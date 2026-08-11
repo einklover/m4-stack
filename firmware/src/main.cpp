@@ -20,15 +20,20 @@
 #include <cstdint>
 #include <cstring>
 
-#ifdef M4_QEMU_BUILD
+#include "qemu/M4QemuNet.h"
+
+#if defined(M4_QEMU_BUILD) || (defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG)
 #include <hal/adc_hal_common.h>
 
 // Espressif QEMU 9.2.2 never raises the ESP32-S3 ADC calibration-done bit,
 // so IDF's pre-app_main calibration constructor otherwise waits forever.
+// Kept for plugin-debug builds that may run without QEMU ADC patch 0001.
 extern "C" uint32_t __wrap_adc_hal_self_calibration(adc_unit_t, adc_atten_t, bool) {
   return 0;
 }
+#endif
 
+#ifdef M4_QEMU_BUILD
 // Volatile keeps the complete application reachable in the QEMU ELF while
 // defaulting the current emulator to its modeled-peripheral boundary.
 static volatile bool gM4QemuScreenMode = true;
@@ -920,6 +925,15 @@ void setup() {
 #endif
     Serial.flush();
 
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    // open_eth + DHCP so Lua plugins / m4adb wifi_* see a usable netif.
+    // Real ESP Wi-Fi is not modeled in Espressif QEMU for S3.
+    if (!m4QemuNetStart(15000)) {
+      Serial.printf("[%lu] [M4-QEMU-PLUGIN] WARNING: open_eth DHCP failed; plugin net will fail\n",
+                    millis());
+    }
+#endif
+
 #ifdef CROSSPOINT_MURPHY_M4
     {
       M4SerialDebug::HostHooks hooks;
@@ -1002,8 +1016,14 @@ void setup() {
         return true;
       };
       gM4DebugBridge.begin(&renderer, &mappedInputManager, &display, std::move(hooks));
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+      // QEMU plugin-debug: auto-authorize m4adb over UART0 (no Developer Options UI).
+      gM4DebugBridge.setAuthorized(true);
+      Serial.printf("[%lu] [M4-QEMU-PLUGIN] serial debug bridge auto-authorized\n", millis());
+#else
       // Apply persisted setting (default off). No serial path can enable this.
       gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);
+#endif
     }
 #endif
 
@@ -1326,7 +1346,11 @@ void loop() {
 
 #ifdef CROSSPOINT_MURPHY_M4
   // Apply Developer Options switch every frame (idempotent). Local UI only.
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  gM4DebugBridge.setAuthorized(true);
+#else
   gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);
+#endif
   // After beginFrame (clears prior synthetic), before activity loop consumes input.
   gM4DebugBridge.poll();
 #endif

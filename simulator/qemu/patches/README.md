@@ -41,6 +41,27 @@ It deliberately does **not** claim analog ADC accuracy. Battery-voltage and
 external-channel analog input belong to the Murphy board model and can be added
 as QOM properties later.
 
+## Patch 0008 — SSD1677 attach
+
+Attaches a digital `murphy-ssd1677` SSI peripheral to GP-SPI2. Requires
+`#include "hw/ssi/ssi.h"` in `esp32s3.c` so `SSI_BUS` expands as a QOM cast
+macro (otherwise the cumulative series fails to link with an undefined
+`SSI_BUS` reference).
+
+## Patch 0009 — SPI0 alias onto SPI1
+
+Production second-stage bootloaders and MSPI paths access SPI0 at
+`0x60003000` as well as SPI1 at `0x60002000`. Upstream only realizes SPI1;
+SPI0 falls into the catch-all iomem window and returns zero, which leaves the
+guest spinning after `entry` while APP CPU waits in ROM `main` for
+`ets_set_user_start`.
+
+This patch aliases SPI0's MMIO onto the existing SPI1 controller so both
+register windows drive the same flash/PSRAM SSI bus. With it applied, an
+unmodified production `murphy_m4` image progresses past second-stage into the
+Arduino/ESP-IDF application (visible via UART0 host logs even when USB-CDC
+`Serial` is silent).
+
 ## Patch 0002 — SPI transfer-buffer indexing
 
 The ESP32-S3 SPI helper iterates `i = 0 .. max(tx_bytes, rx_bytes)` but used the

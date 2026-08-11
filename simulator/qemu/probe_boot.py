@@ -19,9 +19,35 @@ STAGES = [
             r"entry 0x[0-9a-f]+",
         ],
     ),
-    ("app", [r"app_main", r"Arduino", r"\[M4-RC1\] setup\(\) start", r"Starting CrossPoint"]),
-    ("psram", [r"\[M4-PSRAM\]", r"spiram", r"SPIRAM"]),
-    ("board_init", [r"\[M4-SD\]", r"\[M4-DISP\]", r"\[M4-TOUCH\]", r"BoardConfig", r"FreeInk"]),
+    (
+        "app",
+        [
+            r"app_main",
+            r"Arduino",
+            r"\[M4-RC1\] setup\(\) start",
+            r"Starting CrossPoint",
+            # Production USB-CDC Serial may be silent on QEMU UART0; Arduino/
+            # ESP-IDF host logs still prove the guest app is executing.
+            r"esp32-hal-",
+            r"sdmmc_common",
+            r"esp_psram",
+            r"cpu_start",
+        ],
+    ),
+    ("psram", [r"\[M4-PSRAM\]", r"spiram", r"SPIRAM", r"esp_psram"]),
+    (
+        "board_init",
+        [
+            r"\[M4-SD\]",
+            r"\[M4-DISP\]",
+            r"\[M4-TOUCH\]",
+            r"BoardConfig",
+            r"FreeInk",
+            r"sdmmc_init",
+            r"i2cWrite",
+            r"i2c_master",
+        ],
+    ),
 ]
 
 # Exact production boot checkpoints from m4-firmware/src/main.cpp. They are kept

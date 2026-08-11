@@ -86,9 +86,15 @@ def configure_and_build(src: Path, *, jobs: int, reconfigure: bool) -> Path:
     if not build.exists():
         build.mkdir(parents=True)
         run([str(src / "configure"), "--target-list=xtensa-softmmu", "--disable-werror", "--disable-docs"], cwd=build)
-    run(["ninja", "-j", str(max(1, jobs))], cwd=build)
+    # On macOS the final qemu-system-xtensa is an entitlement-wrapped custom
+    # target; a bare ninja all may stop at qemu-system-xtensa-unsigned.
+    run(["ninja", "-j", str(max(1, jobs)), "qemu-system-xtensa"], cwd=build)
     if not binary.is_file():
-        raise RuntimeError(f"expected QEMU binary not produced: {binary}")
+        unsigned = build / "qemu-system-xtensa-unsigned"
+        if unsigned.is_file():
+            binary = unsigned
+        else:
+            raise RuntimeError(f"expected QEMU binary not produced: {binary}")
     return binary
 
 

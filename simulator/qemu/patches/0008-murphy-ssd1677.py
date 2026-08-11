@@ -286,6 +286,16 @@ def main(argv: list[str]) -> int:
 
     path = root / "hw/xtensa/esp32s3.c"
     text = path.read_text(encoding="utf-8")
+    # SSI_BUS / ssi_realize_and_unref / SSI_GPIO_CS live in hw/ssi/ssi.h.
+    # Without this include the attach block is compiled as an implicit function
+    # call and the cumulative series fails to link (undefined reference SSI_BUS).
+    if '#include "hw/ssi/ssi.h"' not in text:
+        text = replace_once(
+            text,
+            '#include "hw/ssi/esp32s3_spi.h"\n',
+            '#include "hw/ssi/esp32s3_spi.h"\n#include "hw/ssi/ssi.h"\n',
+            "include ssi.h for SSD1677 attach",
+        )
     text = replace_once(text,
         '#define TYPE_ESP32S3_GPSPI "ssi.esp32s3.gpspi"\n',
         '#define TYPE_ESP32S3_GPSPI "ssi.esp32s3.gpspi"\n#define TYPE_MURPHY_SSD1677 "murphy-ssd1677"\n',
