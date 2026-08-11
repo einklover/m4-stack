@@ -34,6 +34,8 @@ def load_series() -> list[Path]:
         path = PATCH_DIR / name
         if not path.is_file():
             raise RuntimeError(f"missing patch in series: {path}")
+        if path.suffix not in {".patch", ".diff", ".py"}:
+            raise RuntimeError(f"unsupported patch entry type: {path.name}")
         result.append(path)
     return result
 
@@ -42,6 +44,17 @@ def ensure_tools() -> None:
     missing = [name for name in ("git", "ninja") if shutil.which(name) is None]
     if missing:
         raise RuntimeError("missing required tools: " + ", ".join(missing))
+
+
+def apply_entry(src: Path, patch: Path) -> None:
+    if patch.suffix == ".py":
+        run([sys.executable, str(patch), str(src)], cwd=src)
+    else:
+        # Unified diffs remain convenient for small, upstreamable edits.
+        run(["git", "apply", "--check", str(patch)], cwd=src)
+        run(["git", "apply", str(patch)], cwd=src)
+    # Both forms must leave a syntactically sane diff and actual source changes.
+    run(["git", "diff", "--check"], cwd=src)
 
 
 def prepare_source(src: Path, *, force: bool) -> None:
@@ -56,10 +69,14 @@ def prepare_source(src: Path, *, force: bool) -> None:
     run(["git", "reset", "--hard", ref], cwd=src)
     run(["git", "clean", "-fdx"], cwd=src)
 
+    before = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=src, text=True).strip()
     for patch in load_series():
-        # git apply --check first gives a useful failure before modifying source.
-        run(["git", "apply", "--check", str(patch)], cwd=src)
-        run(["git", "apply", str(patch)], cwd=src)
+        apply_entry(src, patch)
+    if not subprocess.check_output(["git", "status", "--porcelain"], cwd=src, text=True).strip():
+        raise RuntimeError("patch series produced no source changes")
+    after = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=src, text=True).strip()
+    if before != after:
+        raise RuntimeError("patch application unexpectedly changed upstream HEAD")
 
 
 def configure_and_build(src: Path, *, jobs: int, reconfigure: bool) -> Path:
@@ -73,7 +90,6 @@ def configure_and_build(src: Path, *, jobs: int, reconfigure: bool) -> Path:
         shutil.rmtree(build)
     if not build.exists():
         build.mkdir(parents=True)
-        # Keep optional UI/network dependencies out of the mandatory build path.
         run(
             [
                 str(configure),
@@ -99,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-j", "--jobs", type=int, default=4)
     p.add_argument("--force-source", action="store_true", help="discard and reclone source")
     p.add_argument("--reconfigure", action="store_true", help="discard QEMU build directory")
-    p.add_argument("--check-only", action="store_true", help="clone/reset and git-apply --check only")
+    p.add_argument("--check-only", action="store_true", help="clone/reset and apply the full checked series")
     args = p.parse_args(argv)
 
     src = Path(args.source_dir).expanduser().resolve()
