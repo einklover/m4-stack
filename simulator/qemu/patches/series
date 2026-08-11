@@ -1,3 +1,4 @@
 0001-esp32s3-sens-adc-oneshot.py
 0002-esp32s3-spi-transfer-index.diff
 0003-esp32-gpio-digital-io.diff
+0004-esp32s3-i2c-controller.py
