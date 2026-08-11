@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
-"""Run an unmodified Murphy M4 production flash image in ESP32-S3 QEMU.
+"""Run an unmodified Murphy M4 production flash image in patched ESP32-S3 QEMU.
 
-This is the long-term acceptance path for binary-level Murphy emulation. It is
-intentionally different from ``run_murphy_bin.py``:
-
-* input is a complete 16 MiB production/factory flash image;
-* Octal PSRAM is always requested (shipping N16R8 contract);
-* no ``M4_QEMU_BUILD`` firmware profile is assumed;
-* watchdogs stay enabled unless explicitly disabled for diagnosis;
-* ESP32-S3 QEMU eFuse and raw SD-card backing files can be supplied;
-* Murphy idle GPIO inputs are seeded at the GPIO device, not faked in firmware;
-* open_eth is opt-in because it is not the ESP32-S3 Wi-Fi peripheral.
-
-Espressif QEMU already instantiates a DesignWare SD/MMC controller in the
-ESP32-S3 SoC and attaches an ``if=sd`` drive to its SD bus. Board-level SD power
-and card-detect wiring are separate Murphy board-model concerns.
+The default machine is now ``murphy-m4``: an ESP32-S3 machine subtype whose
+board devices are connected below the unchanged guest firmware.  The generic
+``esp32s3`` machine remains selectable for SoC-only diagnostics.
 """
 from __future__ import annotations
 
@@ -33,10 +22,7 @@ PSRAM_DRIVER = "ssi_psram"
 WDT_DRIVER = "timer.esp32c3.timg"
 EFUSE_DRIVER = "nvram.esp32s3.efuse"
 EFUSE_DRIVE_ID = "efuse"
-
-# Active-low Murphy keys (GPIO0/1/2) and the FT6x36-style touch IRQ line
-# (GPIO44, idle high) must not float low at boot. Other board lines remain low
-# until the dedicated board device drives them.
+TOUCH_DRIVER = "murphy-ft6x36"
 MURPHY_IDLE_GPIO_INPUTS = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 44)
 
 
@@ -54,10 +40,20 @@ def existing_file(value: str | None, label: str) -> Path | None:
 def validate_sd_image(path: Path | None) -> Path | None:
     if path is None:
         return None
-    size = path.stat().st_size
-    if size % 512:
-        raise RunnerError(f"SD image size must be a multiple of 512 bytes, got {size}")
+    if path.stat().st_size % 512:
+        raise RunnerError(f"SD image size must be a multiple of 512 bytes, got {path.stat().st_size}")
     return path
+
+
+def parse_touch(value: str) -> tuple[int, int]:
+    try:
+        xs, ys = value.split(",", 1)
+        x, y = int(xs, 0), int(ys, 0)
+    except (ValueError, TypeError) as exc:
+        raise argparse.ArgumentTypeError("touch must be X,Y") from exc
+    if not (0 <= x < 480 and 0 <= y < 800):
+        raise argparse.ArgumentTypeError("touch coordinate must be within 480x800")
+    return x, y
 
 
 def build_cmd(
@@ -74,35 +70,39 @@ def build_cmd(
     disable_wdt: bool,
     open_eth: bool,
     extra: list[str],
+    machine: str = "murphy-m4",
+    touch: tuple[int, int] | None = None,
 ) -> list[str]:
     if gpio_input_default < 0 or gpio_input_default > 0xFFFFFFFFFFFFFFFF:
         raise RunnerError("GPIO input-default mask must fit in 64 bits")
+    if machine not in {"murphy-m4", "esp32s3"}:
+        raise RunnerError(f"unsupported machine: {machine}")
+    if touch is not None and machine != "murphy-m4":
+        raise RunnerError("touch fixture requires --machine murphy-m4")
 
     cmd = [
         qemu,
         "-nographic",
-        "-machine",
-        "esp32s3",
-        "-m",
-        f"{psram_mb}M",
-        "-drive",
-        f"file={flash},if=mtd,format=raw",
-        "-global",
-        f"driver={GPIO_DRIVER},property=strap_mode,value=0x04",
-        "-global",
-        f"driver={GPIO_DRIVER},property=input-default,value=0x{gpio_input_default:x}",
-        # Shipping Murphy M4 uses Octal/OPI PSRAM. Do not silently switch this
-        # acceptance path to Quad PSRAM: an Octal failure belongs below guest.
-        "-global",
-        f"driver={PSRAM_DRIVER},property=is_octal,value=true",
+        "-machine", machine,
+        "-m", f"{psram_mb}M",
+        "-drive", f"file={flash},if=mtd,format=raw",
+        "-global", f"driver={GPIO_DRIVER},property=strap_mode,value=0x04",
+        "-global", f"driver={GPIO_DRIVER},property=input-default,value=0x{gpio_input_default:x}",
+        "-global", f"driver={PSRAM_DRIVER},property=is_octal,value=true",
     ]
+
+    if touch is not None:
+        x, y = touch
+        cmd += [
+            "-global", f"driver={TOUCH_DRIVER},property=pressed,value=on",
+            "-global", f"driver={TOUCH_DRIVER},property=x,value={x}",
+            "-global", f"driver={TOUCH_DRIVER},property=y,value={y}",
+        ]
 
     if efuse_file is not None:
         cmd += [
-            "-drive",
-            f"file={efuse_file},if=none,format=raw,id={EFUSE_DRIVE_ID}",
-            "-global",
-            f"driver={EFUSE_DRIVER},property=drive,value={EFUSE_DRIVE_ID}",
+            "-drive", f"file={efuse_file},if=none,format=raw,id={EFUSE_DRIVE_ID}",
+            "-global", f"driver={EFUSE_DRIVER},property=drive,value={EFUSE_DRIVE_ID}",
         ]
 
     if sd_image is not None:
@@ -112,22 +112,12 @@ def build_cmd(
         cmd += ["-drive", drive]
 
     if disable_wdt:
-        cmd += [
-            "-global",
-            f"driver={WDT_DRIVER},property=wdt_disable,value=true",
-        ]
-
+        cmd += ["-global", f"driver={WDT_DRIVER},property=wdt_disable,value=true"]
     if open_eth:
         cmd += ["-nic", "user,model=open_eth"]
-
-    if serial_file is not None:
-        cmd += ["-serial", f"file:{serial_file}"]
-    else:
-        cmd += ["-serial", "mon:stdio"]
-
+    cmd += ["-serial", f"file:{serial_file}" if serial_file is not None else "mon:stdio"]
     if gdb:
         cmd += ["-gdb", "tcp::3333", "-S"]
-
     cmd += extra
     return cmd
 
@@ -136,11 +126,8 @@ def run_for(cmd: list[str], seconds: float, stdout_log: Path | None) -> int:
     print("+", " ".join(cmd), flush=True)
     out = open(stdout_log, "w", encoding="utf-8") if stdout_log else None
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=out if out else None,
-            stderr=subprocess.STDOUT if out else None,
-        )
+        proc = subprocess.Popen(cmd, stdout=out if out else None,
+                                stderr=subprocess.STDOUT if out else None)
         deadline = time.monotonic() + seconds
         try:
             while proc.poll() is None and time.monotonic() < deadline:
@@ -188,31 +175,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("flash_image", help="complete 16 MiB production/factory flash image")
     parser.add_argument("--qemu", default=None, help="path to qemu-system-xtensa")
+    parser.add_argument("--machine", choices=("murphy-m4", "esp32s3"), default="murphy-m4")
+    parser.add_argument("--touch", type=parse_touch, default=None,
+                        help="start with one FT6x36 contact at logical X,Y")
     parser.add_argument("--efuse-file", default=None, help="ESP32-S3 QEMU joint-format eFuse backing file")
     parser.add_argument("--sd-image", default=None, help="raw SD-card image attached to native ESP32-S3 SDMMC")
     parser.add_argument("--sd-read-only", action="store_true", help="open --sd-image read-only")
     parser.add_argument("--psram-mb", type=int, default=8, choices=(8, 16, 32))
-    parser.add_argument(
-        "--gpio-input-default",
-        type=parse_u64,
-        default=MURPHY_IDLE_GPIO_INPUTS,
-        help="64-bit external GPIO idle-level mask (default: Murphy keys/touch IRQ high)",
-    )
+    parser.add_argument("--gpio-input-default", type=parse_u64, default=MURPHY_IDLE_GPIO_INPUTS)
     parser.add_argument("--seconds", type=float, default=40.0)
     parser.add_argument("--serial-file", default=None, help="guest UART output file")
     parser.add_argument("--log", default=None, help="QEMU process stdout/stderr log")
     parser.add_argument("--probe", action="store_true", help="classify the guest UART log")
     parser.add_argument("--gdb", action="store_true", help="wait for GDB on tcp::3333")
-    parser.add_argument(
-        "--disable-wdt",
-        action="store_true",
-        help="diagnostic escape hatch; production-fidelity runs leave watchdogs enabled",
-    )
-    parser.add_argument(
-        "--open-eth",
-        action="store_true",
-        help="attach QEMU open_eth NAT for diagnostics; this is not ESP32 Wi-Fi emulation",
-    )
+    parser.add_argument("--disable-wdt", action="store_true")
+    parser.add_argument("--open-eth", action="store_true",
+                        help="diagnostic-only OpenCores Ethernet NAT, not ESP Wi-Fi")
     parser.add_argument("--dry-run", action="store_true")
     args, unknown = parser.parse_known_args(argv)
 
@@ -226,12 +204,18 @@ def main(argv: list[str] | None = None) -> int:
         flash = existing_file(args.flash_image, "flash image")
         assert flash is not None
         if flash.stat().st_size != FLASH_SIZE:
-            raise RunnerError(
-                f"production flash must be exactly {FLASH_SIZE} bytes (16 MiB), got {flash.stat().st_size}"
-            )
+            raise RunnerError(f"production flash must be exactly {FLASH_SIZE} bytes (16 MiB), got {flash.stat().st_size}")
         efuse = existing_file(args.efuse_file, "eFuse file")
         sd_image = validate_sd_image(existing_file(args.sd_image, "SD image"))
         qemu = find_qemu(args.qemu)
+        cmd = build_cmd(
+            qemu, flash, psram_mb=args.psram_mb,
+            gpio_input_default=args.gpio_input_default, efuse_file=efuse,
+            sd_image=sd_image, sd_read_only=args.sd_read_only,
+            serial_file=Path(args.serial_file).expanduser().resolve() if args.serial_file else None,
+            gdb=args.gdb, disable_wdt=args.disable_wdt, open_eth=args.open_eth,
+            extra=extra, machine=args.machine, touch=args.touch,
+        )
     except RunnerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -240,30 +224,16 @@ def main(argv: list[str] | None = None) -> int:
     log = Path(args.log).expanduser().resolve() if args.log else None
     if args.probe and serial is None:
         serial = Path("/tmp/murphy-production.serial.log")
+        # Rebuild only to route UART to the implicit probe log.
+        cmd = build_cmd(qemu, flash, psram_mb=args.psram_mb,
+                        gpio_input_default=args.gpio_input_default, efuse_file=efuse,
+                        sd_image=sd_image, sd_read_only=args.sd_read_only, serial_file=serial,
+                        gdb=args.gdb, disable_wdt=args.disable_wdt, open_eth=args.open_eth,
+                        extra=extra, machine=args.machine, touch=args.touch)
 
     for path in (serial, log):
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        cmd = build_cmd(
-            qemu,
-            flash,
-            psram_mb=args.psram_mb,
-            gpio_input_default=args.gpio_input_default,
-            efuse_file=efuse,
-            sd_image=sd_image,
-            sd_read_only=args.sd_read_only,
-            serial_file=serial,
-            gdb=args.gdb,
-            disable_wdt=args.disable_wdt,
-            open_eth=args.open_eth,
-            extra=extra,
-        )
-    except RunnerError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-
     if args.dry_run:
         print("+", " ".join(cmd))
         return 0
