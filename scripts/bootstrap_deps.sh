@@ -21,10 +21,19 @@ tar -xzf "$TMP/m4-device.tar.gz" -C "$TMP/src" --strip-components=1
 DEVICE="$TMP/src"
 
 test -d "$DEVICE/open-m4-sdk" || { echo "missing open-m4-sdk in archive"; exit 2; }
+test -f "$DEVICE/src/network/updater_fw.bin" || { echo "missing updater_fw.bin in m4-device archive"; exit 2; }
 
 echo "==> install open-m4-sdk"
 rm -rf "$FW/open-m4-sdk"
 cp -a "$DEVICE/open-m4-sdk" "$FW/open-m4-sdk"
+
+# platformio.ini embeds this helper image into every hardware build. It is an
+# unvendored production artifact from the same pinned m4-device snapshot, not a
+# generated placeholder; without restoring it a clean clone cannot build the
+# normal murphy_m4 profile.
+echo "==> install src/network/updater_fw.bin"
+mkdir -p "$FW/src/network"
+cp -a "$DEVICE/src/network/updater_fw.bin" "$FW/src/network/updater_fw.bin"
 
 for src in lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts; do
   test -d "$DEVICE/$src" || { echo "missing m4-device $src"; exit 2; }
@@ -44,6 +53,7 @@ cp -a "$DEVICE/lib/EpdFont/builtinFonts" "$FW/lib/EpdFont/builtinFonts"
 
 for p in \
   open-m4-sdk/libs/hardware/BatteryMonitor/library.json \
+  src/network/updater_fw.bin \
   lib/Epub/Epub.h \
   lib/Lua/src/lua.h \
   lib/expat/expat.h \
