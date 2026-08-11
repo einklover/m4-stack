@@ -1,0 +1,68 @@
+name: Murphy QEMU integration v2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'simulator/qemu/**'
+      - 'simulator/tests/test_qemu_*.py'
+      - '.github/workflows/m4-qemu-integration-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev libgcrypt20-dev \
+            libslirp-dev libsdl2-dev flex bison
+      - name: Run Python contracts
+        run: |
+          python3 -m unittest \
+            simulator/tests/test_qemu_production_runner.py \
+            simulator/tests/test_qemu_patchset.py
+      - name: Apply v2 series and build Xtensa QEMU
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/m4-qemu-v2"
+          python3 simulator/qemu/build_patched_qemu_v2.py \
+            --source-dir "$RUNNER_TEMP/espressif-qemu" \
+            --reconfigure -j 2 2>&1 | tee "$RUNNER_TEMP/m4-qemu-v2/build.log"
+      - name: Verify Murphy machine
+        run: |
+          QEMU="$RUNNER_TEMP/espressif-qemu/build-murphy-v2/qemu-system-xtensa"
+          "$QEMU" --version
+          "$QEMU" -machine help | grep -E '(^|[[:space:]])murphy-m4([[:space:]]|$)'
+      - name: Comment failure tail
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo '### Murphy QEMU v2 integration failure'
+            echo
+            echo 'Run: `${{ github.run_id }}`'
+            echo
+            echo '```text'
+            if [ -f "$RUNNER_TEMP/m4-qemu-v2/build.log" ]; then tail -n 120 "$RUNNER_TEMP/m4-qemu-v2/build.log"; else echo 'Failure before build log.'; fi
+            echo '```'
+          } > "$RUNNER_TEMP/failure.md"
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/failure.md"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: murphy-qemu-v2-${{ github.run_id }}
+          path: ${{ runner.temp }}/m4-qemu-v2
+          if-no-files-found: ignore
