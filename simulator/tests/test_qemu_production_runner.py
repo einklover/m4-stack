@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "qemu" / "run_production_bin.py"
+QEMU_DIR = Path(__file__).resolve().parents[1] / "qemu"
+MODULE_PATH = QEMU_DIR / "run_production_bin.py"
+if str(QEMU_DIR) not in sys.path:
+    sys.path.insert(0, str(QEMU_DIR))
 SPEC = importlib.util.spec_from_file_location("run_production_bin", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 run_production_bin = importlib.util.module_from_spec(SPEC)
