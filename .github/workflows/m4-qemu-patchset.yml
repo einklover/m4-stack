@@ -5,6 +5,7 @@ on:
     paths:
       - 'simulator/qemu/**'
       - 'simulator/tests/test_qemu_production_runner.py'
+      - 'simulator/tests/test_qemu_patchset.py'
       - '.github/workflows/m4-qemu-patchset.yml'
   workflow_dispatch:
 
@@ -23,8 +24,11 @@ jobs:
             libglib2.0-dev libpixman-1-dev libgcrypt20-dev \
             libslirp-dev libsdl2-dev flex bison
 
-      - name: Run production-runner unit tests
-        run: python3 -m unittest simulator/tests/test_qemu_production_runner.py
+      - name: Run emulator unit tests
+        run: |
+          python3 -m unittest \
+            simulator/tests/test_qemu_production_runner.py \
+            simulator/tests/test_qemu_patchset.py
 
       - name: Apply Murphy patches and build Xtensa QEMU
         run: |
