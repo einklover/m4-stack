@@ -1,0 +1,26 @@
+**/__pycache__/
+*.pyc
+.pio/
+artifacts/fonts/release/*.epdfont
+artifacts/fonts/source/
+backups/
+build/
+artifacts/
+# Local IDE / runtime (do not commit)
+compile_commands.json
+sdcard/
+.DS_Store
+# m4adb local cache / serial captures (never commit packages or secrets)
+build/m4adb/
+*.session.json
+**/session.json
+simulator/build*/
+
+# Absolute-path symlinks into the source SDK tree (dangling on clone; never commit)
+lib/Epub
+lib/Lua
+lib/expat
+lib/miniz
+lib/picojpeg
+lib/EpdFont/builtinFonts
+open-m4-sdk

@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "source_repo": "einklover/m4-firmware",
+  "policy": "docs/ISSUE_REPRODUCTION_POLICY.md",
+  "entries": [
+    {
+      "id": "issue-1-ssd1677-wipe",
+      "issue": 1,
+      "title": "SSD1677 differential wipe intermediate state not visible",
+      "layer": "ssd1677_controller_and_epd_physics",
+      "status": "device_trace_required",
+      "reproduction_scope": "Controller-level activation/BUSY/commit semantics are modeled; analog intermediate gray/ghost appearance is not truthfully reproducible without physical calibration.",
+      "test_refs": ["ctest:m4_board_tests"],
+      "evidence": ["field custom-LUT direction tests", "TP timing measurements", "48000-byte BW/RED frame format"],
+      "physical_limitations": "Electrophoretic particle response and multi-phase analog gray progression require a real GDEQ0426T82/SSD1677 panel trace."
+    },
+    {
+      "id": "issue-2-internal-ram-tls-oom",
+      "issue": 2,
+      "title": "Internal RAM fragmentation causes TLS/list/chapter OOM while PSRAM is free",
+      "layer": "heap_tls",
+      "status": "reproduced",
+      "reproduction_scope": "Independent internal banks fragment below a 48KiB contiguous TLS peak while total/PSRAM free remain high; wrong framebuffer placement is separately rejected.",
+      "test_refs": ["scenario:tls_fragmented_heap", "scenario:tls_keepalive", "scenario:framebuffer_contract"],
+      "evidence": ["field free_heap=70840", "field min_free_heap=68888", "field free_psram=7605792", "field largest_internal<40KiB"],
+      "physical_limitations": "Exact Arduino/mbedTLS allocation sizes remain version-specific and must be calibrated from device traces."
+    },
+    {
+      "id": "issue-4-jjwxc-memory-prefetch-tradeoff",
+      "issue": 4,
+      "title": "JJWXC reader internal-RAM peak: keep-alive versus fresh TLS prefetch",
+      "layer": "heap_tls_reader_lifecycle",
+      "status": "modeled",
+      "reproduction_scope": "The two constituent mechanisms are automated: persistent TLS consumes internal residency, while a new handshake requires a larger contiguous peak; chapter lifecycle is tested separately.",
+      "test_refs": ["scenario:tls_fragmented_heap", "scenario:tls_keepalive", "ctest:m4_issue_contracts"],
+      "evidence": ["field min_free_heap=3528", "field free_psram about 7.5MiB", "keep-alive/release behavior from issue"],
+      "physical_limitations": "Exact combined occupancy of Wi-Fi, WebServer, font caches and task stacks needs an imported device heap trace."
+    },
+    {
+      "id": "issue-5-cross-chapter-lifecycle",
+      "issue": 5,
+      "title": "Cross-chapter empty-path/reopen chain and repeated-generation instability",
+      "layer": "reader_provider_lifecycle",
+      "status": "reproduced",
+      "reproduction_scope": "The simulator rejects empty/partial paths, requires old reader generation teardown before download/open, runs 79 consecutive handoffs and enforces a transition watchdog budget.",
+      "test_refs": ["ctest:m4_issue_contracts", "scenario:single_tap_slow_index"],
+      "evidence": ["reader_open.log ch1 free=139976", "empty path load_failed free=88372", "ch2 open free=88084"],
+      "physical_limitations": "The exact historical WDT backtrace still depends on real firmware scheduling/SD latency and belongs to QEMU/device validation."
+    },
+    {
+      "id": "issue-9-native-weread-https-psram-residency",
+      "issue": 9,
+      "title": "Native WeRead HTTPS body-read panic with PSRAM worker/control objects",
+      "layer": "freertos_tls_memory_residency",
+      "status": "modeled",
+      "reproduction_scope": "Memory contracts now reject PSRAM placement of TLS worker stack and HTTP/WiFiClientSecure control objects while requiring large body/decode payloads in PSRAM.",
+      "test_refs": ["ctest:m4_issue_contracts", "scenario:tls_fragmented_heap"],
+      "evidence": ["panic stack mbedtls_ssl_read -> NetworkClientSecure -> HTTPClient -> M4NativeProviderHttp", "provider_stage=0x310"],
+      "physical_limitations": "A true reproduction of the mbedTLS/lwIP panic requires executing the affected Arduino-ESP32 binary in QEMU or on device; the host model only proves residency contracts."
+    },
+    {
+      "id": "issue-17-native-ui-and-catalog",
+      "issue": 17,
+      "title": "Native UI tile truncation / confirm / JJWXC catalog-empty device regression",
+      "layer": "native_ui_provider",
+      "status": "fixed_upstream_regression",
+      "reproduction_scope": "Application/UI behavior is covered in m4-firmware native host regressions rather than duplicated in the hardware simulator.",
+      "test_refs": ["firmware:tests/native_app", "firmware:tools/m4ui_preview.py"],
+      "evidence": ["device-vs-preview measurements in issue #17"],
+      "physical_limitations": "Pixel parity still benefits from real renderer/QEMU framebuffer screenshots."
+    },
+    {
+      "id": "issue-18-runtime-ui-font-pixels",
+      "issue": 18,
+      "title": "Runtime UI TTF physical pixel size ignored uiScale",
+      "layer": "font_rendering",
+      "status": "fixed_upstream_regression",
+      "reproduction_scope": "Closed upstream after the runtime-TTF physical-pixel fix; keep it in the historical acceptance matrix because preview/device parity is a recurring class.",
+      "test_refs": ["firmware:test_runtime_ui_font_policy"],
+      "evidence": ["device UI_10 measured about 31px under uiScale=82"],
+      "physical_limitations": "Final glyph raster appearance remains renderer/font dependent."
+    },
+    {
+      "id": "issue-20-native-layout-parity",
+      "issue": 20,
+      "title": "Native device layout differed from preview and leaked <br/> markup",
+      "layer": "native_ui_layout",
+      "status": "fixed_upstream_regression",
+      "reproduction_scope": "Handled by firmware native-UI contract/layout regressions; simulator should consume the real renderer later rather than clone flex layout logic.",
+      "test_refs": ["firmware:test_native_ui"],
+      "evidence": ["missing bottom buttons on device", "literal <br/> in detail intro"],
+      "physical_limitations": "Exact screenshot parity awaits the real-renderer backend."
+    },
+    {
+      "id": "issue-24-http-sd-atomic-commit",
+      "issue": 24,
+      "title": "Catalog/chapter SD write failure and transient HTTP connection failure",
+      "layer": "network_storage_commit",
+      "status": "reproduced",
+      "reproduction_scope": "SD publication reproduces rename failure, bounded 2KiB copy fallback, write failure, sync/size verification policy and preservation of the previous generation. HTTP zero-byte retry policy remains in firmware integration tests.",
+      "test_refs": ["ctest:m4_issue_contracts", "scenario:chunked_quiet_eof"],
+      "evidence": ["field catalog write failure", "field ESP_ERR_HTTP_CONN", "PR #25 field fixes"],
+      "physical_limitations": "Card-specific FAT/exFAT controller behavior and RF/Wi-Fi reconnect timing require device/QEMU integration."
+    },
+    {
+      "id": "issue-24-ttf-ui-glyphs",
+      "issue": 24,
+      "title": "Variable TTF load failure and system UI missing glyphs",
+      "layer": "font_parser_ui_policy",
+      "status": "fixed_upstream_regression",
+      "reproduction_scope": "m4-firmware PR #25 added variable-glyf default-instance parsing and exact cmap UI coverage regression tests.",
+      "test_refs": ["firmware:test_ttf_variable_default", "firmware:test_runtime_ui_font_policy"],
+      "evidence": ["field '字体加载失败，保持原字体'", "field UI '?' glyph placeholders"],
+      "physical_limitations": "Font rendering performance and visual raster quality remain device/render calibration concerns."
+    },
+    {
+      "id": "issue-24-restart-bottom-bar",
+      "issue": 24,
+      "title": "Restart-key path leaves stale bottom navigation bar",
+      "layer": "activity_ui_state",
+      "status": "device_trace_required",
+      "reproduction_scope": "No exact event/state trace is currently available, so this is deliberately not marked reproduced.",
+      "test_refs": [],
+      "evidence": ["single field screenshot/report in issue #24"],
+      "physical_limitations": "Needs input/activity transition trace around restart and HomeActivity re-entry."
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+*.m4x
+cache/
+logs/
+*.session.json
+**/session.json
+
+tools/__pycache__/

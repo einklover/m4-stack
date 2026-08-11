@@ -1,0 +1,5 @@
+# Murphy M4 uses a 16 MiB DIO flash. Espressif QEMU requires the external
+# --flash-file size to match CONFIG_ESPTOOLPY_FLASHSIZE.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y

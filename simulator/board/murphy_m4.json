@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "board": "murphy_m4",
+  "identity": {
+    "schematic_title": "4.26墨水屏阅读器",
+    "schematic_board": "ESP32_426_S3_V2.0",
+    "schematic_revision": "V1.0",
+    "schematic_created": "2026-03-17",
+    "schematic_updated": "2026-05-06",
+    "mcu": "ESP32-S3R8",
+    "psram_bytes": 8388608,
+    "firmware_target": "esp32-s3-devkitc1-n16r8",
+    "provenance": [
+      "SCH_ESP..18(1).pdf supplied by the Murphy M4 project owner",
+      "m4-device open-m4-sdk BoardConfig::MURPHY_M4",
+      "m4-firmware murphy_m4 PlatformIO environment"
+    ]
+  },
+  "flash": {
+    "firmware_model_bytes": 16777216,
+    "firmware_layout": "Murphy factory 16MiB APP0/APP1 layout",
+    "schematic_marking": "W25Q32JVSSIQ",
+    "schematic_marking_nominal_bytes": 4194304,
+    "status": "discrepancy",
+    "note": "The schematic symbol/BOM marking is W25Q32 (32Mbit), while the current production firmware target and factory partition map are 16MiB. The simulator intentionally records both facts and treats the current firmware/field target as executable truth until a production flash-ID trace resolves the populated part."
+  },
+  "display": {
+    "controller": "SSD1677",
+    "panel": "GDEQ0426T82-FT01C",
+    "width": 800,
+    "height": 480,
+    "framebuffer_bytes": 48000,
+    "busy_polarity": "active_high",
+    "spi_hz": 10000000,
+    "pins": {
+      "sclk": 4,
+      "mosi": 3,
+      "cs": 5,
+      "dc": 6,
+      "reset": 7,
+      "busy": 8
+    },
+    "source": "firmware_board_profile_live_probe"
+  },
+  "sd": {
+    "transport": "sdmmc",
+    "bus_width": 4,
+    "power_active_high": false,
+    "pins": {
+      "power": 10,
+      "clk": 16,
+      "cmd": 15,
+      "d0": 17,
+      "d1": 18,
+      "d2": 11,
+      "d3": 14
+    },
+    "card_detect_net_present": true,
+    "card_detect_gpio": null,
+    "source": "firmware_board_profile_and_schematic"
+  },
+  "input": {
+    "active_low": true,
+    "pins": {
+      "up": 1,
+      "down": 2,
+      "lock_power": 0
+    },
+    "source": "firmware_board_profile_live_probe"
+  },
+  "touch": {
+    "controller": "FT6x36-compatible",
+    "i2c_address": 46,
+    "i2c_bus": "i2c0",
+    "power_active_high": false,
+    "pins": {
+      "sda": 13,
+      "scl": 12,
+      "irq": 44,
+      "power": 45
+    },
+    "transform": {
+      "swap_xy": true,
+      "flip_x": false,
+      "flip_y": true
+    },
+    "source": "firmware_board_profile_live_probe"
+  },
+  "frontlight": {
+    "dual_channel": true,
+    "pwm_hz": 5000,
+    "resolution_bits": 8,
+    "active_high": true,
+    "pins": {
+      "cool": 48,
+      "warm": 47
+    },
+    "driver_schematic": "AW9967DNR x2",
+    "source": "firmware_board_profile_and_schematic"
+  },
+  "battery": {
+    "adc_pin": 9,
+    "divider_multiplier": 2.0,
+    "charger_schematic": "TP4056",
+    "charge_status_schematic_gpio": 43,
+    "charge_status_firmware_enabled": false,
+    "source": "firmware_board_profile_and_schematic"
+  },
+  "buzzer": {
+    "gpio": 46,
+    "nominal_hz": 4000,
+    "source": "firmware_board_profile_live_probe_and_schematic"
+  },
+  "physical_i2c_devices": [
+    {
+      "name": "touch",
+      "bus": "i2c0",
+      "sda": 13,
+      "scl": 12,
+      "address": 46,
+      "schematic_present": true,
+      "firmware_enabled": true
+    },
+    {
+      "name": "AHT20",
+      "bus": "i2c0",
+      "sda": 13,
+      "scl": 12,
+      "address": 56,
+      "schematic_present": true,
+      "firmware_enabled": false,
+      "note": "BoardConfig::MURPHY_M4 currently uses NO_SENSORS."
+    },
+    {
+      "name": "SC7A20",
+      "bus": "i2c0",
+      "sda": 13,
+      "scl": 12,
+      "address": null,
+      "schematic_present": true,
+      "firmware_enabled": false,
+      "note": "Address is strap/config dependent and is not asserted by the current firmware profile."
+    }
+  ],
+  "gpio_shared_groups": {
+    "i2c0": [12, 13]
+  },
+  "strap_defaults": {
+    "gpio0": "pull_up_1",
+    "gpio3": "floating",
+    "gpio45": "pull_down_0",
+    "gpio46": "pull_down_0"
+  },
+  "simulation_policy": {
+    "authoritative_pin_source": "firmware_board_profile_live_probe",
+    "schematic_is_physical_evidence": true,
+    "flag_source_disagreements": true,
+    "never_invent_unverified_gpio": true,
+    "epd_physics_requires_device_calibration": true
+  }
+}

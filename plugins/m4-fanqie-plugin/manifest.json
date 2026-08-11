@@ -1,0 +1,18 @@
+{
+  "id": "com.fanqie.client",
+  "name": "番茄小说",
+  "version": "0.3.1",
+  "versionCode": 32,
+  "runtime": "native",
+  "entry": "main.xml",
+  "provider": "fanqie",
+  "author": "einklover",
+  "description": "0.3.1 Native：WAP 风格书架/发现/排行 UI + 原生番茄 Provider；阅读、章节网络、缓存与预取不启动 Lua",
+  "files": [
+    "main.xml"
+  ],
+  "permissions": [
+    "filesystem.appdata",
+    "network"
+  ]
+}

@@ -1,0 +1,37 @@
+# Build / IDE
+**/__pycache__/
+*.pyc
+.DS_Store
+.pio/
+**/build/
+**/build-*/
+compile_commands.json
+.vscode/
+.idea/
+*.session.json
+**/session.json
+
+# Local reconstructed deps (bootstrap_deps.sh) — large, re-fetched from m4-device
+firmware/open-m4-sdk/
+firmware/lib/Epub/
+firmware/lib/expat/
+firmware/lib/miniz/
+firmware/lib/Lua/
+firmware/lib/picojpeg/
+firmware/lib/EpdFont/builtinFonts/
+
+# Artifacts / secrets
+firmware/backups/
+firmware/firmware.bin
+firmware/firmware.sha256
+firmware/sdcard/
+firmware/artifacts/
+**/*.m4x
+release-*/
+*.bin
+!**/partitions*.bin
+
+# Simulator local
+simulator/build/
+simulator/qemu/sdkconfig
+simulator/qemu/build*/

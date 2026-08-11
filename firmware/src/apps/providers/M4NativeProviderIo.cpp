@@ -1,0 +1,416 @@
+#include "apps/providers/M4NativeProviderIo.h"
+
+#include <ArduinoJson.h>
+
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_heap_caps.h>
+#endif
+
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <cstring>
+
+namespace M4NativeProviderIo {
+namespace {
+
+std::string markerPath(const std::string& p) { return p + ".ok"; }
+
+bool readSmall(const std::string& path, std::string& out, size_t cap = 16u * 1024u) {
+  out.clear();
+  FsFile f;
+  if (!SdMan.openFileForRead("NP-CFG", path.c_str(), f)) return false;
+  const size_t n = f.fileSize();
+  if (n == 0 || n > cap) {
+    f.close();
+    return false;
+  }
+  out.resize(n);
+  size_t off = 0;
+  while (off < n) {
+    const int r = f.read(reinterpret_cast<uint8_t*>(&out[off]), n - off);
+    if (r <= 0) break;
+    off += static_cast<size_t>(r);
+  }
+  f.close();
+  if (off != n) {
+    out.clear();
+    return false;
+  }
+  return true;
+}
+
+bool writeExact(const std::string& path, const std::string& body) {
+  if (SdMan.exists(path.c_str())) SdMan.remove(path.c_str());
+  FsFile f;
+  if (!SdMan.openFileForWrite("NP-CFG", path.c_str(), f)) return false;
+  size_t off = 0;
+  while (off < body.size()) {
+    const size_t n = std::min<size_t>(4096, body.size() - off);
+    const int w = f.write(reinterpret_cast<const uint8_t*>(body.data() + off), n);
+    if (w <= 0) {
+      f.close();
+      return false;
+    }
+    off += static_cast<size_t>(w);
+  }
+  f.sync();
+  f.close();
+  return true;
+}
+
+bool fileSizeIs(const std::string& path, size_t expected) {
+  FsFile f;
+  if (!SdMan.openFileForRead("NP-VERIFY", path.c_str(), f)) return false;
+  const size_t n = f.fileSize();
+  f.close();
+  return n == expected;
+}
+
+bool copyFileExact(const std::string& src, const std::string& dst, size_t expectedBytes) {
+  FsFile in;
+  if (!SdMan.openFileForRead("NP-COPY-R", src.c_str(), in)) return false;
+  if (in.fileSize() != expectedBytes) {
+    in.close();
+    return false;
+  }
+
+  if (SdMan.exists(dst.c_str()) && !SdMan.remove(dst.c_str())) {
+    in.close();
+    return false;
+  }
+  FsFile out;
+  if (!SdMan.openFileForWrite("NP-COPY-W", dst.c_str(), out)) {
+    in.close();
+    return false;
+  }
+  (void)out.seek(0);
+  (void)out.truncate(0);
+
+  uint8_t buf[2048];
+  size_t copied = 0;
+  bool ok = true;
+  while (copied < expectedBytes) {
+    const size_t want = std::min<size_t>(sizeof(buf), expectedBytes - copied);
+    const int r = in.read(buf, want);
+    if (r <= 0) {
+      ok = false;
+      break;
+    }
+    size_t off = 0;
+    while (off < static_cast<size_t>(r)) {
+      const int w = out.write(buf + off, static_cast<size_t>(r) - off);
+      if (w <= 0) {
+        ok = false;
+        break;
+      }
+      off += static_cast<size_t>(w);
+    }
+    if (!ok) break;
+    copied += static_cast<size_t>(r);
+  }
+  out.sync();
+  out.close();
+  in.close();
+
+  if (!ok || copied != expectedBytes || !fileSizeIs(dst, expectedBytes)) {
+    if (SdMan.exists(dst.c_str())) SdMan.remove(dst.c_str());
+    return false;
+  }
+  return true;
+}
+
+std::string configPath(const std::string& root) {
+  if (root.empty()) return {};
+  return root.back() == '/' ? root + "config.json" : root + "/config.json";
+}
+
+std::string trim(std::string s) {
+  while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+  while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+  return s;
+}
+
+}  // namespace
+
+bool ensureParentDirs(const std::string& absPath) {
+  const size_t slash = absPath.find_last_of('/');
+  if (slash == std::string::npos || slash == 0) return true;
+  const std::string dir = absPath.substr(0, slash);
+  size_t p = 1;
+  while (p <= dir.size()) {
+    const size_t next = dir.find('/', p);
+    const std::string sub = dir.substr(0, next == std::string::npos ? dir.size() : next);
+    if (!sub.empty() && !SdMan.exists(sub.c_str())) SdMan.mkdir(sub.c_str(), true);
+    if (next == std::string::npos) break;
+    p = next + 1;
+  }
+  return SdMan.exists(dir.c_str());
+}
+
+bool cacheComplete(const std::string& absPath, size_t* sizeOut) {
+  if (sizeOut) *sizeOut = 0;
+  if (absPath.empty() || !SdMan.exists(absPath.c_str()) || !SdMan.exists(markerPath(absPath).c_str())) return false;
+  FsFile f;
+  if (!SdMan.openFileForRead("NP-CACHE", absPath.c_str(), f)) return false;
+  const size_t n = f.fileSize();
+  f.close();
+  if (sizeOut) *sizeOut = n;
+  return n > 0;
+}
+
+bool cacheVerified(const std::string& absPath, size_t* sizeOut) {
+  size_t actual = 0;
+  if (!cacheComplete(absPath, &actual)) return false;
+  std::string marker;
+  if (!readSmall(markerPath(absPath), marker, 64) || marker.rfind("v2:", 0) != 0) return false;
+  char* end = nullptr;
+  const unsigned long long expected = std::strtoull(marker.c_str() + 3, &end, 10);
+  while (end && *end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+  if (!end || *end || expected != actual) return false;
+  if (sizeOut) *sizeOut = actual;
+  return true;
+}
+
+bool removeIncomplete(const std::string& absPath) {
+  const std::string part = absPath + ".part";
+  if (SdMan.exists(part.c_str())) SdMan.remove(part.c_str());
+  return !SdMan.exists(part.c_str());
+}
+
+bool clearCacheArtifacts(const std::string& absPath) {
+  if (absPath.empty()) return false;
+  bool ok = true;
+  const char* suffixes[] = {"", ".part", ".ok", ".wap.tmp", ".tidx", ".tidx.tmp", ".tidx.bak"};
+  for (const char* suffix : suffixes) {
+    const std::string path = absPath + suffix;
+    if (SdMan.exists(path.c_str()) && !SdMan.remove(path.c_str())) ok = false;
+  }
+  return ok;
+}
+
+bool commitTempFile(const std::string& tempAbsPath, const std::string& finalAbsPath,
+                    size_t expectedBytes, bool preserveOld) {
+  if (tempAbsPath.empty() || finalAbsPath.empty() || tempAbsPath == finalAbsPath || expectedBytes == 0 ||
+      !SdMan.exists(tempAbsPath.c_str()) || !fileSizeIs(tempAbsPath, expectedBytes) ||
+      !ensureParentDirs(finalAbsPath)) {
+    return false;
+  }
+
+  const std::string backup = finalAbsPath + ".bak";
+  const bool hadOld = SdMan.exists(finalAbsPath.c_str());
+  bool backedUp = false;
+
+  if (SdMan.exists(backup.c_str())) SdMan.remove(backup.c_str());
+  if (hadOld) {
+    if (preserveOld) {
+      if (!SdMan.rename(finalAbsPath.c_str(), backup.c_str())) return false;
+      backedUp = true;
+    } else if (!SdMan.remove(finalAbsPath.c_str())) {
+      return false;
+    }
+  }
+
+  bool committed = SdMan.rename(tempAbsPath.c_str(), finalAbsPath.c_str());
+  if (committed) committed = fileSizeIs(finalAbsPath, expectedBytes);
+
+  if (!committed) {
+    // Some cards/controllers accept the streaming write but fail the metadata
+    // rename. The temp file is already complete and closed, so copy it in small
+    // bounded chunks and verify the final length before treating it as durable.
+    if (SdMan.exists(finalAbsPath.c_str())) SdMan.remove(finalAbsPath.c_str());
+    committed = copyFileExact(tempAbsPath, finalAbsPath, expectedBytes);
+    if (committed && SdMan.exists(tempAbsPath.c_str())) (void)SdMan.remove(tempAbsPath.c_str());
+  }
+
+  if (committed) {
+    if (backedUp && SdMan.exists(backup.c_str())) SdMan.remove(backup.c_str());
+    return true;
+  }
+
+  if (SdMan.exists(finalAbsPath.c_str())) SdMan.remove(finalAbsPath.c_str());
+  if (backedUp && SdMan.exists(backup.c_str())) {
+    (void)SdMan.rename(backup.c_str(), finalAbsPath.c_str());
+  }
+  return false;
+}
+
+bool commitPart(const std::string& absPath, size_t* sizeOut) {
+  if (sizeOut) *sizeOut = 0;
+  const std::string part = absPath + ".part";
+  if (!SdMan.exists(part.c_str())) return false;
+  FsFile f;
+  if (!SdMan.openFileForRead("NP-COMMIT", part.c_str(), f)) return false;
+  const size_t n = f.fileSize();
+  f.close();
+  if (n == 0) return false;
+
+  const std::string ok = markerPath(absPath);
+  if (SdMan.exists(ok.c_str())) SdMan.remove(ok.c_str());
+  if (!commitTempFile(part, absPath, n, false)) return false;
+
+  if (!writeExact(ok, std::string("v2:") + std::to_string(n) + "\n")) return false;
+  if (sizeOut) *sizeOut = n;
+  return true;
+}
+
+bool PartFileSink::open(const std::string& finalAbsPath) {
+  close();
+  finalPath_ = finalAbsPath;
+  partPath_ = finalPath_ + ".part";
+  if (finalPath_.empty() || !ensureParentDirs(finalPath_)) return false;
+  if (SdMan.exists(partPath_.c_str())) SdMan.remove(partPath_.c_str());
+  if (!SdMan.openFileForWrite("NP-BODY", partPath_.c_str(), file_)) return false;
+  file_.seek(0);
+  file_.truncate(0);
+#if defined(ARDUINO_ARCH_ESP32)
+  buffer_ = static_cast<uint8_t*>(heap_caps_malloc(kBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#endif
+  if (!buffer_) buffer_ = static_cast<uint8_t*>(std::malloc(kBufferBytes));
+  open_ = true;
+  return true;
+}
+
+bool PartFileSink::flushBuffer() {
+  if (!open_ || used_ == 0) return open_;
+  const int n = file_.write(buffer_, used_);
+  if (n != static_cast<int>(used_)) return false;
+  used_ = 0;
+  return true;
+}
+
+bool PartFileSink::write(const uint8_t* data, size_t len) {
+  if (!open_ || !data) return false;
+  if (len == 0) return true;
+  if (!buffer_) {
+    const int n = file_.write(data, len);
+    if (n != static_cast<int>(len)) return false;
+    written_ += len;
+    return true;
+  }
+  while (len > 0) {
+    const size_t take = std::min(len, kBufferBytes - used_);
+    std::memcpy(buffer_ + used_, data, take);
+    used_ += take;
+    data += take;
+    len -= take;
+    written_ += take;
+    if (used_ == kBufferBytes && !flushBuffer()) return false;
+  }
+  return true;
+}
+
+bool PartFileSink::flush() {
+  if (!open_ || !flushBuffer()) return false;
+  file_.flush();
+  return true;
+}
+
+void PartFileSink::close() {
+  if (open_) {
+    (void)flush();
+    file_.close();
+    open_ = false;
+  }
+  if (buffer_) {
+#if defined(ARDUINO_ARCH_ESP32)
+    heap_caps_free(buffer_);
+#else
+    std::free(buffer_);
+#endif
+    buffer_ = nullptr;
+  }
+  used_ = 0;
+  written_ = 0;
+}
+
+bool loadCookieHeader(const std::string& appDataRoot, const std::string& providerId,
+                      std::string& cookieOut) {
+  cookieOut.clear();
+  std::string raw;
+  if (!readSmall(configPath(appDataRoot), raw)) return false;
+  JsonDocument doc;
+  if (deserializeJson(doc, raw)) return false;
+  JsonObject cookies = doc["cookies"].as<JsonObject>();
+  if (cookies.isNull()) return false;
+
+  auto add = [&](const std::string& k, const std::string& v) {
+    if (k.empty() || v.empty()) return;
+    if (!cookieOut.empty()) cookieOut += "; ";
+    cookieOut += k;
+    cookieOut += '=';
+    cookieOut += v;
+  };
+
+  if (providerId == "weread") {
+    const std::string vid = cookies["wr_vid"] | "";
+    const std::string skey = cookies["wr_skey"] | "";
+    const std::string rt = cookies["wr_rt"] | "";
+    if (vid.empty() || skey.empty()) return false;
+    add("wr_vid", vid);
+    add("wr_skey", skey);
+    if (!rt.empty()) add("wr_rt", rt);
+    add("wr_localvid", vid);
+    return true;
+  }
+
+  // JJWXC may add/change cookie names server-side; preserve all scalar values.
+  for (JsonPair kv : cookies) {
+    if (!kv.value().is<const char*>() && !kv.value().is<long>() && !kv.value().is<unsigned long>()) continue;
+    std::string v;
+    if (kv.value().is<const char*>()) v = kv.value().as<const char*>();
+    else if (kv.value().is<long>()) v = std::to_string(kv.value().as<long>());
+    else v = std::to_string(kv.value().as<unsigned long>());
+    add(kv.key().c_str(), v);
+  }
+  return !cookieOut.empty();
+}
+
+bool hasCredential(const std::string& appDataRoot, const std::string& providerId) {
+  std::string ignored;
+  return loadCookieHeader(appDataRoot, providerId, ignored);
+}
+
+bool mergeSetCookies(const std::string& appDataRoot, const std::string& providerId,
+                     const std::vector<std::string>& lines) {
+  (void)providerId;
+  if (lines.empty()) return false;
+  const std::string path = configPath(appDataRoot);
+  std::string raw;
+  JsonDocument doc;
+  if (readSmall(path, raw)) (void)deserializeJson(doc, raw);
+  JsonObject cookies;
+  if (doc["cookies"].is<JsonObject>()) cookies = doc["cookies"].as<JsonObject>();
+  else cookies = doc["cookies"].to<JsonObject>();
+
+  bool changed = false;
+  for (const auto& line : lines) {
+    const size_t semi = line.find(';');
+    const std::string nv = line.substr(0, semi);
+    const size_t eq = nv.find('=');
+    if (eq == std::string::npos || eq == 0) continue;
+    std::string name = trim(nv.substr(0, eq));
+    const std::string value = nv.substr(eq + 1);
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    if (name.empty()) continue;
+    cookies[name] = value;
+    changed = true;
+  }
+  if (!changed) return false;
+
+  std::string out;
+  serializeJson(doc, out);
+  if (out.size() > 16u * 1024u) return false;
+  const std::string tmp = path + ".tmp";
+  if (!writeExact(tmp, out)) return false;
+  if (SdMan.exists(path.c_str())) SdMan.remove(path.c_str());
+  if (!SdMan.rename(tmp.c_str(), path.c_str())) {
+    SdMan.remove(tmp.c_str());
+    return false;
+  }
+  return true;
+}
+
+}  // namespace M4NativeProviderIo

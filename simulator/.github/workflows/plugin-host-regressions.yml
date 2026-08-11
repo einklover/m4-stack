@@ -1,0 +1,104 @@
+name: plugin-host-regressions
+
+on:
+  pull_request:
+    paths:
+      - 'issues/plugin_regressions.json'
+      - 'tools/check_boardconfig_sync.py'
+      - 'board/**'
+      - 'hardware/**'
+      - 'tests/driver_replay/**'
+      - '.github/workflows/plugin-host-regressions.yml'
+      - 'docs/CODEX_FIRMWARE_DEBUG_GUIDE.md'
+  push:
+    branches:
+      - agent/murphy-board-model
+    paths:
+      - 'issues/plugin_regressions.json'
+      - 'tools/check_boardconfig_sync.py'
+      - 'board/**'
+      - 'hardware/**'
+      - 'tests/driver_replay/**'
+      - '.github/workflows/plugin-host-regressions.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: plugin-host-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  m4-device-host-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout validation harness
+        uses: actions/checkout@v4
+
+      - name: Checkout m4-device host/runtime source
+        uses: actions/checkout@v4
+        with:
+          repository: einklover/m4-device
+          ref: main
+          path: device
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Require current FreeInk Murphy board-profile sync
+        run: |
+          python3 tools/check_boardconfig_sync.py \
+            device/open-m4-sdk/libs/hardware/BoardConfig/include/BoardConfig.h
+
+      - name: Replay actual FreeInk SSD1677 driver against controller model
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -Wall -Wextra -Werror \
+            -Wno-error=unused-parameter -Wno-error=unused-function \
+            -DFREEINK_DEVICE_MURPHY_M4=1 \
+            -Itests/driver_replay/include \
+            -Itests/driver_replay \
+            -I. \
+            -Idevice/open-m4-sdk/libs/display/FreeInkDisplay/src \
+            -Idevice/open-m4-sdk/libs/hardware/BoardConfig/include \
+            tests/driver_replay/ssd1677_driver_replay.cpp \
+            tests/driver_replay/HostEpdBus.cpp \
+            device/open-m4-sdk/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp \
+            -o /tmp/m4-ssd1677-driver-replay
+          /tmp/m4-ssd1677-driver-replay
+
+      - name: Install host simulator dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libssl-dev
+
+      - name: Materialize PlatformIO library dependency used by simulator CMake
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check platformio==6.1.18
+          pio pkg install -d device -e murphy_m4
+          test -f device/.pio/libdeps/murphy_m4/QRCode/src/qrcode.c
+
+      - name: Configure m4-device simulator
+        run: |
+          cmake -S device/simulator -B /tmp/m4-device-sim \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD_LIBRARIES=-lcrypto
+
+      - name: Build plugin/provider regression targets
+        run: |
+          cmake --build /tmp/m4-device-sim -j2 --target \
+            test_fanqie_lua \
+            test_jjwxc_lua \
+            test_fanqie_mem \
+            test_weread_shard_roundtrip \
+            test_m4_subactivity_lifecycle \
+            test_m4_plugin_reader_audit \
+            test_m4_arch_fault_injection
+
+      - name: Run focused cross-repo regressions
+        shell: bash
+        run: |
+          ctest --test-dir /tmp/m4-device-sim --output-on-failure \
+            -R '^(fanqie_lua|jjwxc_lua|fanqie_mem|weread_shard_roundtrip|m4_subactivity_lifecycle|m4_plugin_reader_audit|m4_arch_fault_injection)$'

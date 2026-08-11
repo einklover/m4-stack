@@ -1,0 +1,131 @@
+{
+  "schema_version": 2,
+  "board": "murphy_m4",
+  "soc": "ESP32-S3 N16R8",
+  "profile_kind": "field_observations_and_initial_sim_defaults",
+  "warning": "Observed values are evidence from specific firmware builds/issues, not universal hardware constants. Simulator defaults preserve source attribution and may be superseded by imported traces.",
+  "memory": {
+    "observations": [
+      {
+        "source_issue": 2,
+        "state": "AppList idle",
+        "free_internal_bytes": 70840,
+        "min_free_internal_bytes": 68888,
+        "free_psram_bytes": 7605792,
+        "largest_internal_relation": "<40960"
+      },
+      {
+        "source_issue": 4,
+        "state": "JJWXC reader peak",
+        "min_free_internal_bytes": 3528,
+        "free_psram_bytes_approx": 7864320
+      },
+      {
+        "source_issue": 5,
+        "state": "reader chapter 1 open",
+        "free_internal_bytes": 139976,
+        "chapter_bytes": 12967
+      },
+      {
+        "source_issue": 5,
+        "state": "cross-chapter empty-path handoff",
+        "free_internal_bytes": 88372,
+        "chapter_bytes": 0
+      },
+      {
+        "source_issue": 5,
+        "state": "reader chapter 2 open",
+        "free_internal_bytes": 88084,
+        "chapter_bytes": 9712
+      }
+    ],
+    "sim_defaults": {
+      "internal_region_bytes": [262144, 131072, 131072],
+      "psram_bytes": 8388608,
+      "tls_handshake_peak_bytes": 49152,
+      "tls_keepalive_resident_bytes": 12288,
+      "framebuffer_bytes": 48000,
+      "baseline_chunks": [12000, 4000, 14000, 4000, 12000, 4000, 16000, 4000, 10000, 4000]
+    }
+  },
+  "epd": {
+    "controller": "SSD1677",
+    "panel": "GDEQ0426T82-FT01C",
+    "observations": [
+      {
+        "source_issue": 1,
+        "kind": "custom_lut_single_phase",
+        "tp_hex": "0x30",
+        "duration_ms": 1061
+      },
+      {
+        "source_issue": 1,
+        "kind": "custom_lut_single_phase",
+        "tp_hex": "0x08",
+        "duration_ms": 261
+      },
+      {
+        "source_issue": 1,
+        "kind": "custom_lut_single_phase",
+        "tp_hex": "0x01",
+        "duration_ms": 121
+      }
+    ],
+    "sim_defaults": {
+      "reset_busy_ms": 10,
+      "fast_activation_ms": 420,
+      "half_activation_ms": 850,
+      "full_activation_ms": 1800,
+      "power_activation_ms": 30
+    },
+    "physical_calibration_required": [
+      "ghost_density",
+      "temperature_response",
+      "multi_phase_gray_progression",
+      "visual_wipe_continuity"
+    ]
+  },
+  "network": {
+    "observations": [
+      {
+        "source_issue": 9,
+        "provider": "weread_native",
+        "panic_path": [
+          "mbedtls_ssl_read",
+          "NetworkClientSecure::available",
+          "HTTPClient::writeToStream",
+          "M4NativeProviderHttp::perform",
+          "WereadProvider::fetchChapter",
+          "M4NativeProviderManager::workerMain"
+        ],
+        "provider_stage_hex": "0x310"
+      }
+    ]
+  },
+  "sd": {
+    "sim_defaults": {
+      "open_ms": 2,
+      "read_8k_ms": 6,
+      "read_48k_ms": 25,
+      "seek_ms": 1
+    },
+    "faults": [
+      "slow_sd_x20",
+      "short_read",
+      "power_loss",
+      "rename_failure",
+      "stream_copy_failure",
+      "sync_failure",
+      "size_verification_failure"
+    ]
+  },
+  "memory_contracts": [
+    {"tag": "framebuffer", "caps": "SPIRAM|8BIT", "max_bytes": 48000},
+    {"tag": "ttf_cmap", "caps": "SPIRAM|8BIT"},
+    {"tag": "page_read_buffer", "caps": "SPIRAM|8BIT"},
+    {"tag": "native_tls_worker_stack", "caps": "INTERNAL|8BIT"},
+    {"tag": "wifi_client_secure_control", "caps": "INTERNAL|8BIT"},
+    {"tag": "http_client_control", "caps": "INTERNAL|8BIT"},
+    {"tag": "https_body_payload", "caps": "SPIRAM|8BIT"}
+  ]
+}

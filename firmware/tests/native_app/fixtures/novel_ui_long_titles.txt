@@ -1,0 +1,7 @@
+# M4 native novel UI stress strings
+# Used for desktop preview/manual rendering checks; deliberately wider than one 480px row.
+01  长风渡：这是一本名字非常长但应该充分使用右侧空间的小说
+02  穿成反派后我靠种田逆袭成为全京城最受欢迎的人
+03  霍格沃茨的学习面板：一段很长的书名也必须允许完整换行
+category: 无CP
+category: 科幻

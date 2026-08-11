@@ -1,0 +1,238 @@
+#include "ButtonRemapActivity.h"
+
+#include <GfxRenderer.h>
+
+#include "CrossPointSettings.h"
+#include "I18n.h"
+#include "MappedInputManager.h"
+#include "components/UITheme.h"
+#include "fontIds.h"
+#include "util/M4UiText.h"
+
+namespace {
+// UI steps correspond to logical roles in order: Back, Confirm, Left, Right.
+constexpr uint8_t kRoleCount = 4;
+// Marker used when a role has not been assigned yet.
+constexpr uint8_t kUnassigned = 0xFF;
+// Duration to show temporary error text when reassigning a button.
+constexpr unsigned long kErrorDisplayMs = 1500;
+}  // namespace
+
+void ButtonRemapActivity::taskTrampoline(void* param) {
+  auto* self = static_cast<ButtonRemapActivity*>(param);
+  self->displayTaskLoop();
+}
+
+void ButtonRemapActivity::onEnter() {
+  Activity::onEnter();
+
+  renderingMutex = xSemaphoreCreateMutex();
+  // Start with all roles unassigned to avoid duplicate blocking.
+  currentStep = 0;
+  tempMapping[0] = kUnassigned;
+  tempMapping[1] = kUnassigned;
+  tempMapping[2] = kUnassigned;
+  tempMapping[3] = kUnassigned;
+  errorMessage.clear();
+  errorUntil = 0;
+  updateRequired = true;
+
+  xTaskCreate(&ButtonRemapActivity::taskTrampoline, "ButtonRemapTask", 4096, this, 1, &displayTaskHandle);
+}
+
+void ButtonRemapActivity::onExit() {
+  Activity::onExit();
+
+  // Ensure display task is stopped outside of active rendering.
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  if (displayTaskHandle) {
+    vTaskDelete(displayTaskHandle);
+    displayTaskHandle = nullptr;
+  }
+  vSemaphoreDelete(renderingMutex);
+  renderingMutex = nullptr;
+}
+
+void ButtonRemapActivity::loop() {
+  // Side buttons:
+  // - Up: reset mapping to defaults and exit.
+  // - Down: cancel without saving.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+    // Persist default mapping immediately so the user can recover quickly.
+    SETTINGS.frontButtonBack = CrossPointSettings::FRONT_HW_BACK;
+    SETTINGS.frontButtonConfirm = CrossPointSettings::FRONT_HW_CONFIRM;
+    SETTINGS.frontButtonLeft = CrossPointSettings::FRONT_HW_LEFT;
+    SETTINGS.frontButtonRight = CrossPointSettings::FRONT_HW_RIGHT;
+    SETTINGS.saveToFile();
+    onBack();
+    return;
+  }
+
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+    // Exit without changing settings.
+    onBack();
+    return;
+  }
+
+  // Wait for the UI to refresh before accepting another assignment.
+  // This avoids rapid double-presses that can advance the step without a visible redraw.
+  if (updateRequired) {
+    return;
+  }
+
+  // Wait for a front button press to assign to the current role.
+  const int pressedButton = mappedInput.getPressedFrontButton();
+  if (pressedButton < 0) {
+    return;
+  }
+
+  // Update temporary mapping and advance the remap step.
+  // Only accept the press if this hardware button isn't already assigned elsewhere.
+  if (!validateUnassigned(static_cast<uint8_t>(pressedButton))) {
+    updateRequired = true;
+    return;
+  }
+  tempMapping[currentStep] = static_cast<uint8_t>(pressedButton);
+  currentStep++;
+
+  if (currentStep >= kRoleCount) {
+    // All roles assigned; save to settings and exit.
+    applyTempMapping();
+    SETTINGS.saveToFile();
+    onBack();
+    return;
+  }
+
+  updateRequired = true;
+}
+
+[[noreturn]] void ButtonRemapActivity::displayTaskLoop() {
+  while (true) {
+    if (updateRequired) {
+      // Ensure render calls are serialized with UI thread changes.
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      render();
+      updateRequired = false;
+      xSemaphoreGive(renderingMutex);
+    }
+
+    // Clear any temporary warning after its timeout.
+    if (errorUntil > 0 && millis() > errorUntil) {
+      errorMessage.clear();
+      errorUntil = 0;
+      updateRequired = true;
+    }
+
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+  }
+}
+
+void ButtonRemapActivity::render() {
+  renderer.clearScreen();
+
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto labelForHardware = [&](uint8_t hardwareIndex) -> const char* {
+    for (uint8_t i = 0; i < kRoleCount; i++) {
+      if (tempMapping[i] == hardwareIndex) {
+        return getRoleName(i);
+      }
+    }
+    return "-";
+  };
+
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 15, L(Str::kRemapFrontButtons), true, EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 40, L(Str::kPressFrontBtnForRole));
+
+  for (uint8_t i = 0; i < kRoleCount; i++) {
+    const int y = 70 + i * 40;
+    const bool isSelected = (i == currentStep);
+
+    // Highlight the role that is currently being assigned.
+    if (isSelected) {
+      renderer.fillRect(0, y - 2, pageWidth - 1, 40);
+    }
+
+    const char* roleName = getRoleName(i);
+    M4UiText::draw(renderer, UI_10_FONT_ID, 20, y, roleName, !isSelected);
+
+    // Show currently assigned hardware button (or unassigned).
+    const char* assigned = (tempMapping[i] == kUnassigned) ? L(Str::kUnassigned) : getHardwareName(tempMapping[i]);
+    const auto width = M4UiText::textWidth(renderer, UI_10_FONT_ID, assigned);
+    M4UiText::draw(renderer, UI_10_FONT_ID, pageWidth - 20 - width, y, assigned, !isSelected);
+  }
+
+  // Temporary warning banner for duplicates.
+  if (!errorMessage.empty()) {
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 210, errorMessage.c_str(), true);
+  }
+
+  // Provide side button actions at the bottom of the screen (split across two lines).
+  renderer.drawCenteredText(SMALL_FONT_ID, 250, L(Str::kSideBtnUpReset), true);
+  renderer.drawCenteredText(SMALL_FONT_ID, 280, L(Str::kSideBtnDownCancel), true);
+
+  // Live preview of logical labels under front buttons.
+  // This mirrors the on-device front button order: Back, Confirm, Left, Right.
+  GUI.drawButtonHints(renderer, labelForHardware(CrossPointSettings::FRONT_HW_BACK),
+                      labelForHardware(CrossPointSettings::FRONT_HW_CONFIRM),
+                      labelForHardware(CrossPointSettings::FRONT_HW_LEFT),
+                      labelForHardware(CrossPointSettings::FRONT_HW_RIGHT));
+  renderer.displayBuffer();
+}
+
+void ButtonRemapActivity::applyTempMapping() {
+  // Commit temporary mapping into settings (logical role -> hardware).
+  SETTINGS.frontButtonBack = tempMapping[0];
+  SETTINGS.frontButtonConfirm = tempMapping[1];
+  SETTINGS.frontButtonLeft = tempMapping[2];
+  SETTINGS.frontButtonRight = tempMapping[3];
+}
+
+bool ButtonRemapActivity::validateUnassigned(const uint8_t pressedButton) {
+  // Block reusing a hardware button already assigned to another role.
+  for (uint8_t i = 0; i < kRoleCount; i++) {
+    if (tempMapping[i] == pressedButton && i != currentStep) {
+      errorMessage = L(Str::kAlreadyAssigned);
+      errorUntil = millis() + kErrorDisplayMs;
+      return false;
+    }
+  }
+  return true;
+}
+
+const char* ButtonRemapActivity::getRoleName(const uint8_t roleIndex) const {
+  switch (roleIndex) {
+    case 0:
+      return L(Str::kBackShort);
+    case 1:
+      return L(Str::kConfirm);
+    case 2:
+      return L(Str::kLeft);
+    case 3:
+    default:
+      return L(Str::kRight);
+  }
+}
+
+const char* ButtonRemapActivity::getHardwareName(const uint8_t buttonIndex) const {
+  // 使用静态缓冲区拼接“功能名(按键序号)”字符串
+  static char nameBuf[4][32];
+  static int bufIdx = 0;
+  const char* roleName = nullptr;
+  const char* btnLabel = nullptr;
+  switch (buttonIndex) {
+    case CrossPointSettings::FRONT_HW_BACK:
+      roleName = L(Str::kBackShort); btnLabel = L(Str::kBtn1st); break;
+    case CrossPointSettings::FRONT_HW_CONFIRM:
+      roleName = L(Str::kConfirm); btnLabel = L(Str::kBtn2nd); break;
+    case CrossPointSettings::FRONT_HW_LEFT:
+      roleName = L(Str::kLeft); btnLabel = L(Str::kBtn3rd); break;
+    case CrossPointSettings::FRONT_HW_RIGHT:
+      roleName = L(Str::kRight); btnLabel = L(Str::kBtn4th); break;
+    default:
+      return L(Str::kUnknown);
+  }
+  char* buf = nameBuf[bufIdx % 4];
+  bufIdx++;
+  snprintf(buf, sizeof(nameBuf[0]), "%s(%s)", roleName, btnLabel);
+  return buf;
+}

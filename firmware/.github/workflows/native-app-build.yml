@@ -1,0 +1,155 @@
+name: Native App Build
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - 'tests/native_app/**'
+      - 'platformio.ini'
+      - '.github/workflows/native-app-build.yml'
+  workflow_dispatch:
+
+jobs:
+  murphy-m4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconstruct unvendored SDK and libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fetch_tree() {
+            local url="$1"
+            local dst="$2"
+            local tarball="$3"
+            rm -rf "$dst"
+            mkdir -p "$dst"
+            curl -fL --retry 3 --retry-delay 2 "$url" -o "$tarball"
+            tar -xzf "$tarball" -C "$dst" --strip-components=1
+          }
+
+          # All unvendored SDK/libraries come from einklover/m4-device (the
+          # one source local builds use): open-m4-sdk holds the custom FreeInk
+          # SDK with Waveform Lab windowed-refresh + InputManager touch-stream
+          # APIs absent from upstream, and lib/ holds the vendored Epub/expat/
+          # miniz/picojpeg/Lua/builtinFonts. Pin to commit for reproducibility.
+          fetch_tree \
+            https://github.com/einklover/m4-device/archive/f86b134.tar.gz \
+            /tmp/m4-device /tmp/m4-device.tar.gz
+          test -d /tmp/m4-device/open-m4-sdk || { echo 'missing open-m4-sdk'; exit 2; }
+          rm -rf open-m4-sdk
+          cp -a /tmp/m4-device/open-m4-sdk open-m4-sdk
+
+          for src in lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts; do
+            test -d "/tmp/m4-device/$src" || { echo "missing m4-device $src"; exit 2; }
+          done
+          rm -rf lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts
+          for src in lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts; do
+            cp -a "/tmp/m4-device/$src" "lib/${src#lib/}"
+          done
+
+          for p in \
+            open-m4-sdk/libs/hardware/BatteryMonitor/library.json \
+            lib/Epub/Epub.h \
+            lib/Lua/src/lua.h \
+            lib/expat/expat.h \
+            lib/miniz/miniz.h \
+            lib/picojpeg/picojpeg.h \
+            lib/EpdFont/builtinFonts/all.h; do
+            test -f "$p" || { echo 'missing reconstructed dependency: '"$p"; exit 2; }
+          done
+
+      - name: Install PlatformIO
+        run: python -m pip install --disable-pip-version-check platformio==6.1.18
+
+      - name: Build Murphy M4
+        shell: bash
+        run: |
+          set +e
+          pio run -e murphy_m4 > /tmp/m4-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '=== compiler diagnostics ==='
+            grep -nE '(^|: )(fatal error:|error:|undefined reference|collect2:)' /tmp/m4-build.log | tail -n 120 || true
+            echo '=== build tail ==='
+            tail -n 160 /tmp/m4-build.log
+            exit "$rc"
+          fi
+          tail -n 40 /tmp/m4-build.log
+
+  host-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Compile native UI contract tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/native_app/test_native_ui.cpp \
+            src/apps/native/M4NativeUi.cpp \
+            -o /tmp/test_native_ui
+          /tmp/test_native_ui
+
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/native_app/test_jjwxc_catalog_shape.cpp \
+            -o /tmp/test_jjwxc_catalog_shape
+          /tmp/test_jjwxc_catalog_shape
+
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/native_app/test_runtime_ui_font_policy.cpp \
+            -o /tmp/test_runtime_ui_font_policy
+          /tmp/test_runtime_ui_font_policy
+
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/native_app/test_reader_frontlight_gesture.cpp \
+            -o /tmp/test_reader_frontlight_gesture
+          /tmp/test_reader_frontlight_gesture
+
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/native_app/test_weread_shelf_paging.cpp \
+            -o /tmp/test_weread_shelf_paging
+          /tmp/test_weread_shelf_paging
+
+          # TtfReader was not previously compiled as a standalone host TU and
+          # contains one existing unused internal allocation helper. Keep all
+          # other warnings fatal while exercising the parser regression.
+          g++ -std=c++17 -Wall -Wextra -Werror -Wno-error=unused-function -Ilib/TtfReader/src \
+            tests/native_app/test_ttf_variable_default.cpp \
+            lib/TtfReader/src/TtfReader.cpp \
+            -o /tmp/test_ttf_variable_default
+          /tmp/test_ttf_variable_default
+
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/native_app/test_legado_endpoint.cpp \
+            -o /tmp/test_legado_endpoint
+          /tmp/test_legado_endpoint
+
+      - name: Run existing host tests when available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -x tests/run_tests.sh ]; then
+            tests/run_tests.sh
+          elif [ -x test/run_tests.sh ]; then
+            test/run_tests.sh
+          else
+            echo 'No aggregate legacy host-test runner found.'
+          fi

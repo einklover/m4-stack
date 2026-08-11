@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "purpose": "Cross-repository acceptance map. Plugin business logic stays in plugin/m4-device host tests; hardware and resource mechanisms map to murphy-m4-simulator contracts.",
+  "entries": [
+    {
+      "id": "fanqie-json-internal-oom",
+      "source_repo": "einklover/m4-device",
+      "source_commit": "ffeef090215d3d343ae3919b48dee213977b7c71",
+      "symptom": "~90KB category JSON expands to ~150-200KB ArduinoJson pool in internal RAM; paging drives free heap to ~38KB and panics",
+      "upstream_tests": ["simulator:test_fanqie_mem", "simulator:test_fanqie_lua"],
+      "local_contracts": ["scenario:tls_fragmented_heap", "ctest:m4_issue_contracts"],
+      "status": "cross_repo_covered"
+    },
+    {
+      "id": "fanqie-cancel-uninitialized-page",
+      "source_repo": "einklover/m4-device",
+      "source_commit": "5d8ad4f9c2eda4616bc06ab3a92fdb99037202b4",
+      "symptom": "cancel during loading re-renders Lua fallback with nil booklist_page; arithmetic error exits app",
+      "upstream_tests": ["simulator:test_fanqie_lua::testBooklistPagingJourney"],
+      "local_contracts": [],
+      "status": "upstream_application_regression"
+    },
+    {
+      "id": "fanqie-loading-inflight-scene-race",
+      "source_repo": "einklover/m4-device",
+      "source_commit": "93818277d48237ad85cd411093e07919d176ddd6",
+      "symptom": "tap while a network fetch is already in flight changes Lua screen while host later reopens booklist, causing host page/Lua state divergence",
+      "upstream_tests": ["simulator:test_fanqie_lua", "49/49 simulator suite at fix commit"],
+      "local_contracts": ["scenario:bug_divergence"],
+      "status": "cross_repo_covered"
+    },
+    {
+      "id": "fanqie-native-reader-open-handoff",
+      "source_repo": "einklover/m4-fanqie-plugin",
+      "source_commit": "b4d1df3312a3ab2c14ed8e272addf9927a9486fd",
+      "symptom": "host finishOk/queueOpen handoff can be dropped after chapter body completes, leaving loading screen forever",
+      "upstream_tests": ["plugin host/device flow"],
+      "local_contracts": ["ctest:m4_issue_contracts"],
+      "status": "cross_repo_covered"
+    },
+    {
+      "id": "jjwxc-booklist-oom",
+      "source_repo": "einklover/m4-jjwxc-plugin",
+      "source_commit": "e7ccc27e1de73ca40f65c8ec8e9630e43cce6e80",
+      "followup_commit": "286792b692512dc3883d6b345e33ee6f351959ed",
+      "symptom": "category/booklist network projection exhausted internal RAM until request size/projection/release policy was bounded",
+      "upstream_tests": ["m4-device:simulator:test_jjwxc_lua"],
+      "local_contracts": ["scenario:tls_fragmented_heap", "scenario:tls_keepalive"],
+      "status": "cross_repo_covered"
+    },
+    {
+      "id": "jjwxc-cross-chapter-open-prefetch",
+      "source_repo": "einklover/m4-jjwxc-plugin",
+      "source_commit": "83e87f554547b013e6cea4d857460a694fc03591",
+      "symptom": "cross-chapter open_chapter chain and prefetch retries could fail or strand reader state",
+      "upstream_tests": ["m4-device:simulator:test_jjwxc_lua"],
+      "local_contracts": ["ctest:m4_issue_contracts", "scenario:single_tap_slow_index"],
+      "status": "cross_repo_covered"
+    },
+    {
+      "id": "host-cancel-on-input-progressive-loader",
+      "source_repo": "einklover/m4-device",
+      "source_commit": "006891e70c92efe320e35c5a7a6f243a4f106c91",
+      "symptom": "progressive HTTP work must cooperate with touch cancellation without dropping ui.list clicks",
+      "upstream_tests": ["simulator fanqie/jjwxc fixtures and host regression suite"],
+      "local_contracts": ["scenario:slow_sd_tap", "scenario:single_tap_slow_index"],
+      "status": "cross_repo_covered"
+    },
+    {
+      "id": "progress-shard-large-file-limits",
+      "source_repo": "einklover/m4-weread-plugin",
+      "source_commit": "7382fcc6b3ecf76688b35cde2a460a6d60c1e314",
+      "related_commits": [
+        "einklover/m4-jjwxc-plugin@88ec16cabe9e9b5bea7192cc8b222d931b03688e",
+        "einklover/m4-fanqie-plugin@78951ecde9edecb3dee2fe304da8e0cca5cb487b"
+      ],
+      "symptom": "monolithic progress/shelf storage exceeded practical file-size or memory limits; state was sharded per book",
+      "upstream_tests": ["m4-device:simulator:weread_shard_roundtrip"],
+      "local_contracts": ["ctest:m4_issue_contracts"],
+      "status": "cross_repo_covered"
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<m4ui version="1" start="home" theme="wap" fullscreen="true">
+  <screen id="home" title="微信读书" class="compact">
+    <text text="继续阅读" class="hero" />
+    <text text="@page.status" class="meta inset" />
+    <divider class="hairline inset" />
+    <list
+      id="books"
+      source="provider.books"
+      titleField="title"
+      subtitleField="author"
+      valueField="progress"
+      onActivate="provider.openBook"
+      class="inset"
+      pageSize="8" />
+    <buttons
+      back="返回"
+      primary="阅读"
+      left="找书"
+      right="登录"
+      onBack="system.back"
+      onPrimary="provider.openSelected"
+      onLeft="ui.go:search"
+      onRight="provider.login" />
+  </screen>
+
+  <screen id="search" title="微信读书 · 找书" class="compact">
+    <text text="找书" class="section" />
+    <flowText
+      text="书名 / 作者搜索&#10;结果优先显示标题、作者和阅读状态"
+      class="compact inset" />
+    <spacer height="6" />
+    <text text="显示策略" class="section" />
+    <flowText
+      text="文字列表优先，不做封面墙&#10;搜索结果与书架使用相同阅读入口"
+      class="compact inset" />
+    <text
+      text="登录后会自动同步书架；如网络异常，可手动刷新。"
+      class="meta inset" />
+    <buttons
+      back="书架"
+      primary="登录"
+      right="刷新"
+      onBack="ui.go:home"
+      onPrimary="provider.login"
+      onRight="provider.refresh" />
+  </screen>
+</m4ui>

@@ -1,0 +1,67 @@
+name: native-ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: native-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Murphy board contract
+        run: python3 tools/validate_board_spec.py
+
+      - name: Validate issue reproduction matrix
+        run: python3 tools/validate_issue_matrix.py
+
+      - name: Require complete live firmware issue coverage
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/check_live_issue_coverage.py
+
+      - name: Validate plugin regression matrix
+        run: python3 tools/validate_plugin_matrix.py
+
+      - name: Validate calibration profile JSON
+        run: python3 -m json.tool profiles/murphy_m4.json > /dev/null
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Deterministic regression suite
+        run: ./build/m4_simulator
+
+      - name: Low-level board model
+        run: ./build/m4_board_tests
+
+      - name: Peripheral policies
+        run: ./build/m4_peripheral_policies
+
+      - name: Firmware issue contracts
+        run: ./build/m4_issue_contracts
+
+      - name: Native backend smoke
+        run: ./build/m4_native_smoke
+
+      - name: CTest
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Python tooling and diagnostics tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Sanitized low-level tests
+        run: |
+          cmake -S . -B build-sanitize -DM4SIM_SANITIZE=ON -DM4SIM_BUILD_NATIVE_SMOKE=OFF -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-sanitize -j2 --target m4_board_tests m4_peripheral_policies m4_issue_contracts
+          ./build-sanitize/m4_board_tests
+          ./build-sanitize/m4_peripheral_policies
+          ./build-sanitize/m4_issue_contracts

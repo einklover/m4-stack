@@ -1,0 +1,18 @@
+{
+  "id": "com.weread.client",
+  "name": "微信读书",
+  "version": "0.7.1",
+  "versionCode": 29,
+  "runtime": "native",
+  "entry": "main.xml",
+  "provider": "weread",
+  "author": "einklover",
+  "description": "0.7.1 Native：WAP 风格继续阅读/搜索 UI + 原生微信读书 Provider；登录、分片校验解码、缓存与阅读不启动 Lua",
+  "files": [
+    "main.xml"
+  ],
+  "permissions": [
+    "filesystem.appdata",
+    "network"
+  ]
+}

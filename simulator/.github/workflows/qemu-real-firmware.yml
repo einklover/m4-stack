@@ -1,0 +1,152 @@
+name: qemu-real-firmware
+
+on:
+  push:
+    branches:
+      - agent/murphy-board-model
+    paths:
+      - 'qemu/**'
+      - 'tools/murphy_flash_image.py'
+      - 'tools/check_coordinator_sync.py'
+      - 'tools/check_boardconfig_sync.py'
+      - 'board/murphy_m4.json'
+      - '.github/workflows/qemu-real-firmware.yml'
+  pull_request:
+    paths:
+      - 'qemu/**'
+      - 'tools/murphy_flash_image.py'
+      - 'tools/check_coordinator_sync.py'
+      - 'tools/check_boardconfig_sync.py'
+      - 'board/murphy_m4.json'
+      - '.github/workflows/qemu-real-firmware.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: qemu-real-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boot-real-firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      IDF_TOOLS_PATH: ${{ github.workspace }}/.espressif
+      IDF_PATH: ${{ github.workspace }}/esp-idf
+    steps:
+      - name: Checkout simulator
+        uses: actions/checkout@v4
+
+      - name: Checkout latest validated Murphy firmware branch
+        uses: actions/checkout@v4
+        with:
+          repository: einklover/m4-firmware
+          ref: agent/page-turn-shadow-phasea
+          path: firmware
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Require PageTurnCoordinator behavioral sync
+        run: |
+          python3 tools/check_coordinator_sync.py \
+            core/PageTurnCoordinator.h \
+            firmware/src/util/M4PageTurnCoordinator.h
+
+      - name: Reconstruct firmware SDK and unvendored libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 2 \
+            https://github.com/einklover/m4-device/archive/f86b134.tar.gz \
+            -o /tmp/m4-device.tar.gz
+          mkdir -p /tmp/m4-device
+          tar -xzf /tmp/m4-device.tar.gz -C /tmp/m4-device --strip-components=1
+          rm -rf firmware/open-m4-sdk
+          cp -a /tmp/m4-device/open-m4-sdk firmware/open-m4-sdk
+          for src in Epub expat miniz picojpeg Lua EpdFont/builtinFonts; do
+            rm -rf "firmware/lib/$src"
+            mkdir -p "firmware/lib/$(dirname "$src")"
+            cp -a "/tmp/m4-device/lib/$src" "firmware/lib/$src"
+          done
+
+      - name: Require firmware SDK Murphy board-profile sync
+        run: |
+          python3 tools/check_boardconfig_sync.py \
+            firmware/open-m4-sdk/libs/hardware/BoardConfig/include/BoardConfig.h
+
+      - name: Build actual Murphy M4 PlatformIO firmware
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check platformio==6.1.18
+          pio run -d firmware -e murphy_m4
+          test -f firmware/.pio/build/murphy_m4/firmware.bin
+          test -f firmware/.pio/build/murphy_m4/bootloader.bin
+          test -f firmware/.pio/build/murphy_m4/partitions.bin
+
+      - name: Compose exact 16MiB QEMU flash
+        run: |
+          python3 tools/murphy_flash_image.py \
+            --build-dir firmware/.pio/build/murphy_m4 \
+            -o /tmp/murphy-m4-real-firmware.bin
+          test "$(stat -c %s /tmp/murphy-m4-real-firmware.bin)" = "16777216"
+
+      - name: Install ESP-IDF 5.5.2 and Espressif QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libgcrypt20 libglib2.0-0 libpixman-1-0 libsdl2-2.0-0 libslirp0 ninja-build
+          git clone --depth 1 --branch v5.5.2 --recursive https://github.com/espressif/esp-idf.git "$IDF_PATH"
+          "$IDF_PATH/install.sh" esp32s3
+          python "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
+
+      - name: Build 16MiB ESP32-S3 QEMU launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          rm -rf qemu/build-real-firmware qemu/sdkconfig
+          idf.py -C qemu -B build-real-firmware set-target esp32s3
+          idf.py -C qemu -B build-real-firmware build
+          grep -q '^CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y' qemu/sdkconfig
+
+      - name: Boot real firmware and capture boundary
+        shell: bash
+        run: |
+          set +e
+          . "$IDF_PATH/export.sh"
+          timeout --signal=INT 25s python3 qemu/run_full_flash.py \
+            /tmp/murphy-m4-real-firmware.bin \
+            --build-dir build-real-firmware \
+            --no-build > /tmp/murphy-qemu.log 2>&1
+          rc=$?
+          set -e
+          echo "QEMU monitor exit=$rc (timeout 124/130 is expected for a still-running firmware)"
+          cat /tmp/murphy-qemu.log
+          python3 qemu/probe_boot.py /tmp/murphy-qemu.log -o /tmp/murphy-qemu-probe.json
+          cat /tmp/murphy-qemu-probe.json
+
+      - name: Require CPU/bootloader execution
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          p = json.load(open('/tmp/murphy-qemu-probe.json'))
+          if not p['acceptance']['second_stage_bootloader_reached']:
+              raise SystemExit('real firmware did not reach the ESP second-stage bootloader in QEMU')
+          print('PASS: real Murphy flash reached at least second-stage bootloader')
+          PY
+
+      - name: Upload executable-image evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: murphy-qemu-real-firmware-evidence
+          path: |
+            /tmp/murphy-qemu.log
+            /tmp/murphy-qemu-probe.json
+            /tmp/murphy-m4-real-firmware.bin.json
+          if-no-files-found: warn

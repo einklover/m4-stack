@@ -1,0 +1,6 @@
+tools/__pycache__/
+*.pyc
+.DS_Store
+jjwxc.m4x
+com.jjwxc.client.m4x
+*.m4x

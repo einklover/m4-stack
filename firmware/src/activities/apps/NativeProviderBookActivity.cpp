@@ -1,0 +1,872 @@
+#include "NativeProviderBookActivity.h"
+#include "NativeProviderLoginActivity.h"
+
+#include "MappedInputManager.h"
+
+#include "activities/reader/TxtReaderActivity.h"
+#include "activities/reader/TxtReaderChapterSelectionActivity.h"
+#include "apps/M4ContentProviderSession.h"
+#include "apps/M4PluginReaderSession.h"
+#include "apps/providers/M4NativeLoadUi.h"
+#include "apps/providers/M4NativeProviderBookDetail.h"
+#include "apps/providers/M4NativeProviderCatalog.h"
+#include "apps/providers/M4NativeProviderManager.h"
+#include "components/UITheme.h"
+#include "fontIds.h"
+#include "util/M4PluginReaderBridge.h"
+#include "util/M4PluginTocList.h"
+#include "util/M4UiText.h"
+
+#include <GfxRenderer.h>
+#include <HalDisplay.h>
+#include <SDCardManager.h>
+#include <Txt.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <utility>
+#include <vector>
+
+namespace {
+
+std::string chapterErrorText(const std::string& code) {
+  if (code == "http_request_failed") return "网络请求失败";
+  if (code == "http_begin_failed") return "无法建立网络连接";
+  if (code == "wifi_not_connected") return "Wi-Fi 未连接";
+  if (code == "http_401" || code == "http_403") return "登录已失效";
+  if (code == "login_required") return "登录已失效，请重新登录";
+  if (code == "http_404") return "章节不存在";
+  if (code == "http_429") return "请求过于频繁";
+  if (code == "response_too_large") return "章节内容过大";
+  if (code == "tls_internal_oom") return "TLS 临时内存不足，请返回后重试";
+  if (code == "heap_corrupt") return "检测到内存异常，请返回后重试";
+  if (code == "body_stream_failed") return "正文接收失败";
+  if (code == "empty_content" || code == "psvts_not_found") return "未获取到有效正文，请重试";
+  if (code == "shard_json" || code == "shard_bad_header" || code == "shard_md5") {
+    return "正文分片校验失败，请重试";
+  }
+  if (code == "shard_oom") return "正文处理内存不足，请返回后重试";
+  if (code == "shard_io") return "正文分片读写失败";
+  if (code == "sink_failed" || code == "sd_open_failed") return "写入 SD 卡失败";
+  if (code == "cache_commit_failed") return "缓存提交失败，已清理并重试";
+  if (code == "catalog_resolve") return "目录章节信息无效";
+  if (code == "provider_not_supported") return "内容源不支持此章节";
+  if (code == "cancelled") return "加载已取消";
+  return code.empty() ? "未知错误" : code;
+}
+
+std::string catalogErrorText(const std::string& code) {
+  if (code == "login_required" || code == "http_401" || code == "http_403") return "需要登录后读取目录";
+  if (code == "http_request_failed" || code == "catalog_http") return "目录网络请求失败";
+  if (code == "http_404") return "未找到书籍目录";
+  if (code == "http_429") return "请求过于频繁";
+  if (code == "catalog_empty") return "目录为空";
+  if (code == "catalog_commit_failed" || code == "sd_open_failed") return "目录写入 SD 卡失败";
+  if (code == "sink_failed") return "目录写入中断（已重试策略；请再试）";
+  if (code == "catalog_register_failed") return "目录校验失败";
+  if (code == "json_path_not_found") return "目录接口格式已变化";
+  if (code == "json_token_too_large") return "目录条目过大";
+  if (code == "json_syntax" || code == "json_truncated") return "目录数据解析失败";
+  if (code == "book_locator_missing") return "书源定位丢失，请刷新书架";
+  if (code == "legado_endpoint_missing") return "未找到开源阅读服务，请先用手机打开本机传书页";
+  if (code == "cancelled") return "目录加载已取消";
+  return code.empty() ? "目录加载失败" : code;
+}
+
+const char* providerDisplayName(const std::string& id) {
+  if (id == "jjwxc") return "晋江文学城";
+  if (id == "fanqie") return "番茄小说";
+  if (id == "weread") return "微信读书";
+  if (id == "legado") return "开源阅读";
+  return "在线书源";
+}
+
+bool isAuthError(const std::string& code) {
+  return code == "login_required" || code == "http_401" || code == "http_403";
+}
+
+M4NativeLoadUi::Stage catalogStage(M4NativeProviderCatalog::Phase phase) {
+  switch (phase) {
+    case M4NativeProviderCatalog::Phase::Connecting: return M4NativeLoadUi::Stage::Connecting;
+    case M4NativeProviderCatalog::Phase::Receiving: return M4NativeLoadUi::Stage::Receiving;
+    case M4NativeProviderCatalog::Phase::Registering: return M4NativeLoadUi::Stage::Processing;
+    case M4NativeProviderCatalog::Phase::Ready: return M4NativeLoadUi::Stage::Ready;
+    case M4NativeProviderCatalog::Phase::AuthRequired: return M4NativeLoadUi::Stage::AuthRequired;
+    case M4NativeProviderCatalog::Phase::Error: return M4NativeLoadUi::Stage::Error;
+    default: return M4NativeLoadUi::Stage::Preparing;
+  }
+}
+
+M4NativeLoadUi::Stage chapterStage(M4NativeProvider::Phase phase) {
+  switch (phase) {
+    case M4NativeProvider::Phase::Resolving: return M4NativeLoadUi::Stage::Resolving;
+    case M4NativeProvider::Phase::Connecting: return M4NativeLoadUi::Stage::Connecting;
+    case M4NativeProvider::Phase::Receiving: return M4NativeLoadUi::Stage::Receiving;
+    case M4NativeProvider::Phase::Decoding: return M4NativeLoadUi::Stage::Processing;
+    case M4NativeProvider::Phase::Writing: return M4NativeLoadUi::Stage::Writing;
+    case M4NativeProvider::Phase::Ready: return M4NativeLoadUi::Stage::Ready;
+    case M4NativeProvider::Phase::AuthRequired: return M4NativeLoadUi::Stage::AuthRequired;
+    case M4NativeProvider::Phase::Error: return M4NativeLoadUi::Stage::Error;
+    case M4NativeProvider::Phase::Cancelled: return M4NativeLoadUi::Stage::Cancelled;
+    default: return M4NativeLoadUi::Stage::Preparing;
+  }
+}
+
+void appendMeta(std::string& out, const std::string& value) {
+  if (value.empty()) return;
+  if (!out.empty()) out += " · ";
+  out += value;
+}
+
+std::string displayWordCount(const std::string& raw) {
+  if (raw.empty()) return {};
+  bool digitsOnly = true;
+  for (unsigned char c : raw) {
+    if (!std::isdigit(c)) {
+      digitsOnly = false;
+      break;
+    }
+  }
+  if (!digitsOnly) return raw;
+  char* end = nullptr;
+  const unsigned long long n = std::strtoull(raw.c_str(), &end, 10);
+  if (!end || *end != '\0') return raw;
+  if (n >= 10000ULL) {
+    char buf[40];
+    const unsigned long long tenths = (n + 500ULL) / 1000ULL;
+    std::snprintf(buf, sizeof(buf), "%llu.%llu万字", tenths / 10ULL, tenths % 10ULL);
+    return buf;
+  }
+  return raw + "字";
+}
+
+}  // namespace
+
+NativeProviderBookActivity::NativeProviderBookActivity(
+    GfxRenderer& renderer, MappedInputManager& mappedInput, std::string providerId,
+    std::string bookId, std::string appId, std::string title, std::string author,
+    const std::function<void()>& onExitBook)
+    : ActivityWithSubactivity("NativeProviderBook", renderer, mappedInput),
+      providerId_(std::move(providerId)),
+      bookId_(std::move(bookId)),
+      appId_(std::move(appId)),
+      title_(std::move(title)),
+      author_(std::move(author)),
+      onExitBook_(onExitBook) {}
+
+void NativeProviderBookActivity::onEnter() {
+  ActivityWithSubactivity::onEnter();
+  state_ = State::Detail;
+  error_.clear();
+  appDataRoot_ = std::string("/apps_data/") + appId_;
+  // Local/persisted catalog discovery is cheap and does not start network I/O.
+  // A missing catalog is intentionally not an error on the detail page.
+  if (!prepareCatalog()) error_.clear();
+  loadBookDetail();
+}
+
+void NativeProviderBookActivity::onExit() {
+  if (state_ == State::CatalogLoading) M4NativeProviderCatalog::cancel();
+  ActivityWithSubactivity::onExit();
+  titles_.reset();
+}
+
+bool NativeProviderBookActivity::prepareCatalog() {
+  if (!M4NativeProviderManager::ensureBook(providerId_, bookId_, appId_, title_)) {
+    error_ = "目录尚未准备好";
+    return false;
+  }
+  appDataRoot_ = M4NativeProviderManager::appDataRootFor(providerId_, bookId_);
+  M4ContentProvider::ChapterCatalogSpec catalog;
+  if (!M4ContentProviderSession::catalogFor(providerId_, bookId_, 0, catalog) || catalog.fileRelPath.empty()) {
+    error_ = "目录尚未准备好";
+    return false;
+  }
+  std::string abs;
+  if (M4PluginReaderBridge::resolveUnderDataRoot(appDataRoot_, catalog.fileRelPath.c_str(), abs) !=
+      M4PluginReaderBridge::OpenError::Ok) {
+    error_ = "目录路径无效";
+    return false;
+  }
+  titles_ = M4PluginTocList::openPagedFileRows(abs, catalog);
+  if (!titles_ || titles_->rowCount() == 0) {
+    error_ = "目录为空";
+    return false;
+  }
+  chapterCount_ = static_cast<int>(titles_->rowCount());
+  currentIndex_ = std::max(0, std::min(currentIndex_, chapterCount_ - 1));
+  error_.clear();
+  return true;
+}
+
+bool NativeProviderBookActivity::startCatalogBootstrap(PendingCatalogAction action) {
+  titles_.reset();
+  chapterCount_ = 0;
+  loadingIndex_ = -1;
+  error_.clear();
+  lastCatalogPaintMs_ = 0;
+  lastCatalogSignature_.clear();
+  pendingCatalogAction_ = action;
+  state_ = State::CatalogLoading;
+
+  const auto existing = M4NativeProviderCatalog::snapshot();
+  if (M4NativeProviderCatalog::busy()) {
+    if (existing.providerId == providerId_ && existing.bookId == bookId_ && existing.appId == appId_) {
+      renderCatalogLoading(true);
+      return true;
+    }
+    error_ = "另一本书的目录正在加载";
+    return false;
+  }
+  if (!M4NativeProviderCatalog::start(providerId_, bookId_, appId_, title_)) {
+    error_ = "目录任务启动失败";
+    return false;
+  }
+  renderCatalogLoading(true);
+  return true;
+}
+
+void NativeProviderBookActivity::continueAfterCatalogReady() {
+  const PendingCatalogAction action = pendingCatalogAction_;
+  pendingCatalogAction_ = PendingCatalogAction::None;
+  if (action == PendingCatalogAction::StartReading) {
+    startReading();
+  } else {
+    openToc();
+  }
+}
+
+void NativeProviderBookActivity::loadBookDetail() {
+  if (detailAttempted_) {
+    renderDetail();
+    return;
+  }
+  detailAttempted_ = true;
+
+  M4NativeProviderBookDetail::Request req;
+  req.providerId = providerId_;
+  req.appId = appId_;
+  req.bookId = bookId_;
+  req.title = title_;
+  req.author = author_;
+  req.maxBytes = 96u * 1024u;
+  detail_ = M4NativeProviderBookDetail::seed(req);
+
+  // Paint the immediately available discovery/history model first. The
+  // following bounded metadata request may need Wi-Fi/TLS, but the user never
+  // stares at a blank screen while it is in flight.
+  detailLoading_ = true;
+  renderDetail();
+
+  const auto fetched = M4NativeProviderBookDetail::fetch(req);
+  detailLoading_ = false;
+  if (fetched.ok) {
+    detail_ = fetched.detail;
+    if (!detail_.title.empty()) title_ = detail_.title;
+    if (!detail_.author.empty()) author_ = detail_.author;
+  }
+  renderDetail();
+}
+
+void NativeProviderBookActivity::renderDetail() {
+  renderer.clearScreen();
+  const auto metrics = UITheme::getInstance().getMetrics();
+  const int w = renderer.getScreenWidth();
+  const int h = renderer.getScreenHeight();
+  const int contentBottom = h - metrics.buttonHintsHeight - 6;
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, w, metrics.headerHeight}, providerDisplayName(providerId_));
+
+  const int pad = metrics.contentSidePadding + 10;
+  const int textWidth = std::max(1, w - 2 * pad);
+  int y = metrics.topPadding + metrics.headerHeight + 12;
+  detailReadButtonTop_ = 0;
+  detailReadButtonHeight_ = 0;
+
+  const std::string displayTitle = !detail_.title.empty() ? detail_.title
+                                   : (!title_.empty() ? title_ : std::string("在线书籍"));
+  const auto titleLines = M4UiText::wrapLines(renderer, UI_12_FONT_ID, displayTitle.c_str(), textWidth, 2,
+                                               EpdFontFamily::BOLD);
+  const int titleStep = M4UiText::listLineHeight(renderer, UI_12_FONT_ID) + 5;
+  if (titleLines.empty()) {
+    M4UiText::draw(renderer, UI_12_FONT_ID, pad, y, displayTitle.c_str(), true, EpdFontFamily::BOLD);
+    y += titleStep;
+  } else {
+    for (const auto& line : titleLines) {
+      M4UiText::draw(renderer, UI_12_FONT_ID, pad, y, line.c_str(), true, EpdFontFamily::BOLD);
+      y += titleStep;
+    }
+  }
+  y += 3;
+
+  const std::string displayAuthor = !detail_.author.empty() ? detail_.author : author_;
+  if (!displayAuthor.empty() && y < contentBottom) {
+    const std::string clipped = M4UiText::truncated(renderer, UI_10_FONT_ID, displayAuthor.c_str(), textWidth);
+    M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, clipped.c_str());
+    y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 5;
+  }
+
+  std::string meta;
+  appendMeta(meta, detail_.kind);
+  appendMeta(meta, detail_.status);
+  appendMeta(meta, displayWordCount(detail_.wordCount));
+  if (meta.empty()) meta = std::string("来源 · ") + providerDisplayName(providerId_);
+  if (y < contentBottom) {
+    const std::string clipped = M4UiText::truncated(renderer, UI_10_FONT_ID, meta.c_str(), textWidth);
+    M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, clipped.c_str());
+    y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 7;
+  }
+
+  const auto history = M4ContentProviderSession::makeHistorySnapshot(providerId_, bookId_);
+  const bool hasHistory = history.providerId == providerId_ && history.bookId == bookId_ &&
+                          (history.chapterIndex0 > 0 || history.hasByteOffset || history.page0 > 0);
+  std::string resume;
+  if (hasHistory) {
+    resume = std::string("上次阅读 · 第 ") + std::to_string(history.chapterIndex0 + 1) + " 章";
+    if (titles_ && history.chapterIndex0 >= 0 && history.chapterIndex0 < chapterCount_) {
+      const std::string chapterTitle = titleAt(history.chapterIndex0);
+      if (!chapterTitle.empty()) resume += " · " + chapterTitle;
+    }
+  } else {
+    resume = "尚未阅读 · 将从第一章开始";
+  }
+  if (y < contentBottom) {
+    const std::string clipped = M4UiText::truncated(renderer, UI_10_FONT_ID, resume.c_str(), textWidth);
+    M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, clipped.c_str(), true, EpdFontFamily::BOLD);
+    y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 8;
+  }
+
+  // 69shuba-inspired primary action: make reading the strongest visual target,
+  // while keeping the standard footer/physical Confirm action for consistency.
+  if (y + 50 < contentBottom) {
+    detailReadButtonTop_ = y;
+    detailReadButtonHeight_ = 48;
+    renderer.drawRoundedRect(pad, y, textWidth, detailReadButtonHeight_, 2, 7, true);
+    const char* primary = hasHistory ? "继续阅读" : "开始阅读";
+    M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, pad, y, textWidth, detailReadButtonHeight_,
+                                primary, true, EpdFontFamily::BOLD, 12);
+    y += detailReadButtonHeight_ + 10;
+  }
+
+  if (y + 26 < contentBottom) {
+    renderer.drawLine(pad, y, w - pad, y, true);
+    y += 10;
+    M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, "最近更新", true, EpdFontFamily::BOLD);
+    y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 4;
+
+    int recentShown = 0;
+    if (titles_ && chapterCount_ > 0) {
+      for (int i = chapterCount_ - 1; i >= 0 && recentShown < 3 && y < contentBottom; --i) {
+        const std::string chapterTitle = titleAt(i);
+        if (chapterTitle.empty()) continue;
+        const std::string row = std::to_string(i + 1) + "  " + chapterTitle;
+        const std::string clipped = M4UiText::truncated(renderer, UI_10_FONT_ID, row.c_str(), textWidth);
+        M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, clipped.c_str());
+        y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 3;
+        ++recentShown;
+      }
+    } else if (!detail_.lastChapter.empty() && y < contentBottom) {
+      const std::string clipped = M4UiText::truncated(renderer, UI_10_FONT_ID, detail_.lastChapter.c_str(), textWidth);
+      M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, clipped.c_str());
+      y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 3;
+      recentShown = 1;
+    }
+    if (recentShown == 0 && y < contentBottom) {
+      const std::string state = titles_ && chapterCount_ > 0
+                                    ? std::to_string(chapterCount_) + " 章"
+                                    : "章节目录按需加载";
+      M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, state.c_str());
+      y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 3;
+    }
+  }
+
+  if (y + 34 < contentBottom) {
+    renderer.drawLine(pad, y, w - pad, y, true);
+    y += 10;
+    M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, "简介", true, EpdFontFamily::BOLD);
+    y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 4;
+
+    const int lineStep = M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 4;
+    const int available = std::max(0, contentBottom - y);
+    const int maxLines = std::max(1, std::min(5, available / std::max(1, lineStep)));
+    if (!detail_.intro.empty()) {
+      const auto introLines = M4UiText::wrapLines(renderer, UI_10_FONT_ID, detail_.intro.c_str(), textWidth, maxLines);
+      for (const auto& line : introLines) {
+        if (y >= contentBottom) break;
+        M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, line.c_str());
+        y += lineStep;
+      }
+    } else if (y < contentBottom) {
+      const char* placeholder = detailLoading_ ? "正在获取作品简介…" : "暂无可用简介";
+      M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, placeholder);
+    }
+  }
+
+  const char* primary = hasHistory ? "继续阅读" : "开始阅读";
+  const auto labels = mappedInput.mapLabels("« 返回", primary, "章节", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void NativeProviderBookActivity::openToc() {
+  pendingCatalogAction_ = PendingCatalogAction::OpenToc;
+  if (!titles_ && !prepareCatalog()) {
+    error_.clear();
+    if (!startCatalogBootstrap(PendingCatalogAction::OpenToc)) {
+      state_ = State::Error;
+      if (error_.empty()) error_ = "目录尚未准备好";
+      renderError();
+    }
+    return;
+  }
+  pendingCatalogAction_ = PendingCatalogAction::None;
+  tocBackPending_ = false;
+  tocSelectionPending_ = false;
+  tocSelectedIndex_ = -1;
+  state_ = State::Toc;
+  auto source = titles_;
+  auto loader = [source](int first, int count, std::vector<std::string>& pageTitles,
+                         std::vector<uint8_t>& pagePresent) {
+    return source->loadPage(first, count, pageTitles, pagePresent);
+  };
+  enterNewActivity(new TxtReaderChapterSelectionActivity(
+      renderer, mappedInput, chapterCount_, std::move(loader), currentIndex_,
+      [this]() {
+        tocBackPending_ = true;
+        requestExitSubActivity();
+      },
+      [this](int index0) {
+        tocSelectedIndex_ = index0;
+        tocSelectionPending_ = true;
+        requestExitSubActivity();
+      },
+      title_.empty() ? std::string("目  录") : title_));
+}
+
+void NativeProviderBookActivity::startReading() {
+  pendingCatalogAction_ = PendingCatalogAction::StartReading;
+  if (!titles_ && !prepareCatalog()) {
+    error_.clear();
+    if (!startCatalogBootstrap(PendingCatalogAction::StartReading)) {
+      state_ = State::Error;
+      if (error_.empty()) error_ = "无法加载目录";
+      renderError();
+    }
+    return;
+  }
+  pendingCatalogAction_ = PendingCatalogAction::None;
+
+  int index0 = 0;
+  pendingInitialByteOffset_ = 0;
+  hasPendingInitialByteOffset_ = false;
+  pendingInitialIndex_ = -1;
+  const auto history = M4ContentProviderSession::makeHistorySnapshot(providerId_, bookId_);
+  if (history.providerId == providerId_ && history.bookId == bookId_ && history.chapterIndex0 >= 0 &&
+      history.chapterIndex0 < chapterCount_) {
+    index0 = history.chapterIndex0;
+    if (history.hasByteOffset) {
+      pendingInitialByteOffset_ = history.byteOffset;
+      hasPendingInitialByteOffset_ = true;
+      pendingInitialIndex_ = index0;
+    }
+  }
+  requestChapter(index0, false);
+}
+
+std::string NativeProviderBookActivity::titleAt(int index0) const {
+  if (!titles_ || index0 < 0) return {};
+  std::vector<std::string> t;
+  std::vector<uint8_t> p;
+  if (!titles_->loadPage(index0, 1, t, p) || t.empty() || p.empty() || !p[0]) return {};
+  return t[0];
+}
+
+void NativeProviderBookActivity::requestChapter(int index0, bool fromToc) {
+  if (index0 < 0 || index0 >= chapterCount_) return;
+  currentIndex_ = index0;
+  loadingIndex_ = index0;
+  loadingFromToc_ = fromToc;
+  loadingTitle_ = titleAt(index0);
+  error_.clear();
+  state_ = State::Loading;
+  lastLoadingSignature_.clear();
+  lastLoadingPaintMs_ = 0;
+  const bool queued = M4NativeProviderManager::requestChapter(
+      providerId_, bookId_, index0, M4NativeProviderManager::LoadIntent::Foreground);
+  if (!queued) {
+    const auto st = M4ContentProviderSession::chapterAt(providerId_, bookId_, index0);
+    if (st.state != M4ContentProvider::ChapterReady::Ready) {
+      error_ = chapterErrorText(st.error.empty() ? "chapter_queue_failed" : st.error);
+      state_ = State::Error;
+      renderError();
+      return;
+    }
+  }
+  renderLoading(true);
+}
+
+void NativeProviderBookActivity::openLogin() {
+  if (providerId_ != "weread" && providerId_ != "jjwxc") {
+    error_ = "此内容源不支持登录";
+    state_ = State::Error;
+    renderError();
+    return;
+  }
+  if (appDataRoot_.empty()) appDataRoot_ = std::string("/apps_data/") + appId_;
+  loginFinishedPending_ = false;
+  loginSucceeded_ = false;
+  state_ = State::Login;
+  enterNewActivity(new NativeProviderLoginActivity(
+      renderer, mappedInput, providerId_, appDataRoot_,
+      [this](bool success) {
+        loginSucceeded_ = success;
+        loginFinishedPending_ = true;
+        requestExitSubActivity();
+      }));
+}
+
+bool NativeProviderBookActivity::openReadyReader(int index0) {
+  const auto st = M4ContentProviderSession::chapterAt(providerId_, bookId_, index0);
+  if (st.state != M4ContentProvider::ChapterReady::Ready || st.cacheRelPath.empty()) return false;
+  std::string abs;
+  if (M4PluginReaderBridge::resolveUnderDataRoot(appDataRoot_, st.cacheRelPath.c_str(), abs) !=
+      M4PluginReaderBridge::OpenError::Ok) {
+    error_ = "章节缓存路径无效";
+    return false;
+  }
+  auto txt = std::make_unique<Txt>(abs, "/.crosspoint");
+  if (!txt->load() || !txt->isEncodingSupported() || txt->getFileSize() == 0) {
+    error_ = "章节缓存不可读取";
+    return false;
+  }
+
+  TxtReaderActivity::PluginSession sess;
+  sess.active = true;
+  sess.suppressRecentBooks = false;
+  sess.suppressOpenEpubPath = true;
+  sess.progressiveIndex = true;
+  sess.bookId = bookId_;
+  sess.chapterUid = st.chapterUid;
+  sess.chapterIndex = index0;
+  sess.providerId = providerId_;
+  sess.appId = appId_;
+  sess.appDataRoot = appDataRoot_;
+  sess.cacheRelPath = st.cacheRelPath;
+  sess.progressKey = providerId_ + ":" + bookId_ + ":" + st.chapterUid;
+  sess.titleOverride = titleAt(index0);
+  sess.generation = M4PluginReaderSession::bumpGeneration();
+  sess.providerManaged = true;
+  if (hasPendingInitialByteOffset_ && pendingInitialIndex_ == index0) {
+    sess.initialByteOffset = pendingInitialByteOffset_;
+    sess.hasInitialByteOffset = true;
+  }
+  hasPendingInitialByteOffset_ = false;
+  pendingInitialIndex_ = -1;
+
+  readerBackPending_ = false;
+  state_ = State::Reader;
+  auto onReaderClose = [this]() {
+    int requestedIndex = -1;
+    if (subActivity) {
+      auto* r = static_cast<TxtReaderActivity*>(subActivity.get());
+      const auto p = r->pluginProgressSnapshot();
+      if (p.valid && p.switchChapterIndex >= 0) requestedIndex = p.switchChapterIndex;
+    }
+    if (requestedIndex >= 0) {
+      tocSelectedIndex_ = requestedIndex;
+      tocSelectionPending_ = true;
+    }
+    readerBackPending_ = true;
+    requestExitSubActivity();
+  };
+  enterNewActivity(new TxtReaderActivity(renderer, mappedInput, std::move(txt), onReaderClose, onReaderClose,
+                                         std::move(sess)));
+  return true;
+}
+
+void NativeProviderBookActivity::renderCatalogLoading(bool force) {
+  const uint32_t now = millis();
+  const auto c = M4NativeProviderCatalog::snapshot();
+  const bool mine = c.providerId == providerId_ && c.bookId == bookId_ && c.appId == appId_;
+  const std::string failureCode = mine ? c.error : std::string();
+  const bool authRequired = isAuthError(failureCode) ||
+                            (mine && c.phase == M4NativeProviderCatalog::Phase::AuthRequired);
+
+  M4NativeLoadUi::Snapshot load;
+  load.scope = M4NativeLoadUi::Scope::Catalog;
+  load.stage = mine ? catalogStage(c.phase) : M4NativeLoadUi::Stage::Preparing;
+  load.receivedBytes = mine ? c.receivedBytes : 0;
+  load.rows = mine ? c.rowCount : 0;
+  const uint32_t started = mine && c.startedMs ? c.startedMs : now;
+  load.elapsedSeconds = (now - started) / 1000u;
+  load.error = failureCode;
+  const std::string phase = M4NativeLoadUi::title(load);
+  const std::string detail = M4NativeLoadUi::detail(load);
+  const std::string sig = phase + "|" + detail + "|" + failureCode + (authRequired ? "|auth" : "");
+  if (!force && sig == lastCatalogSignature_ && now - lastCatalogPaintMs_ < 1000) return;
+  lastCatalogSignature_ = sig;
+  lastCatalogPaintMs_ = now;
+
+  renderer.clearScreen();
+  const auto metrics = UITheme::getInstance().getMetrics();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
+                 title_.empty() ? "在线阅读" : title_.c_str());
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 185, phase.c_str(), true, EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 245, detail.c_str());
+  if (!failureCode.empty()) {
+    const std::string reason = std::string("原因：") + catalogErrorText(failureCode);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 305, reason.c_str());
+  }
+  const bool failed = mine && c.phase == M4NativeProviderCatalog::Phase::Error;
+  const char* primary = authRequired ? "登录" : (failed ? "重试" : "");
+  const auto labels = mappedInput.mapLabels("« 返回", primary, "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void NativeProviderBookActivity::renderLoading(bool force) {
+  const uint32_t now = millis();
+  const auto p = M4NativeProviderManager::progress();
+  const auto st = M4ContentProviderSession::chapterAt(providerId_, bookId_, loadingIndex_);
+  const bool mine = p.providerId == providerId_ && p.bookId == bookId_ && p.chapterIndex0 == loadingIndex_;
+  std::string failureCode = st.error;
+  if (failureCode.empty() && mine) failureCode = p.error;
+  const bool authRequired = isAuthError(failureCode) ||
+                            (mine && p.phase == M4NativeProvider::Phase::AuthRequired);
+
+  M4NativeLoadUi::Snapshot load;
+  load.scope = M4NativeLoadUi::Scope::Chapter;
+  load.stage = mine ? chapterStage(p.phase) : M4NativeLoadUi::Stage::Preparing;
+  load.receivedBytes = mine ? p.receivedBytes : 0;
+  load.writtenBytes = mine ? p.writtenBytes : 0;
+  load.percent = mine ? p.percent : st.pct;
+  const uint32_t started = mine && p.startedMs ? p.startedMs : now;
+  load.elapsedSeconds = (now - started) / 1000u;
+  load.error = failureCode;
+  if (authRequired) load.stage = M4NativeLoadUi::Stage::AuthRequired;
+  const std::string phase = M4NativeLoadUi::title(load);
+  const std::string detail = M4NativeLoadUi::detail(load);
+  const std::string sig = phase + "|" + detail + "|" + std::to_string(load.percent) + "|" +
+                          std::to_string(static_cast<int>(st.state)) + "|" + failureCode;
+  if (!force && sig == lastLoadingSignature_ && now - lastLoadingPaintMs_ < 1000) return;
+  lastLoadingSignature_ = sig;
+  lastLoadingPaintMs_ = now;
+
+  renderer.clearScreen();
+  const auto metrics = UITheme::getInstance().getMetrics();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
+                 title_.empty() ? "在线阅读" : title_.c_str());
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 180, phase.c_str(), true, EpdFontFamily::BOLD);
+  if (!loadingTitle_.empty()) M4UiText::drawCentered(renderer, UI_10_FONT_ID, 230, loadingTitle_.c_str());
+  if (load.percent > 0 && load.percent < 100) {
+    GUI.drawProgressBar(renderer, Rect{70, 285, renderer.getScreenWidth() - 140, 12},
+                        static_cast<size_t>(std::min(100, load.percent)), 100);
+  }
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 330, detail.c_str());
+  if (!failureCode.empty() || st.state == M4ContentProvider::ChapterReady::Error) {
+    const std::string reason = std::string("失败原因：") + chapterErrorText(failureCode);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 385, reason.c_str());
+  }
+  const char* primary = authRequired ? "登录" :
+                        (st.state == M4ContentProvider::ChapterReady::Error ? "重试" : "");
+  const auto labels = mappedInput.mapLabels("« 返回", primary, "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void NativeProviderBookActivity::renderError() {
+  renderer.clearScreen();
+  const auto metrics = UITheme::getInstance().getMetrics();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
+                 title_.empty() ? "在线阅读" : title_.c_str());
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 190, "无法打开", true, EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 245, error_.c_str());
+  const auto labels = mappedInput.mapLabels("« 返回", "重试", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void NativeProviderBookActivity::loop() {
+  if (subActivity) {
+    const bool closed = pumpSubActivityFrame();
+    if (!closed) return;
+
+    if (state_ == State::Toc) {
+      if (tocBackPending_) {
+        tocBackPending_ = false;
+        state_ = State::Detail;
+        renderDetail();
+        return;
+      }
+      if (tocSelectionPending_ && tocSelectedIndex_ >= 0) {
+        const int next = tocSelectedIndex_;
+        tocSelectionPending_ = false;
+        requestChapter(next, true);
+        return;
+      }
+    } else if (state_ == State::Login && loginFinishedPending_) {
+      loginFinishedPending_ = false;
+      if (loginSucceeded_ && loadingIndex_ >= 0) {
+        requestChapter(loadingIndex_, loadingFromToc_);
+      } else if (loginSucceeded_ && pendingCatalogAction_ != PendingCatalogAction::None) {
+        if (prepareCatalog()) continueAfterCatalogReady();
+        else if (!startCatalogBootstrap(pendingCatalogAction_)) {
+          state_ = State::Error;
+          if (error_.empty()) error_ = "登录成功，但目录加载失败";
+          renderError();
+        }
+      } else {
+        state_ = State::Detail;
+        renderDetail();
+      }
+      return;
+    } else if (state_ == State::Reader && readerBackPending_) {
+      readerBackPending_ = false;
+      if (tocSelectionPending_ && tocSelectedIndex_ >= 0) {
+        const int next = tocSelectedIndex_;
+        tocSelectionPending_ = false;
+        requestChapter(next, true);
+      } else {
+        state_ = State::Detail;
+        renderDetail();
+      }
+      return;
+    }
+  }
+
+  if (state_ == State::Detail) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
+      onExitBook_();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      startReading();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      openToc();
+      return;
+    }
+    if (mappedInput.hasTouch()) {
+      int tx = 0, ty = 0;
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        if (detailReadButtonHeight_ > 0 && ty >= detailReadButtonTop_ &&
+            ty < detailReadButtonTop_ + detailReadButtonHeight_) {
+          startReading();
+          return;
+        }
+        const auto metrics = UITheme::getInstance().getMetrics();
+        if (ty >= renderer.getScreenHeight() - metrics.buttonHintsHeight) {
+          const int slot = std::min(3, std::max(0, tx * 4 / std::max(1, renderer.getScreenWidth())));
+          if (slot == 0) onExitBook_();
+          else if (slot == 1) startReading();
+          else if (slot == 2) openToc();
+        }
+      }
+    }
+    return;
+  }
+
+  if (state_ == State::CatalogLoading) {
+    const auto c = M4NativeProviderCatalog::snapshot();
+    const bool mine = c.providerId == providerId_ && c.bookId == bookId_ && c.appId == appId_;
+    if (mine && c.phase == M4NativeProviderCatalog::Phase::Ready) {
+      if (prepareCatalog()) {
+        continueAfterCatalogReady();
+      } else {
+        state_ = State::Error;
+        if (error_.empty()) error_ = "目录注册后无法读取";
+        renderError();
+      }
+      return;
+    }
+    renderCatalogLoading(false);
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
+      M4NativeProviderCatalog::cancel();
+      pendingCatalogAction_ = PendingCatalogAction::None;
+      state_ = State::Detail;
+      renderDetail();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) && mine) {
+      if (c.phase == M4NativeProviderCatalog::Phase::AuthRequired) {
+        openLogin();
+      } else if (c.phase == M4NativeProviderCatalog::Phase::Error) {
+        const PendingCatalogAction action = pendingCatalogAction_ == PendingCatalogAction::None
+                                                ? PendingCatalogAction::OpenToc
+                                                : pendingCatalogAction_;
+        (void)startCatalogBootstrap(action);
+      }
+    }
+    return;
+  }
+
+  if (state_ == State::Loading) {
+    const auto st = M4ContentProviderSession::chapterAt(providerId_, bookId_, loadingIndex_);
+    const auto p = M4NativeProviderManager::progress();
+    const bool authRequired = isAuthError(st.error) ||
+                              (p.providerId == providerId_ && p.bookId == bookId_ &&
+                               p.chapterIndex0 == loadingIndex_ &&
+                               p.phase == M4NativeProvider::Phase::AuthRequired);
+    if (st.state == M4ContentProvider::ChapterReady::Ready) {
+      if (!openReadyReader(loadingIndex_)) {
+        state_ = State::Error;
+        if (error_.empty()) error_ = "章节打开失败";
+        renderError();
+      }
+      return;
+    }
+    if (st.state == M4ContentProvider::ChapterReady::Error && authRequired) {
+      openLogin();
+      return;
+    }
+    renderLoading(false);
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
+      M4NativeProviderManager::cancelForeground();
+      if (loadingFromToc_) openToc();
+      else {
+        state_ = State::Detail;
+        renderDetail();
+      }
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (authRequired) openLogin();
+      else if (st.state == M4ContentProvider::ChapterReady::Error) {
+        (void)M4NativeProviderManager::invalidateChapterCache(providerId_, bookId_, loadingIndex_);
+        requestChapter(loadingIndex_, loadingFromToc_);
+      }
+    }
+    return;
+  }
+
+  if (state_ == State::Error) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
+      loadingIndex_ = -1;
+      error_.clear();
+      state_ = State::Detail;
+      renderDetail();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (loadingIndex_ >= 0) {
+        (void)M4NativeProviderManager::invalidateChapterCache(providerId_, bookId_, loadingIndex_);
+        requestChapter(loadingIndex_, loadingFromToc_);
+      } else {
+        const PendingCatalogAction action = pendingCatalogAction_ == PendingCatalogAction::None
+                                                ? PendingCatalogAction::OpenToc
+                                                : pendingCatalogAction_;
+        if (!startCatalogBootstrap(action)) renderError();
+      }
+    }
+  }
+}
+
+std::string NativeProviderBookActivity::debugUiJson() {
+  return std::string("{\"kind\":\"native_provider_book\",\"provider\":\"") + providerId_ +
+         "\",\"book\":\"" + bookId_ + "\",\"chapter\":" + std::to_string(currentIndex_) +
+         ",\"state\":" + std::to_string(static_cast<int>(state_)) +
+         ",\"detail_loaded\":" + (detail_.intro.empty() ? "false" : "true") + "}";
+}
