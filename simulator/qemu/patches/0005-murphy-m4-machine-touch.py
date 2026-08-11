@@ -66,7 +66,6 @@ static uint8_t murphy_ft6x36_frame_byte(MurphyFt6x36State *s, unsigned index)
     case 1: return 0;
     case 2: return s->pressed ? 1 : 0;
     case 3:
-        /* Event=2 (contact) in bits 7:6, X high nibble in bits 3:0. */
         return s->pressed ? (uint8_t)(0x80 | ((x >> 8) & 0x0f)) : 0;
     case 4: return s->pressed ? (uint8_t)x : 0;
     case 5: return s->pressed ? (uint8_t)((y >> 8) & 0x0f) : 0;
@@ -219,9 +218,6 @@ def main(argv: list[str]) -> int:
 """
     board_block = gpio_block + r'''
     if (object_dynamic_cast(OBJECT(machine), TYPE_MURPHY_M4_MACHINE)) {
-        /* Murphy touch lives on I2C0. Its board power and IRQ remain visible
-         * through the ordinary GPIO controller rather than guest shortcuts.
-         */
         I2CBus *i2c_bus = I2C_BUS(qdev_get_child_bus(DEVICE(&ss->i2c[0]), "i2c"));
         I2CSlave *touch = i2c_slave_create_simple(i2c_bus, TYPE_MURPHY_FT6X36, 0x2e);
         ms->touch_dev = DEVICE(touch);
@@ -245,7 +241,7 @@ static void esp32s3_machine_type_init(void)
     type_register_static(&esp32s3_info);
 }
 
-type_init(esp32s3_machine_type_init)
+type_init(esp32s3_machine_type_init);
 '''
     new_tail = r'''static const TypeInfo esp32s3_info = {
     .name = TYPE_ESP32S3_MACHINE,
@@ -273,7 +269,7 @@ static void esp32s3_machine_type_init(void)
     type_register_static(&murphy_m4_info);
 }
 
-type_init(esp32s3_machine_type_init)
+type_init(esp32s3_machine_type_init);
 '''
     text = replace_once(text, old_tail, new_tail, "register Murphy machine subtype")
     path.write_text(text, encoding="utf-8")

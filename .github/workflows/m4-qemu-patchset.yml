@@ -58,3 +58,33 @@ jobs:
         with:
           name: murphy-qemu-patch-provenance
           path: ${{ runner.temp }}/m4-qemu-provenance
+
+  full-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      M4_E2E_ARTIFACTS: ${{ runner.temp }}/m4-full-e2e/artifacts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install full-chain host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-pip python3-venv \
+            libglib2.0-dev libpixman-1-dev libgcrypt20-dev libslirp-dev libsdl2-dev \
+            flex bison dosfstools mtools fonts-wqy-zenhei git
+          python3 -m pip install --break-system-packages platformio pyserial fonttools
+
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Run full-chain TTF TXT and plugin E2E
+        run: python3 simulator/qemu/run_full_e2e_ci.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: murphy-full-e2e-${{ github.run_id }}
+          path: ${{ runner.temp }}/m4-full-e2e/artifacts
+          if-no-files-found: warn
