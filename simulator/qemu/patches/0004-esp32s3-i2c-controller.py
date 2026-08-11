@@ -37,22 +37,6 @@ def main(argv: list[str]) -> int:
 
     text = replace_once(
         text,
-        """        for (int i = 0; i < ESP32S3_UART_COUNT; ++i) {
-            device_cold_reset(DEVICE(&s->uart[i]));
-        }
-""",
-        """        for (int i = 0; i < ESP32S3_UART_COUNT; ++i) {
-            device_cold_reset(DEVICE(&s->uart[i]));
-        }
-        for (int i = 0; i < 2; ++i) {
-            device_cold_reset(DEVICE(&s->i2c[i]));
-        }
-""",
-        "reset S3 I2C controllers",
-    )
-
-    text = replace_once(
-        text,
         """    for (int i = 0; i < ESP32S3_UART_COUNT; ++i) {
         snprintf(name, sizeof(name), "uart%d", i);
         object_initialize_child(obj, name, &s->uart[i], TYPE_ESP32S3_UART);
@@ -93,6 +77,9 @@ def main(argv: list[str]) -> int:
         sysbus_realize(SYS_BUS_DEVICE(&ss->gpio), &error_fatal);"""
     text = replace_once(text, anchor, block, "realize S3 I2C controllers")
 
+    # The embedded SysBusDevice children participate in QEMU's normal reset
+    # hierarchy. Avoid a direct DEVICE(&s->i2c[i]) cast in esp32s3_soc_reset;
+    # the pinned QEMU build rejects that C type conversion and it is redundant.
     path.write_text(text, encoding="utf-8")
     return 0
 
