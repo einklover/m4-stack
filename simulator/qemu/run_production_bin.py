@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run an unmodified Murphy M4 production flash image in patched ESP32-S3 QEMU.
 
-The default machine is now ``murphy-m4``: an ESP32-S3 machine subtype whose
-board devices are connected below the unchanged guest firmware.  The generic
-``esp32s3`` machine remains selectable for SoC-only diagnostics.
+The default machine is ``murphy-m4``: an ESP32-S3 machine subtype whose board
+devices sit below the unchanged guest.  ``--screen-file`` exports the image
+committed by the emulated SSD1677 controller after MASTER_ACT/BUSY completion;
+it does not use the legacy QEMU-only firmware framebuffer shortcut.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ WDT_DRIVER = "timer.esp32c3.timg"
 EFUSE_DRIVER = "nvram.esp32s3.efuse"
 EFUSE_DRIVE_ID = "efuse"
 TOUCH_DRIVER = "murphy-ft6x36"
+EPD_DRIVER = "murphy-ssd1677"
 MURPHY_IDLE_GPIO_INPUTS = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 44)
 
 
@@ -72,6 +74,8 @@ def build_cmd(
     extra: list[str],
     machine: str = "murphy-m4",
     touch: tuple[int, int] | None = None,
+    screen_file: Path | None = None,
+    epd_busy_ms: int = 40,
 ) -> list[str]:
     if gpio_input_default < 0 or gpio_input_default > 0xFFFFFFFFFFFFFFFF:
         raise RunnerError("GPIO input-default mask must fit in 64 bits")
@@ -79,6 +83,10 @@ def build_cmd(
         raise RunnerError(f"unsupported machine: {machine}")
     if touch is not None and machine != "murphy-m4":
         raise RunnerError("touch fixture requires --machine murphy-m4")
+    if screen_file is not None and machine != "murphy-m4":
+        raise RunnerError("SSD1677 screen export requires --machine murphy-m4")
+    if epd_busy_ms < 1 or epd_busy_ms > 60000:
+        raise RunnerError("SSD1677 busy duration must be 1..60000 ms")
 
     cmd = [
         qemu,
@@ -98,6 +106,11 @@ def build_cmd(
             "-global", f"driver={TOUCH_DRIVER},property=x,value={x}",
             "-global", f"driver={TOUCH_DRIVER},property=y,value={y}",
         ]
+
+    if machine == "murphy-m4":
+        cmd += ["-global", f"driver={EPD_DRIVER},property=busy-ms,value={epd_busy_ms}"]
+        if screen_file is not None:
+            cmd += ["-global", f"driver={EPD_DRIVER},property=frame-file,value={screen_file}"]
 
     if efuse_file is not None:
         cmd += [
@@ -123,7 +136,7 @@ def build_cmd(
 
 
 def run_for(cmd: list[str], seconds: float, stdout_log: Path | None) -> int:
-    print("+", " ".join(cmd), flush=True)
+    print("+", " ".join(str(x) for x in cmd), flush=True)
     out = open(stdout_log, "w", encoding="utf-8") if stdout_log else None
     try:
         proc = subprocess.Popen(cmd, stdout=out if out else None,
@@ -178,8 +191,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--machine", choices=("murphy-m4", "esp32s3"), default="murphy-m4")
     parser.add_argument("--touch", type=parse_touch, default=None,
                         help="start with one FT6x36 contact at logical X,Y")
-    parser.add_argument("--efuse-file", default=None, help="ESP32-S3 QEMU joint-format eFuse backing file")
-    parser.add_argument("--sd-image", default=None, help="raw SD-card image attached to native ESP32-S3 SDMMC")
+    parser.add_argument("--screen-file", default=None,
+                        help="PBM written by emulated SSD1677 after a completed refresh")
+    parser.add_argument("--epd-busy-ms", type=int, default=40,
+                        help="virtual SSD1677 BUSY duration per activation")
+    parser.add_argument("--efuse-file", default=None,
+                        help="ESP32-S3 QEMU joint-format eFuse backing file")
+    parser.add_argument("--sd-image", default=None,
+                        help="raw SD-card image attached to native ESP32-S3 SDMMC")
     parser.add_argument("--sd-read-only", action="store_true", help="open --sd-image read-only")
     parser.add_argument("--psram-mb", type=int, default=8, choices=(8, 16, 32))
     parser.add_argument("--gpio-input-default", type=parse_u64, default=MURPHY_IDLE_GPIO_INPUTS)
@@ -200,11 +219,20 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("extra QEMU arguments must follow a standalone --")
         extra = unknown[1:]
 
+    serial = Path(args.serial_file).expanduser().resolve() if args.serial_file else None
+    log = Path(args.log).expanduser().resolve() if args.log else None
+    screen = Path(args.screen_file).expanduser().resolve() if args.screen_file else None
+    if args.probe and serial is None:
+        serial = Path("/tmp/murphy-production.serial.log")
+
     try:
         flash = existing_file(args.flash_image, "flash image")
         assert flash is not None
         if flash.stat().st_size != FLASH_SIZE:
-            raise RunnerError(f"production flash must be exactly {FLASH_SIZE} bytes (16 MiB), got {flash.stat().st_size}")
+            raise RunnerError(
+                f"production flash must be exactly {FLASH_SIZE} bytes (16 MiB), "
+                f"got {flash.stat().st_size}"
+            )
         efuse = existing_file(args.efuse_file, "eFuse file")
         sd_image = validate_sd_image(existing_file(args.sd_image, "SD image"))
         qemu = find_qemu(args.qemu)
@@ -212,30 +240,19 @@ def main(argv: list[str] | None = None) -> int:
             qemu, flash, psram_mb=args.psram_mb,
             gpio_input_default=args.gpio_input_default, efuse_file=efuse,
             sd_image=sd_image, sd_read_only=args.sd_read_only,
-            serial_file=Path(args.serial_file).expanduser().resolve() if args.serial_file else None,
-            gdb=args.gdb, disable_wdt=args.disable_wdt, open_eth=args.open_eth,
-            extra=extra, machine=args.machine, touch=args.touch,
+            serial_file=serial, gdb=args.gdb, disable_wdt=args.disable_wdt,
+            open_eth=args.open_eth, extra=extra, machine=args.machine,
+            touch=args.touch, screen_file=screen, epd_busy_ms=args.epd_busy_ms,
         )
     except RunnerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    serial = Path(args.serial_file).expanduser().resolve() if args.serial_file else None
-    log = Path(args.log).expanduser().resolve() if args.log else None
-    if args.probe and serial is None:
-        serial = Path("/tmp/murphy-production.serial.log")
-        # Rebuild only to route UART to the implicit probe log.
-        cmd = build_cmd(qemu, flash, psram_mb=args.psram_mb,
-                        gpio_input_default=args.gpio_input_default, efuse_file=efuse,
-                        sd_image=sd_image, sd_read_only=args.sd_read_only, serial_file=serial,
-                        gdb=args.gdb, disable_wdt=args.disable_wdt, open_eth=args.open_eth,
-                        extra=extra, machine=args.machine, touch=args.touch)
-
-    for path in (serial, log):
+    for path in (serial, log, screen):
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
     if args.dry_run:
-        print("+", " ".join(cmd))
+        print("+", " ".join(str(x) for x in cmd))
         return 0
 
     rc = run_for(cmd, args.seconds, log)
@@ -248,6 +265,12 @@ def main(argv: list[str] | None = None) -> int:
             probe_rc = run_probe(serial)
             if probe_rc:
                 return probe_rc
+    if screen is not None:
+        if screen.is_file():
+            print(f"SSD1677 screen: {screen} ({screen.stat().st_size} bytes)")
+        else:
+            print("warning: SSD1677 did not complete a refresh; no screen file was produced",
+                  file=sys.stderr)
     return rc
 
 
