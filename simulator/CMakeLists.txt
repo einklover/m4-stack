@@ -50,6 +50,13 @@ add_executable(m4_peripheral_policies tests/peripheral_policies.cpp)
 target_link_libraries(m4_peripheral_policies PRIVATE m4_board_model)
 add_test(NAME m4_peripheral_policies COMMAND m4_peripheral_policies)
 
+add_executable(m4_sd_image_tests tests/sd_image.cpp)
+target_link_libraries(m4_sd_image_tests PRIVATE m4_board_model)
+add_test(NAME m4_sd_image_tests COMMAND m4_sd_image_tests)
+
+add_executable(m4_board_contract tools/board_contract.cpp)
+target_link_libraries(m4_board_contract PRIVATE m4_board_model)
+
 add_executable(m4_issue_contracts tests/issue_contracts.cpp)
 target_link_libraries(m4_issue_contracts PRIVATE
   m4_reader_core

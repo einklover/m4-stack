@@ -5,7 +5,9 @@
 Canonical supplied source as of 2026-08-11:
 
 - Original filename: `SCH_ESP..18(2).pdf`
-- Planned repository filename: `Murphy-M4-ESP32-S3R8-ESP32_426_S3_V2.0-2026-05-06.pdf`
+- Intended repository filename: `Murphy-M4-ESP32-S3R8-ESP32_426_S3_V2.0-2026-05-06.pdf`
+- SHA-256: `585d4cb233da7c1b99a725af79f5636a2ddec1169217a576350d43992f6643ed`
+- Size: 732565 bytes
 - Pages: 2
 - Schematic title: `ESP32_S3_6`
 - Board field: `ESP32_426_S3_V2.0`
@@ -25,11 +27,15 @@ Do not overwrite a schematic silently. If a newer board drawing appears, keep
 both revisions when they describe different PCB revisions and add a short note
 here describing which shipping hardware each revision matches.
 
-### Binary-source note
+### Binary-source status
 
-The repository automation used for the current staged changes can write text
-objects directly. The supplied PDF is also retained in the project file library
-and is being mirrored into this directory as a binary Git object in the same
-hardware-baseline stage. The structured facts are intentionally committed
-separately so emulator work remains reviewable even when the drawing is opened
-outside GitHub's text diff UI.
+The exact PDF is retained in the project file library and pinned by the checksum
+above. The GitHub connector available to this automation can create UTF-8
+repository contents but cannot accept a local binary file path, so the PDF
+itself is **not yet committed as a Git blob**. Do not mistake this Markdown
+record for the drawing.
+
+Until a normal git/file-upload path is available, hardware facts extracted from
+the PDF are committed under `hardware/murphy-m4/` with explicit evidence labels.
+When binary upload becomes available, add the exact PDF under the intended name
+above, verify the SHA-256, and do not rewrite or replace the source.
