@@ -18,19 +18,25 @@ SPEC.loader.exec_module(run_production_bin)
 
 
 class ProductionRunnerCommandTests(unittest.TestCase):
-    def test_production_contract_enables_octal_psram_without_guest_shim(self):
-        flash = Path("/tmp/factory.bin")
-        cmd = run_production_bin.build_cmd(
-            "/opt/qemu-system-xtensa",
-            flash,
+    def build(self, **overrides):
+        args = dict(
             psram_mb=8,
             efuse_file=None,
+            sd_image=None,
+            sd_read_only=False,
             serial_file=None,
             gdb=False,
             disable_wdt=False,
             open_eth=False,
             extra=[],
         )
+        args.update(overrides)
+        return run_production_bin.build_cmd(
+            "/opt/qemu-system-xtensa", Path("/tmp/factory.bin"), **args
+        )
+
+    def test_production_contract_enables_octal_psram_without_guest_shim(self):
+        cmd = self.build()
         joined = " ".join(cmd)
         self.assertIn("-machine esp32s3", joined)
         self.assertIn("file=/tmp/factory.bin,if=mtd,format=raw", joined)
@@ -40,10 +46,7 @@ class ProductionRunnerCommandTests(unittest.TestCase):
         self.assertNotIn("M4_QEMU_BUILD", joined)
 
     def test_efuse_backing_uses_esp32s3_nvram_device(self):
-        cmd = run_production_bin.build_cmd(
-            "qemu-system-xtensa",
-            Path("/tmp/factory.bin"),
-            psram_mb=8,
+        cmd = self.build(
             efuse_file=Path("/tmp/efuse.bin"),
             serial_file=Path("/tmp/serial.log"),
             gdb=True,
@@ -58,6 +61,23 @@ class ProductionRunnerCommandTests(unittest.TestCase):
         self.assertIn("-nic user,model=open_eth", joined)
         self.assertIn("-gdb tcp::3333 -S", joined)
         self.assertTrue(cmd[-2:] == ["-d", "guest_errors"])
+
+    def test_sd_image_uses_native_if_sd_controller_path(self):
+        cmd = self.build(sd_image=Path("/tmp/card.img"))
+        joined = " ".join(cmd)
+        self.assertIn("file=/tmp/card.img,if=sd,format=raw", joined)
+        self.assertNotIn("readonly=on", joined)
+
+    def test_sd_image_can_be_read_only(self):
+        cmd = self.build(sd_image=Path("/tmp/card.img"), sd_read_only=True)
+        self.assertIn("file=/tmp/card.img,if=sd,format=raw,readonly=on", " ".join(cmd))
+
+    def test_sd_image_requires_sector_multiple(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "bad.img"
+            path.write_bytes(b"x" * 513)
+            with self.assertRaises(run_production_bin.RunnerError):
+                run_production_bin.validate_sd_image(path)
 
     def test_existing_file_rejects_empty_input(self):
         with tempfile.TemporaryDirectory() as td:
