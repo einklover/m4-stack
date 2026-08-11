@@ -6,5 +6,5 @@
 0005-murphy-m4-machine-touch.py
 0006-murphy-touch-qdev-reset.py
 0006a-murphy-touch-qdev-core.py
-0007-esp32s3-gpspi2.py
+0007b-esp32s3-gpspi2-cumulative.py
 0008-murphy-ssd1677.py
