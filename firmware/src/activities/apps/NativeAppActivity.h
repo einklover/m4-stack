@@ -65,4 +65,8 @@ class NativeAppActivity final : public ActivityWithSubactivity {
   const M4NativeUi::Node* tilesNode_ = nullptr;
 
   std::string buttonActions_[4];
+
+  // Provider "screenbridge" defers app teardown by one parent loop frame so the
+  // child ScreenBridgeActivity is never destroyed from inside its own callback.
+  bool screenBridgeExitPending_ = false;
 };

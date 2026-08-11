@@ -1,0 +1,5 @@
+# Local build artifacts — not committed
+build-out/
+*.apk
+*.idsig
+debug.keystore

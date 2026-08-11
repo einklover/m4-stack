@@ -318,7 +318,8 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.request.headers = {{"User-Agent", "Mozilla/5.0 Murphy-M4 NativeProvider/1"}};
     s.request.maxBytes = 4u * 1024u * 1024u;
     s.path = {"data"};
-    s.fields = {"bookUrl", "name", "author", "_m4_progress"};
+    // totalChapterNum powers progressive catalog placeholders (fast open).
+    s.fields = {"bookUrl", "name", "author", "totalChapterNum"};
     s.maxRows = 64;
     return s;
   }

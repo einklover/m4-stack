@@ -1,0 +1,18 @@
+{
+  "id": "com.m4screenbridge.client",
+  "name": "屏幕桥",
+  "version": "0.1.0",
+  "versionCode": 1,
+  "runtime": "native",
+  "entry": "main.xml",
+  "provider": "screenbridge",
+  "author": "einklover",
+  "description": "0.1.0 Native：Android 无障碍屏幕桥，阅读界面由系统屏幕桥活动接管，端点使用应用数据持久化",
+  "files": [
+    "main.xml"
+  ],
+  "permissions": [
+    "filesystem.appdata",
+    "network"
+  ]
+}

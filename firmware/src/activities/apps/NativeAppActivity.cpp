@@ -1,6 +1,7 @@
 #include "NativeAppActivity.h"
 #include "NativeProviderBookActivity.h"
 #include "NativeProviderLoginActivity.h"
+#include "ScreenBridgeActivity.h"
 
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
@@ -15,6 +16,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/M4ContentProviderContract.h"
+#include "util/M4ErrorScreen.h"
 #include "util/M4ListTouchPolicy.h"
 #include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
@@ -103,6 +105,16 @@ void NativeAppActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   error_.clear();
   authLoginPrompted_ = false;
+  if (app_.provider == "screenbridge") {
+    // ScreenBridge is a dedicated fullscreen reader activity, not an XML/UI
+    // document. Closing the child closes the app: the callback only arms a
+    // deferred-exit flag that loop() applies after the child frame returns.
+    screenBridgeExitPending_ = false;
+    enterNewActivity(new ScreenBridgeActivity(renderer, mappedInput, app_.id, [this]() {
+      screenBridgeExitPending_ = true;
+    }));
+    return;
+  }
   if (!loadDocument()) {
     updateRequired_ = true;
     return;
@@ -306,6 +318,15 @@ void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi
 }
 
 void NativeAppActivity::loop() {
+  // ScreenBridge child requested app close. Tear the child down here (parent
+  // frame, outside the child's own loop stack) before closing the app.
+  if (screenBridgeExitPending_) {
+    screenBridgeExitPending_ = false;
+    exitActivity();
+    onExitApp_();
+    return;
+  }
+
   if (subActivity) {
     if (pumpSubActivityFrame()) updateRequired_ = true;
     return;
@@ -488,12 +509,16 @@ void NativeAppActivity::render() {
   tilesNode_ = nullptr;
 
   if (!error_.empty()) {
-    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, w, metrics.headerHeight}, app_.name.c_str());
-    M4UiText::drawCentered(renderer, UI_12_FONT_ID, h / 2 - 30, "操作失败", true, EpdFontFamily::BOLD);
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, h / 2 + 20, error_.c_str());
     const auto labels = mappedInput.mapLabels("« 返回", "关闭提示", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    std::vector<std::string> diag;
+    M4ErrorScreen::appendCode(diag, error_);
+    M4ErrorScreen::addKV(diag, "app_id: ", app_.id);
+    M4ErrorScreen::addKV(diag, "provider: ", app_.provider);
+    M4ErrorScreen::addKV(diag, "screen: ", screenId_);
+    M4ErrorScreen::addKV(diag, "path: ", app_.path);
+    auto snap = M4ErrorScreen::genericFail(app_.name.empty() ? "应用" : app_.name, "操作失败", error_, diag,
+                                           labels.btn1, labels.btn2);
+    M4ErrorScreen::paint(renderer, snap, true);
     return;
   }
 
@@ -701,6 +726,7 @@ void NativeAppActivity::render() {
 }
 
 std::string NativeAppActivity::debugUiJson() {
+  if (subActivity) return subActivity->debugUiJson();
   return "{\"kind\":\"native_app\",\"app_id\":\"" + jsonEscape(app_.id) +
          "\",\"provider\":\"" + jsonEscape(app_.provider) + "\",\"screen\":\"" +
          jsonEscape(screenId_) + "\",\"selected\":" + std::to_string(selectedIndex_) +

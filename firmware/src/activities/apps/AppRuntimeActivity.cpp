@@ -9,6 +9,7 @@
 
 #include "MappedInputManager.h"
 #include "fontIds.h"
+#include "util/M4ErrorScreen.h"
 #include "util/M4UiText.h"
 #include "util/M4InputProfile.h"
 #include "util/M4PluginReaderBridge.h"
@@ -771,15 +772,20 @@ void AppRuntimeActivity::loop() {
 }
 
 void AppRuntimeActivity::renderError() {
-  renderer.clearScreen();
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 160, "应用运行失败", true, EpdFontFamily::BOLD);
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 220, app_.name.c_str());
   std::string err;
   copyError(err);
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 280, err.c_str());
-  const char* hint = M4InputProfile::showHardwareKeyHints() ? "返回退出" : "tap to exit";
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 360, hint);
-  renderer.displayBuffer();
+  std::vector<std::string> diag;
+  M4ErrorScreen::appendCode(diag, err);
+  M4ErrorScreen::addKV(diag, "app_id: ", app_.id);
+  M4ErrorScreen::addKV(diag, "app_name: ", app_.name);
+  M4ErrorScreen::addKV(diag, "provider: ", app_.provider);
+  M4ErrorScreen::addKV(diag, "path: ", app_.path);
+  M4ErrorScreen::addKV(diag, "entry: ", app_.entry);
+  const char* back = M4InputProfile::showHardwareKeyHints() ? "« 返回" : "tap exit";
+  auto snap = M4ErrorScreen::genericFail(app_.name.empty() ? "应用" : app_.name, "应用运行失败", err, diag,
+                                         back, "");
+  snap.fastRefresh = false;
+  M4ErrorScreen::paint(renderer, snap, true);
 }
 
 std::string AppRuntimeActivity::debugUiJson() {

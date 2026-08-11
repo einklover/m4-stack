@@ -71,21 +71,37 @@ def find_esptool() -> str:
 
 
 def find_otatool() -> str:
-    """Resolve otatool.py from PATH or $IDF_PATH. Raises FlashError if missing."""
+    """Resolve otatool.py from PATH, $IDF_PATH, or PlatformIO ESP-IDF package."""
     path = shutil.which("otatool.py")
     if path:
         return path
     idf = os.environ.get("IDF_PATH")
     if idf:
-        cand = Path(idf) / "components" / "app_update" / "otatool.py"
+        for rel in (
+            Path("components") / "app_update" / "otatool.py",
+            Path("tools") / "otatool.py",
+        ):
+            cand = Path(idf) / rel
+            if cand.exists():
+                return str(cand)
+    # PlatformIO ships framework-espidf with otatool even without a full IDF install.
+    pio_pkg = Path.home() / ".platformio" / "packages" / "framework-espidf"
+    for cand in (
+        pio_pkg / "components" / "app_update" / "otatool.py",
+        pio_pkg / "tools" / "otatool.py",
+    ):
         if cand.exists():
             return str(cand)
-        cand2 = Path(idf) / "tools" / "otatool.py"
-        if cand2.exists():
-            return str(cand2)
+    # Nested package layouts (versioned dirs).
+    try:
+        for hit in pio_pkg.rglob("otatool.py"):
+            return str(hit)
+    except OSError:
+        pass
     raise FlashError(
-        "otatool.py not found. Install ESP-IDF tools or set IDF_PATH. "
-        "Refusing to write APP1 without a way to select the OTA slot."
+        "otatool.py not found. Install ESP-IDF tools, set IDF_PATH, or install "
+        "PlatformIO framework-espidf. Refusing to write APP1 without a way to "
+        "select the OTA slot."
     )
 
 

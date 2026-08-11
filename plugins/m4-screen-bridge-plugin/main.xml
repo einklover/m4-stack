@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<m4ui version="1" start="home" theme="wap" fullscreen="true">
+  <screen id="home" title="屏幕桥" class="compact">
+    <text text="屏幕桥已启用" class="hero inset"/>
+    <text text="@page.status" class="meta inset"/>
+    <text text="手机端画面由系统屏幕桥活动接管，本页为占位界面。" class="compact inset"/>
+  </screen>
+</m4ui>

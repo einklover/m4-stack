@@ -4,6 +4,7 @@
 #include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeProviderHttp.h"
+#include "apps/providers/M4ProgressiveCatalog.h"
 #include "apps/providers/M4Psram.h"
 #include "apps/providers/M4NativeProviderIo.h"
 #include "apps/providers/M4NativeProviderManager.h"
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -52,11 +54,14 @@ std::atomic<bool> gBusy{false};
 std::atomic<bool> gCancel{false};
 TaskHandle_t gTask = nullptr;
 
-void publish(Phase phase, size_t received = 0, size_t rows = 0, const std::string& error = {}) {
+void publish(Phase phase, size_t received = 0, size_t rows = 0, const std::string& error = {},
+             bool partial = false, size_t totalHint = 0) {
   std::lock_guard<std::mutex> lock(gMu);
   gSnapshot.phase = phase;
   gSnapshot.receivedBytes = received;
   gSnapshot.rowCount = rows;
+  gSnapshot.partial = partial;
+  if (totalHint > 0) gSnapshot.totalHint = totalHint;
   gSnapshot.error = error;
   gSnapshot.updatedMs = millis();
 }
@@ -65,6 +70,79 @@ bool cancelled() { return gCancel.load(std::memory_order_acquire); }
 
 std::string appRoot(const std::string& appId) {
   return appId.empty() ? std::string() : std::string("/apps_data/") + appId;
+}
+
+// Read totalChapterNum from shelf_rows.tsv field 3 (Legado progressive metadata).
+size_t readShelfTotalHint(const std::string& appId, const std::string& bookId) {
+  if (appId.empty() || bookId.empty()) return 0;
+  const std::string path = appRoot(appId) + "/provider/shelf_rows.tsv";
+  FsFile f;
+  if (!SdMan.openFileForRead("NP-TOC-HINT", path.c_str(), f)) return 0;
+  std::string line;
+  char buf[96];
+  while (f.available()) {
+    const int n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf) - 1);
+    if (n <= 0) break;
+    buf[n] = 0;
+    for (int i = 0; i < n; ++i) {
+      if (buf[i] == '\n') {
+        if (line.rfind(bookId, 0) == 0 && line.size() > bookId.size() && line[bookId.size()] == '\t') {
+          // id \t name \t author \t totalChapterNum
+          size_t t = 0;
+          int field = 0;
+          size_t start = 0;
+          for (; t <= line.size(); ++t) {
+            if (t == line.size() || line[t] == '\t') {
+              if (field == 3) {
+                f.close();
+                unsigned long v = 0;
+                for (size_t k = start; k < t; ++k) {
+                  if (line[k] < '0' || line[k] > '9') {
+                    v = 0;
+                    break;
+                  }
+                  v = v * 10u + static_cast<unsigned>(line[k] - '0');
+                }
+                return static_cast<size_t>(v);
+              }
+              ++field;
+              start = t + 1;
+            }
+          }
+        }
+        line.clear();
+      } else {
+        line.push_back(buf[i]);
+      }
+    }
+  }
+  f.close();
+  return 0;
+}
+
+// Write placeholder TSV via AtomicRowsSink-compatible temp commit.
+bool writePlaceholderFile(const std::string& absPath, size_t total) {
+  const auto policy = M4ProgressiveCatalog::defaultPolicy();
+  const std::string body = M4ProgressiveCatalog::buildPlaceholderBody(total, policy);
+  if (body.empty()) return false;
+  if (!M4NativeProviderIo::ensureParentDirs(absPath)) return false;
+  const std::string tmp = absPath + ".tmp";
+  if (SdMan.exists(tmp.c_str())) SdMan.remove(tmp.c_str());
+  FsFile f;
+  if (!SdMan.openFileForWrite("NP-TOC-PH", tmp.c_str(), f)) return false;
+  size_t off = 0;
+  while (off < body.size()) {
+    const int n = f.write(reinterpret_cast<const uint8_t*>(body.data() + off), body.size() - off);
+    if (n <= 0) {
+      f.close();
+      SdMan.remove(tmp.c_str());
+      return false;
+    }
+    off += static_cast<size_t>(n);
+  }
+  f.sync();
+  f.close();
+  return M4NativeProviderIo::commitTempFile(tmp, absPath, body.size(), true);
 }
 
 std::string tocRelPath(const std::string& bookId) {
@@ -80,6 +158,68 @@ std::string boundedTitle(std::string title, const std::string& fallback) {
   return title;
 }
 
+// Growable PSRAM buffer for catalog FileRows TSV. When free SPIRAM is
+// available, Legado parses entirely off the SD bus, then flushes once in large
+// sequential writes — much more resilient than per-row FatFS writes racing
+// e-ink SPI traffic.
+class PsramRowsSink final : public M4xJsonStream::Sink {
+ public:
+  ~PsramRowsSink() override { clear(); }
+
+  // Soft cap for FileRows TSV in PSRAM. Must stay at least as large as the
+  // largest Legado catalog we accept (JSON is bigger than TSV, but long
+  // titles still need headroom). Aligned with request maxBytes below.
+  static constexpr size_t kMaxBytes = 4u * 1024u * 1024u;
+
+  bool reserve(size_t hint) {
+    clear();
+    const size_t initial = std::max<size_t>(8u * 1024u, std::min(hint, kMaxBytes));
+    buf_ = static_cast<uint8_t*>(M4Psram::mallocPrefer(initial));
+    if (!buf_) return false;
+    cap_ = initial;
+    size_ = 0;
+    return true;
+  }
+
+  bool write(const uint8_t* data, size_t len) override {
+    if (!data) return false;
+    if (len == 0) return true;
+    if (!buf_ && !reserve(std::max(len, size_t{8u * 1024u}))) return false;
+    if (len > kMaxBytes || size_ > kMaxBytes - len) return false;
+    if (size_ + len > cap_) {
+      size_t next = cap_ ? cap_ * 2u : 8u * 1024u;
+      while (next < size_ + len && next < kMaxBytes) next *= 2u;
+      next = std::min(next, kMaxBytes);
+      if (next < size_ + len) return false;
+      auto* nb = static_cast<uint8_t*>(M4Psram::mallocPrefer(next));
+      if (!nb) return false;
+      if (size_) std::memcpy(nb, buf_, size_);
+      M4Psram::freePrefer(buf_);
+      buf_ = nb;
+      cap_ = next;
+    }
+    std::memcpy(buf_ + size_, data, len);
+    size_ += len;
+    return true;
+  }
+
+  const uint8_t* data() const { return buf_; }
+  size_t size() const { return size_; }
+  bool empty() const { return size_ == 0; }
+
+  void clear() {
+    M4Psram::freePrefer(buf_);
+    buf_ = nullptr;
+    size_ = 0;
+    cap_ = 0;
+  }
+
+ private:
+  uint8_t* buf_ = nullptr;
+  size_t size_ = 0;
+  size_t cap_ = 0;
+};
+
 class AtomicRowsSink final : public M4xJsonStream::Sink {
  public:
   ~AtomicRowsSink() override { close(); }
@@ -89,39 +229,58 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     finalPath_ = finalPath;
     tmpPath_ = finalPath + ".tmp";
     written_ = 0;
+    used_ = 0;
     if (!M4NativeProviderIo::ensureParentDirs(finalPath_)) return false;
     if (SdMan.exists(tmpPath_.c_str())) SdMan.remove(tmpPath_.c_str());
-    open_ = SdMan.openFileForWrite("NP-TOC", tmpPath_.c_str(), f_);
-    return open_;
+    // SD open can fail briefly under SPI contention (e-ink FAST_REFRESH) or a
+    // busy FatFS volume. A few short retries recover most "works on my card"
+    // / "fails on theirs" catalog failures after a successful download.
+    for (int attempt = 0; attempt < 4; ++attempt) {
+      if (SdMan.openFileForWrite("NP-TOC", tmpPath_.c_str(), f_)) {
+        open_ = true;
+        return true;
+      }
+      delay(30 + attempt * 40);
+    }
+    open_ = false;
+    return false;
   }
 
   bool write(const uint8_t* data, size_t len) override {
     if (!open_ || !data) return false;
-    // FatFS can return short writes under SPI bus contention (e-ink refresh
-    // during progress paints). Retry the remainder instead of aborting the
-    // whole catalog as sink_failed after a few dozen rows.
+    if (len == 0) return true;
+    // Coalesce tiny TSV rows (one chapter per emit) into larger SPI bursts.
+    // Thousands of single-line FatFS writes are far more likely to collide
+    // with the shared display SPI bus than a few KB flushes.
     size_t off = 0;
     while (off < len) {
-      const int n = f_.write(data + off, len - off);
-      if (n <= 0) return false;
-      off += static_cast<size_t>(n);
+      const size_t take = std::min(len - off, kBufferBytes - used_);
+      std::memcpy(buf_ + used_, data + off, take);
+      used_ += take;
+      off += take;
+      if (used_ == kBufferBytes && !flushBuffer()) return false;
     }
     written_ += len;
     return true;
   }
 
   void close() {
-    if (open_) {
-      f_.sync();
-      f_.close();
-      open_ = false;
-    }
+    if (!open_) return;
+    (void)flushBuffer();
+    f_.sync();
+    f_.close();
+    open_ = false;
+    used_ = 0;
   }
 
   bool commit() {
     close();
-    return written_ > 0 && !tmpPath_.empty() &&
-           M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true);
+    if (written_ == 0 || tmpPath_.empty()) return false;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      if (M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true)) return true;
+      delay(40 + attempt * 60);
+    }
+    return false;
   }
 
   void discard() {
@@ -130,9 +289,34 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
   }
 
  private:
+  static constexpr size_t kBufferBytes = 8u * 1024u;
+
+  bool flushBuffer() {
+    if (!open_ || used_ == 0) return open_;
+    // FatFS can return short writes or transient -1 under SPI bus contention.
+    // Retry the remainder (and full failures with a brief backoff) instead of
+    // aborting the whole catalog as sink_failed after a few dozen rows.
+    size_t off = 0;
+    int hardFails = 0;
+    while (off < used_) {
+      const int n = f_.write(buf_ + off, used_ - off);
+      if (n > 0) {
+        off += static_cast<size_t>(n);
+        hardFails = 0;
+        continue;
+      }
+      if (++hardFails > 6) return false;
+      delay(8 * hardFails);
+    }
+    used_ = 0;
+    return true;
+  }
+
   FsFile f_;
   std::string finalPath_;
   std::string tmpPath_;
+  uint8_t buf_[kBufferBytes]{};
+  size_t used_ = 0;
   size_t written_ = 0;
   bool open_ = false;
 };
@@ -182,8 +366,10 @@ CatalogSpec makeSpec(const Snapshot& job) {
     }
     s.request.url = M4LegadoBridge::baseUrl() + "/getChapterList?url=" + urlEncode(locator);
     s.request.headers = {{"User-Agent", "Mozilla/5.0 Murphy-M4 NativeProvider/1"}};
-    // Real shelves are 200–1500 chapters (~100–500 KB JSON). Cap at 1.5 MB.
-    s.request.maxBytes = 1536u * 1024u;
+    // Long web novels (2k–10k chapters) often ship 1–3 MB JSON with full
+    // title/url fields. 1.5 MB was too tight and surfaced as response_too_large
+    // ("目录数据过大"). Match other providers: 4 MB PSRAM-backed body.
+    s.request.maxBytes = 4u * 1024u * 1024u;
     // Use chapter index as the FileRows uid: Legado chapter `url` often contains
     // '/' (web paths) which fails idOk(); content fetch already uses index0 via
     // getBookContent?url=&index=. index is a plain decimal string, M4-safe.
@@ -230,14 +416,14 @@ CatalogSpec makeSpec(const Snapshot& job) {
   return s;
 }
 
-bool registerBook(const Snapshot& job, const CatalogSpec& spec, size_t rowCount) {
+bool registerBook(const Snapshot& job, const CatalogSpec& spec, size_t rowCount, int currentIndex0 = 0) {
   if (rowCount == 0 || rowCount > M4ContentProvider::kMaxCatalogChapters) return false;
   M4ContentProvider::BookSpec book;
   book.providerId = job.providerId;
   book.appId = job.appId;
   book.bookId = job.bookId;
   book.title = boundedTitle(job.title, job.bookId);
-  book.currentIndex0 = 0;
+  book.currentIndex0 = currentIndex0;
   book.catalog.kind = M4ContentProvider::ChapterCatalogKind::FileRows;
   book.catalog.fileRelPath = tocRelPath(job.bookId);
   book.catalog.chapterCount = rowCount;
@@ -245,6 +431,218 @@ bool registerBook(const Snapshot& job, const CatalogSpec& spec, size_t rowCount)
   book.catalog.titleField0 = spec.titleField0;
   book.catalog.vipField0 = spec.vipField0;
   return M4NativeProviderManager::registerBook(book);
+}
+
+// Commit a PSRAM TSV body (or fail). Releases PSRAM before returning.
+bool commitPsramBody(const std::string& finalPath, PsramRowsSink& mem) {
+  if (mem.empty()) return false;
+  AtomicRowsSink file;
+  if (!file.open(finalPath)) {
+    mem.clear();
+    return false;
+  }
+  if (!file.write(mem.data(), mem.size())) {
+    file.discard();
+    mem.clear();
+    return false;
+  }
+  // Drop PSRAM before FatFS rename so peak RAM stays lower.
+  const size_t bytes = mem.size();
+  mem.clear();
+  if (!file.commit()) {
+    file.discard();
+    Serial.printf("[NativeCatalog] psram→SD commit failed size=%u\n",
+                  static_cast<unsigned>(bytes));
+    return false;
+  }
+  Serial.printf("[NativeCatalog] psram→SD ok size=%u\n", static_cast<unsigned>(bytes));
+  return true;
+}
+
+// Full catalog download: prefer PSRAM TSV assembly (no SD during parse), fall
+// back to buffered AtomicRowsSink if PSRAM cannot reserve.
+// On success: *outRows / *outBytes filled. On failure returns false (caller
+// decides whether to keep a partial catalog).
+bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
+                         const std::string& finalPath, size_t totalHint,
+                         bool keepPartialOnFail, size_t* outRows, size_t* outBytes) {
+  publish(Phase::Receiving, 0, 0, {}, keepPartialOnFail, totalHint);
+
+  // --- Prefer PSRAM path ---
+  PsramRowsSink mem;
+  if (mem.reserve(256u * 1024u)) {
+    M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, mem, spec.maxRows);
+    RecordExtractorSink jsonSink(rows);
+    M4NativeProviderHttp::Result net;
+    {
+      M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
+      net = M4NativeProviderHttp::requestToSink(
+          spec.request, jsonSink,
+          [&](size_t bytes) {
+            publish(Phase::Receiving, bytes, rows.recordCount(), {}, keepPartialOnFail, totalHint);
+          },
+          [] { return cancelled(); });
+    }
+    const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0 && !mem.empty();
+    if (!parsed) {
+      mem.clear();
+      if (outBytes) *outBytes = net.bytes;
+      if (outRows) *outRows = rows.recordCount();
+      Serial.printf("[NativeCatalog] full psram parse failed err=%s keep_partial=%d\n",
+                    net.error.empty() ? M4xJsonStream::errorString(rows.error())
+                                      : net.error.c_str(),
+                    keepPartialOnFail ? 1 : 0);
+      return false;
+    }
+    const size_t rowCount = rows.recordCount();
+    if (!commitPsramBody(finalPath, mem)) {
+      if (outBytes) *outBytes = net.bytes;
+      if (outRows) *outRows = rowCount;
+      return false;
+    }
+    if (outBytes) *outBytes = net.bytes;
+    if (outRows) *outRows = rowCount;
+    return true;
+  }
+
+  // --- Fallback: direct buffered SD writes ---
+  Serial.printf("[NativeCatalog] psram unavailable → SD stream fallback\n");
+  AtomicRowsSink file;
+  if (!file.open(finalPath)) {
+    if (!keepPartialOnFail) publish(Phase::Error, 0, 0, "sd_open_failed", false, totalHint);
+    return false;
+  }
+  M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, file, spec.maxRows);
+  RecordExtractorSink jsonSink(rows);
+  M4NativeProviderHttp::Result net;
+  {
+    M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
+    net = M4NativeProviderHttp::requestToSink(
+        spec.request, jsonSink,
+        [&](size_t bytes) {
+          publish(Phase::Receiving, bytes, rows.recordCount(), {}, keepPartialOnFail, totalHint);
+        },
+        [] { return cancelled(); });
+  }
+  const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0;
+  if (!parsed) {
+    file.discard();
+    if (outBytes) *outBytes = net.bytes;
+    if (outRows) *outRows = rows.recordCount();
+    return false;
+  }
+  if (!file.commit()) {
+    file.discard();
+    if (outBytes) *outBytes = net.bytes;
+    if (outRows) *outRows = rows.recordCount();
+    return false;
+  }
+  if (outBytes) *outBytes = net.bytes;
+  if (outRows) *outRows = rows.recordCount();
+  return true;
+}
+
+// Shared progressive stream: first window → Ready(partial), then full refill.
+// Used by every native provider so plugins share one open-speed path.
+bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
+                              const std::string& finalPath, size_t totalHint) {
+  const auto policy = M4ProgressiveCatalog::defaultPolicy();
+  AtomicRowsSink file;
+  if (!file.open(finalPath)) {
+    publish(Phase::Error, 0, 0, "sd_open_failed", false, totalHint);
+    return false;
+  }
+
+  M4ProgressiveCatalog::FirstWindowSink window(file, policy.firstWindow);
+  M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, window, spec.maxRows);
+  RecordExtractorSink jsonSink(rows);
+
+  publish(Phase::Receiving, 0, 0, {}, false, totalHint);
+  M4NativeProviderHttp::Result net;
+  {
+    M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
+    net = M4NativeProviderHttp::requestToSink(
+        spec.request, jsonSink,
+        [&](size_t bytes) { publish(Phase::Receiving, bytes, window.count(), {}, false, totalHint); },
+        M4ProgressiveCatalog::windowCancel(window, [] { return cancelled(); }));
+  }
+
+  // First window filled → open immediately (partial). HTTP was cancelled early.
+  // Do NOT overwrite these real titles with placeholders — placeholders are only
+  // for the instant-open path when totalHint is known before any stream.
+  if (window.windowReady() && window.count() > 0) {
+    if (!file.commit()) {
+      file.discard();
+      publish(Phase::Error, net.bytes, window.count(), "catalog_commit_failed", false, totalHint);
+      return false;
+    }
+    const size_t partialRows = window.count();
+    publish(Phase::Registering, net.bytes, partialRows, {}, true, totalHint);
+    if (!registerBook(job, spec, partialRows, job.currentIndex0)) {
+      publish(Phase::Error, net.bytes, partialRows, "catalog_register_failed", false, totalHint);
+      return false;
+    }
+    Serial.printf("[NativeCatalog] progressive first-window ready rows=%u hint=%u provider=%s\n",
+                  static_cast<unsigned>(window.count()), static_cast<unsigned>(totalHint),
+                  job.providerId.c_str());
+    publish(Phase::Ready, net.bytes, partialRows, {}, true, totalHint);
+
+    // Background full refill (same task): PSRAM TSV → bulk SD when possible.
+    if (cancelled()) return true;
+    size_t fullRows = 0;
+    size_t fullBytes = 0;
+    if (!downloadFullCatalog(job, spec, finalPath, totalHint, /*keepPartialOnFail=*/true,
+                             &fullRows, &fullBytes)) {
+      Serial.printf("[NativeCatalog] progressive full refill failed keep partial rows=%u\n",
+                    static_cast<unsigned>(partialRows));
+      return true;
+    }
+    (void)registerBook(job, spec, fullRows, job.currentIndex0);
+    publish(Phase::Ready, fullBytes, fullRows, {}, false, fullRows);
+    Serial.printf("[NativeCatalog] progressive full ready rows=%u provider=%s\n",
+                  static_cast<unsigned>(fullRows), job.providerId.c_str());
+    return true;
+  }
+
+  // Stream finished without hitting the window (small catalog).
+  const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0;
+  const size_t rowCount = rows.recordCount();
+  if (!parsed) {
+    file.discard();
+    std::string error;
+    if (!net.ok) {
+      if (net.error == "sink_failed" && rows.error() != M4xJsonStream::Error::None) {
+        error = M4xJsonStream::errorString(rows.error());
+      } else if (net.error == "cancelled" || cancelled()) {
+        error = "cancelled";
+      } else {
+        error = net.error.empty() ? "catalog_http" : net.error;
+      }
+    } else if (rowCount == 0) {
+      error = "catalog_empty";
+    } else {
+      error = M4xJsonStream::errorString(rows.error());
+    }
+    if (job.providerId == "weread" &&
+        (error == "http_401" || error == "http_403" || error == "login_required")) {
+      publish(Phase::AuthRequired, net.bytes, 0, error);
+    } else {
+      publish(Phase::Error, net.bytes, rowCount, cancelled() ? "cancelled" : error);
+    }
+    return false;
+  }
+  if (!file.commit()) {
+    file.discard();
+    publish(Phase::Error, net.bytes, rowCount, "catalog_commit_failed");
+    return false;
+  }
+  publish(Phase::Registering, net.bytes, rowCount);
+  if (!registerBook(job, spec, rowCount, job.currentIndex0)) {
+    publish(Phase::Error, net.bytes, rowCount, "catalog_register_failed");
+    return false;
+  }
+  publish(Phase::Ready, net.bytes, rowCount, {}, false, rowCount);
+  return true;
 }
 
 void taskMain(void*) {
@@ -263,120 +661,40 @@ void taskMain(void*) {
     const std::string finalPath = appRoot(job.appId) + "/" + tocRelPath(job.bookId);
     publish(Phase::Connecting);
 
-    // Legado catalogs are large (often 100–500 KB JSON, 600–1500 rows). Streaming
-    // HTTP → JSON → SD in one shot races the e-ink progress repaint on the shared
-    // SPI bus and aborts as sink_failed after a handful of rows. Download the
-    // bounded body into PSRAM first, then parse/write SD without network callbacks.
-    const bool legadoBuffered = job.providerId == "legado";
-    std::string legadoBody;
-    M4NativeProviderHttp::Result net;
-    size_t rowCount = 0;
-    std::string parseError;
-
-    if (legadoBuffered) {
-      M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
-      if (!M4NativeProviderHttp::requestSmall(spec.request, legadoBody, net, spec.request.maxBytes,
-                                             [] { return cancelled(); })) {
-        publish(Phase::Error, net.bytes, 0,
-                cancelled() ? "cancelled" : (net.error.empty() ? "catalog_http" : net.error));
-        gBusy.store(false, std::memory_order_release);
-        {
-          std::lock_guard<std::mutex> lock(gMu);
-          gTask = nullptr;
-        }
-        M4Psram::deleteTask(nullptr);
-        return;
-      }
-      publish(Phase::Receiving, net.bytes, 0);
+    // Shared progressive path (all plugins). Strategy from M4ProgressiveCatalog:
+    //   PlaceholderThenFull — known total (Legado totalChapterNum) → skeleton now
+    //   WindowThenFull      — stream first window, Ready, full refill
+    size_t totalHint = 0;
+    if (job.providerId == "legado") {
+      totalHint = readShelfTotalHint(job.appId, job.bookId);
     }
+    const auto strategy = M4ProgressiveCatalog::chooseStrategy(
+        totalHint, M4ProgressiveCatalog::defaultPolicy().firstWindow);
 
-    AtomicRowsSink file;
-    if (!file.open(finalPath)) {
-      publish(Phase::Error, net.bytes, 0, "sd_open_failed");
-    } else if (legadoBuffered) {
-      M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, file, spec.maxRows);
-      publish(Phase::Receiving, net.bytes, 0);
-      constexpr size_t kChunk = 2048;
-      bool fed = true;
-      for (size_t i = 0; i < legadoBody.size() && fed; i += kChunk) {
-        if (cancelled()) {
-          fed = false;
-          parseError = "cancelled";
-          break;
-        }
-        const size_t n = std::min(kChunk, legadoBody.size() - i);
-        fed = rows.feed(reinterpret_cast<const uint8_t*>(legadoBody.data() + i), n);
-        if ((i / kChunk) % 16u == 0u) {
-          publish(Phase::Receiving, net.bytes, rows.recordCount());
-        }
-      }
-      const bool parsed = fed && rows.finish() && rows.recordCount() > 0;
-      rowCount = rows.recordCount();
-      if (!parsed) {
-        file.discard();
-        if (parseError.empty()) {
-          parseError = !fed ? (rows.error() == M4xJsonStream::Error::None
-                                   ? "sink_failed"
-                                   : M4xJsonStream::errorString(rows.error()))
-                            : (rowCount == 0 ? "catalog_empty"
-                                             : M4xJsonStream::errorString(rows.error()));
-        }
-        publish(Phase::Error, net.bytes, rowCount, parseError);
-      } else if (!file.commit()) {
-        file.discard();
-        publish(Phase::Error, net.bytes, rowCount, "catalog_commit_failed");
-      } else {
-        publish(Phase::Registering, net.bytes, rowCount);
-        if (!registerBook(job, spec, rowCount)) {
-          publish(Phase::Error, net.bytes, rowCount, "catalog_register_failed");
+    if (strategy == M4ProgressiveCatalog::OpenStrategy::PlaceholderThenFull) {
+      if (writePlaceholderFile(finalPath, totalHint) &&
+          registerBook(job, spec, totalHint, job.currentIndex0)) {
+        Serial.printf("[NativeCatalog] placeholder ready count=%u book=%s\n",
+                      static_cast<unsigned>(totalHint), job.bookId.c_str());
+        publish(Phase::Ready, 0, totalHint, {}, true, totalHint);
+        // Full stream (PSRAM when available) replaces placeholders with real titles.
+        size_t fullRows = 0;
+        size_t fullBytes = 0;
+        if (downloadFullCatalog(job, spec, finalPath, totalHint, /*keepPartialOnFail=*/true,
+                                &fullRows, &fullBytes)) {
+          (void)registerBook(job, spec, fullRows, job.currentIndex0);
+          publish(Phase::Ready, fullBytes, fullRows, {}, false, fullRows);
+          Serial.printf("[NativeCatalog] placeholder→full ready rows=%u\n",
+                        static_cast<unsigned>(fullRows));
         } else {
-          publish(Phase::Ready, net.bytes, rowCount);
+          Serial.printf("[NativeCatalog] full refill failed, keep placeholders\n");
         }
+      } else {
+        // Placeholder failed — fall through to progressive stream.
+        (void)streamCatalogProgressive(job, spec, finalPath, totalHint);
       }
     } else {
-      M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, file, spec.maxRows);
-      RecordExtractorSink jsonSink(rows);
-      M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
-      net = M4NativeProviderHttp::requestToSink(
-          spec.request, jsonSink,
-          [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); },
-          [] { return cancelled(); });
-      const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0;
-      rowCount = rows.recordCount();
-      if (!parsed) {
-        file.discard();
-        // Prefer the JSON-stream error when the transport only saw sink_failed —
-        // feed() returns false for TokenTooLarge/Syntax too, which used to look
-        // like an SD write failure on device ("目录写入 SD 卡失败").
-        std::string error;
-        if (!net.ok) {
-          if (net.error == "sink_failed" && rows.error() != M4xJsonStream::Error::None) {
-            error = M4xJsonStream::errorString(rows.error());
-          } else {
-            error = net.error.empty() ? "catalog_http" : net.error;
-          }
-        } else if (rowCount == 0) {
-          error = "catalog_empty";
-        } else {
-          error = M4xJsonStream::errorString(rows.error());
-        }
-        if (job.providerId == "weread" &&
-            (error == "http_401" || error == "http_403" || error == "login_required")) {
-          publish(Phase::AuthRequired, net.bytes, 0, error);
-        } else {
-          publish(Phase::Error, net.bytes, rowCount, cancelled() ? "cancelled" : error);
-        }
-      } else if (!file.commit()) {
-        file.discard();
-        publish(Phase::Error, net.bytes, rowCount, "catalog_commit_failed");
-      } else {
-        publish(Phase::Registering, net.bytes, rowCount);
-        if (!registerBook(job, spec, rowCount)) {
-          publish(Phase::Error, net.bytes, rowCount, "catalog_register_failed");
-        } else {
-          publish(Phase::Ready, net.bytes, rowCount);
-        }
-      }
+      (void)streamCatalogProgressive(job, spec, finalPath, totalHint);
     }
   }
 
@@ -391,7 +709,7 @@ void taskMain(void*) {
 }  // namespace
 
 bool start(const std::string& providerId, const std::string& bookId,
-           const std::string& appId, const std::string& title) {
+           const std::string& appId, const std::string& title, int focusIndex0) {
   if ((providerId != "fanqie" && providerId != "jjwxc" && providerId != "weread" &&
        providerId != "legado") ||
       appId.empty() || !M4ContentProvider::idOk(bookId.c_str(), M4ContentProvider::kMaxBookIdLen)) {
@@ -408,6 +726,9 @@ bool start(const std::string& providerId, const std::string& bookId,
     gSnapshot.appId = appId;
     gSnapshot.bookId = bookId;
     gSnapshot.title = title;
+    gSnapshot.partial = false;
+    gSnapshot.totalHint = 0;
+    gSnapshot.currentIndex0 = focusIndex0 > 0 ? focusIndex0 : 0;
     gSnapshot.startedMs = millis();
     gSnapshot.updatedMs = gSnapshot.startedMs;
   }

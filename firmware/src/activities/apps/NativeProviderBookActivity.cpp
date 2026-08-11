@@ -13,6 +13,7 @@
 #include "apps/providers/M4NativeProviderManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/M4ErrorScreen.h"
 #include "util/M4PluginReaderBridge.h"
 #include "util/M4PluginTocList.h"
 #include "util/M4UiText.h"
@@ -50,7 +51,9 @@ std::string chapterErrorText(const std::string& code) {
   }
   if (code == "shard_oom") return "正文处理内存不足，请返回后重试";
   if (code == "shard_io") return "正文分片读写失败";
-  if (code == "sink_failed" || code == "sd_open_failed") return "写入 SD 卡失败";
+  if (code == "sink_failed" || code == "sink_write_failed" || code == "sd_open_failed") {
+    return "写入 SD 卡失败（请检查存储空间后重试）";
+  }
   if (code == "cache_commit_failed") return "缓存提交失败，已清理并重试";
   if (code == "catalog_resolve") return "目录章节信息无效";
   if (code == "provider_not_supported") return "内容源不支持此章节";
@@ -64,14 +67,24 @@ std::string catalogErrorText(const std::string& code) {
   if (code == "http_404") return "未找到书籍目录";
   if (code == "http_429") return "请求过于频繁";
   if (code == "catalog_empty") return "目录为空";
-  if (code == "catalog_commit_failed" || code == "sd_open_failed") return "目录写入 SD 卡失败";
-  if (code == "sink_failed") return "目录写入中断（已重试策略；请再试）";
+  // Open/commit failures and mid-write FatFS/SPI contention all present as
+  // "can't persist the TOC". Wording steers users toward free space + retry.
+  if (code == "catalog_commit_failed" || code == "sd_open_failed") {
+    return "目录写入 SD 卡失败（请检查存储空间后重试）";
+  }
+  if (code == "sink_failed" || code == "sink_write_failed") {
+    return "目录写入中断（存储繁忙，请再试）";
+  }
   if (code == "catalog_register_failed") return "目录校验失败";
   if (code == "json_path_not_found") return "目录接口格式已变化";
   if (code == "json_token_too_large") return "目录条目过大";
+  if (code == "json_too_many_records") return "目录章节过多";
   if (code == "json_syntax" || code == "json_truncated") return "目录数据解析失败";
   if (code == "book_locator_missing") return "书源定位丢失，请刷新书架";
   if (code == "legado_endpoint_missing") return "未找到开源阅读服务，请先用手机打开本机传书页";
+  if (code == "response_too_large") {
+    return "目录数据过大（章节特别多，请更新固件或换较短书试）";
+  }
   if (code == "cancelled") return "目录加载已取消";
   return code.empty() ? "目录加载失败" : code;
 }
@@ -221,7 +234,7 @@ bool NativeProviderBookActivity::startCatalogBootstrap(PendingCatalogAction acti
     error_ = "另一本书的目录正在加载";
     return false;
   }
-  if (!M4NativeProviderCatalog::start(providerId_, bookId_, appId_, title_)) {
+  if (!M4NativeProviderCatalog::start(providerId_, bookId_, appId_, title_, currentIndex_)) {
     error_ = "目录任务启动失败";
     return false;
   }
@@ -604,10 +617,49 @@ void NativeProviderBookActivity::renderCatalogLoading(bool force) {
   load.error = failureCode;
   const std::string phase = M4NativeLoadUi::title(load);
   const std::string detail = M4NativeLoadUi::detail(load);
-  const std::string sig = phase + "|" + detail + "|" + failureCode + (authRequired ? "|auth" : "");
-  if (!force && sig == lastCatalogSignature_ && now - lastCatalogPaintMs_ < 1000) return;
+  // Throttle key intentionally omits elapsedSeconds: the loading screen used to
+  // FAST_REFRESH every second purely because the clock advanced, racing the SD
+  // SPI bus while the catalog task was writing toc_rows (common root of
+  // "目录写入 SD 卡失败" after a successful multi-hundred-KB download).
+  const int phaseInt = mine ? static_cast<int>(c.phase) : -1;
+  const std::string sig = std::to_string(phaseInt) + "|" + std::to_string(load.receivedBytes) + "|" +
+                          std::to_string(load.rows) + "|" + failureCode +
+                          (authRequired ? "|auth" : "");
+  // Error/Auth paints immediately; dense mid-phase progress is coalesced so the
+  // e-ink panel is not FAST_REFRESHed every second while SD is busy.
+  const bool urgent = authRequired || (mine && c.phase == M4NativeProviderCatalog::Phase::Error);
+  if (!force) {
+    if (sig == lastCatalogSignature_) return;
+    if (!urgent && now - lastCatalogPaintMs_ < 2500u) {
+      const size_t bar = lastCatalogSignature_.find('|');
+      const size_t bar2 = sig.find('|');
+      if (bar != std::string::npos && bar2 != std::string::npos &&
+          lastCatalogSignature_.compare(0, bar, sig, 0, bar2) == 0) {
+        return;
+      }
+    }
+  }
   lastCatalogSignature_ = sig;
   lastCatalogPaintMs_ = now;
+
+  const bool failed = mine && c.phase == M4NativeProviderCatalog::Phase::Error;
+  const char* primary = authRequired ? "登录" : (failed ? "重试" : "");
+  const auto labels = mappedInput.mapLabels("« 返回", primary, "", "");
+
+  // Full diagnostic surface on failure/auth so a phone photo is enough to triage.
+  if (failed || authRequired || !failureCode.empty()) {
+    auto snap = M4ErrorScreen::catalogFail(
+        title_.empty() ? "在线阅读" : title_,
+        (authRequired ? std::string("需要登录：") : std::string("原因：")) +
+            catalogErrorText(failureCode),
+        failureCode, providerId_, bookId_, appId_, load.receivedBytes, load.rows,
+        load.elapsedSeconds, labels.btn1, labels.btn2);
+    if (authRequired) snap.title = "需要登录";
+    M4ErrorScreen::addKV(snap.diag, "phase: ", phase);
+    M4ErrorScreen::addKV(snap.diag, "progress: ", detail);
+    M4ErrorScreen::paint(renderer, snap, true);
+    return;
+  }
 
   renderer.clearScreen();
   const auto metrics = UITheme::getInstance().getMetrics();
@@ -615,13 +667,6 @@ void NativeProviderBookActivity::renderCatalogLoading(bool force) {
                  title_.empty() ? "在线阅读" : title_.c_str());
   M4UiText::drawCentered(renderer, UI_12_FONT_ID, 185, phase.c_str(), true, EpdFontFamily::BOLD);
   M4UiText::drawCentered(renderer, UI_10_FONT_ID, 245, detail.c_str());
-  if (!failureCode.empty()) {
-    const std::string reason = std::string("原因：") + catalogErrorText(failureCode);
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 305, reason.c_str());
-  }
-  const bool failed = mine && c.phase == M4NativeProviderCatalog::Phase::Error;
-  const char* primary = authRequired ? "登录" : (failed ? "重试" : "");
-  const auto labels = mappedInput.mapLabels("« 返回", primary, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
@@ -654,6 +699,25 @@ void NativeProviderBookActivity::renderLoading(bool force) {
   lastLoadingSignature_ = sig;
   lastLoadingPaintMs_ = now;
 
+  const bool chapterFailed =
+      !failureCode.empty() || st.state == M4ContentProvider::ChapterReady::Error;
+  const char* primary = authRequired ? "登录" : (chapterFailed ? "重试" : "");
+  const auto labels = mappedInput.mapLabels("« 返回", primary, "", "");
+
+  if (chapterFailed || authRequired) {
+    auto snap = M4ErrorScreen::chapterFail(
+        title_.empty() ? "在线阅读" : title_, loadingTitle_,
+        (authRequired ? std::string("需要登录：") : std::string("失败原因：")) +
+            chapterErrorText(failureCode),
+        failureCode, providerId_, bookId_, loadingIndex_, load.receivedBytes, load.writtenBytes,
+        load.percent, load.elapsedSeconds, labels.btn1, labels.btn2);
+    if (authRequired) snap.title = "需要登录";
+    M4ErrorScreen::addKV(snap.diag, "phase: ", phase);
+    M4ErrorScreen::addKV(snap.diag, "progress: ", detail);
+    M4ErrorScreen::paint(renderer, snap, true);
+    return;
+  }
+
   renderer.clearScreen();
   const auto metrics = UITheme::getInstance().getMetrics();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
@@ -665,27 +729,25 @@ void NativeProviderBookActivity::renderLoading(bool force) {
                         static_cast<size_t>(std::min(100, load.percent)), 100);
   }
   M4UiText::drawCentered(renderer, UI_10_FONT_ID, 330, detail.c_str());
-  if (!failureCode.empty() || st.state == M4ContentProvider::ChapterReady::Error) {
-    const std::string reason = std::string("失败原因：") + chapterErrorText(failureCode);
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 385, reason.c_str());
-  }
-  const char* primary = authRequired ? "登录" :
-                        (st.state == M4ContentProvider::ChapterReady::Error ? "重试" : "");
-  const auto labels = mappedInput.mapLabels("« 返回", primary, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
 void NativeProviderBookActivity::renderError() {
-  renderer.clearScreen();
-  const auto metrics = UITheme::getInstance().getMetrics();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
-                 title_.empty() ? "在线阅读" : title_.c_str());
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 190, "无法打开", true, EpdFontFamily::BOLD);
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 245, error_.c_str());
   const auto labels = mappedInput.mapLabels("« 返回", "重试", "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  std::vector<std::string> diag;
+  M4ErrorScreen::appendCode(diag, error_);
+  M4ErrorScreen::addKV(diag, "provider: ", providerId_);
+  M4ErrorScreen::addKV(diag, "book: ", bookId_);
+  M4ErrorScreen::addKV(diag, "app: ", appId_);
+  {
+    char b[48];
+    std::snprintf(b, sizeof(b), "state: %d", static_cast<int>(state_));
+    M4ErrorScreen::add(diag, b);
+  }
+  auto snap = M4ErrorScreen::genericFail(title_.empty() ? "在线阅读" : title_, "无法打开", error_, diag,
+                                         labels.btn1, labels.btn2);
+  M4ErrorScreen::paint(renderer, snap, true);
 }
 
 void NativeProviderBookActivity::loop() {
