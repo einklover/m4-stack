@@ -21,6 +21,7 @@ class ProductionRunnerCommandTests(unittest.TestCase):
     def build(self, **overrides):
         args = dict(
             psram_mb=8,
+            gpio_input_default=run_production_bin.MURPHY_IDLE_GPIO_INPUTS,
             efuse_file=None,
             sd_image=None,
             sd_read_only=False,
@@ -44,6 +45,20 @@ class ProductionRunnerCommandTests(unittest.TestCase):
         self.assertNotIn("wdt_disable", joined)
         self.assertNotIn("open_eth", joined)
         self.assertNotIn("M4_QEMU_BUILD", joined)
+
+    def test_murphy_idle_gpio_mask_keeps_active_low_keys_released(self):
+        mask = run_production_bin.MURPHY_IDLE_GPIO_INPUTS
+        self.assertEqual(mask & 0x7, 0x7)
+        self.assertTrue(mask & (1 << 44))
+        cmd = self.build()
+        self.assertIn(
+            "driver=esp32s3.gpio,property=input-default,value=0x100000000007",
+            " ".join(cmd),
+        )
+
+    def test_gpio_mask_must_fit_u64(self):
+        with self.assertRaises(run_production_bin.RunnerError):
+            self.build(gpio_input_default=1 << 64)
 
     def test_efuse_backing_uses_esp32s3_nvram_device(self):
         cmd = self.build(
