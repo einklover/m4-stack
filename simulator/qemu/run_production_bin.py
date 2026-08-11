@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """Run an unmodified Murphy M4 production flash image in ESP32-S3 QEMU.
 
-This is the long-term acceptance path for binary-level Murphy emulation.  It is
+This is the long-term acceptance path for binary-level Murphy emulation. It is
 intentionally different from ``run_murphy_bin.py``:
 
 * input is a complete 16 MiB production/factory flash image;
 * Octal PSRAM is always requested (shipping N16R8 contract);
 * no ``M4_QEMU_BUILD`` firmware profile is assumed;
 * watchdogs stay enabled unless explicitly disabled for diagnosis;
-* an ESP32-S3 QEMU eFuse backing file can be supplied;
+* ESP32-S3 QEMU eFuse and raw SD-card backing files can be supplied;
 * open_eth is opt-in because it is not the ESP32-S3 Wi-Fi peripheral.
 
-Stock Espressif QEMU 9.2.2 is not expected to reach Home yet.  In particular,
-the production Octal-PSRAM path and Murphy board peripherals still need model
-work.  A failure here is therefore useful evidence: this runner must not hide a
-missing hardware model by modifying the guest firmware.
+Espressif QEMU already instantiates a DesignWare SD/MMC controller in the
+ESP32-S3 SoC and attaches an ``if=sd`` drive to its SD bus. Therefore Murphy's
+first SD experiment should use that native path before inventing a second host
+storage shim. Board-level SD_PWR/SD_CD wiring still needs Murphy-specific device
+work for hotplug/power fidelity.
 """
 from __future__ import annotations
 
@@ -47,12 +48,23 @@ def existing_file(value: str | None, label: str) -> Path | None:
     return path
 
 
+def validate_sd_image(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    size = path.stat().st_size
+    if size % 512:
+        raise RunnerError(f"SD image size must be a multiple of 512 bytes, got {size}")
+    return path
+
+
 def build_cmd(
     qemu: str,
     flash: Path,
     *,
     psram_mb: int,
     efuse_file: Path | None,
+    sd_image: Path | None,
+    sd_read_only: bool,
     serial_file: Path | None,
     gdb: bool,
     disable_wdt: bool,
@@ -70,7 +82,7 @@ def build_cmd(
         f"file={flash},if=mtd,format=raw",
         "-global",
         f"driver={GPIO_DRIVER},property=strap_mode,value=0x04",
-        # Shipping Murphy M4 uses Octal/OPI PSRAM.  Do not silently switch this
+        # Shipping Murphy M4 uses Octal/OPI PSRAM. Do not silently switch this
         # acceptance path to Quad PSRAM: an Octal failure belongs in the QEMU
         # board/SoC model, not in a special guest build.
         "-global",
@@ -78,14 +90,22 @@ def build_cmd(
     ]
 
     if efuse_file is not None:
-        # Espressif QEMU expects a joint-format eFuse backing file.  The raw
-        # QEMU invocation mirrors the documented idf.py --efuse-file behavior.
+        # Espressif QEMU expects a joint-format eFuse backing file. The raw
+        # invocation mirrors the documented idf.py --efuse-file behavior.
         cmd += [
             "-drive",
             f"file={efuse_file},if=none,format=raw,id={EFUSE_DRIVE_ID}",
             "-global",
             f"driver={EFUSE_DRIVER},property=drive,value={EFUSE_DRIVE_ID}",
         ]
+
+    if sd_image is not None:
+        # esp32s3.c calls drive_get(IF_SD, 0, 0), creates TYPE_SD_CARD and
+        # realizes it on the SoC's DWCSDMMC SDBus. Use that native controller.
+        drive = f"file={sd_image},if=sd,format=raw"
+        if sd_read_only:
+            drive += ",readonly=on"
+        cmd += ["-drive", drive]
 
     if disable_wdt:
         cmd += [
@@ -94,7 +114,7 @@ def build_cmd(
         ]
 
     if open_eth:
-        # Diagnostic convenience only.  Production ESP32 Wi-Fi APIs do not
+        # Diagnostic convenience only. Production ESP32 Wi-Fi APIs do not
         # become correct merely because QEMU has an open_eth NIC.
         cmd += ["-nic", "user,model=open_eth"]
 
@@ -157,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("flash_image", help="complete 16 MiB production/factory flash image")
     parser.add_argument("--qemu", default=None, help="path to qemu-system-xtensa")
     parser.add_argument("--efuse-file", default=None, help="ESP32-S3 QEMU joint-format eFuse backing file")
+    parser.add_argument("--sd-image", default=None, help="raw SD-card image attached to the native ESP32-S3 SDMMC controller")
+    parser.add_argument("--sd-read-only", action="store_true", help="open --sd-image read-only")
     parser.add_argument("--psram-mb", type=int, default=8, choices=(8, 16, 32))
     parser.add_argument("--seconds", type=float, default=40.0)
     parser.add_argument("--serial-file", default=None, help="guest UART output file")
@@ -191,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"got {flash.stat().st_size}"
             )
         efuse = existing_file(args.efuse_file, "eFuse file")
+        sd_image = validate_sd_image(existing_file(args.sd_image, "SD image"))
         qemu = find_qemu(args.qemu)
     except RunnerError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -210,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         flash,
         psram_mb=args.psram_mb,
         efuse_file=efuse,
+        sd_image=sd_image,
+        sd_read_only=args.sd_read_only,
         serial_file=serial,
         gdb=args.gdb,
         disable_wdt=args.disable_wdt,
