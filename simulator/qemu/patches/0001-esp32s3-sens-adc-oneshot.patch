@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: Murphy M4 emulator <noreply@example.invalid>
+Date: Tue, 11 Aug 2026 18:30:00 +0800
+Subject: [PATCH 1/1] hw/xtensa: model ESP32-S3 SENS ADC oneshot completion
+
+ESP-IDF's ESP32-S3 ADC self-calibration starts an RTC/SENS oneshot conversion
+and polls meas{1,2}_done_sar. The SENS block currently falls through the broad
+ESP32-S3 unimplemented I/O region, whose reads return zero forever. Production
+firmware therefore hangs in a pre-app_main calibration constructor.
+
+Keep a small SENS register shadow and implement the firmware-visible start/done
+handshake for ADC1/ADC2. A rising START produces a deterministic zero raw sample
+and sets DONE; deasserting START clears DONE. Zero is intentional for this
+minimal model: it represents internal-ground calibration and lets IDF's binary
+search terminate without claiming analog ADC accuracy.
+
+The Murphy QEMU build no longer needs to wrap adc_hal_self_calibration once this
+patch is present. Host-configurable analog channel values are a separate board
+model concern.
+---
+ hw/xtensa/esp32s3.c | 63 ++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 58 insertions(+), 5 deletions(-)
+
+diff --git a/hw/xtensa/esp32s3.c b/hw/xtensa/esp32s3.c
+index 0000000000..1111111111 100644
+--- a/hw/xtensa/esp32s3.c
++++ b/hw/xtensa/esp32s3.c
+@@ -96,6 +96,14 @@ static const struct MemmapEntry {
+ #define ESP32S3_IO_WARNING  0
+ 
++/* Minimal RTC/SENS ADC register model used by ESP-IDF oneshot calibration. */
++#define ESP32S3_SENS_REG_SIZE          0x100
++#define ESP32S3_SENS_ADC1_CTRL2_OFF    0x0c
++#define ESP32S3_SENS_ADC2_CTRL2_OFF    0x30
++#define ESP32S3_SENS_ADC_START         BIT(17)
++#define ESP32S3_SENS_ADC_DONE          BIT(16)
++#define ESP32S3_SENS_ADC_DATA_MASK     0x0000ffffu
++
+ typedef struct Esp32s3SocState {
+     /*< private >*/
+     DeviceState parent_obj;
+@@ -134,6 +142,8 @@ typedef struct Esp32s3SocState {
+     DeviceState *eth;
+     SsiPsramState *psram;
+ 
++    uint32_t sens_regs[ESP32S3_SENS_REG_SIZE / sizeof(uint32_t)];
++
+     uint32_t requested_reset;
+ } Esp32s3SocState;
+ 
+@@ -174,6 +184,7 @@ static void esp32s3_soc_reset(DeviceState *dev)
+             device_cold_reset(DEVICE(&s->uart[i]));
+         }
++        memset(s->sens_regs, 0, sizeof(s->sens_regs));
+     }
+     if (s->requested_reset & ESP32S3_SOC_RESET_PROCPU) {
+         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
+@@ -459,22 +470,64 @@ static uint64_t esp32s3_io_read(void *opaque, hwaddr addr, unsigned int size)
+ {
++    Esp32s3SocState *s = ESP32S3_SOC(opaque);
++    const hwaddr phys = ESP32S3_IO_START_ADDR + addr;
++
++    if (size == sizeof(uint32_t) &&
++        phys >= DR_REG_SENS_BASE &&
++        phys < DR_REG_SENS_BASE + ESP32S3_SENS_REG_SIZE) {
++        return s->sens_regs[(phys - DR_REG_SENS_BASE) / sizeof(uint32_t)];
++    }
++
+ #if ESP32S3_IO_WARNING
+     warn_report("[ESP32-S3] Unsupported read to $%08lx, size = %i\n", ESP32S3_IO_START_ADDR + addr, size);
+ #endif
+     return 0;
+ }
+ 
+-
+ static void esp32s3_io_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
+ {
++    Esp32s3SocState *s = ESP32S3_SOC(opaque);
++    const hwaddr phys = ESP32S3_IO_START_ADDR + addr;
++
++    if (size == sizeof(uint32_t) &&
++        phys >= DR_REG_SENS_BASE &&
++        phys < DR_REG_SENS_BASE + ESP32S3_SENS_REG_SIZE) {
++        const unsigned index = (phys - DR_REG_SENS_BASE) / sizeof(uint32_t);
++        const hwaddr off = phys - DR_REG_SENS_BASE;
++        const uint32_t old = s->sens_regs[index];
++        uint32_t next = (uint32_t)value;
++
++        if (off == ESP32S3_SENS_ADC1_CTRL2_OFF ||
++            off == ESP32S3_SENS_ADC2_CTRL2_OFF) {
++            /* DONE/DATA are read-only from the guest's perspective. Preserve
++             * their modeled value across ordinary read-modify-write accesses.
++             */
++            next &= ~(ESP32S3_SENS_ADC_DONE | ESP32S3_SENS_ADC_DATA_MASK);
++            next |= old & (ESP32S3_SENS_ADC_DONE | ESP32S3_SENS_ADC_DATA_MASK);
++
++            if (!(value & ESP32S3_SENS_ADC_START)) {
++                next &= ~ESP32S3_SENS_ADC_DONE;
++            } else if (!(old & ESP32S3_SENS_ADC_START)) {
++                /* Minimal deterministic conversion. Internal-ground
++                 * calibration expects a low result and, most importantly,
++                 * a DONE transition. Analog input modeling is layered later.
++                 */
++                next &= ~ESP32S3_SENS_ADC_DATA_MASK;
++                next |= ESP32S3_SENS_ADC_DONE;
++            }
++        }
++
++        s->sens_regs[index] = next;
++        return;
++    }
++
+ #if ESP32S3_IO_WARNING
+-        warn_report("[ESP32-S3] Unsupported write $%08lx = %08lx\n", ESP32S3_IO_START_ADDR + addr, value);
++    warn_report("[ESP32-S3] Unsupported write $%08lx = %08lx\n", ESP32S3_IO_START_ADDR + addr, value);
+ #endif
+ }
+@@ -598,7 +651,7 @@ static void esp32s3_machine_init(MachineState *machine)
+ 
+ 
+     memory_region_init_io(&ss->iomem, OBJECT(&ss->cpu[0]), &esp32s3_io_ops,
+-                          NULL, "esp32s3.iomem", 0xd1000);
++                          ss, "esp32s3.iomem", 0xd1000);
+     memory_region_add_subregion(sys_mem, ESP32S3_IO_START_ADDR, &ss->iomem);
+ 
+     // qdev_prop_set_chr(DEVICE(ss), "serial0", serial_hd(0));
+-- 
+2.39.5
