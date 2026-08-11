@@ -38,14 +38,15 @@ class QemuPatchsetTests(unittest.TestCase):
         self.assertIn("-        if (byte < tx_bytes) {", text)
         self.assertIn("-        if (byte < rx_bytes) {", text)
 
-    def test_gpio_patch_exposes_pin_lines_and_interrupt_connection(self):
-        self.assertIn("0003-esp32-gpio-digital-io.diff", series_names())
-        text = (PATCH_DIR / "0003-esp32-gpio-digital-io.diff").read_text(encoding="utf-8")
+    def test_gpio_transform_exposes_pin_lines_and_interrupt_connection(self):
+        self.assertIn("0003-esp32-gpio-digital-io.py", series_names())
+        text = (PATCH_DIR / "0003-esp32-gpio-digital-io.py").read_text(encoding="utf-8")
         self.assertIn('"gpio-in", ESP32_GPIO_PIN_COUNT', text)
         self.assertIn('"gpio-out", ESP32_GPIO_PIN_COUNT', text)
-        self.assertIn('DEFINE_PROP_UINT64("input-default"', text)
+        self.assertIn('DEFINE_PROP_UINT64(\"input-default\"', text)
         self.assertIn("ETS_GPIO_INTR_SOURCE", text)
         self.assertIn("GPIO_STATUS_W1TC_OFF", text)
+        self.assertIn("expected exactly one upstream match", text)
 
 
 if __name__ == "__main__":
