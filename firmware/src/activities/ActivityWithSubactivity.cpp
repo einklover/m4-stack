@@ -5,23 +5,44 @@
 #include "util/M4TouchNavigation.h"
 #include "util/M4UiRuntimePolicy.h"
 
+namespace {
+void restoreParentPolicies(ActivityWithSubactivity& activity) {
+  M4TouchNavigation::activateForActivity(activity.showTouchNavigation());
+  M4UiRuntimePolicy::setTextScalePercent(activity.uiTextScalePercent());
+  M4ReaderFrontlightGesture::setEnabled(activity.isReaderBodyActivity());
+  M4FooterTouchPolicy::setMask(activity.touchFooterButtonsMask());
+}
+}  // namespace
+
 void ActivityWithSubactivity::exitActivity() {
+  // Child callbacks run inside subActivity->loop(). Destroying that child here
+  // is a use-after-free as soon as the callback returns. Defer teardown until
+  // pumpSubActivityFrame() regains control.
+  if (pumpingSubActivity_) {
+    pendingExitSub_ = true;
+    pendingSubActivity_.reset();
+    return;
+  }
+
   if (subActivity) {
     subActivity->onExit();
     subActivity.reset();
   }
   pendingExitSub_ = false;
-  // Child onExit() disables global touch chrome, reader side-light gestures,
-  // activity-owned footer touch, and restores the default text scale. Restore
-  // all parent policies so the parent returns exactly as it was.
-  M4TouchNavigation::activateForActivity(showTouchNavigation());
-  M4UiRuntimePolicy::setTextScalePercent(uiTextScalePercent());
-  M4ReaderFrontlightGesture::setEnabled(isReaderBodyActivity());
-  M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+  pendingSubActivity_.reset();
+  restoreParentPolicies(*this);
 }
 
 void ActivityWithSubactivity::enterNewActivity(Activity* activity) {
-  // Replace any existing child safely (caller must not be inside child loop).
+  if (pumpingSubActivity_) {
+    // Replace only after the currently executing child frame returns. Ownership
+    // is transferred immediately so callers do not need a separate pending
+    // object lifetime.
+    pendingExitSub_ = true;
+    pendingSubActivity_.reset(activity);
+    return;
+  }
+
   exitActivity();
   subActivity.reset(activity);
   if (subActivity) subActivity->onEnter();
@@ -29,13 +50,25 @@ void ActivityWithSubactivity::enterNewActivity(Activity* activity) {
 
 bool ActivityWithSubactivity::pumpSubActivityFrame() {
   if (!subActivity) return false;
+
+  pumpingSubActivity_ = true;
   subActivity->loop();
-  if (pendingExitSub_) {
-    pendingExitSub_ = false;
-    exitActivity();
-    return true;
+  pumpingSubActivity_ = false;
+
+  if (!pendingExitSub_) return false;
+
+  pendingExitSub_ = false;
+  if (subActivity) {
+    subActivity->onExit();
+    subActivity.reset();
   }
-  return false;
+  restoreParentPolicies(*this);
+
+  if (pendingSubActivity_) {
+    subActivity = std::move(pendingSubActivity_);
+    subActivity->onEnter();
+  }
+  return true;
 }
 
 void ActivityWithSubactivity::loop() {
@@ -53,4 +86,9 @@ void ActivityWithSubactivity::onExit() {
   if (subActivity) {
     subActivity->onExit();
   }
+  if (pendingSubActivity_) {
+    pendingSubActivity_.reset();
+  }
+  pendingExitSub_ = false;
+  pumpingSubActivity_ = false;
 }
