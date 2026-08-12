@@ -54,8 +54,8 @@ add_executable(m4_sd_image_tests tests/sd_image.cpp)
 target_link_libraries(m4_sd_image_tests PRIVATE m4_board_model)
 add_test(NAME m4_sd_image_tests COMMAND m4_sd_image_tests)
 
-# TtfReader is deliberately Arduino-free. Compile the production parser itself
-# into a host regression target so outline compatibility changes are exercised
+# Runtime font parsers are deliberately Arduino-free. Compile the production
+# sources into host regression targets so compatibility changes are exercised
 # without QEMU, an SD fixture, or distro-specific font files.
 add_executable(m4_ttf_reader_compound_tests
   tests/ttf_reader_compound.cpp
@@ -65,6 +65,15 @@ target_include_directories(m4_ttf_reader_compound_tests PRIVATE
   ../firmware/lib/TtfReader/src
 )
 add_test(NAME m4_ttf_reader_compound_tests COMMAND m4_ttf_reader_compound_tests)
+
+add_executable(m4_cff_reader_tests
+  tests/cff_reader.cpp
+  ../firmware/lib/TtfReader/src/CffReader.cpp
+)
+target_include_directories(m4_cff_reader_tests PRIVATE
+  ../firmware/lib/TtfReader/src
+)
+add_test(NAME m4_cff_reader_tests COMMAND m4_cff_reader_tests)
 
 add_executable(m4_board_contract tools/board_contract.cpp)
 target_link_libraries(m4_board_contract PRIVATE m4_board_model)
