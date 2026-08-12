@@ -6,6 +6,11 @@ that debug operation may auto-start a saved/QEMU STA connection and bypass the
 real NetworkModeSelectionActivity. Each journey boots a fresh SD image, enters
 File transfer from Home with physical key events, selects one production mode,
 then proves the parent activity survives the child callback transition.
+
+Firmware lifecycle logs live on the QEMU serial PTY, not QEMU stderr. Keep one
+m4adb Client open for each complete journey so status/key traffic also drains
+and records the real firmware serial stream. This makes child-activity markers
+observable without OCR or a debug-only navigation shortcut.
 """
 from __future__ import annotations
 
@@ -17,12 +22,15 @@ import shutil
 import signal
 import sys
 import time
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "simulator"))
+sys.path.insert(0, str(ROOT / "firmware" / "scripts"))
 
 import m4sim  # noqa: E402
+from m4adb_lib.client import BridgeError, Client  # noqa: E402
+from m4adb_lib.transport import SerialTransport  # noqa: E402
 
 
 EXPECTED_PARENT = "CrossPointWebServer"
@@ -31,6 +39,7 @@ MODES = (
     ("2-device-to-phone", 1, "after web server start"),
     ("3-calibre-wifi", 2, "Entering activity: CalibreConnect"),
 )
+T = TypeVar("T")
 
 
 def _set_session(root: Path) -> None:
@@ -54,46 +63,60 @@ def _terminate(proc: Any) -> None:
             pass
 
 
-def _json_call(pty: str, args: list[str], *, timeout: float = 12.0,
-               retries: int = 16) -> dict[str, Any]:
-    """Run one m4adb command and tolerate only transient synthetic-input busy."""
-    last = ""
+def _call_busy_retry(fn: Callable[[], T], *, retries: int = 16) -> T:
+    """Retry only the synthetic-input busy response; preserve real failures."""
+    last: BridgeError | None = None
     for attempt in range(1, retries + 1):
-        rc, last = m4sim.m4adb_once(pty, args, timeout=timeout)
-        blob = m4sim._json_blob(last)
-        if rc == 0 and isinstance(blob, dict):
-            return blob
-        if "busy" not in last.lower():
-            break
-        if attempt < retries:
+        try:
+            return fn()
+        except BridgeError as exc:
+            last = exc
+            if exc.key != "busy" or attempt >= retries:
+                raise m4sim.M4SimError(f"m4adb {exc.key}: {exc.message}") from exc
             time.sleep(0.12)
-    raise m4sim.M4SimError(
-        f"m4adb {' '.join(args)} failed after {retries} attempt(s)\n{last[-1600:]}"
-    )
+    raise m4sim.M4SimError(f"m4adb busy after {retries} attempts: {last}")
 
 
-def _status(pty: str) -> dict[str, Any]:
-    return _json_call(pty, ["status"], timeout=10.0, retries=4)
+def _status(client: Client) -> dict[str, Any]:
+    result = _call_busy_retry(client.status, retries=4)
+    if not isinstance(result, dict):
+        raise m4sim.M4SimError(f"unexpected status response: {result!r}")
+    return result
 
 
-def _send_key(pty: str, name: str) -> None:
-    blob = _json_call(pty, ["key", name], timeout=10.0, retries=24)
-    if blob.get("op") != "key":
+def _send_key(client: Client, name: str) -> None:
+    blob = _call_busy_retry(lambda: client.key(name), retries=24)
+    if not isinstance(blob, dict) or blob.get("op") != "key":
         raise m4sim.M4SimError(f"unexpected key response for {name}: {blob}")
 
 
-def _wait_activity(pty: str, proc: Any, qlog: Path, expected: str,
+def _qemu_tail(qlog: Path, chars: int = 3000) -> str:
+    return qlog.read_text(encoding="utf-8", errors="replace")[-chars:] if qlog.is_file() else ""
+
+
+def _serial_text(client: Client) -> str:
+    return "\n".join(client.serial_log)
+
+
+def _save_serial(client: Client | None, path: Path) -> None:
+    if client is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = _serial_text(client)
+    path.write_text(text + ("\n" if text else ""), encoding="utf-8")
+
+
+def _wait_activity(client: Client, proc: Any, qlog: Path, expected: str,
                    *, seconds: float) -> dict[str, Any]:
     deadline = time.monotonic() + seconds
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            tail = qlog.read_text(encoding="utf-8", errors="replace")[-3000:] if qlog.is_file() else ""
             raise m4sim.M4SimError(
-                f"QEMU exited while waiting for activity={expected} rc={proc.returncode}\n{tail}"
+                f"QEMU exited while waiting for activity={expected} rc={proc.returncode}\n{_qemu_tail(qlog)}"
             )
         try:
-            last = _status(pty)
+            last = _status(client)
         except m4sim.M4SimError:
             time.sleep(0.15)
             continue
@@ -105,28 +128,49 @@ def _wait_activity(pty: str, proc: Any, qlog: Path, expected: str,
     )
 
 
-def _wait_log(proc: Any, qlog: Path, marker: str, *, seconds: float) -> None:
+def _wait_serial_marker(client: Client, proc: Any, qlog: Path, marker: str,
+                        *, seconds: float) -> None:
+    """Observe a firmware lifecycle marker on the persistent serial stream.
+
+    A status request doubles as a bounded serial pump: Client.request() parses
+    and records any ordinary firmware log lines that arrive before/between the
+    protocol frames. Repeating it avoids a second reader racing the same PTY.
+    """
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
+        if marker in _serial_text(client):
+            return
         if proc.poll() is not None:
             break
-        text = qlog.read_text(encoding="utf-8", errors="replace") if qlog.is_file() else ""
-        if marker in text:
+        try:
+            _status(client)
+        except m4sim.M4SimError:
+            # A display refresh may temporarily delay the bridge. Keep the
+            # lifecycle deadline authoritative, but never hide a QEMU crash.
+            if proc.poll() is not None:
+                break
+        if marker in _serial_text(client):
             return
-        time.sleep(0.15)
-    tail = qlog.read_text(encoding="utf-8", errors="replace")[-4000:] if qlog.is_file() else ""
-    raise m4sim.M4SimError(f"log marker not observed: {marker}\n--- qemu log tail ---\n{tail}")
+        time.sleep(0.12)
+    serial_tail = "\n".join(client.serial_log[-120:])
+    raise m4sim.M4SimError(
+        f"firmware serial marker not observed: {marker}\n"
+        f"--- firmware serial tail ---\n{serial_tail}\n"
+        f"--- qemu stderr tail ---\n{_qemu_tail(qlog, 2000)}"
+    )
 
 
-def _assert_parent_stable(pty: str, proc: Any, qlog: Path, *, seconds: float) -> list[dict[str, Any]]:
+def _assert_parent_stable(client: Client, proc: Any, qlog: Path,
+                          *, seconds: float) -> list[dict[str, Any]]:
     """Continuously prove the old callback-stack bounce does not recur."""
     deadline = time.monotonic() + seconds
     samples: list[dict[str, Any]] = []
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            tail = qlog.read_text(encoding="utf-8", errors="replace")[-3000:] if qlog.is_file() else ""
-            raise m4sim.M4SimError(f"QEMU exited during stability window rc={proc.returncode}\n{tail}")
-        st = _status(pty)
+            raise m4sim.M4SimError(
+                f"QEMU exited during stability window rc={proc.returncode}\n{_qemu_tail(qlog)}"
+            )
+        st = _status(client)
         samples.append(st)
         activity = st.get("activity")
         if activity != EXPECTED_PARENT:
@@ -138,15 +182,15 @@ def _assert_parent_stable(pty: str, proc: Any, qlog: Path, *, seconds: float) ->
     return samples
 
 
-def _enter_real_mode_selection(pty: str, proc: Any, qlog: Path) -> None:
+def _enter_real_mode_selection(client: Client, proc: Any, qlog: Path) -> None:
     # Fresh SD + pristine flash/default settings produce the canonical Home menu:
     # My Library, Recents, File transfer, Apps, Settings.
-    _wait_activity(pty, proc, qlog, "Home", seconds=30.0)
-    _send_key(pty, "down")
-    _send_key(pty, "down")
-    _send_key(pty, "confirm")
-    _wait_activity(pty, proc, qlog, EXPECTED_PARENT, seconds=20.0)
-    _wait_log(proc, qlog, "Entering activity: NetworkModeSelection", seconds=20.0)
+    _wait_activity(client, proc, qlog, "Home", seconds=30.0)
+    _send_key(client, "down")
+    _send_key(client, "down")
+    _send_key(client, "confirm")
+    _wait_activity(client, proc, qlog, EXPECTED_PARENT, seconds=20.0)
+    _wait_serial_marker(client, proc, qlog, "Entering activity: NetworkModeSelection", seconds=20.0)
 
 
 def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
@@ -162,25 +206,29 @@ def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
     shutil.copy2(flash, mode_flash)
     sd = m4sim.ensure_sd(fresh=True, size_mb=64)
     proc = None
+    client: Client | None = None
     try:
         proc, pty, qlog = m4sim.boot_qemu(qemu, mode_flash, sd, open_eth=True, psram_mb=8)
+        # First prove the bridge is up using the same public readiness path as
+        # m4sim smoke, then keep one direct client open for the whole journey.
         ping = m4sim.wait_m4adb_ready(pty, proc, seconds=ready_seconds, qemu_log=qlog)
-        _enter_real_mode_selection(pty, proc, qlog)
+        client = Client(SerialTransport(pty), default_timeout=10.0)
+        client.wait_ready(timeout=min(20.0, max(5.0, ready_seconds)))
+        _enter_real_mode_selection(client, proc, qlog)
 
         for _ in range(down_count):
-            _send_key(pty, "down")
-        _send_key(pty, "confirm")
+            _send_key(client, "down")
+        _send_key(client, "confirm")
 
-        # This proves the real child consumed Confirm and completed its
-        # lifecycle transition; status alone still names the parent while the
-        # mode picker remains open.
-        _wait_log(proc, qlog, "Exiting activity: NetworkModeSelection", seconds=20.0)
-        _wait_log(proc, qlog, expected_marker, seconds=30.0)
+        # Status alone still names the parent while the mode picker is open,
+        # so prove the real child consumed Confirm through firmware serial.
+        _wait_serial_marker(client, proc, qlog, "Exiting activity: NetworkModeSelection", seconds=20.0)
+        _wait_serial_marker(client, proc, qlog, expected_marker, seconds=30.0)
 
-        first = _wait_activity(pty, proc, qlog, EXPECTED_PARENT, seconds=10.0)
-        samples = _assert_parent_stable(pty, proc, qlog, seconds=3.0)
-        final_ping = _json_call(pty, ["ping"], timeout=10.0, retries=4)
-        if "protocol" not in final_ping or "firmware" not in final_ping:
+        first = _wait_activity(client, proc, qlog, EXPECTED_PARENT, seconds=10.0)
+        samples = _assert_parent_stable(client, proc, qlog, seconds=3.0)
+        final_ping = _call_busy_retry(client.ping, retries=4)
+        if not isinstance(final_ping, dict) or "protocol" not in final_ping or "firmware" not in final_ping:
             raise m4sim.M4SimError(f"post-transition ping incomplete: {final_ping}")
 
         result = {
@@ -199,7 +247,12 @@ def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
         )
         print(f"NETWORK MODE PASS: {label} samples={len(samples)}", flush=True)
         return result
+    except BridgeError as exc:
+        raise m4sim.M4SimError(f"m4adb {exc.key}: {exc.message}") from exc
     finally:
+        _save_serial(client, mode_root / "artifacts" / "firmware-serial.log")
+        if client is not None:
+            client.close()
         _terminate(proc)
 
 
