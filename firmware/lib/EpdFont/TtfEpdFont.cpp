@@ -130,10 +130,87 @@ class MemoryTtfStream : public ttf::TtfStream {
   uint32_t pos_ = 0;
 };
 
-// Presents one glyf-based face from a TTC as a normal standalone sfnt stream.
-// TTC table offsets are absolute in the collection. We keep all table payloads
-// on SD and synthesize only the small offset-table/directory in RAM, so a large
-// CJK collection never has to fit in PSRAM.
+// Some OpenType files carry ordinary TrueType glyf/loca outlines while using
+// the OTTO sfnt signature. TtfReader intentionally keeps its parser strict, so
+// this zero-copy adapter verifies the required glyf tables and aliases only the
+// first four bytes to 0x00010000. All table payloads continue to stream from SD.
+class GlyfOpenTypeStream : public ttf::TtfStream {
+ public:
+  explicit GlyfOpenTypeStream(SdTtfStream* source) : source_(source) {}
+  ~GlyfOpenTypeStream() override { delete source_; }
+
+  bool init() {
+    if (!source_ || source_->size() < 12) return false;
+    uint8_t hdr[12];
+    if (!readSource(0, hdr, sizeof(hdr)) || std::memcmp(hdr, "OTTO", 4) != 0) return false;
+    const uint16_t numTables = be16(hdr + 4);
+    if (!numTables || numTables > 64 || 12u + static_cast<uint32_t>(numTables) * 16u > source_->size()) return false;
+    bool head = false, maxp = false, loca = false, cmap = false;
+    bool hhea = false, hmtx = false, glyf = false;
+    bool cff = false, cff2 = false;
+    for (uint16_t i = 0; i < numTables; ++i) {
+      uint8_t rec[16];
+      if (!readSource(12u + static_cast<uint32_t>(i) * 16u, rec, sizeof(rec))) return false;
+      const uint32_t tag = be32(rec);
+      const uint32_t off = be32(rec + 8);
+      const uint32_t len = be32(rec + 12);
+      if (off > source_->size() || len > source_->size() - off) return false;
+      head |= tag == 0x68656164u;
+      maxp |= tag == 0x6d617870u;
+      loca |= tag == 0x6c6f6361u;
+      cmap |= tag == 0x636d6170u;
+      hhea |= tag == 0x68686561u;
+      hmtx |= tag == 0x686d7478u;
+      glyf |= tag == 0x676c7966u;
+      cff |= tag == 0x43464620u;
+      cff2 |= tag == 0x43464632u;
+    }
+    if (!(head && maxp && loca && cmap && hhea && hmtx && glyf)) {
+      char line[128];
+      snprintf(line, sizeof(line), "opentype_backend unsupported=%s", cff2 ? "CFF2" : (cff ? "CFF" : "no-glyf"));
+      m4AppendFontDiagnostic(line);
+      return false;
+    }
+    pos_ = 0;
+    m4AppendFontDiagnostic("opentype_glyf_alias enabled");
+    return true;
+  }
+
+  uint32_t size() const override { return source_ ? source_->size() : 0; }
+  bool seek(uint32_t pos) override {
+    if (!source_ || pos > source_->size()) return false;
+    pos_ = pos;
+    return true;
+  }
+  uint32_t read(void* dst, uint32_t n) override {
+    if (!source_ || !dst || pos_ >= source_->size()) return 0;
+    n = std::min(n, source_->size() - pos_);
+    auto* out = static_cast<uint8_t*>(dst);
+    uint32_t total = 0;
+    static constexpr uint8_t kTrueTypeSig[4] = {0x00, 0x01, 0x00, 0x00};
+    while (total < n && pos_ < 4) {
+      out[total++] = kTrueTypeSig[pos_++];
+    }
+    if (total < n) {
+      if (!source_->seek(pos_)) return total;
+      const uint32_t got = source_->read(out + total, n - total);
+      pos_ += got;
+      total += got;
+    }
+    return total;
+  }
+
+ private:
+  bool readSource(uint32_t off, void* dst, uint32_t n) {
+    return off <= source_->size() && n <= source_->size() - off && source_->seek(off) && source_->read(dst, n) == n;
+  }
+  SdTtfStream* source_ = nullptr;
+  uint32_t pos_ = 0;
+};
+
+// Presents one glyf-based face from a TTC/OTC as a normal standalone sfnt
+// stream. Collection table offsets are absolute. Only the small directory is
+// synthesized in RAM; large CJK table payloads remain on SD.
 class TtcFaceStream : public ttf::TtfStream {
  public:
   explicit TtcFaceStream(SdTtfStream* source) : source_(source) {}
@@ -222,7 +299,7 @@ class TtcFaceStream : public ttf::TtfStream {
     uint8_t faceHdr[12];
     if (!readSource(faceOff, faceHdr, 12)) return false;
     const uint32_t signature = be32(faceHdr);
-    if (signature != 0x00010000u && signature != 0x74727565u) return false;
+    if (signature != 0x00010000u && signature != 0x74727565u && signature != 0x4f54544fu) return false;
     const uint16_t numTables = be16(faceHdr + 4);
     if (!numTables || numTables > 64) return false;
     const uint32_t dirBytes = 12u + static_cast<uint32_t>(numTables) * 16u;
@@ -234,6 +311,7 @@ class TtcFaceStream : public ttf::TtfStream {
     maps.reserve(numTables);
     bool head = false, maxp = false, loca = false, cmap = false;
     bool hhea = false, hmtx = false, glyf = false;
+    bool cff = false, cff2 = false;
     uint32_t virtualOff = align4(dirBytes);
 
     for (uint16_t i = 0; i < numTables; ++i) {
@@ -253,8 +331,19 @@ class TtcFaceStream : public ttf::TtfStream {
       hhea |= tag == 0x68686561u;
       hmtx |= tag == 0x686d7478u;
       glyf |= tag == 0x676c7966u;
+      cff |= tag == 0x43464620u;
+      cff2 |= tag == 0x43464632u;
     }
-    if (!(head && maxp && loca && cmap && hhea && hmtx && glyf)) return false;
+    if (!(head && maxp && loca && cmap && hhea && hmtx && glyf)) {
+      if (signature == 0x4f54544fu && (cff || cff2)) {
+        char line[128];
+        snprintf(line, sizeof(line), "collection_face index=%lu unsupported=%s",
+                 static_cast<unsigned long>(faceIndex), cff2 ? "CFF2" : "CFF");
+        m4AppendFontDiagnostic(line);
+      }
+      return false;
+    }
+    if (signature == 0x4f54544fu) putBe32(dir.data(), 0x00010000u);
     directory_.swap(dir);
     tables_.swap(maps);
     size_ = virtualOff;
@@ -392,12 +481,21 @@ TtfEpdFont::TtfEpdFont(const String& path, uint16_t sizePx, uint16_t maxSlots, s
   if (haveMagic && std::memcmp(magic, "ttcf", 4) == 0) {
     auto* collection = new (std::nothrow) TtcFaceStream(sd);
     if (!collection || !collection->init()) {
-      Serial.printf("[TTF] TTC has no supported glyf face: %s\n", path_.c_str());
-      delete collection;  // also owns/deletes sd when allocated
+      Serial.printf("[TTF] Collection has no supported glyf face: %s\n", path_.c_str());
+      delete collection;
       if (!collection) delete sd;
       return;
     }
     stream_ = collection;
+  } else if (haveMagic && std::memcmp(magic, "OTTO", 4) == 0) {
+    auto* opentype = new (std::nothrow) GlyfOpenTypeStream(sd);
+    if (!opentype || !opentype->init()) {
+      Serial.printf("[TTF] OpenType font requires unsupported CFF/CFF2 backend or is invalid: %s\n", path_.c_str());
+      delete opentype;
+      if (!opentype) delete sd;
+      return;
+    }
+    stream_ = opentype;
   } else {
     sd->seek(0);
     stream_ = sd;
