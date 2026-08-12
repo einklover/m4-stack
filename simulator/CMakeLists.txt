@@ -69,6 +69,7 @@ add_test(NAME m4_ttf_reader_compound_tests COMMAND m4_ttf_reader_compound_tests)
 add_executable(m4_cff_reader_tests
   tests/cff_reader.cpp
   ../firmware/lib/TtfReader/src/CffReader.cpp
+  ../firmware/lib/TtfReader/src/CffType2.cpp
 )
 target_include_directories(m4_cff_reader_tests PRIVATE
   ../firmware/lib/TtfReader/src
