@@ -15,7 +15,7 @@ namespace ttf {
 class CffFont {
  public:
   struct Slice {
-    uint32_t off = 0;  // absolute file offset
+    uint32_t off = 0;
     uint32_t len = 0;
     bool valid() const { return len != 0; }
   };
@@ -24,27 +24,24 @@ class CffFont {
   CffFont(const CffFont&) = delete;
   CffFont& operator=(const CffFont&) = delete;
 
-  // Parse an OpenType/SFNT face containing a CFF (not CFF2) table.
-  // `faceOffset` permits TTC/OTC callers to select an already-resolved face.
   bool init(TtfStream& stream, uint32_t faceOffset = 0);
 
   bool ready() const { return ready_; }
   const char* lastError() const { return lastError_; }
   uint16_t glyphCount() const { return glyphCount_; }
+  uint16_t unitsPerEm() const { return unitsPerEm_; }
+  int32_t fontBBoxYMax() const { return bboxYMax_; }
   Slice cffTable() const { return cff_; }
   Slice charStringsIndex() const { return charStrings_; }
   Slice globalSubrsIndex() const { return globalSubrs_; }
   Slice localSubrsIndex() const { return localSubrs_; }
   Slice privateDict() const { return privateDict_; }
 
-  // Return an INDEX object by zero-based item number without loading the whole
-  // INDEX into RAM. `index` must be a validated INDEX slice from this object.
   bool indexObject(Slice index, uint16_t item, Slice& object) const;
-
-  // Execute a CFF1 Type 2 CharString and return flattened outline contours in
-  // font units. Cubic Beziers are adaptively subdivided into on-curve points so
-  // the existing renderer can reuse the same contour/raster path as TrueType.
   bool collectGlyph(uint16_t gid, std::vector<Contour>& out) const;
+  bool findGlyph(uint32_t cp, uint16_t& gid) const;
+  bool glyphHMetrics(uint16_t gid, int32_t& advUnits, int32_t& lsbUnits) const;
+  void fontVMetrics(int32_t& ascUnits, int32_t& descUnits, int32_t& gapUnits) const;
 
  private:
   struct IndexInfo {
@@ -54,12 +51,15 @@ class CffFont {
     uint32_t offsetsOff = 0;
     uint32_t dataOff = 0;
   };
+  struct Table { uint32_t off = 0, len = 0; bool present = false; };
 
   bool readAt(uint32_t off, void* dst, uint32_t n) const;
   bool parseIndex(uint32_t relOff, IndexInfo& out, uint32_t* nextRel = nullptr) const;
   bool indexObject(const IndexInfo& index, uint16_t item, Slice& object) const;
   bool parseTopDict(Slice dict);
   bool parsePrivateDict();
+  bool initSfntMetrics(uint32_t faceOffset, uint16_t numTables);
+  bool initCmap();
   bool readOffset(uint32_t absOff, uint8_t offSize, uint32_t& value) const;
   bool executeType2(Slice code, std::vector<Contour>& out, int depth,
                     float& x, float& y, uint32_t& stemCount) const;
@@ -70,14 +70,17 @@ class CffFont {
   mutable const char* lastError_ = "not initialized";
 
   Slice cff_;
-  IndexInfo charStringsInfo_;
-  IndexInfo globalSubrsInfo_;
-  IndexInfo localSubrsInfo_;
-  Slice charStrings_;
-  Slice globalSubrs_;
-  Slice localSubrs_;
-  Slice privateDict_;
+  IndexInfo charStringsInfo_, globalSubrsInfo_, localSubrsInfo_;
+  Slice charStrings_, globalSubrs_, localSubrs_, privateDict_;
   uint16_t glyphCount_ = 0;
+
+  Table head_, cmap_, hhea_, hmtx_, maxp_;
+  uint16_t unitsPerEm_ = 0;
+  int32_t ascender_ = 0, descender_ = 0, lineGap_ = 0, bboxYMax_ = 0;
+  uint16_t numHMetrics_ = 0;
+  std::vector<uint8_t> cmapData_;
+  bool cmapIs12_ = false;
+  uint32_t cmapGroups_ = 0;
 };
 
 }  // namespace ttf
