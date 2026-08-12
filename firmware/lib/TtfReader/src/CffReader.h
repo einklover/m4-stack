@@ -35,10 +35,10 @@ class CffFont {
   TtfStream* stream_=nullptr; uint32_t fileSize_=0; bool ready_=false; mutable const char* lastError_="not initialized";
   Slice cff_; IndexInfo charStringsInfo_,globalSubrsInfo_,localSubrsInfo_; Slice charStrings_,globalSubrs_,localSubrs_,privateDict_; uint16_t glyphCount_=0;
   Table head_,cmap_,hhea_,hmtx_,maxp_; uint16_t unitsPerEm_=0; int32_t ascender_=0,descender_=0,lineGap_=0,bboxYMax_=0; uint16_t numHMetrics_=0;
-  // Unicode cmap lookup is hot and the selected subtable may be large on CJK
-  // fonts. Keep a reusable PSRAM-first high-water buffer instead of vector.
   uint8_t* cmapData_=nullptr; uint32_t cmapLen_=0,cmapScratchCap_=0; bool cmapIs12_=false; uint32_t cmapGroups_=0;
-  // High-water raster scratch: PSRAM-first on ESP32 and retained across glyphs.
+  // Glyph execution bytecode scratch. Parent CharStrings stay resident while a
+  // subroutine frame runs, so frames reference offsets and survive realloc.
+  mutable uint8_t* type2Scratch_=nullptr; mutable uint32_t type2ScratchCap_=0;
   uint8_t* covScratch_=nullptr; uint32_t covScratchCap_=0;
   uint8_t* packedScratch_=nullptr; uint32_t packedScratchCap_=0;
   Intersection* intersectionScratch_=nullptr; uint32_t intersectionScratchCap_=0;
