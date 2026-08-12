@@ -1,4 +1,5 @@
 #include "apps/native/M4NativeAppControllerFactory.h"
+#include "apps/native/M4ScreenBridgeController.h"
 
 #include "apps/M4xJsonStream.h"
 #include "apps/providers/M4NativeLoadUi.h"
@@ -408,6 +409,9 @@ class ProviderController final : public BaseController {
 }  // namespace
 
 std::unique_ptr<M4NativeUi::Controller> create(const M4xInstalledApp& app) {
+  if (app.runtime == M4xRuntimeKind::Native && app.provider == "screenbridge") {
+    return createScreenBridgeController(app);
+  }
   if (app.runtime == M4xRuntimeKind::Native && !app.provider.empty() && M4NativeProviderManager::supports(app.provider)) {
     return std::make_unique<ProviderController>(app);
   }

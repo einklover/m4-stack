@@ -2,6 +2,10 @@
 #include <Arduino.h>
 #include <EInkDisplay.h>
 
+#if defined(M4_QEMU_BUILD) || (defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG)
+#define HALDISPLAY_QEMU_FRAMEBUFFER 1
+#endif
+
 class HalDisplay {
  public:
   // Constructor with pin configuration
@@ -81,7 +85,7 @@ class HalDisplay {
   void setCustomLUT(bool enabled, const unsigned char* lutData = nullptr);
 
  private:
-#ifdef M4_QEMU_BUILD
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
   uint8_t* qemuFrameBuffer = nullptr;
 #endif
   EInkDisplay einkDisplay;

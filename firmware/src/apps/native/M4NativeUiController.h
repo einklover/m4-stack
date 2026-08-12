@@ -31,6 +31,7 @@ enum class ActionKind {
   OpenProviderBook,
   OpenProviderToc,
   OpenLogin,
+  OpenScreenBridge,
   Error,
 };
 
@@ -60,6 +61,11 @@ struct ActionResult {
     ActionResult r;
     r.kind = ActionKind::OpenProviderBook;
     r.payload = std::move(uri);
+    return r;
+  }
+  static ActionResult openScreenBridge() {
+    ActionResult r;
+    r.kind = ActionKind::OpenScreenBridge;
     return r;
   }
 };

@@ -32,6 +32,7 @@ STATUS_H = 24
 MIN_WIN_W = 360
 MIN_WIN_H = 360
 RESIZE_DEBOUNCE_MS = 40
+SWIPE_MIN_PX = 32
 # Left-side physical-key strip — Murphy M4 side body keys (BoardConfig + NETS.md):
 #   top→bottom: KEY1/Up(GPIO1), KEY2/Down(GPIO2), KEY_LOCK/Power(GPIO0), Recovery(4th)
 # Back/Confirm/Left/Right are touch-mapped on M4, not these four GPIOs.
@@ -95,7 +96,26 @@ def load_pbm_p4(path: Path) -> tuple[int, int, bytes]:
     raise ValueError(f"unsupported image: {path} size={len(raw)}")
 
 
-def pbm_to_ppm_scaled(
+def physical_to_logical(w: int, h: int, payload: bytes) -> tuple[int, int, bytes]:
+    """Rotate the SSD1677 800×480 PBM frame into the logical 480×800 panel."""
+    if (w, h) != (800, 480):
+        return w, h, payload
+    out = bytearray(480 * 800 // 8)
+    for y in range(800):
+        for x in range(480):
+            src_x, src_y = y, 479 - x
+            if (payload[src_y * 100 + src_x // 8] >> (7 - src_x % 8)) & 1:
+                out[y * 60 + x // 8] |= 1 << (7 - x % 8)
+    return 480, 800, bytes(out)
+
+
+_BYTE_TO_GRAY = tuple(
+    bytes(0 if value & (0x80 >> bit) else 255 for bit in range(8))
+    for value in range(256)
+)
+
+
+def pbm_to_pgm_scaled(
     w: int,
     h: int,
     payload: bytes,
@@ -104,23 +124,32 @@ def pbm_to_ppm_scaled(
     *,
     invert: bool = False,
 ) -> bytes:
-    """Nearest-neighbour 1bpp → RGB PPM of size dw×dh."""
+    """Nearest-neighbour 1bpp → grayscale PGM of size dw×dh."""
     dw = max(1, int(dw))
     dh = max(1, int(dh))
     row_bytes = (w + 7) // 8
-    out = bytearray(dw * dh * 3)
-    oi = 0
+    if (dw, dh) == (w, h) and w % 8 == 0:
+        pixels = b"".join(_BYTE_TO_GRAY[b] for b in payload)
+        if invert:
+            pixels = bytes(255 - value for value in pixels)
+        return f"P5\n{dw} {dh}\n255\n".encode("ascii") + pixels
+
+    out = bytearray(dw * dh)
     xs = [min(w - 1, (x * w) // dw) for x in range(dw)]
+    rows: dict[int, bytes] = {}
     for y in range(dh):
         sy = min(h - 1, (y * h) // dh)
-        row = payload[sy * row_bytes : (sy + 1) * row_bytes]
-        for sx in xs:
-            bit = (row[sx // 8] >> (7 - (sx % 8))) & 1
-            black = bool(bit) ^ invert
-            v = 0 if black else 255
-            out[oi] = out[oi + 1] = out[oi + 2] = v
-            oi += 3
-    return f"P6\n{dw} {dh}\n255\n".encode("ascii") + bytes(out)
+        scaled = rows.get(sy)
+        if scaled is None:
+            row = payload[sy * row_bytes : (sy + 1) * row_bytes]
+            scaled = bytes(
+                (255 if invert else 0) if row[sx // 8] & (0x80 >> (sx % 8))
+                else (0 if invert else 255)
+                for sx in xs
+            )
+            rows[sy] = scaled
+        out[y * dw : (y + 1) * dw] = scaled
+    return f"P5\n{dw} {dh}\n255\n".encode("ascii") + bytes(out)
 
 
 def letterbox(cw: int, ch: int) -> tuple[float, int, int, int, int]:
@@ -211,8 +240,12 @@ class M4AdbWorker:
                 if self._shot_pending:
                     return
                 self._shot_pending = True
-        if job.kind in ("tap", "key", "back", "home", "ui", "wifi_transfer"):
+        if job.kind in ("tap", "swipe", "key", "back", "home", "ui", "wifi_transfer"):
             with self._lock:
+                if job.kind in ("tap", "swipe", "key") and self._input_pending >= 2:
+                    if job.on_done is not None:
+                        job.on_done(None, RuntimeError("input queue busy"))
+                    return
                 self._input_pending += 1
         self._q.put(job)
 
@@ -222,6 +255,9 @@ class M4AdbWorker:
 
     def tap(self, x: int, y: int, on_done: Callable | None = None) -> None:
         self.submit(_Job("tap", (x, y), on_done, prio=1))
+
+    def swipe(self, sx: int, sy: int, ex: int, ey: int, on_done: Callable | None = None) -> None:
+        self.submit(_Job("swipe", (sx, sy, ex, ey), on_done, prio=1))
 
     def key(self, name: str, on_done: Callable | None = None) -> None:
         self.submit(_Job("key", (name,), on_done, prio=1))
@@ -280,7 +316,21 @@ class M4AdbWorker:
     def _run(self) -> None:
         self._log(f"worker start pty={self.pty}")
         while True:
-            job = self._q.get()
+            try:
+                job = self._q.get(timeout=0.05)
+            except queue.Empty:
+                # Keep unsolicited firmware logs from filling the PTY. Requests
+                # and draining share this worker, so response frames cannot race.
+                if self._client is not None:
+                    try:
+                        self._client.t.read(timeout=0.01)
+                    except Exception:
+                        try:
+                            self._client.close()
+                        except Exception:
+                            pass
+                        self._client = None
+                continue
             if job is None or job.kind == "quit":
                 break
             result: Any = None
@@ -319,7 +369,7 @@ class M4AdbWorker:
                 if job.kind == "screenshot":
                     with self._lock:
                         self._shot_pending = False
-                if job.kind in ("tap", "key", "back", "home", "ui", "wifi_transfer"):
+                if job.kind in ("tap", "swipe", "key", "back", "home", "ui", "wifi_transfer"):
                     with self._lock:
                         self._input_pending = max(0, self._input_pending - 1)
                 if job.on_done is not None:
@@ -342,6 +392,9 @@ class M4AdbWorker:
         if job.kind == "tap":
             x, y = job.args
             return c.tap(int(x), int(y))
+        if job.kind == "swipe":
+            sx, sy, ex, ey = job.args
+            return c.swipe(int(sx), int(sy), int(ex), int(ey))
         if job.kind == "key":
             (name,) = job.args
             return c.key(str(name))
@@ -370,6 +423,7 @@ class M4ScreenViewer(tk.Tk):
         path: Path | None,
         *,
         pty: str | None,
+        frame_file: Path | None,
         interval: float,
         invert: bool,
         click_to_tap: bool,
@@ -383,7 +437,9 @@ class M4ScreenViewer(tk.Tk):
 
         self._path = path
         self._pty = pty
-        self._interval_ms = max(500, int(interval * 1000))
+        self._frame_file = frame_file
+        self._frame_signature: tuple[int, int] | None = None
+        self._interval_ms = max(40 if frame_file else 500, int(interval * 1000))
         self._invert = invert
         self._click_to_tap = click_to_tap
 
@@ -410,6 +466,7 @@ class M4ScreenViewer(tk.Tk):
         self._resize_after: str | None = None
         self._worker: M4AdbWorker | None = None
         self._press_logical: tuple[int, int] | None = None
+        self._drag_item: int | None = None
         self._hit_items: list[int] = []
 
         # ----- toolbar -----
@@ -528,6 +585,7 @@ class M4ScreenViewer(tk.Tk):
         )
 
         self._canvas.bind("<ButtonPress-1>", self.on_press)
+        self._canvas.bind("<B1-Motion>", self.on_motion)
         self._canvas.bind("<ButtonRelease-1>", self.on_release)
         # Both canvas and root: some Tk builds only fire one of them on resize
         self._canvas.bind("<Configure>", self._on_canvas_configure)
@@ -565,7 +623,11 @@ class M4ScreenViewer(tk.Tk):
 
     def _bootstrap_content(self, path: Path | None) -> None:
         self._force_layout()
-        if path is not None and path.is_file():
+        if self._frame_file is not None:
+            self._live = True
+            self._live_btn.configure(text="Live●", bg="#1a4a1a")
+            self.after(40, self.live_tick)
+        elif path is not None and path.is_file():
             self.show_path(path)
         elif self._pty:
             self._live = True
@@ -702,7 +764,7 @@ class M4ScreenViewer(tk.Tk):
         gen = self._paint_gen
 
         try:
-            ppm = pbm_to_ppm_scaled(w, h, payload, pw, ph, invert=self._invert)
+            ppm = pbm_to_pgm_scaled(w, h, payload, pw, ph, invert=self._invert)
             # master=self is required on some Tk builds so the image is not GC'd
             # against a withdrawn default root and reports real width/height.
             photo = tk.PhotoImage(master=self, data=ppm)
@@ -803,7 +865,24 @@ class M4ScreenViewer(tk.Tk):
             self._flash_hit(pt[0], pt[1])
             self._status.set(f"↓ ({pt[0]},{pt[1]})  scale={self._disp_scale:.2f}")
 
+    def on_motion(self, event: tk.Event) -> None:
+        start = self._press_logical
+        end = self._event_to_logical(event)
+        if start is None or end is None:
+            return
+        sx = self._disp_scale if self._disp_scale > 1e-6 else 1.0
+        coords = (self._ox + start[0] * sx, self._oy + start[1] * sx,
+                  self._ox + end[0] * sx, self._oy + end[1] * sx)
+        if self._drag_item is None:
+            self._drag_item = self._canvas.create_line(*coords, fill="#2f80ed", width=3,
+                                                       arrow=tk.LAST, tags=("hit",))
+        else:
+            self._canvas.coords(self._drag_item, *coords)
+
     def on_release(self, event: tk.Event) -> None:
+        if self._drag_item is not None:
+            self._canvas.delete(self._drag_item)
+            self._drag_item = None
         if not self._click_to_tap:
             self._status.set("Tap is Off — click toolbar Tap:On")
             self._press_logical = None
@@ -812,12 +891,16 @@ class M4ScreenViewer(tk.Tk):
             messagebox.showinfo("No PTY", "Need --pty for click-to-tap")
             self._press_logical = None
             return
-        pt = self._event_to_logical(event) or self._press_logical
+        start = self._press_logical
+        pt = self._event_to_logical(event) or start
         self._press_logical = None
         if pt is None:
             self._status.set("click outside panel")
             return
         x, y = pt
+        if start is not None and max(abs(x - start[0]), abs(y - start[1])) >= SWIPE_MIN_PX:
+            self._send_swipe(start[0], start[1], x, y)
+            return
         t0 = time.time()
         self._status.set(f"tap ({x},{y})…")
 
@@ -833,6 +916,24 @@ class M4ScreenViewer(tk.Tk):
             self.after(0, ui)
 
         self._worker.tap(x, y, on_done=done)
+
+    def _send_swipe(self, sx: int, sy: int, ex: int, ey: int) -> None:
+        if self._worker is None:
+            return
+        t0 = time.time()
+        dx, dy = ex - sx, ey - sy
+        direction = ("左" if dx < 0 else "右") if abs(dx) >= abs(dy) else ("上" if dy < 0 else "下")
+        self._status.set(f"swipe {direction}…")
+
+        def done(result: Any, err: Exception | None) -> None:
+            def ui() -> None:
+                ms = int((time.time() - t0) * 1000)
+                self._status.set(f"swipe {direction} {'FAIL: ' + str(err) if err else 'ok'} {ms}ms")
+                if self._frame_file is None:
+                    self.after(250, self.grab_live_once)
+            self.after(0, ui)
+
+        self._worker.swipe(sx, sy, ex, ey, on_done=done)
 
     # ----- toolbar actions -----
 
@@ -968,6 +1069,20 @@ class M4ScreenViewer(tk.Tk):
             self._worker.key(name, on_done=done)
 
     def grab_live_once(self) -> None:
+        if self._frame_file is not None:
+            try:
+                st = self._frame_file.stat()
+                signature = (st.st_mtime_ns, st.st_size)
+                if signature != self._frame_signature:
+                    raw = physical_to_logical(*load_pbm_p4(self._frame_file))
+                    self._frame_signature = signature
+                    self._path = self._frame_file
+                    self._set_raw_frame(*raw, "EPD direct")
+            except (OSError, ValueError):
+                pass  # QEMU may be between truncate/write; retry next tick.
+            if self._live:
+                self._live_after = self.after(self._interval_ms, self.live_tick)
+            return
         if self._worker is None or not self._pty:
             return
         # Don't pile screenshots on top of pending input
@@ -1010,7 +1125,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("image", nargs="?", help="path to .pbm screenshot")
     p.add_argument("--pty", help="serial PTY for m4adb live screenshot + tap")
-    p.add_argument("--interval", type=float, default=2.5, help="live refresh seconds")
+    p.add_argument("--frame-file", help="live SSD1677 PBM exported directly by QEMU")
+    p.add_argument("--interval", type=float, default=None, help="live refresh seconds")
     p.add_argument(
         "--scale",
         default="fit",
@@ -1046,10 +1162,18 @@ def main(argv: list[str] | None = None) -> int:
         if pty_file.is_file():
             pty = pty_file.read_text(encoding="utf-8").strip() or None
 
+    frame_file = Path(args.frame_file).expanduser() if args.frame_file else None
+    if frame_file is None:
+        frame_hint = Path("/tmp/m4-plugin-debug/artifacts/frame-file.txt")
+        if frame_hint.is_file():
+            frame_file = Path(frame_hint.read_text(encoding="utf-8").strip())
+    interval = args.interval if args.interval is not None else (0.08 if frame_file else 2.5)
+
     app = M4ScreenViewer(
         path,
         pty=pty,
-        interval=args.interval,
+        frame_file=frame_file,
+        interval=interval,
         invert=args.invert,
         click_to_tap=not args.no_click_tap,
         init_scale=init_scale,

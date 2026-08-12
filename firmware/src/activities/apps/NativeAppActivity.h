@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 class NativeAppActivity final : public ActivityWithSubactivity {
  public:
@@ -34,6 +35,8 @@ class NativeAppActivity final : public ActivityWithSubactivity {
   bool rowAt(int index0, M4NativeUi::Row& out) const;
   std::string resolved(const std::string& s) const;
   void setError(const std::string& error);
+  void resetFlowPaging();
+  void turnFlowPage(bool forward);
 
   M4xInstalledApp app_;
   std::function<void()> onExitApp_;
@@ -66,7 +69,13 @@ class NativeAppActivity final : public ActivityWithSubactivity {
 
   std::string buttonActions_[4];
 
-  // Provider "screenbridge" defers app teardown by one parent loop frame so the
-  // child ScreenBridgeActivity is never destroyed from inside its own callback.
-  bool screenBridgeExitPending_ = false;
+  // Flow text is paged by the native renderer, where the actual font metrics
+  // are known. XML/controllers continue to provide one plain UTF-8 body.
+  std::string flowTextCache_;
+  std::vector<size_t> flowPageOffsets_{0};
+  size_t flowNextOffset_ = 0;
+  int flowPageIndex_ = 0;
+  bool flowHasMore_ = false;
+  bool flowVisible_ = false;
+
 };

@@ -133,7 +133,7 @@ class MockDevice:
                     "wifi_ip": self.wifi_ip if self.wifi_connected else "",
                     "wifi_rssi": self.wifi_rssi if self.wifi_connected else -127,
                     "caps": ["install", "install_http", "wifi_status", "wifi_prepare", "wifi_transfer",
-                             "launch", "tap", "key", "screenshot", "logs"],
+                             "launch", "tap", "swipe", "key", "screenshot", "logs"],
                 },
             )
         if op in ("wifi_status", "wifi_prepare", "wifi_transfer"):
@@ -247,6 +247,14 @@ class MockDevice:
             # Visual change heuristic for tests
             self.set_pixel_black(x % self.screen_w, y % self.screen_h)
             return self._ok(req_id, {"op": "tap", "x": x, "y": y}, cache=True)
+        if op == "swipe":
+            sx, sy = int(j.get("sx", -1)), int(j.get("sy", -1))
+            ex, ey = int(j.get("ex", -1)), int(j.get("ey", -1))
+            if min(sx, sy, ex, ey) < 0 or sx >= self.screen_w or ex >= self.screen_w \
+                    or sy >= self.screen_h or ey >= self.screen_h or (sx == ex and sy == ey):
+                return self._err(req_id, "swipe_oob", "滑动坐标越界或轨迹为空")
+            return self._ok(req_id, {"op": "swipe", "sx": sx, "sy": sy,
+                                     "ex": ex, "ey": ey}, cache=True)
         if op == "key":
             name = j.get("name", "")
             if name not in (

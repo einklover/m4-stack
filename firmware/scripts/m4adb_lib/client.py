@@ -585,6 +585,10 @@ class Client:
     def tap(self, x: int, y: int) -> dict:
         return self.request({"op": "tap", "x": int(x), "y": int(y)}, timeout=5)
 
+    def swipe(self, sx: int, sy: int, ex: int, ey: int) -> dict:
+        return self.request({"op": "swipe", "sx": int(sx), "sy": int(sy),
+                             "ex": int(ex), "ey": int(ey)}, timeout=5)
+
     def key(self, name: str) -> dict:
         return self.request({"op": "key", "name": name}, timeout=5)
 

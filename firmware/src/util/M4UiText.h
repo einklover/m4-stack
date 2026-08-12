@@ -157,35 +157,42 @@ inline std::string truncated(const GfxRenderer& renderer, int layoutFontId, cons
   return renderer.truncatedText(f.fontId, text ? text : "", maxWidth, style, f.scale);
 }
 
-// Width-aware UTF-8 wrapping used by XML/plugin title surfaces. Chinese text
-// can break between any codepoints; Latin text is also allowed to break at a
-// codepoint when a word is wider than the available e-ink column. The final
-// visible line gets an ellipsis only when content remains undisplayed.
-inline std::vector<std::string> wrapLines(const GfxRenderer& renderer, int layoutFontId,
-                                          const char* text, int maxWidth, int maxLines,
-                                          EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+struct WrappedPage {
   std::vector<std::string> lines;
-  if (!text || !*text || maxWidth <= 0 || maxLines <= 0) return lines;
+  size_t nextOffset = 0;
+  bool hasMore = false;
+};
 
-  const std::string normalized = normalizeDisplayBreaks(text);
+// Wrap one page of already-normalized UTF-8 text. Offsets are byte offsets so
+// callers can keep a tiny page stack without copying the remaining body.
+inline WrappedPage wrapPage(const GfxRenderer& renderer, int layoutFontId,
+                            const std::string& normalized, int maxWidth, int maxLines,
+                            size_t startOffset = 0,
+                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  WrappedPage page;
+  page.nextOffset = std::min(startOffset, normalized.size());
+  if (page.nextOffset >= normalized.size() || maxWidth <= 0 || maxLines <= 0) return page;
+
   const Face f = resolveForText(renderer, layoutFontId, normalized.c_str(), style);
-  const char* p = normalized.c_str();
+  const char* begin = normalized.c_str();
+  const char* end = begin + normalized.size();
+  const char* p = begin + page.nextOffset;
   std::string current;
-  bool clipped = false;
 
   auto widthOf = [&](const std::string& s) {
     return renderer.getTextWidth(f.fontId, s.c_str(), style, f.scale);
   };
 
-  while (*p && static_cast<int>(lines.size()) < maxLines) {
+  while (p < end) {
     if (*p == '\n' || *p == '\r') {
-      while (*p == '\n' || *p == '\r') ++p;
+      while (p < end && (*p == '\n' || *p == '\r')) ++p;
       if (!current.empty()) {
-        lines.push_back(current);
+        page.lines.push_back(current);
         current.clear();
-      } else if (!lines.empty() && static_cast<int>(lines.size()) < maxLines) {
-        lines.emplace_back();
+      } else if (!page.lines.empty()) {
+        page.lines.emplace_back();
       }
+      if (static_cast<int>(page.lines.size()) >= maxLines) break;
       continue;
     }
 
@@ -197,10 +204,10 @@ inline std::vector<std::string> wrapLines(const GfxRenderer& renderer, int layou
     candidate += glyphBytes;
 
     if (!current.empty() && widthOf(candidate) > maxWidth) {
-      lines.push_back(current);
+      page.lines.push_back(current);
       current.clear();
-      if (static_cast<int>(lines.size()) >= maxLines) {
-        clipped = true;
+      if (static_cast<int>(page.lines.size()) >= maxLines) {
+        p = cpBegin;
         break;
       }
       current = glyphBytes;
@@ -212,13 +219,31 @@ inline std::vector<std::string> wrapLines(const GfxRenderer& renderer, int layou
     }
   }
 
-  if (static_cast<int>(lines.size()) < maxLines && !current.empty()) lines.push_back(current);
-  if (*p) clipped = true;
-
-  if (clipped && !lines.empty()) {
-    lines.back() = renderer.truncatedText(f.fontId, (lines.back() + "…").c_str(), maxWidth, style, f.scale);
+  if (static_cast<int>(page.lines.size()) < maxLines && !current.empty()) {
+    page.lines.push_back(current);
   }
-  return lines;
+  page.nextOffset = static_cast<size_t>(p - begin);
+  page.hasMore = page.nextOffset < normalized.size();
+  return page;
+}
+
+// Width-aware UTF-8 wrapping used by XML/plugin title surfaces. Chinese text
+// can break between any codepoints; Latin text is also allowed to break at a
+// codepoint when a word is wider than the available e-ink column. The final
+// visible line gets an ellipsis only when content remains undisplayed.
+inline std::vector<std::string> wrapLines(const GfxRenderer& renderer, int layoutFontId,
+                                          const char* text, int maxWidth, int maxLines,
+                                          EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  if (!text || !*text || maxWidth <= 0 || maxLines <= 0) return {};
+  const std::string normalized = normalizeDisplayBreaks(text);
+  auto page = wrapPage(renderer, layoutFontId, normalized, maxWidth, maxLines, 0, style);
+
+  if (page.hasMore && !page.lines.empty()) {
+    const Face f = resolveForText(renderer, layoutFontId, normalized.c_str(), style);
+    page.lines.back() = renderer.truncatedText(
+        f.fontId, (page.lines.back() + "…").c_str(), maxWidth, style, f.scale);
+  }
+  return page.lines;
 }
 
 // List rows must use the metrics of the face that will actually be drawn.

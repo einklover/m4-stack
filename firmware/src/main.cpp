@@ -756,6 +756,14 @@ void setup() {
 #endif
 
     SETTINGS.loadFromFile();
+#ifdef M4_QEMU_PLUGIN_FONT
+    if (SdMan.exists("/FONT/" M4_QEMU_PLUGIN_FONT)) {
+      SETTINGS.fontFamily = CrossPointSettings::FONT_CUSTOM;
+      std::snprintf(SETTINGS.customFontFamily, sizeof(SETTINGS.customFontFamily), "%s",
+                    M4_QEMU_PLUGIN_FONT);
+      Serial.printf("[%lu] [M4-QEMU] runtime TTF selected: %s\n", millis(), M4_QEMU_PLUGIN_FONT);
+    }
+#endif
 #ifdef CROSSPOINT_MURPHY_M4
     applyFrontlightSettings(true);
     m4LightOk = true;

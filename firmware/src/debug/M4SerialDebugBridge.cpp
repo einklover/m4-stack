@@ -510,7 +510,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"wifi_connected\":%s,\"wifi_status\":%d,\"wifi_ssid\":\"%s\",\"wifi_ip\":\"%s\","
              "\"wifi_rssi\":%d,\"caps\":[\"install\",\"install_http\",\"wifi_status\",\"wifi_prepare\","
              "\"wifi_transfer\",\"sd_probe\",\"sd_read\",\"http_probe\",\"launch\",\"tap\",\"key\","
-             "\"screenshot\",\"logs\",\"ui\"]}",
+             "\"swipe\",\"screenshot\",\"logs\",\"ui\"]}",
              op, kProtocolVersion, st.firmwareVersion ? st.firmwareVersion : "", activityCopy_, appIdCopy_,
              static_cast<unsigned>(st.freeHeap), static_cast<unsigned>(st.minFreeHeap),
              static_cast<unsigned>(st.freePsram), static_cast<unsigned>(st.resetReason),
@@ -1074,6 +1074,28 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     }
     char out[96];
     snprintf(out, sizeof(out), "{\"op\":\"tap\",\"x\":%d,\"y\":%d}", x, y);
+    replyOk(reqId, out, true);
+    return;
+  }
+
+  if (strcmp(op, "swipe") == 0) {
+    if (!input_) {
+      replyErr(reqId, "no_input", "输入管理器不可用");
+      return;
+    }
+    const int sx = doc["sx"] | -1;
+    const int sy = doc["sy"] | -1;
+    const int ex = doc["ex"] | -1;
+    const int ey = doc["ey"] | -1;
+    bool busy = false;
+    if (!input_->injectSyntheticSwipe(sx, sy, ex, ey, busy)) {
+      replyErr(reqId, busy ? "busy" : "swipe_oob",
+               busy ? "输入忙，请稍后重试" : "滑动坐标越界或轨迹为空");
+      return;
+    }
+    char out[128];
+    snprintf(out, sizeof(out), "{\"op\":\"swipe\",\"sx\":%d,\"sy\":%d,\"ex\":%d,\"ey\":%d}",
+             sx, sy, ex, ey);
     replyOk(reqId, out, true);
     return;
   }

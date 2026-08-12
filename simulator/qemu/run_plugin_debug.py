@@ -28,14 +28,17 @@ from pathlib import Path
 import re
 import shlex
 import signal
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 TMP = Path(os.environ.get("M4_PLUGIN_DEBUG_TMP", "/tmp/m4-plugin-debug"))
 ART = TMP / "artifacts"
+QEMU_FONT_NAME = "M4Qemu.ttf"
 
 
 def run(cmd: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -51,17 +54,17 @@ def find_qemu(explicit: str | None) -> Path:
     if env:
         candidates.append(Path(env))
     candidates += [
+        Path.home() / ".cache/murphy-m4/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa",
         Path.home() / ".cache/murphy-m4/espressif-qemu-v2/build-murphy-v2/qemu-system-xtensa",
         Path.home() / ".cache/murphy-m4/espressif-qemu/build-murphy/qemu-system-xtensa",
-        Path.home() / ".cache/murphy-m4/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa",
     ]
     for c in candidates:
         if c.is_file():
             return c.resolve()
     raise SystemExit(
         "patched qemu-system-xtensa not found; run:\n"
-        "  python3 simulator/qemu/build_patched_qemu_v2.py -j 6\n"
-        "  export QEMU_XTENSA=$HOME/.cache/murphy-m4/espressif-qemu-v2/build-murphy-v2/qemu-system-xtensa"
+        "  python3 simulator/qemu/build_patched_qemu_v3.py -j 6\n"
+        "  export QEMU_XTENSA=$HOME/.cache/murphy-m4/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa"
     )
 
 
@@ -112,6 +115,38 @@ def make_sd(*, fresh: bool = False, size_mb: int = 64) -> Path:
     return sd
 
 
+def install_font(sd: Path, source: Path) -> None:
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise SystemExit(f"not a supported TrueType font: {source}")
+    with source.open("rb") as font_file:
+        if font_file.read(4) not in {b"\0\1\0\0", b"true"}:
+            raise SystemExit(f"not a supported TrueType font: {source}")
+
+    mcopy = shutil.which("mcopy")
+    mmd = shutil.which("mmd")
+    if mcopy and mmd:
+        run([mmd, "-i", str(sd), "::/FONT"], check=False)
+        run([mcopy, "-o", "-i", str(sd), str(source), f"::/FONT/{QEMU_FONT_NAME}"])
+        return
+
+    if sys.platform != "darwin" or not shutil.which("hdiutil"):
+        raise SystemExit("installing --font needs mtools (mcopy/mmd), or hdiutil on macOS")
+    with tempfile.TemporaryDirectory(prefix="m4-qemu-sd-") as mount:
+        cp = subprocess.run([
+            "hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage",
+            "-mountpoint", mount, str(sd),
+        ], check=True, capture_output=True, text=True)
+        device = cp.stdout.strip().split()[0]
+        try:
+            font_dir = Path(mount) / "FONT"
+            font_dir.mkdir(exist_ok=True)
+            shutil.copy2(source, font_dir / QEMU_FONT_NAME)
+        finally:
+            run(["hdiutil", "detach", device], check=False)
+    print(f"installed persistent QEMU font: /FONT/{QEMU_FONT_NAME}", flush=True)
+
+
 def m4adb(pty: str, args: list[str], *, timeout: int = 30, check: bool = True) -> str:
     """Run m4adb with a hard wall-clock kill (subprocess timeout).
 
@@ -120,8 +155,10 @@ def m4adb(pty: str, args: list[str], *, timeout: int = 30, check: bool = True) -
     --timeout/--ready-timeout are forwarded into m4adb.
     """
     inner = max(3, int(timeout) - 2)
+    penv_python = Path.home() / ".platformio/penv/bin/python"
     cmd = [
-        sys.executable, str(ROOT / "firmware/scripts/m4adb.py"),
+        str(penv_python if penv_python.is_file() else Path(sys.executable)),
+        str(ROOT / "firmware/scripts/m4adb.py"),
         "--port", pty, "--no-daemon",
         "--timeout", str(inner),
         "--ready-timeout", str(min(inner, 12)),
@@ -148,6 +185,9 @@ def m4adb(pty: str, args: list[str], *, timeout: int = 30, check: bool = True) -
 
 def boot(qemu: Path, flash: Path, sd: Path, *, serial_log: Path) -> tuple[subprocess.Popen, str]:
     qlog = ART / "qemu.log"
+    frame = ART / "ssd1677-frame.pbm"
+    frame.unlink(missing_ok=True)
+    (ART / "frame-file.txt").write_text(str(frame) + "\n", encoding="utf-8")
     cmd = [
         str(qemu), "-nographic", "-monitor", "none",
         "-machine", "murphy-m4", "-m", "8M",
@@ -156,6 +196,8 @@ def boot(qemu: Path, flash: Path, sd: Path, *, serial_log: Path) -> tuple[subpro
         "-global", "driver=esp32s3.gpio,property=strap_mode,value=0x04",
         "-global", "driver=esp32s3.gpio,property=input-default,value=0x100000000007",
         "-global", "driver=ssi_psram,property=is_octal,value=true",
+        "-global", f"driver=murphy-ssd1677,property=frame-file,value={frame}",
+        "-global", "driver=murphy-ssd1677,property=busy-ms,value=20",
         "-global", "driver=timer.esp32c3.timg,property=wdt_disable,value=true",
         # open_eth = guest "Wi-Fi" under QEMU. hostfwd lets the host browser
         # reach the device file-transfer HTTP/WS (ports 80/81) for 传书.
@@ -218,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         help="wipe and recreate empty SD image (default: keep /tmp/m4-plugin-debug/artifacts/murphy-sd.img)",
     )
     p.add_argument("--sd-size-mb", type=int, default=64, help="SD image size when creating (default 64)")
+    p.add_argument("--font", help=f"copy a TrueType font persistently to /FONT/{QEMU_FONT_NAME}")
     p.add_argument("--plugin-src", help="path to plugin source tree for m4adb install")
     p.add_argument("--app-id", help="plugin app id for launch (e.g. com.fanqie.client)")
     p.add_argument("--seconds", type=float, default=90.0, help="max wait for m4adb ready")
@@ -245,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
 
         flash = compose_flash(bdir)
         sd = make_sd(fresh=bool(args.fresh_sd), size_mb=int(args.sd_size_mb))
+        if args.font:
+            install_font(sd, Path(args.font))
         proc, pty = boot(qemu, flash, sd, serial_log=ART / "guest.serial.log")
         try:
             wait_bridge(pty, proc, seconds=args.seconds)
@@ -282,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n=== Plugin debug session ===\n"
                   f"PTY: {pty}\n"
                   f"Artifacts: {ART}\n"
+                  f"Direct EPD frame: {ART / 'ssd1677-frame.pbm'}\n"
                   f"SD (persistent): {sd}\n"
                   f"  (reused on next run unless --fresh-sd)\n"
                   f"m4adb example:\n"

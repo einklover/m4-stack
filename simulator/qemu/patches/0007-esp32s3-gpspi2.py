@@ -244,8 +244,10 @@ def main(argv: list[str]) -> int:
         "    SsiPsramState *psram;\n    DeviceState *gpspi2;\n\n    uint32_t sens_regs",
         "add GP-SPI2 state")
     text = replace_once(text,
-        "    object_initialize_child(obj, \"spi1\", &s->spi1, TYPE_ESP32S3_SPI);\n    object_initialize_child(obj, \"cache\", &s->cache, TYPE_ESP32S3_CACHE);",
-        "    object_initialize_child(obj, \"spi1\", &s->spi1, TYPE_ESP32S3_SPI);\n    s->gpspi2 = qdev_new(TYPE_ESP32S3_GPSPI);\n    object_property_add_child(obj, \"gpspi2\", OBJECT(s->gpspi2));\n    object_initialize_child(obj, \"cache\", &s->cache, TYPE_ESP32S3_CACHE);",
+        "    object_initialize_child(OBJECT(ss), \"spi1\", &ss->spi1, TYPE_ESP32S3_SPI);",
+        "    object_initialize_child(OBJECT(ss), \"spi1\", &ss->spi1, TYPE_ESP32S3_SPI);\n"
+        "    ss->gpspi2 = qdev_new(TYPE_ESP32S3_GPSPI);\n"
+        "    object_property_add_child(OBJECT(ss), \"gpspi2\", OBJECT(ss->gpspi2));",
         "create GP-SPI2 child")
     anchor = "    /* I2C controller realization. The generic ESP32 controller model uses\n"
     block = """    /* General-purpose SPI2 used by the Murphy display stack. */

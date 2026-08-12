@@ -16,6 +16,9 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 SOURCE = r'''#include "qemu/osdep.h"
 #include "qemu/timer.h"
 #include "qemu/error-report.h"
+#include "qapi/error.h"
+#include "exec/address-spaces.h"
+#include "exec/memory.h"
 #include "hw/ssi/ssi.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
@@ -28,6 +31,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(MurphySsd1677State, MURPHY_SSD1677)
 #define EPD_H 480
 #define EPD_ROW_BYTES (EPD_W / 8)
 #define EPD_FB_BYTES (EPD_ROW_BYTES * EPD_H)
+#define DIRECT_FRAME_BASE 0x60100000
+#define DIRECT_REFRESH_BASE 0x6010c000
 #define CMD_DEEP_SLEEP 0x10
 #define CMD_DATA_ENTRY 0x11
 #define CMD_SOFT_RESET 0x12
@@ -63,6 +68,8 @@ struct MurphySsd1677State {
     uint8_t physical[EPD_FB_BYTES];
     char *frame_file;
     uint32_t busy_ms;
+    MemoryRegion direct_ram;
+    MemoryRegion direct_refresh;
 };
 
 static unsigned expected_params(uint8_t cmd)
@@ -91,9 +98,11 @@ static void set_busy(MurphySsd1677State *s, bool level)
 static void export_frame(MurphySsd1677State *s)
 {
     if (!s->frame_file || !*s->frame_file) return;
-    FILE *f = fopen(s->frame_file, "wb");
+    char *tmp = g_strdup_printf("%s.tmp", s->frame_file);
+    FILE *f = fopen(tmp, "wb");
     if (!f) {
         warn_report("murphy-ssd1677: cannot open frame file %s", s->frame_file);
+        g_free(tmp);
         return;
     }
     fprintf(f, "P4\n%d %d\n", EPD_W, EPD_H);
@@ -102,7 +111,31 @@ static void export_frame(MurphySsd1677State *s)
         fwrite(&b, 1, 1, f);
     }
     fclose(f);
+    if (rename(tmp, s->frame_file) != 0) {
+        warn_report("murphy-ssd1677: cannot publish frame file %s", s->frame_file);
+    }
+    g_free(tmp);
 }
+
+static uint64_t direct_refresh_read(void *opaque, hwaddr addr, unsigned size)
+{
+    (void)opaque; (void)addr; (void)size; return 0;
+}
+
+static void direct_refresh_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+{
+    MurphySsd1677State *s = MURPHY_SSD1677(opaque);
+    (void)addr; (void)value; (void)size;
+    memcpy(s->physical, memory_region_get_ram_ptr(&s->direct_ram), EPD_FB_BYTES);
+    export_frame(s);
+}
+
+static const MemoryRegionOps direct_refresh_ops = {
+    .read = direct_refresh_read,
+    .write = direct_refresh_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
 
 static void reset_state(MurphySsd1677State *s, bool preserve_physical)
 {
@@ -237,6 +270,12 @@ static void realize(SSIPeripheral *dev, Error **errp)
     qdev_init_gpio_in_named(DEVICE(dev), set_reset, "reset", 1);
     qdev_init_gpio_out_named(DEVICE(dev), &s->busy, "busy", 1);
     s->busy_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, busy_done, s);
+    memory_region_init_ram(&s->direct_ram, OBJECT(s), "murphy-ssd1677.direct-frame",
+                           EPD_FB_BYTES, &error_fatal);
+    memory_region_add_subregion(get_system_memory(), DIRECT_FRAME_BASE, &s->direct_ram);
+    memory_region_init_io(&s->direct_refresh, OBJECT(s), &direct_refresh_ops, s,
+                          "murphy-ssd1677.direct-refresh", 4);
+    memory_region_add_subregion(get_system_memory(), DIRECT_REFRESH_BASE, &s->direct_refresh);
     device_reset(DEVICE(dev));
 }
 
@@ -286,9 +325,7 @@ def main(argv: list[str]) -> int:
 
     path = root / "hw/xtensa/esp32s3.c"
     text = path.read_text(encoding="utf-8")
-    # SSI_BUS / ssi_realize_and_unref / SSI_GPIO_CS live in hw/ssi/ssi.h.
-    # Without this include the attach block is compiled as an implicit function
-    # call and the cumulative series fails to link (undefined reference SSI_BUS).
+    # SSIBus / ssi_realize_and_unref / SSI_GPIO_CS live in hw/ssi/ssi.h.
     if '#include "hw/ssi/ssi.h"' not in text:
         text = replace_once(
             text,
@@ -311,7 +348,7 @@ def main(argv: list[str]) -> int:
     replacement = """        qdev_connect_gpio_out_named(DEVICE(&ss->gpio), "gpio-out", 45,
                                     qdev_get_gpio_in_named(ms->touch_dev, "power", 0));
 
-        SSIBus *spi_bus = SSI_BUS(qdev_get_child_bus(ss->gpspi2, "spi"));
+        SSIBus *spi_bus = (SSIBus *)qdev_get_child_bus(ss->gpspi2, "spi");
         DeviceState *epd = qdev_new(TYPE_MURPHY_SSD1677);
         ms->epd_dev = epd;
         ssi_realize_and_unref(epd, spi_bus, &error_fatal);

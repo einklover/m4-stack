@@ -30,6 +30,31 @@ On macOS, Espressif documents the required QEMU runtime libraries and the
 The launcher project is pinned to `esp32s3`, 16 MiB flash, DIO and 40 MHz in
 `CMakeLists.txt` + `sdkconfig.defaults`.
 
+Plugin-debug runs keep `/tmp/m4-plugin-debug/artifacts/murphy-sd.img` across
+restarts. Use `--fresh-sd` only when a deliberate wipe is needed. A runtime
+TrueType font can be installed and selected for QEMU with:
+
+```bash
+python3 qemu/run_plugin_debug.py --font /path/to/font.ttf --keep-alive
+```
+
+The patched v3 QEMU exposes the SSD1677 framebuffer at a guest MMIO aperture.
+Plugin-debug firmware copies each completed 800x480 monochrome frame there and
+QEMU atomically publishes `artifacts/ssd1677-frame.pbm`. This avoids UART frame
+dumps and byte-by-byte SPI overhead while retaining the firmware's real XML,
+font and layout rendering. Open the interactive portrait viewer with the PTY
+printed by the launcher:
+
+```bash
+python3 tools/m4_screen_viewer.py \
+  --pty /dev/ttys006 \
+  --frame-file /tmp/m4-plugin-debug/artifacts/ssd1677-frame.pbm
+```
+
+Clicks inject taps. Mouse drags inject coordinate swipes, so scrolling and
+page-turn gestures use the same firmware input path as touch hardware. If the
+direct frame file is unavailable, the viewer falls back to m4adb screenshots.
+
 ## A. Smoke project
 
 ```bash
@@ -168,10 +193,12 @@ Stage 4  firmware framebuffer commits can be exported as a portrait PBM
 Stage 5  interactive buttons/touch/SD/network are modeled
 ```
 
-The QEMU-only firmware profile now covers Stage 4 at the framebuffer boundary;
-it does not emulate SSD1677 SPI commands, BUSY timing, or panel waveforms. Those
-controller behaviors remain covered by deterministic M4Sim. Interactive input,
-SD, and board networking are still Stage 5 work.
+The generic `murphy_m4_qemu` profile covers Stage 4 at the framebuffer
+boundary. The patched `murphy_m4_qemu_plugin` path additionally covers the
+interactive Stage 5 loop needed for plugin development: direct SSD1677 frame
+publication, persistent SD, FT6x36-compatible touch/injected swipes and
+open_eth networking. Electrical timing and panel waveform fidelity remain the
+responsibility of deterministic M4Sim and hardware tests.
 
 ## Why this stays separate from deterministic M4Sim
 

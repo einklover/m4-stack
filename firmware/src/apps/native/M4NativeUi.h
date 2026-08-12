@@ -20,6 +20,7 @@ struct Limits {
 enum class NodeType : uint8_t {
   Text = 0,
   FlowText,
+  Image,
   List,
   Tiles,
   Tabs,

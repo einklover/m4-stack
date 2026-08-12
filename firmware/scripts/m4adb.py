@@ -475,6 +475,18 @@ def cmd_tap(args: argparse.Namespace) -> int:
         c.close()
 
 
+def cmd_swipe(args: argparse.Namespace) -> int:
+    c = _open_client(args)
+    try:
+        print(json.dumps(c.swipe(args.sx, args.sy, args.ex, args.ey), ensure_ascii=False, indent=2))
+        return 0
+    except BridgeError as e:
+        print(f"错误 {e.key}: {e.message}", file=sys.stderr)
+        return 1
+    finally:
+        c.close()
+
+
 def cmd_key(args: argparse.Namespace) -> int:
     c = _open_client(args)
     try:
@@ -891,6 +903,11 @@ def build_parser() -> argparse.ArgumentParser:
     pt = sub.add_parser("tap", help="注入点击（逻辑坐标）")
     pt.add_argument("x", type=int)
     pt.add_argument("y", type=int)
+    psw = sub.add_parser("swipe", help="注入滑动（逻辑起止坐标）")
+    psw.add_argument("sx", type=int)
+    psw.add_argument("sy", type=int)
+    psw.add_argument("ex", type=int)
+    psw.add_argument("ey", type=int)
     pk = sub.add_parser("key", help="注入按键")
     pk.add_argument("name")
     sub.add_parser("back", help="注入 Back")
@@ -935,6 +952,7 @@ def main(argv: list[str] | None = None) -> int:
         "sync": cmd_sync,
         "launch": cmd_launch,
         "tap": cmd_tap,
+        "swipe": cmd_swipe,
         "key": cmd_key,
         "back": cmd_back,
         "screenshot": cmd_screenshot,
