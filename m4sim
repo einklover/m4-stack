@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Unified Murphy M4 BIN simulator entry (repo root).
+# Delegates to simulator/m4sim.py — same path used by local dev and CI.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$ROOT/simulator/m4sim.py" "$@"
