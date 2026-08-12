@@ -131,7 +131,14 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
 }
 
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-#ifdef M4_QEMU_BUILD
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  // Plugin QEMU keeps the real FreeInk panel driver for RAM/framebuffer (so
+  // m4adb screenshot works) but must not SPI-wait on SSD1677 BUSY — the pin
+  // never completes under this machine model and freezes the guest.
+  (void)mode;
+  (void)turnOffScreen;
+  return;
+#elif defined(M4_QEMU_BUILD)
   (void)mode;
   (void)turnOffScreen;
   dumpQemuFrame(qemuFrameBuffer);
@@ -141,7 +148,11 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 }
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-#ifdef M4_QEMU_BUILD
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  (void)mode;
+  (void)turnOffScreen;
+  return;
+#elif defined(M4_QEMU_BUILD)
   displayBuffer(mode, turnOffScreen);
 #else
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);

@@ -74,6 +74,13 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  bool skipLoopDelay() override { return webServer && webServer->isRunning(); }
+  // QEMU: never tight-spin the main loop (starves m4adb when transfer is up).
+  bool skipLoopDelay() override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    return false;
+#else
+    return webServer && webServer->isRunning();
+#endif
+  }
   bool preventAutoSleep() override { return webServer && webServer->isRunning(); }
 };

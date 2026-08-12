@@ -1,6 +1,7 @@
 #include "apps/providers/M4NativeWifi.h"
 
 #include "WifiCredentialStore.h"
+#include "qemu/M4QemuNet.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -11,7 +12,9 @@ namespace M4NativeWifi {
 
 Result ensureConnected(uint32_t timeoutMs, const CancelFn& cancelled) {
   Result r;
-  if (WiFi.status() == WL_CONNECTED) {
+  // QEMU plugin-debug uses open_eth (not the Wi-Fi radio). Treat that path as
+  // already connected so discovery/HTTP does not demand saved STA credentials.
+  if (M4QemuNet::staConnected() || WiFi.status() == WL_CONNECTED) {
     r.ok = true;
     r.alreadyConnected = true;
     return r;

@@ -210,15 +210,9 @@ class ProviderController final : public BaseController {
         return true;
       }
 
-      if (shelfCount_ == 0 && !autoDiscoveryAttempted_ && !M4NativeProviderDiscovery::busy()) {
-        autoDiscoveryAttempted_ = true;
-        if (!selectedCategoryKey_.empty()) {
-          (void)M4NativeProviderDiscovery::startCategory(app_.provider, app_.id, selectedCategoryKey_);
-        } else {
-          (void)M4NativeProviderDiscovery::startDefault(app_.provider, app_.id);
-        }
-      }
-
+      // Do not start FreeRTOS discovery (TLS) as a side effect of resolving UI
+      // text during render — that races the frame path and can starve the main
+      // loop under QEMU open_eth. kickAutoDiscovery() runs from the activity loop.
       const auto d = M4NativeProviderDiscovery::snapshot();
       if (d.providerId == app_.provider && d.appId == app_.id) {
         M4NativeLoadUi::Snapshot load;
@@ -378,6 +372,19 @@ class ProviderController final : public BaseController {
     return rev;
   }
 
+  void pollAsync() override {
+    syncDiscovery();
+    if (shelfCount_ != 0 || autoDiscoveryAttempted_ || M4NativeProviderDiscovery::busy()) return;
+    // One-shot auto fill for public discovery providers (fanqie/jjwxc) and
+    // account shelves (weread/legado). Kept out of scalar()/render().
+    autoDiscoveryAttempted_ = true;
+    if (!selectedCategoryKey_.empty()) {
+      (void)M4NativeProviderDiscovery::startCategory(app_.provider, app_.id, selectedCategoryKey_);
+    } else {
+      (void)M4NativeProviderDiscovery::startDefault(app_.provider, app_.id);
+    }
+  }
+
  private:
   void syncDiscovery() const {
     const auto d = M4NativeProviderDiscovery::snapshot();
@@ -393,7 +400,7 @@ class ProviderController final : public BaseController {
   mutable size_t shelfCount_ = 0;
   mutable std::vector<uint32_t> shelfAnchors_;
   mutable uint32_t discoveryAppliedMs_ = 0;
-  mutable bool autoDiscoveryAttempted_ = false;
+  bool autoDiscoveryAttempted_ = false;
   std::string selectedCategoryKey_;
   std::string selectedCategoryTitle_;
 };

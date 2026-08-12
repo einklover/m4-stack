@@ -244,7 +244,15 @@ int MappedInputManager::getPressedFrontButton() const {
   return -1;
 }
 
-bool MappedInputManager::hasTouch() const { return gpio.hasTouch() && renderer != nullptr; }
+bool MappedInputManager::hasTouch() const {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  // Plugin-debug QEMU skips FT6x36 I2C polling. Activities gate on hasTouch()
+  // before wasScreenTapped(); keep true so m4adb synthetic taps still reach UI.
+  return renderer != nullptr;
+#else
+  return gpio.hasTouch() && renderer != nullptr;
+#endif
+}
 
 bool MappedInputManager::wasScreenTapped(int& x, int& y) const {
   if (!tapCacheValid) {

@@ -51,6 +51,10 @@ bool parseKeyName(const char* name, MappedInputManager::Button& out) {
       {"up", MappedInputManager::Button::Up},
       {"Down", MappedInputManager::Button::Down},
       {"down", MappedInputManager::Button::Down},
+      // Murphy M4 side body: KEY_LOCK / power (GPIO0). Short-press policy is
+      // SETTINGS.shortPwrBtn (full refresh / confirm / ignore / …).
+      {"Power", MappedInputManager::Button::Power},
+      {"power", MappedInputManager::Button::Power},
       {"PageBack", MappedInputManager::Button::PageBack},
       {"page_back", MappedInputManager::Button::PageBack},
       {"PageForward", MappedInputManager::Button::PageForward},
@@ -1497,7 +1501,13 @@ bool ensureStaConnected(uint32_t timeoutMs) {
   // first HTTP request disappearing into modem sleep.
   WiFi.setSleep(false);
   if (hasUsableStaAddress()) {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    char ip[16] = {};
+    m4QemuNetLocalIp(ip, sizeof(ip));
+    Serial.printf("[M4DBG] WiFi/eth already up ssid=%s ip=%s\n", m4QemuNetSsid(), ip);
+#else
     Serial.printf("[M4DBG] WiFi already up ssid=%s\n", WiFi.SSID().c_str());
+#endif
     return true;
   }
   WIFI_STORE.loadFromFile();

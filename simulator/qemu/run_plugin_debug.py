@@ -86,24 +86,60 @@ def compose_flash(build_dir: Path) -> Path:
     return flash
 
 
-def make_sd() -> Path:
+def make_sd(*, fresh: bool = False, size_mb: int = 64) -> Path:
+    """Return the plugin-debug SD card image.
+
+    By default **reuses** ``artifacts/murphy-sd.img`` so installs, books, and
+    NVS-adjacent SD files survive QEMU restarts. Pass ``fresh=True`` (CLI
+    ``--fresh-sd``) to wipe and recreate an empty FAT32 image.
+    """
     ART.mkdir(parents=True, exist_ok=True)
     sd = ART / "murphy-sd.img"
+    min_bytes = size_mb * 1024 * 1024
+    if sd.is_file() and sd.stat().st_size >= min_bytes and not fresh:
+        print(
+            f"reuse SD image {sd} ({sd.stat().st_size // (1024 * 1024)} MiB) "
+            f"— data kept across restarts (use --fresh-sd to wipe)",
+            flush=True,
+        )
+        return sd
+    if fresh and sd.is_file():
+        print(f"--fresh-sd: recreating empty FAT32 at {sd}", flush=True)
     run([
         sys.executable, str(HERE / "make_sd_image.py"),
-        str(sd), "--size-mb", "64", "--force",
+        str(sd), "--size-mb", str(size_mb), "--force",
     ])
     return sd
 
 
-def m4adb(pty: str, args: list[str], *, timeout: int = 180, check: bool = True) -> str:
+def m4adb(pty: str, args: list[str], *, timeout: int = 30, check: bool = True) -> str:
+    """Run m4adb with a hard wall-clock kill (subprocess timeout).
+
+    Default used to be 180s with fixed --timeout 25 and a 15s ready floor, so a
+    frozen guest burned minutes. Pass a short ``timeout``; matching
+    --timeout/--ready-timeout are forwarded into m4adb.
+    """
+    inner = max(3, int(timeout) - 2)
     cmd = [
         sys.executable, str(ROOT / "firmware/scripts/m4adb.py"),
-        "--port", pty, "--no-daemon", "--timeout", "25", *args,
+        "--port", pty, "--no-daemon",
+        "--timeout", str(inner),
+        "--ready-timeout", str(min(inner, 12)),
+        *args,
     ]
     print("+", " ".join(shlex.quote(x) for x in cmd), flush=True)
-    cp = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, timeout=timeout)
+    try:
+        cp = subprocess.run(
+            cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or "") if isinstance(e.stdout, str) else ""
+        msg = f"[m4adb] HARD_TIMEOUT {timeout}s: {' '.join(args)}\n{out}"
+        print(msg, end="" if msg.endswith("\n") else "\n", flush=True)
+        if check:
+            raise RuntimeError(msg) from e
+        return msg
     print(cp.stdout, end="")
     if check and cp.returncode:
         raise RuntimeError(f"m4adb {' '.join(args)} failed rc={cp.returncode}")
@@ -121,7 +157,10 @@ def boot(qemu: Path, flash: Path, sd: Path, *, serial_log: Path) -> tuple[subpro
         "-global", "driver=esp32s3.gpio,property=input-default,value=0x100000000007",
         "-global", "driver=ssi_psram,property=is_octal,value=true",
         "-global", "driver=timer.esp32c3.timg,property=wdt_disable,value=true",
-        "-nic", "user,model=open_eth",
+        # open_eth = guest "Wi-Fi" under QEMU. hostfwd lets the host browser
+        # reach the device file-transfer HTTP/WS (ports 80/81) for 传书.
+        "-nic",
+        "user,model=open_eth,hostfwd=tcp::18080-:80,hostfwd=tcp::18081-:81",
         "-serial", "pty",
     ]
     print("+", " ".join(shlex.quote(x) for x in cmd), flush=True)
@@ -173,6 +212,12 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--qemu", help="path to patched qemu-system-xtensa")
     p.add_argument("--skip-build", action="store_true", help="reuse last plugin-debug firmware build")
+    p.add_argument(
+        "--fresh-sd",
+        action="store_true",
+        help="wipe and recreate empty SD image (default: keep /tmp/m4-plugin-debug/artifacts/murphy-sd.img)",
+    )
+    p.add_argument("--sd-size-mb", type=int, default=64, help="SD image size when creating (default 64)")
     p.add_argument("--plugin-src", help="path to plugin source tree for m4adb install")
     p.add_argument("--app-id", help="plugin app id for launch (e.g. com.fanqie.client)")
     p.add_argument("--seconds", type=float, default=90.0, help="max wait for m4adb ready")
@@ -199,13 +244,15 @@ def main(argv: list[str] | None = None) -> int:
             bdir = build_firmware()
 
         flash = compose_flash(bdir)
-        sd = make_sd()
+        sd = make_sd(fresh=bool(args.fresh_sd), size_mb=int(args.sd_size_mb))
         proc, pty = boot(qemu, flash, sd, serial_log=ART / "guest.serial.log")
         try:
             wait_bridge(pty, proc, seconds=args.seconds)
 
             if not args.no_net_check:
-                st = m4adb(pty, ["wifi_status"], timeout=40, check=False)
+                # Hard ceiling: guest freeze must not hold the PTY for a long
+                # post-ready window (agents/scripts race this path).
+                st = m4adb(pty, ["wifi_status"], timeout=12, check=False)
                 (ART / "wifi_status.json").write_text(st, encoding="utf-8")
                 if "qemu-openeth" not in st and '"ready":true' not in st and '"connected":true' not in st:
                     print("WARNING: wifi_status does not show open_eth ready yet:\n", st, flush=True)
@@ -235,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n=== Plugin debug session ===\n"
                   f"PTY: {pty}\n"
                   f"Artifacts: {ART}\n"
+                  f"SD (persistent): {sd}\n"
+                  f"  (reused on next run unless --fresh-sd)\n"
                   f"m4adb example:\n"
                   f"  python3 firmware/scripts/m4adb.py --port {pty} --no-daemon ping\n"
                   f"  python3 firmware/scripts/m4adb.py --port {pty} --no-daemon wifi_status\n"

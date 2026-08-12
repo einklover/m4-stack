@@ -348,6 +348,7 @@ void NativeAppActivity::loop() {
   if (!authRequired) authLoginPrompted_ = false;
 
   if (controller_) {
+    controller_->pollAsync();
     const uint32_t revision = controller_->revision();
     if (revision != controllerRevision_) {
       controllerRevision_ = revision;

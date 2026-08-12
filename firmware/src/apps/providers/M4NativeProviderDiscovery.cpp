@@ -80,8 +80,14 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     tmpPath_ = finalPath_ + ".tmp";
     written_ = 0;
     if (!M4NativeProviderIo::ensureParentDirs(finalPath_)) return false;
-    if (SdMan.exists(tmpPath_.c_str())) SdMan.remove(tmpPath_.c_str());
+    // Stale zero-byte *.tmp from a previous aborted discovery can block FatFS
+    // open-for-write on some cards; force-remove then retry once.
+    if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
     open_ = SdMan.openFileForWrite("NP-DISC", tmpPath_.c_str(), f_);
+    if (!open_) {
+      if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
+      open_ = SdMan.openFileForWrite("NP-DISC", tmpPath_.c_str(), f_);
+    }
     return open_;
   }
 
@@ -363,6 +369,7 @@ void taskMain(void*) {
   } else {
     AtomicRowsSink file;
     if (!file.open(rowsPath(job.appId))) {
+      writeDiscoveryDiag(job.appId, "sd_open_failed", false, 0, "sd_open_failed", 0, 0, false);
       publish(Phase::Error, 0, 0, "sd_open_failed");
     } else if (job.providerId == "legado") {
       // Stream /getBookshelf data[] and rewrite bookUrl → shortId + sidecar.
@@ -423,6 +430,7 @@ void taskMain(void*) {
       if (!parsed) {
         file.discard();
         if (wereadLoginExpired) {
+          writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, "login_required", 0, 0, false);
           publish(Phase::AuthRequired, net.bytes, 0, "login_required");
         } else {
           const std::string error = !net.ok
@@ -432,15 +440,20 @@ void taskMain(void*) {
                                                : M4xJsonStream::errorString(rows.error()));
           if (job.providerId == "weread" &&
               (error == "http_401" || error == "http_403" || error == "login_required")) {
+            writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, error, rows.recordCount(), 0, false);
             publish(Phase::AuthRequired, net.bytes, 0, error);
           } else {
+            writeDiscoveryDiag(job.appId, "error", net.ok, net.bytes, error, rows.recordCount(), 0, false);
             publish(Phase::Error, net.bytes, rows.recordCount(), error);
           }
         }
       } else if (!file.commit()) {
         file.discard();
+        writeDiscoveryDiag(job.appId, "commit_fail", net.ok, net.bytes, "discovery_commit_failed",
+                           rows.recordCount(), 0, false);
         publish(Phase::Error, net.bytes, rows.recordCount(), "discovery_commit_failed");
       } else {
+        writeDiscoveryDiag(job.appId, "ready", net.ok, net.bytes, "-", rows.recordCount(), 0, false);
         publish(Phase::Ready, net.bytes, rows.recordCount());
       }
     }
@@ -476,7 +489,13 @@ bool startCategory(const std::string& providerId, const std::string& appId,
     gSnapshot.updatedMs = gSnapshot.startedMs;
   }
   TaskHandle_t handle = nullptr;
-  if (M4Psram::createTask(taskMain, "NativeDiscovery", 24u * 1024u, nullptr, 1, &handle) != pdPASS) {
+  // Match NativeProvider worker stack budget: mbedTLS + HTTP client + JSON
+  // stream need far more than 24KB. Undersized stacks corrupt under QEMU/device
+  // and look like a frozen guest after fanqie/jjwxc discovery starts.
+  constexpr uint32_t kDiscoveryStackBytes = 72u * 1024u;
+  // Priority 0 (below Arduino loopTask) so TLS/HTTP cannot starve m4adb/UI.
+  if (M4Psram::createTask(taskMain, "NativeDiscovery", kDiscoveryStackBytes, nullptr, 0,
+                          &handle) != pdPASS) {
     gBusy.store(false, std::memory_order_release);
     publish(Phase::Error, 0, 0, "discovery_task_create");
     return false;

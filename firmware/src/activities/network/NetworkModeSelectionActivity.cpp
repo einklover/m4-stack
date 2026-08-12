@@ -63,16 +63,12 @@ void NetworkModeSelectionActivity::loop() {
     const auto sw = mappedInput.wasSwipe();
     if (sw == MappedInputManager::SwipeDir::Up) te.swipe = M4ListTouchPolicy::Swipe::Up;
     else if (sw == MappedInputManager::SwipeDir::Down) te.swipe = M4ListTouchPolicy::Swipe::Down;
-    int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTouchDown(tx, ty)) {
-      te.touchDown = true;
-      te.x = tx;
-      te.y = ty;
-    } else if (mappedInput.wasScreenTapped(tx, ty)) {
-      te.tap = true;
-      te.x = tx;
-      te.y = ty;
-    }
+    // Sample down + tap independently (do not else-if). Synthetic m4adb taps
+    // only set wasScreenTapped; dropping them behind touchDown blocked entry.
+    int dx = 0, dy = 0, tx = 0, ty = 0;
+    const bool down = mappedInput.wasScreenTouchDown(dx, dy);
+    const bool tap = mappedInput.wasScreenTapped(tx, ty);
+    te = M4ListTouchPolicy::mergeFrame(te.backGesture, te.swipe, down, dx, dy, tap, tx, ty);
 
     M4ListTouchPolicy::ListLayout layout;
     layout.listTop = startY;

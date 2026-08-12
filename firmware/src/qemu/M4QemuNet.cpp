@@ -112,6 +112,11 @@ bool m4QemuNetIsUp(void) { return s_up; }
 
 bool m4QemuNetWifiCompatConnected(void) { return s_up; }
 
+const char* m4QemuNetSsid(void) {
+  // Stable fake STA identity so UI / m4adb / visitor store look "on Wi-Fi".
+  return "qemu-openeth";
+}
+
 void m4QemuNetLocalIp(char* out, size_t outLen) {
   if (!out || !outLen) return;
   if (!s_up) {
