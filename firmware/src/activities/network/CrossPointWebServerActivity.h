@@ -13,23 +13,15 @@
 
 // Web server activity states
 enum class WebServerActivityState {
-  MODE_SELECTION,  // Choosing between Join Network and Create Hotspot
-  WIFI_SELECTION,  // WiFi selection subactivity is active (for Join Network mode)
-  AP_STARTING,     // Starting Access Point mode
-  SERVER_RUNNING,  // Web server is running and handling requests
-  SHUTTING_DOWN    // Shutting down server and WiFi
+  MODE_SELECTION,
+  WIFI_SELECTION,
+  AP_STARTING,
+  SERVER_RUNNING,
+  ERROR,
+  SHUTTING_DOWN
 };
 
-/**
- * CrossPointWebServerActivity is the entry point for file transfer functionality.
- * It:
- * - First presents a choice between "Join a Network" (STA), "Connect to Calibre", and "Create Hotspot" (AP)
- * - For STA mode: Launches WifiSelectionActivity to connect to an existing network
- * - For AP mode: Creates an Access Point that clients can connect to
- * - Starts the CrossPointWebServer when connected
- * - Handles client requests in its loop() function
- * - Cleans up the server and shuts down WiFi on exit
- */
+/** File-transfer entry activity: mode selection → network setup → server. */
 class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
@@ -37,28 +29,21 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   WebServerActivityState state = WebServerActivityState::MODE_SELECTION;
   const std::function<void()> onGoBack;
 
-  // Network mode
   NetworkMode networkMode = NetworkMode::JOIN_NETWORK;
   bool isApMode = false;
-
-  // Web server - owned by this activity
   std::unique_ptr<CrossPointWebServer> webServer;
-
-  // Server status
   std::string connectedIP;
-  std::string connectedSSID;  // For STA mode: network name, For AP mode: AP name
-  // USB debug can pre-connect the saved STA credentials and jump straight to
-  // the transfer page.  If the link is not ready, fall back to the normal
-  // touch-selectable mode screen.
+  std::string connectedSSID;
+  std::string setupError;
   bool autoStartSavedSta = false;
-
-  // Performance monitoring
   unsigned long lastHandleClientTime = 0;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
   void render() const;
   void renderServerRunning() const;
+  void showSetupError(const char* message);
+  void reopenModeSelection();
 
   void onNetworkModeSelected(NetworkMode mode);
   void onWifiSelectionComplete(bool connected);
@@ -74,7 +59,6 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  // QEMU: never tight-spin the main loop (starves m4adb when transfer is up).
   bool skipLoopDelay() override {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
     return false;
