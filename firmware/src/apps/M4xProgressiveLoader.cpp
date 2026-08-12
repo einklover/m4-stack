@@ -81,7 +81,6 @@ void Session::writeOkMarker() {
 }
 
 void Session::removeOutputs() {
-  // Drop incomplete / failed body so the next open cannot cache-hit wrong text.
   if (!absOut_.empty() && SdMan.exists(absOut_.c_str())) {
     (void)SdMan.remove(absOut_.c_str());
   }
@@ -113,9 +112,6 @@ void Session::fail(const char* e) {
   sink_.reset();
   scalar_.reset();
   records_.reset();
-  // Incomplete download must not become a cache hit (wrong book / half chapter).
-  // If we already early-opened, keep the partial for the live reader but strip .ok
-  // so the next open re-fetches a full clean body.
   if (!streamComplete_) {
     if (!early_) {
       removeOutputs();
@@ -147,7 +143,6 @@ void Session::cancel() {
   sink_.reset();
   scalar_.reset();
   records_.reset();
-  // Cancel mid-flight: never leave a complete-looking cache for another book/chapter.
   if (!streamComplete_) {
     if (!early_) {
       removeOutputs();
@@ -165,13 +160,11 @@ void Session::cancel() {
 }
 
 bool Session::openOutFile(std::string& err) {
-  // Ensure parent dirs exist (cache/<book>/...).
   {
     const size_t slash = absOut_.find_last_of('/');
     if (slash != std::string::npos && slash > 0) {
       const std::string dir = absOut_.substr(0, slash);
       if (!SdMan.exists(dir.c_str())) {
-        // Best-effort nested mkdir.
         size_t pos = 1;
         while (pos < dir.size()) {
           const size_t n = dir.find('/', pos);
@@ -205,16 +198,12 @@ bool Session::connectHttp(const std::string& url,
   return false;
 #else
   secure_ = std::make_unique<WiFiClientSecure>();
-  secure_->setInsecure();  // mirrors many public content CDN paths; cert bundle optional
+  secure_->setInsecure();
   http_ = std::make_unique<HTTPClient>();
-  // Keep the socket alive for the whole cooperative stream.  The same
-  // HTTPClient is retained across pump() slices, so this avoids reconnecting
-  // while the reader is already consuming the first bytes.
   http_->setReuse(true);
   http_->setTimeout(static_cast<int>(timeoutMs_));
   http_->setFollowRedirects(followRedirects ? HTTPC_FORCE_FOLLOW_REDIRECTS
                                             : HTTPC_DISABLE_FOLLOW_REDIRECTS);
-  // Need Transfer-Encoding to decode chunked CDN bodies (晋江 app-cdn is chunked).
   static const char* kHdrKeys[] = {"Transfer-Encoding", "Content-Encoding", "Content-Type"};
   http_->collectHeaders(kHdrKeys, 3);
   if (!http_->begin(*secure_, url.c_str())) {
@@ -233,14 +222,10 @@ bool Session::connectHttp(const std::string& url,
   if (!hasUA) {
     http_->addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 M4xApp/1.0");
   }
-  // Avoid gzip on the progressive path (no inflate); prefer plain / chunked.
   if (!hasAE) http_->addHeader("Accept-Encoding", "identity");
   const int code = http_->GET();
   if (code != HTTP_CODE_OK) {
     err = (code < 0) ? "http_request_failed" : "http_error";
-    // Diagnostic: serial is unreliable on M4; record internal heap state at
-    // TLS handshake failure (jjwxc chapter/TOC fetch failing). Largest free
-    // block tells us if the ~40KB mbedTLS handshake requirement was met.
 #if defined(ARDUINO_ARCH_ESP32)
     FsFile df = SdMan.open("apps_data/com.jjwxc.client/logs/loader_heap.log",
                            O_WRONLY | O_CREAT | O_APPEND);
@@ -262,7 +247,6 @@ bool Session::connectHttp(const std::string& url,
     err = "response_too_large";
     return false;
   }
-  // Detect body framing. getSize()>0 ⇒ Content-Length path.
   bodyMode_ = BodyMode::UntilClose;
   contentRemain_ = 0;
   chunkPhase_ = ChunkPhase::SizeLine;
@@ -280,15 +264,16 @@ bool Session::connectHttp(const std::string& url,
       const char c = te[i];
       teLower.push_back(static_cast<char>((c >= 'A' && c <= 'Z') ? c + 32 : c));
     }
-    if (teLower.find("chunked") != std::string::npos) {
-      bodyMode_ = BodyMode::Chunked;
-    }
+    if (teLower.find("chunked") != std::string::npos) bodyMode_ = BodyMode::Chunked;
   }
   stream_ = http_->getStreamPtr();
   if (!stream_) {
     err = "no_stream";
     return false;
   }
+  // timeoutMs_ is an inactivity timeout, not a maximum lifetime for the whole
+  // response. A long catalog may legitimately stream for minutes.
+  startMs_ = nowMs();
 #if defined(ARDUINO_ARCH_ESP32)
   Serial.printf("[LOADER] connected mode=%d cl=%d te=%s\n", static_cast<int>(bodyMode_), cl,
                 http_->header("Transfer-Encoding").c_str());
@@ -304,6 +289,10 @@ bool Session::acceptPayload(const uint8_t* data, size_t len) {
     return false;
   }
   bytes_ += len;
+  // Any decoded payload is forward progress. Renew the inactivity window so a
+  // healthy multi-megabyte / multi-thousand-row catalog cannot time out merely
+  // because its total transfer duration exceeds timeoutMs_.
+  startMs_ = nowMs();
   if (kind_ == Kind::Chapter) {
     if (rawBody_) {
       if (!sink_ || !sink_->write(data, len)) {
@@ -348,7 +337,6 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
   }
 
   size_t produced = 0;
-
   while (produced < want) {
     if (static_cast<uint32_t>(nowMs() - startMs_) >= timeoutMs_) {
       *hardFail = "timeout";
@@ -421,14 +409,12 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
       continue;
     }
 
-    // Chunked
     if (chunkPhase_ == ChunkPhase::Done) {
       bodyEof_ = true;
       *more = false;
       break;
     }
     if (chunkPhase_ == ChunkPhase::SizeLine) {
-      // Read until \n
       while (chunkLine_.size() < 32) {
         const int avail = stream_->available();
         if (avail <= 0) {
@@ -446,44 +432,26 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
         if (stream_->read(&c, 1) != 1) return produced;
         if (c == '\n') {
           if (!chunkLine_.empty() && chunkLine_.back() == '\r') chunkLine_.pop_back();
-          // parse hex size
           size_t sz = 0;
           bool ok = false;
           for (char ch : chunkLine_) {
             if (ch == ';') break;
             size_t v = 0;
-            if (ch >= '0' && ch <= '9')
-              v = static_cast<size_t>(ch - '0');
-            else if (ch >= 'a' && ch <= 'f')
-              v = static_cast<size_t>(ch - 'a' + 10);
-            else if (ch >= 'A' && ch <= 'F')
-              v = static_cast<size_t>(ch - 'A' + 10);
-            else {
-              ok = false;
-              break;
-            }
+            if (ch >= '0' && ch <= '9') v = static_cast<size_t>(ch - '0');
+            else if (ch >= 'a' && ch <= 'f') v = static_cast<size_t>(ch - 'a' + 10);
+            else if (ch >= 'A' && ch <= 'F') v = static_cast<size_t>(ch - 'A' + 10);
+            else { ok = false; break; }
             sz = (sz << 4) + v;
             ok = true;
           }
           chunkLine_.clear();
-          if (!ok && sz == 0) {
-            // empty size line after previous? treat as error unless truly "0"
-            *hardFail = "chunk_size_parse";
-            *more = false;
-            return produced;
-          }
-          // ok can be true for "0"
           if (!ok) {
             *hardFail = "chunk_size_parse";
             *more = false;
             return produced;
           }
-          if (sz == 0) {
-            chunkPhase_ = ChunkPhase::Trailers;
-          } else {
-            chunkRemain_ = sz;
-            chunkPhase_ = ChunkPhase::Data;
-          }
+          if (sz == 0) chunkPhase_ = ChunkPhase::Trailers;
+          else { chunkRemain_ = sz; chunkPhase_ = ChunkPhase::Data; }
           break;
         }
         chunkLine_.push_back(static_cast<char>(c));
@@ -532,7 +500,6 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
 
     if (chunkPhase_ == ChunkPhase::CrlfAfterData) {
       uint8_t crlf[2];
-      // need 2 bytes
       size_t got = 0;
       while (got < 2) {
         const int avail = stream_->available();
@@ -561,7 +528,6 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
     }
 
     if (chunkPhase_ == ChunkPhase::Trailers) {
-      // Read lines until empty line
       while (true) {
         if (chunkLine_.size() > 256) {
           *hardFail = "chunk_trailer";
@@ -571,7 +537,6 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
         const int avail = stream_->available();
         if (avail <= 0) {
           if (!stream_->connected()) {
-            // trailers optional; EOF ok
             chunkPhase_ = ChunkPhase::Done;
             bodyEof_ = true;
             *more = false;
@@ -606,23 +571,14 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
 void Session::maybeEarlyChapter() {
   if (early_ || kind_ != Kind::Chapter) return;
   const size_t n = sink_ ? sink_->written() : bytes_;
-  // earlyBytes == 0 means "open only when stream is complete" (fanqie sets
-  // this so partial pagination never freezes at ~few pages).  size_t n < 0 is
-  // never true, so without this guard early_bytes=0 would fire at 1 byte.
   if (earlyThreshold_ == 0 && !streamComplete_ && phase_ != Phase::Done) return;
   if (n < earlyThreshold_ && !streamComplete_ && phase_ != Phase::Done) return;
   if (n < 1) return;
   if (sink_) sink_->forceFlush();
   chapter_.open.relPath = relOut_;
   chapter_.open.absPath = absOut_;
-  // Mid-stream early open: pendingComplete so the native reader shows a
-  // loading placeholder; finishOk re-opens with pendingComplete=false.
-  // Complete-stream open (finishOk path): open real reader immediately.
   chapter_.open.pendingComplete = !streamComplete_;
-  if (!M4PluginReaderSession::queueOpen(chapter_.open)) {
-    // Keep streaming; plugin may retry open.
-    return;
-  }
+  if (!M4PluginReaderSession::queueOpen(chapter_.open)) return;
   early_ = true;
   if (phase_ == Phase::Streaming) phase_ = Phase::EarlyOpened;
 #if defined(ARDUINO_ARCH_ESP32)
@@ -635,7 +591,6 @@ void Session::publishTocRows(size_t rows) {
   if (kind_ != Kind::Toc || rows < 1) return;
   if (rows <= lastPublishedRows_) return;
   lastPublishedRows_ = rows;
-  // Registry: plugins / resolveCatalogWork see the latest count.
   if (!toc_.open.providerId.empty() && !toc_.open.bookId.empty()) {
     M4ContentProvider::BookSpec spec;
     spec.providerId = toc_.open.providerId;
@@ -651,7 +606,6 @@ void Session::publishTocRows(size_t rows) {
     spec.catalog.vipField0 = toc_.vipField0;
     (void)M4ContentProviderSession::registerBook(spec);
   }
-  // Live native TOC picker (if already open after early handoff).
   (void)M4PluginTocList::publishLiveCatalogRowCount(rows);
 }
 
@@ -659,7 +613,6 @@ void Session::maybeEarlyToc() {
   if (kind_ != Kind::Toc) return;
   if (records_) rows_ = records_->recordCount();
   if (rows_ < 1) return;
-  // Always push growth to live picker / registry while streaming.
   if (sink_) sink_->forceFlush();
   publishTocRows(rows_);
   if (early_) return;
@@ -681,16 +634,9 @@ void Session::finishOk() {
   closeHttp();
   bytes_ = sink_ ? sink_->written() : bytes_;
   if (kind_ == Kind::Toc && records_) rows_ = records_->recordCount();
-  // Final catalog size → live TOC picker grows to full list.
   if (kind_ == Kind::Toc) publishTocRows(rows_);
-  // Body is complete before any open decision.  Must set this *before*
-  // maybeEarlyChapter / final re-open: pendingComplete = !streamComplete_,
-  // and the early→final branch used to check streamComplete_ while it was
-  // still false, so every progressive chapter stuck on the "加载中…"
-  // placeholder forever (both fanqie and jjwxc).
   streamComplete_ = true;
   if (!early_) {
-    // Tiny chapter / short toc: first (and only) open with complete body.
     if (kind_ == Kind::Chapter) {
       earlyThreshold_ = 0;
       maybeEarlyChapter();
@@ -699,8 +645,6 @@ void Session::finishOk() {
       maybeEarlyToc();
     }
   } else if (kind_ == Kind::Chapter) {
-    // Early open showed a loading placeholder (pendingComplete=true).
-    // Re-open so the reader paginates the full file.
     chapter_.open.relPath = relOut_;
     chapter_.open.absPath = absOut_;
     chapter_.open.pendingComplete = false;
@@ -710,7 +654,7 @@ void Session::finishOk() {
 #endif
     }
   }
-  writeOkMarker();  // only fully finished bodies are cache-eligible
+  writeOkMarker();
   phase_ = Phase::Done;
   scalar_.reset();
   records_.reset();
@@ -743,8 +687,6 @@ bool Session::beginChapter(ChapterSpec spec, std::string& err) {
   chunkLine_.clear();
   bodyEof_ = false;
 
-  // Cache hit only when a previous stream fully finished (.ok marker).
-  // Partial early-open leftovers must not open as "another book's chapter".
   if (hasCompleteCache()) {
     FsFile f;
     if (SdMan.openFileForRead("LOAD", absOut_.c_str(), f)) {
@@ -768,9 +710,7 @@ bool Session::beginChapter(ChapterSpec spec, std::string& err) {
     }
   }
 
-  // Stale partial without .ok: wipe before rewrite.
   removeOutputs();
-
   if (!openOutFile(err)) {
     fail(err.c_str());
     return false;
@@ -778,9 +718,6 @@ bool Session::beginChapter(ChapterSpec spec, std::string& err) {
   if (!rawBody_) {
     scalar_ = std::make_unique<M4xJsonStream::ScalarStreamExtractor>(chapter_.jsonPath, chapter_.field, *sink_);
   }
-  // Defer TLS/HTTP connect to first pump() so Lua can paint "connecting…" first.
-  // TLS is record-streamed (no need to download whole body before decrypt);
-  // the handshake + TTFB still block one pump slice (~1–3s on weak Wi‑Fi).
   phase_ = Phase::Connecting;
   return true;
 }
@@ -810,7 +747,6 @@ bool Session::beginToc(TocSpec spec, std::string& err) {
   if (hasCompleteCache()) {
     FsFile f;
     if (SdMan.openFileForRead("LOAD", absOut_.c_str(), f)) {
-      // Count lines quickly for cache hit.
       size_t lines = 0;
       char buf[256];
       while (f.available()) {
@@ -839,13 +775,11 @@ bool Session::beginToc(TocSpec spec, std::string& err) {
   }
 
   removeOutputs();
-
   if (!openOutFile(err)) {
     fail(err.c_str());
     return false;
   }
   records_ = std::make_unique<M4xJsonStream::RecordExtractor>(toc_.jsonPath, toc_.fields, *sink_);
-  // Defer connect — same as chapter (UI can show connecting before handshake).
   phase_ = Phase::Connecting;
   return true;
 }
@@ -858,8 +792,6 @@ bool Session::pump(uint32_t budgetMs, size_t budgetBytes) {
   fail("loader_device_only");
   return false;
 #else
-  // Connecting slice: TLS handshake + HTTP headers only. Return so the host
-  // can repaint progress before body streaming starts.
   if (phase_ == Phase::Connecting) {
     std::string err;
     const auto& url = (kind_ == Kind::Chapter) ? chapter_.url : toc_.url;
@@ -897,15 +829,13 @@ bool Session::pump(uint32_t budgetMs, size_t budgetBytes) {
       if (!acceptPayload(buf, n)) return false;
       got += n;
     } else if (!more) {
-      break;  // clean EOF of body framing
+      break;
     } else {
-      // No decoded bytes this slice (waiting on socket).
       return true;
     }
     if (!more) break;
   }
 
-  // Body framing complete?
   if (bodyEof_) {
     if (kind_ == Kind::Chapter && !rawBody_ && scalar_) {
       if (!scalar_->finish()) {
@@ -934,13 +864,12 @@ bool Session::pump(uint32_t budgetMs, size_t budgetBytes) {
     finishOk();
     return false;
   }
-  // Mid-stream TOC growth (early already open).
   if (kind_ == Kind::Toc && early_ && records_) {
     rows_ = records_->recordCount();
     if (sink_) sink_->forceFlush();
     publishTocRows(rows_);
   }
-  return true;  // more work
+  return true;
 #endif
 }
 
