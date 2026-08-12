@@ -11,10 +11,10 @@
 #include "EpdFont.h"
 #include "TtfReader.h"
 
-// Runtime TrueType font backend for the existing EpdFont interface.
+// Runtime sfnt font backend for the existing EpdFont interface.
 //
 // The same rasterizer can read either:
-//   * an SD path (normal user/reader TTF), or
+//   * an SD path (normal user/reader TTF/TTC/OTF/OTC), or
 //   * a const byte array in memory-mapped flash (tiny built-in emergency TTF).
 //
 // Only the table directory + cmap + bounded LRU metadata stay resident. Glyph
@@ -48,13 +48,13 @@ class TtfEpdFont : public EpdFont {
   bool isRuntimeTtf() const override { return true; }
 
   bool valid() const { return valid_; }
-  const char* lastError() const { return font_.lastError(); }
+  const char* lastError() const { return runtimeError_.length() ? runtimeError_.c_str() : font_.lastError(); }
   uint16_t sizePx() const { return sizePx_; }
   uint16_t maxSlots() const { return maxSlots_; }
   size_t cacheBudget() const { return cacheBudget_; }
 
   // Exact cmap coverage check without the getGlyph() '?' fallback. UI code
-  // uses this before replacing the built-in CJK chrome with a user TTF so a
+  // uses this before replacing the built-in CJK chrome with a user font so a
   // partial/Latin font cannot turn system labels into question marks.
   bool hasCodepoint(uint32_t cp) const {
     uint16_t gid = 0;
@@ -81,6 +81,7 @@ class TtfEpdFont : public EpdFont {
   bool finishInit(const char* sourceLabel);
 
   String path_;
+  String runtimeError_;
   uint16_t sizePx_ = 0;
   uint16_t maxSlots_ = kDefaultRuntimeSlots;
   size_t cacheBudget_ = kDefaultRuntimeBudget;
