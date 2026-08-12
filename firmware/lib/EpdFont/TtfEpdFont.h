@@ -71,7 +71,9 @@ class TtfEpdFont : public EpdFont {
   size_t cacheBudget_ = kDefaultRuntimeBudget;
   bool valid_ = false;
   Backend backend_ = Backend::Glyf;
-  uint32_t cffFaceOffset_ = 0;
+  // Absolute sfnt directory offset in the original stream. Zero for standalone
+  // fonts; non-zero for both glyf and CFF1 faces inside TTC/OTC collections.
+  uint32_t faceOffset_ = 0;
   EpdFontData data_{};
 
   ttf::TtfStream* stream_ = nullptr;
