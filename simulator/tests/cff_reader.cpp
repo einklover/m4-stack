@@ -40,7 +40,7 @@ std::vector<uint8_t> makeCff() {
   // Top DICT size is fixed because offsets are encoded as 5-byte longints.
   // We build once with placeholders, then derive table-relative offsets.
   std::vector<uint8_t> top;
-  dictInt(top, 0); top.push_back(17);                 // CharStrings
+  dictInt(top, 0); top.push_back(17);                    // CharStrings
   dictInt(top, 2); dictInt(top, 0); top.push_back(18);  // Private size/off
   const size_t topIndexStart = cff.size();
   addIndex(cff, {top});
@@ -53,9 +53,10 @@ std::vector<uint8_t> makeCff() {
   cff.push_back(139); cff.push_back(20);  // defaultWidthX=0
 
   // Top INDEX layout: count(2), offSize(1), two offsets(4), then dict bytes.
+  // Each DICT longint is opcode 29 followed by four value bytes.
   const size_t dictAbs = topIndexStart + 7;
-  put32(cff, dictAbs + 1, charStringsRel);  // after operator 29
-  put32(cff, dictAbs + 8, privateRel);      // second longint of Private
+  put32(cff, dictAbs + 1, charStringsRel);  // CharStrings longint value
+  put32(cff, dictAbs + 12, privateRel);     // Private offset longint value
   return cff;
 }
 
