@@ -8,6 +8,7 @@
 #include <esp_task_wdt.h>
 
 #include <cstddef>
+#include <cstring>
 #include <new>
 
 #include "MappedInputManager.h"
@@ -26,6 +27,7 @@ using namespace NetworkConstants;
 
 namespace {
 DNSServer* dnsServer = nullptr;
+
 void logInternalHeap(const char* where) {
   Serial.printf("[%lu] [WEBACT] [MEM] %s internal_free=%u largest=%u total_heap=%u\n", millis(), where,
                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -41,6 +43,7 @@ void CrossPointWebServerActivity::taskTrampoline(void* param) {
 void CrossPointWebServerActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   logInternalHeap("onEnter");
+
   renderingMutex = xSemaphoreCreateMutex();
   state = WebServerActivityState::MODE_SELECTION;
   networkMode = NetworkMode::JOIN_NETWORK;
@@ -49,6 +52,7 @@ void CrossPointWebServerActivity::onEnter() {
   connectedSSID.clear();
   setupError.clear();
   lastHandleClientTime = 0;
+  pendingParentAction = PendingParentAction::None;
   updateRequired = true;
 
   xTaskCreate(&CrossPointWebServerActivity::taskTrampoline, "WebServerActivityTask", 2048, this, 1,
@@ -66,11 +70,13 @@ void CrossPointWebServerActivity::onEnter() {
     startWebServer();
     return;
   }
+
   reopenModeSelection();
 }
 
 void CrossPointWebServerActivity::onExit() {
   ActivityWithSubactivity::onExit();
+  pendingParentAction = PendingParentAction::None;
   state = WebServerActivityState::SHUTTING_DOWN;
   stopWebServer();
   MDNS.end();
@@ -90,6 +96,7 @@ void CrossPointWebServerActivity::onExit() {
   delay(300);
 #endif
   logInternalHeap("after network stop");
+
   if (renderingMutex) xSemaphoreTake(renderingMutex, portMAX_DELAY);
   if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
@@ -102,9 +109,6 @@ void CrossPointWebServerActivity::onExit() {
 }
 
 void CrossPointWebServerActivity::showSetupError(const char* message) {
-  // Error UI must not retain the resources that just failed. In particular an
-  // AP can succeed while the HTTP server fails; keeping AP/DNS alive here
-  // fragments internal heap and makes a retry less likely to succeed.
   stopWebServer();
   MDNS.end();
   if (dnsServer) {
@@ -118,6 +122,7 @@ void CrossPointWebServerActivity::showSetupError(const char* message) {
     WiFi.mode(WIFI_OFF);
   }
 #endif
+  pendingParentAction = PendingParentAction::None;
   setupError = message ? message : "Network setup failed";
   state = WebServerActivityState::ERROR;
   updateRequired = true;
@@ -125,6 +130,7 @@ void CrossPointWebServerActivity::showSetupError(const char* message) {
 }
 
 void CrossPointWebServerActivity::reopenModeSelection() {
+  pendingParentAction = PendingParentAction::None;
   setupError.clear();
   state = WebServerActivityState::MODE_SELECTION;
   enterNewActivity(new NetworkModeSelectionActivity(
@@ -132,18 +138,54 @@ void CrossPointWebServerActivity::reopenModeSelection() {
       [this]() { onGoBack(); }));
 }
 
+void CrossPointWebServerActivity::runPendingParentAction() {
+  if (subActivity || pendingParentAction == PendingParentAction::None) return;
+  const PendingParentAction action = pendingParentAction;
+  pendingParentAction = PendingParentAction::None;
+
+  switch (action) {
+    case PendingParentAction::StartAccessPoint:
+      state = WebServerActivityState::AP_STARTING;
+      updateRequired = true;
+      startAccessPoint();
+      return;
+    case PendingParentAction::EnterWifiSelection:
+      WiFi.mode(WIFI_STA);
+      state = WebServerActivityState::WIFI_SELECTION;
+      enterNewActivity(new WifiSelectionActivity(
+          renderer, mappedInput, [this](const bool connected) { onWifiSelectionComplete(connected); }));
+      return;
+    case PendingParentAction::StartWebServer:
+      if (!isApMode && MDNS.begin(AP_HOSTNAME)) {
+        Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
+      }
+      startWebServer();
+      return;
+    case PendingParentAction::None:
+      return;
+  }
+}
+
 void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
   networkMode = mode;
-  isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
-  exitActivity();
+  isApMode = mode == NetworkMode::CREATE_HOTSPOT;
 
   if (mode == NetworkMode::CONNECT_CALIBRE) {
+    // enterNewActivity() is deferred by ActivityWithSubactivity while the mode
+    // child's callback frame is active. Calibre::onEnter therefore happens only
+    // after NetworkModeSelection's 4KB display task has been destroyed.
     enterNewActivity(new CalibreConnectActivity(renderer, mappedInput, [this] {
       exitActivity();
       reopenModeSelection();
     }));
     return;
   }
+
+  // Do not initialize WiFi/AP/HTTP while NetworkModeSelection is still alive.
+  // Its display task uses a 4096-byte stack from the same internal heap needed
+  // by WiFi/LWIP. Record one byte of intent and execute it after the safe child
+  // pump has completed the child's onExit().
+  exitActivity();
 
   if (mode == NetworkMode::JOIN_NETWORK) {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
@@ -153,14 +195,11 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
       connectedSSID = M4QemuNet::ssidStd();
       if (connectedIP.empty()) connectedIP = "10.0.2.15";
       if (connectedSSID.empty()) connectedSSID = "qemu-openeth";
-      startWebServer();
+      pendingParentAction = PendingParentAction::StartWebServer;
       return;
     }
 #endif
-    WiFi.mode(WIFI_STA);
-    state = WebServerActivityState::WIFI_SELECTION;
-    enterNewActivity(new WifiSelectionActivity(renderer, mappedInput,
-                                               [this](const bool connected) { onWifiSelectionComplete(connected); }));
+    pendingParentAction = PendingParentAction::EnterWifiSelection;
     return;
   }
 
@@ -171,17 +210,18 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     connectedSSID = M4QemuNet::ssidStd();
     if (connectedIP.empty()) connectedIP = "10.0.2.15";
     if (connectedSSID.empty()) connectedSSID = "qemu-openeth";
-    startWebServer();
+    pendingParentAction = PendingParentAction::StartWebServer;
     return;
   }
 #endif
-  state = WebServerActivityState::AP_STARTING;
-  updateRequired = true;
-  startAccessPoint();
+
+  pendingParentAction = PendingParentAction::StartAccessPoint;
 }
 
 void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) {
   if (connected) {
+    // Read child-owned data before requesting its deferred teardown, but defer
+    // HTTP/mDNS startup until the child's display task has actually been freed.
     if (subActivity) {
       connectedIP = static_cast<WifiSelectionActivity*>(subActivity.get())->getConnectedIP();
     }
@@ -190,10 +230,7 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
     if (connectedSSID.empty()) connectedSSID = WiFi.SSID().c_str();
     isApMode = false;
     exitActivity();
-    if (MDNS.begin(AP_HOSTNAME)) {
-      Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
-    }
-    startWebServer();
+    pendingParentAction = PendingParentAction::StartWebServer;
   } else {
     exitActivity();
     reopenModeSelection();
@@ -201,7 +238,7 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
 }
 
 void CrossPointWebServerActivity::startAccessPoint() {
-  logInternalHeap("before AP start");
+  logInternalHeap("before AP start (selection child released)");
   WiFi.mode(WIFI_AP);
   delay(100);
   const bool apStarted = (AP_PASSWORD && strlen(AP_PASSWORD) >= 8)
@@ -217,6 +254,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
   snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", apIP[0], apIP[1], apIP[2], apIP[3]);
   connectedIP = ipStr;
   connectedSSID = AP_SSID;
+
   if (MDNS.begin(AP_HOSTNAME)) {
     Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
   }
@@ -233,6 +271,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
 }
 
 void CrossPointWebServerActivity::startWebServer() {
+  logInternalHeap("before web server start");
   webServer.reset(new (std::nothrow) CrossPointWebServer());
   if (!webServer) {
     showSetupError("Web server memory allocation failed");
@@ -247,9 +286,11 @@ void CrossPointWebServerActivity::startWebServer() {
   setupError.clear();
   state = WebServerActivityState::SERVER_RUNNING;
   updateRequired = true;
-  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  logInternalHeap("after web server start");
+
+  if (renderingMutex) xSemaphoreTake(renderingMutex, portMAX_DELAY);
   render();
-  xSemaphoreGive(renderingMutex);
+  if (renderingMutex) xSemaphoreGive(renderingMutex);
 }
 
 void CrossPointWebServerActivity::stopWebServer() {
@@ -262,8 +303,13 @@ void CrossPointWebServerActivity::stopWebServer() {
 void CrossPointWebServerActivity::loop() {
   if (subActivity) {
     pumpSubActivityFrame();
+    if (!subActivity) runPendingParentAction();
     return;
   }
+
+  runPendingParentAction();
+  if (subActivity) return;
+
   if (state == WebServerActivityState::SHUTTING_DOWN) {
     onGoBack();
     return;
@@ -361,6 +407,7 @@ void CrossPointWebServerActivity::render() const {
 void CrossPointWebServerActivity::renderServerRunning() const {
   constexpr int LINE_SPACING = 28;
   M4UiText::drawCentered(renderer, UI_12_FONT_ID, 15, L(Str::kFileTransfer), true, EpdFontFamily::BOLD);
+
   if (isApMode) {
     int startY = 55;
     const std::string ssidInfo = std::string(L(Str::kWifiName)) + connectedSSID;
@@ -396,6 +443,7 @@ void CrossPointWebServerActivity::renderServerRunning() const {
                              webInfo);
     renderer.drawCenteredText(SMALL_FONT_ID, startY + LINE_SPACING * 5, "or scan QR code with your phone:");
   }
+
   const auto labels = mappedInput.mapLabels(L(Str::kBack), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
 }
