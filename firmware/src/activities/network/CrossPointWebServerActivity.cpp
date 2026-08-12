@@ -134,20 +134,11 @@ void CrossPointWebServerActivity::onExit() {
   delay(300);  // Allow WiFi hardware to power down
 #endif
 
-  // 注意：Arduino WiFi 库已经封装了 esp_wifi_stop/deinit
-  // WiFi.mode(WIFI_OFF) 内部会调用 esp_wifi_stop()
-  // 但不会调用 esp_wifi_deinit()，因为 Arduino 假设 WiFi 可能会被重新使用
-  // 在 ESP32-C3 上，WiFi 协议栈占用的内存约 30-50KB
-  // 由于我们使用 Arduino 框架，无法强制释放这部分内存
-  // 只能通过减少 WiFi 使用频率来缓解
-
   Serial.printf("[%lu] [WEBACT] [MEM] Free heap after WiFi disconnect: %d bytes\n", millis(), ESP.getFreeHeap());
 
-  // Acquire mutex before deleting task
   Serial.printf("[%lu] [WEBACT] Acquiring rendering mutex before task deletion...\n", millis());
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
 
-  // Delete the display task
   Serial.printf("[%lu] [WEBACT] Deleting display task...\n", millis());
   if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
@@ -155,7 +146,6 @@ void CrossPointWebServerActivity::onExit() {
     Serial.printf("[%lu] [WEBACT] Display task deleted\n", millis());
   }
 
-  // Delete the mutex
   Serial.printf("[%lu] [WEBACT] Deleting mutex...\n", millis());
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
@@ -176,7 +166,6 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   networkMode = mode;
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
 
-  // Exit mode selection subactivity
   exitActivity();
 
   if (mode == NetworkMode::CONNECT_CALIBRE) {
@@ -193,7 +182,6 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
 
   if (mode == NetworkMode::JOIN_NETWORK) {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
-    // No ESP Wi-Fi radio in QEMU — open_eth already provides IP.
     if (m4QemuNetWifiCompatConnected()) {
       isApMode = false;
       connectedIP = M4QemuNet::localIpStd();
@@ -206,7 +194,6 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
       return;
     }
 #endif
-    // STA mode - launch WiFi selection
     Serial.printf("[%lu] [WEBACT] Turning on WiFi (STA mode)...\n", millis());
     WiFi.mode(WIFI_STA);
 
@@ -216,8 +203,6 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
                                                [this](const bool connected) { onWifiSelectionComplete(connected); }));
   } else {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
-    // Mode1 softAP is not modeled in QEMU. After the 三选一 choice, still open
-    // the transfer page on open_eth so the path is exercisable (hostfwd :18080).
     if (mode == NetworkMode::CREATE_HOTSPOT && m4QemuNetWifiCompatConnected()) {
       isApMode = false;
       connectedIP = M4QemuNet::localIpStd();
@@ -231,7 +216,6 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
       return;
     }
 #endif
-    // AP mode - start access point
     state = WebServerActivityState::AP_STARTING;
     updateRequired = true;
     startAccessPoint();
@@ -242,7 +226,6 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
   Serial.printf("[%lu] [WEBACT] WifiSelectionActivity completed, connected=%d\n", millis(), connected);
 
   if (connected) {
-    // Get connection info before exiting subactivity
     connectedIP = static_cast<WifiSelectionActivity*>(subActivity.get())->getConnectedIP();
     if (connectedIP.empty() || connectedIP == "0.0.0.0") {
       connectedIP = M4QemuNet::localIpStd();
@@ -253,15 +236,12 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
 
     exitActivity();
 
-    // Start mDNS for hostname resolution
     if (MDNS.begin(AP_HOSTNAME)) {
       Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
     }
 
-    // Start the web server
     startWebServer();
   } else {
-    // User cancelled - go back to mode selection
     exitActivity();
     state = WebServerActivityState::MODE_SELECTION;
     enterNewActivity(new NetworkModeSelectionActivity(
@@ -274,16 +254,13 @@ void CrossPointWebServerActivity::startAccessPoint() {
   Serial.printf("[%lu] [WEBACT] Starting Access Point mode...\n", millis());
   Serial.printf("[%lu] [WEBACT] [MEM] Free heap before AP start: %d bytes\n", millis(), ESP.getFreeHeap());
 
-  // Configure and start the AP
   WiFi.mode(WIFI_AP);
   delay(100);
 
-  // Start soft AP
   bool apStarted;
   if (AP_PASSWORD && strlen(AP_PASSWORD) >= 8) {
     apStarted = WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
   } else {
-    // Open network (no password)
     apStarted = WiFi.softAP(AP_SSID, nullptr, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
   }
 
@@ -293,9 +270,8 @@ void CrossPointWebServerActivity::startAccessPoint() {
     return;
   }
 
-  delay(100);  // Wait for AP to fully initialize
+  delay(100);
 
-  // Get AP IP address
   const IPAddress apIP = WiFi.softAPIP();
   char ipStr[16];
   snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", apIP[0], apIP[1], apIP[2], apIP[3]);
@@ -306,15 +282,12 @@ void CrossPointWebServerActivity::startAccessPoint() {
   Serial.printf("[%lu] [WEBACT] SSID: %s\n", millis(), AP_SSID);
   Serial.printf("[%lu] [WEBACT] IP: %s\n", millis(), connectedIP.c_str());
 
-  // Start mDNS for hostname resolution
   if (MDNS.begin(AP_HOSTNAME)) {
     Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
   } else {
     Serial.printf("[%lu] [WEBACT] WARNING: mDNS failed to start\n", millis());
   }
 
-  // Start DNS server for captive portal behavior
-  // This redirects all DNS queries to our IP, making any domain typed resolve to us
   dnsServer = new DNSServer();
   dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
   dnsServer->start(NetworkConstants::DNS_PORT, "*", apIP);
@@ -322,14 +295,12 @@ void CrossPointWebServerActivity::startAccessPoint() {
 
   Serial.printf("[%lu] [WEBACT] [MEM] Free heap after AP start: %d bytes\n", millis(), ESP.getFreeHeap());
 
-  // Start the web server
   startWebServer();
 }
 
 void CrossPointWebServerActivity::startWebServer() {
   Serial.printf("[%lu] [WEBACT] Starting web server...\n", millis());
 
-  // Create the web server instance
   webServer.reset(new CrossPointWebServer());
   webServer->begin();
 
@@ -337,8 +308,6 @@ void CrossPointWebServerActivity::startWebServer() {
     state = WebServerActivityState::SERVER_RUNNING;
     Serial.printf("[%lu] [WEBACT] Web server started successfully\n", millis());
 
-    // Force an immediate render since we're transitioning from a subactivity
-    // that had its own rendering task. We need to make sure our display is shown.
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     render();
     xSemaphoreGive(renderingMutex);
@@ -346,7 +315,6 @@ void CrossPointWebServerActivity::startWebServer() {
   } else {
     Serial.printf("[%lu] [WEBACT] ERROR: Failed to start web server!\n", millis());
     webServer.reset();
-    // Go back on error
     onGoBack();
   }
 }
@@ -362,24 +330,21 @@ void CrossPointWebServerActivity::stopWebServer() {
 
 void CrossPointWebServerActivity::loop() {
   if (subActivity) {
-    // Forward loop to subactivity
-    subActivity->loop();
+    // All child callbacks can request teardown/replacement. Pump through the
+    // base lifecycle gate so the current child's loop frame returns before its
+    // object is destroyed. Direct subActivity->loop() bypasses that guarantee.
+    pumpSubActivityFrame();
     return;
   }
 
-  // Dead-end state: older code only set SHUTTING_DOWN without leaving, which
-  // froze the transfer UI with no exit path.
   if (state == WebServerActivityState::SHUTTING_DOWN) {
     Serial.printf("[%lu] [WEBACT] SHUTTING_DOWN → onGoBack\n", millis());
     onGoBack();
     return;
   }
 
-  // Exit paths must run every frame *before* any multi-iteration HTTP service,
-  // otherwise m4adb/touch/home starve while handleClient spins.
   auto wantsExit = [this]() -> bool {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) return true;
-    // Side "Up" is not exit; Power short-press may be CONFIRM policy — leave alone.
     if (!mappedInput.hasTouch()) return false;
     if (mappedInput.wasBackGesture()) return true;
     if (mappedInput.wasHomeGesture()) return true;
@@ -400,13 +365,10 @@ void CrossPointWebServerActivity::loop() {
     return;
   }
 
-  // Captive-portal DNS (AP only)
   if (isApMode && dnsServer) {
     dnsServer->processNextRequest();
   }
 
-  // STA health: on real Wi-Fi, leave if the radio drops. QEMU open_eth is a
-  // permanent virtual link — never auto-exit (false negatives froze the page).
   if (!isApMode && webServer && webServer->isRunning() && !m4QemuNetWifiCompatConnected()) {
     static unsigned long lastWifiCheck = 0;
     if (millis() - lastWifiCheck > 2000) {
@@ -428,12 +390,6 @@ void CrossPointWebServerActivity::loop() {
     return;
   }
 
-  // Bound HTTP work so the main owner loop can still:
-  //   • poll m4adb (tap/key/home/screenshot)
-  //   • run global home/back gestures
-  //   • refresh input
-  // The old 500-iteration spin made the transfer page look "frozen" and
-  // blocked the serial bridge under QEMU.
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
   constexpr int kMaxIters = 12;
   constexpr unsigned long kBudgetMs = 10;
@@ -449,7 +405,6 @@ void CrossPointWebServerActivity::loop() {
     if ((i & 0x3) == 0x3) {
       yield();
       esp_task_wdt_reset();
-      // Cheap digital/virtual edge poll (not full beginFrame); keeps Back responsive.
       mappedInput.update();
       if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
         onGoBack();
@@ -473,8 +428,6 @@ void CrossPointWebServerActivity::displayTaskLoop() {
 }
 
 void CrossPointWebServerActivity::render() const {
-  // Only render our own UI when server is running
-  // Subactivities handle their own rendering
   if (state == WebServerActivityState::SERVER_RUNNING) {
     renderer.clearScreen();
     renderServerRunning();
@@ -487,16 +440,12 @@ void CrossPointWebServerActivity::render() const {
   }
 }
 
-
-
 void CrossPointWebServerActivity::renderServerRunning() const {
-  // Use consistent line spacing
-  constexpr int LINE_SPACING = 28;  // Space between lines
+  constexpr int LINE_SPACING = 28;
 
   M4UiText::drawCentered(renderer, UI_12_FONT_ID, 15, L(Str::kFileTransfer), true, EpdFontFamily::BOLD);
 
   if (isApMode) {
-    // AP mode display - center the content block
     int startY = 55;
 
     std::string ssidInfo = std::string(L(Str::kWifiName)) + connectedSSID;
@@ -506,28 +455,20 @@ void CrossPointWebServerActivity::renderServerRunning() const {
 
     renderer.drawCenteredText(SMALL_FONT_ID, startY + LINE_SPACING * 3,
                               L(Str::kOrScanQRConnectHotspot));
-    // Show QR code for WiFi
     const auto pageWidth = renderer.getScreenWidth();
     const std::string wifiConfig = std::string("WIFI:S:") + connectedSSID + ";;";
-    
     QRCodeHelper::drawQRCode(renderer, (pageWidth - QRCodeHelper::qrSize()) / 2, startY + LINE_SPACING * 5, wifiConfig);
 
     startY += QRCodeHelper::qrSize() - 4 * QRCodeHelper::DEFAULT_PX + 4 * LINE_SPACING;
 
     std::string hostnameUrl = std::string("http://") + AP_HOSTNAME + ".local/";
-
-    // Show IP address as fallback
     std::string ipUrl = connectedIP;
     renderer.drawCenteredText(SMALL_FONT_ID, startY + LINE_SPACING * 4, L(Str::kOpenInPhoneBrowser));
     renderer.drawCenteredText(SMALL_FONT_ID, startY + LINE_SPACING * 5, ipUrl.c_str());
-
-    // Show QR code for URL
     renderer.drawCenteredText(SMALL_FONT_ID, startY + LINE_SPACING * 6, L(Str::kOrScanQRFileManager));
-    
     QRCodeHelper::drawQRCode(renderer, (pageWidth - QRCodeHelper::qrSize()) / 2, startY + LINE_SPACING * 8,
                              hostnameUrl);
   } else {
-    // STA mode display (original behavior)
     const int startY = 65;
 
     std::string ssidInfo = "Network: " + connectedSSID;
@@ -539,18 +480,14 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     std::string ipInfo = "IP Address: " + connectedIP;
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, startY + LINE_SPACING, ipInfo.c_str());
 
-    // Show web server URL prominently
     std::string webInfo = "http://" + connectedIP + "/";
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, startY + LINE_SPACING * 2, webInfo.c_str(), true, EpdFontFamily::BOLD);
 
-    // Also show hostname URL
     std::string hostnameUrl = std::string("or http://") + AP_HOSTNAME + ".local/";
     renderer.drawCenteredText(SMALL_FONT_ID, startY + LINE_SPACING * 3, hostnameUrl.c_str());
 
     renderer.drawCenteredText(SMALL_FONT_ID, startY + LINE_SPACING * 4, "Open this URL in your browser");
 
-    // Show QR code for URL
-   
     const auto pageWidth = renderer.getScreenWidth();
     QRCodeHelper::drawQRCode(renderer, (pageWidth - QRCodeHelper::qrSize()) / 2, startY + LINE_SPACING * 6, webInfo);
     renderer.drawCenteredText(SMALL_FONT_ID, startY + LINE_SPACING * 5, "or scan QR code with your phone:");
