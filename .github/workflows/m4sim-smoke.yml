@@ -82,12 +82,42 @@ jobs:
           mkdir -p "$B/bin" "$B/lib" "$B/pc-bios" "$B/python" "$B/firmware/scripts" "$B/simulator/tools"
           cp "$QEMU_XTENSA" "$B/bin/qemu-system-xtensa"
 
-          # The Espressif ESP32-S3 machine loads its ROM as a runtime data file.
-          # Local/CI builds find this implicitly through the QEMU source tree;
-          # portable validation must make the pinned upstream dependency explicit.
+          # ESP32-S3 QEMU needs this runtime ROM, but the upstream pc-bios README
+          # does not state a standalone redistribution license for this binary.
+          # Do NOT upload the ROM. Publish only its pinned source and checksum;
+          # the recipient can fetch it directly from the official upstream repo.
           ROM="$RUNNER_TEMP/espressif-qemu-v3/pc-bios/esp32s3_rev0_rom.bin"
           test -s "$ROM"
-          cp "$ROM" "$B/pc-bios/esp32s3_rev0_rom.bin"
+          ROM_SHA="$(sha256sum "$ROM" | awk '{print $1}')"
+          printf '%s  %s\n' "$ROM_SHA" 'pc-bios/esp32s3_rev0_rom.bin' > "$B/ROM_SHA256SUM"
+          cat > "$B/ROM_SOURCE.txt" <<'EOF'
+          repository=https://github.com/espressif/qemu.git
+          ref=febae182e132e4055529be423a818225ebddaa3a
+          path=pc-bios/esp32s3_rev0_rom.bin
+          EOF
+          cat > "$B/fetch-rom.py" <<'PY'
+          #!/usr/bin/env python3
+          from pathlib import Path
+          import hashlib
+          import urllib.request
+
+          root = Path(__file__).resolve().parent
+          expected = (root / "ROM_SHA256SUM").read_text().split()[0]
+          out = root / "pc-bios" / "esp32s3_rev0_rom.bin"
+          url = ("https://raw.githubusercontent.com/espressif/qemu/"
+                 "febae182e132e4055529be423a818225ebddaa3a/"
+                 "pc-bios/esp32s3_rev0_rom.bin")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          print(f"fetching pinned ESP32-S3 ROM from official upstream: {url}")
+          with urllib.request.urlopen(url, timeout=60) as r:
+              data = r.read()
+          digest = hashlib.sha256(data).hexdigest()
+          if digest != expected:
+              raise SystemExit(f"ROM sha256 mismatch: got {digest}, expected {expected}")
+          out.write_bytes(data)
+          print(f"wrote {out} ({len(data)} bytes, sha256={digest})")
+          PY
+          chmod +x "$B/fetch-rom.py"
 
           # These are the two non-baseline shared libraries missing from the
           # clean execution container used for cross-machine validation. Copy
@@ -102,8 +132,15 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export LD_LIBRARY_PATH="$HERE/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          exec "$HERE/qemu-system-xtensa" -L "$HERE/../pc-bios" "$@"
+          ROOT="$(cd "$HERE/.." && pwd)"
+          ROM="$ROOT/pc-bios/esp32s3_rev0_rom.bin"
+          if [[ ! -s "$ROM" ]]; then
+            echo "ESP32-S3 ROM is not present in this artifact." >&2
+            echo "Run: python3 $ROOT/fetch-rom.py" >&2
+            exit 2
+          fi
+          export LD_LIBRARY_PATH="$ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$HERE/qemu-system-xtensa" -L "$ROOT/pc-bios" "$@"
           EOF
           chmod +x "$B/bin/qemu-m4"
 
@@ -116,28 +153,31 @@ jobs:
           python3 -m pip install --quiet --target "$B/python" 'pyserial>=3.5'
 
           ldd "$QEMU_XTENSA" > "$B/qemu-ldd.txt" || true
-          "$B/bin/qemu-m4" --version > "$B/qemu-version.txt"
-          "$B/bin/qemu-m4" -machine help > "$B/qemu-machines.txt"
+          "$QEMU_XTENSA" --version > "$B/qemu-version.txt"
+          "$QEMU_XTENSA" -machine help > "$B/qemu-machines.txt"
           grep -q 'murphy-m4' "$B/qemu-machines.txt"
 
-          # Write relocatable paths so `cd bundle && sha256sum -c SHA256SUMS`
-          # works after artifact download, not only on the GitHub runner.
+          # Relocatable checksums cover only files we actually redistribute.
           (
             cd "$B"
             sha256sum bin/qemu-system-xtensa lib/libslirp.so.0 lib/libsndio.so.7 \
-              pc-bios/esp32s3_rev0_rom.bin flash-16m.bin murphy-sd.img > SHA256SUMS
+              flash-16m.bin murphy-sd.img fetch-rom.py ROM_SOURCE.txt ROM_SHA256SUM \
+              > SHA256SUMS
           )
 
           cat > "$B/README.txt" <<'EOF'
           This artifact is produced only after ./m4sim test smoke succeeds.
           It contains the exact Linux x86_64 patched QEMU v3, flash image, SD image,
-          m4adb Python runtime, required shared libraries, and the ESP32-S3 ROM from
-          the repository's pinned Espressif QEMU upstream checkout.
+          m4adb Python runtime, and required shared libraries used by that run.
 
-          It is a transport bundle, not a second simulator implementation.
-          Use bin/qemu-m4 so bundled libraries and pc-bios are resolved explicitly.
+          The ESP32-S3 ROM is intentionally NOT redistributed because its standalone
+          binary redistribution terms are not explicit in upstream pc-bios/README.
+          Run `python3 fetch-rom.py` to fetch the exact ROM from the pinned official
+          Espressif QEMU commit and verify its SHA256 before use.
+
+          Then use bin/qemu-m4 so bundled libraries and pc-bios are resolved explicitly.
           Set PYTHONPATH=<bundle>/python when invoking firmware/scripts/m4adb.py.
-          Verify after extraction with: sha256sum -c SHA256SUMS
+          Verify artifact files after extraction with: sha256sum -c SHA256SUMS
           EOF
           printf '%s\n' "${GITHUB_SHA}" > "$B/git-sha.txt"
 
