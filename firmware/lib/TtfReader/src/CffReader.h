@@ -35,6 +35,10 @@ class CffFont {
   Slice cff_; IndexInfo charStringsInfo_,globalSubrsInfo_,localSubrsInfo_; Slice charStrings_,globalSubrs_,localSubrs_,privateDict_; uint16_t glyphCount_=0;
   Table head_,cmap_,hhea_,hmtx_,maxp_; uint16_t unitsPerEm_=0; int32_t ascender_=0,descender_=0,lineGap_=0,bboxYMax_=0; uint16_t numHMetrics_=0;
   std::vector<uint8_t> cmapData_; bool cmapIs12_=false; uint32_t cmapGroups_=0;
-  uint8_t* covScratch_=nullptr; uint32_t covScratchCap_=0; uint8_t* packedScratch_=nullptr; uint32_t packedScratchCap_=0;
+  // Raster scratch is high-water and PSRAM-first on ESP32. It is intentionally
+  // retained between glyphs so large CJK glyphs do not churn the internal heap.
+  uint8_t* covScratch_=nullptr; uint32_t covScratchCap_=0;
+  uint8_t* packedScratch_=nullptr; uint32_t packedScratchCap_=0;
+  float* xScratch_=nullptr; int8_t* signScratch_=nullptr; uint32_t intersectionScratchCap_=0;
 };
 } // namespace ttf
