@@ -102,6 +102,22 @@ void CrossPointWebServerActivity::onExit() {
 }
 
 void CrossPointWebServerActivity::showSetupError(const char* message) {
+  // Error UI must not retain the resources that just failed. In particular an
+  // AP can succeed while the HTTP server fails; keeping AP/DNS alive here
+  // fragments internal heap and makes a retry less likely to succeed.
+  stopWebServer();
+  MDNS.end();
+  if (dnsServer) {
+    dnsServer->stop();
+    delete dnsServer;
+    dnsServer = nullptr;
+  }
+#if !defined(M4_QEMU_PLUGIN_DEBUG) || !M4_QEMU_PLUGIN_DEBUG
+  if (isApMode) {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+#endif
   setupError = message ? message : "Network setup failed";
   state = WebServerActivityState::ERROR;
   updateRequired = true;
@@ -192,8 +208,6 @@ void CrossPointWebServerActivity::startAccessPoint() {
                              ? WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CONNECTIONS)
                              : WiFi.softAP(AP_SSID, nullptr, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
   if (!apStarted) {
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_OFF);
     showSetupError("Hotspot startup failed");
     return;
   }
@@ -207,8 +221,6 @@ void CrossPointWebServerActivity::startAccessPoint() {
     Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
   }
 
-  // Captive DNS is optional. On a fragmented/low-memory heap, keep the actual
-  // transfer server usable instead of aborting just because DNSServer alloc fails.
   dnsServer = new (std::nothrow) DNSServer();
   if (dnsServer) {
     dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
@@ -341,7 +353,7 @@ void CrossPointWebServerActivity::render() const {
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 - 15, setupError.c_str());
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 25, "Back: choose another mode");
   } else {
-    return;  // child activity owns the display in selection states
+    return;
   }
   renderer.displayBuffer();
 }
