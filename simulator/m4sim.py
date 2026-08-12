@@ -612,7 +612,8 @@ def cmd_test_smoke(args: argparse.Namespace) -> int:
         qemu=args.qemu,
         build_qemu=True,
         fresh_sd=True,
-        sd_size_mb=32,
+        # macOS newfs_msdos rejects tiny FAT32 volumes; keep ≥64 MiB.
+        sd_size_mb=64,
         no_sd=False,
         no_net=False,
         psram_mb=8,
