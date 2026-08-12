@@ -431,21 +431,17 @@ def resolve_flash(args: argparse.Namespace) -> Path:
         raise M4SimError(f"not a file: {image}")
 
     if image.stat().st_size == FLASH_SIZE:
-        # Full flash image — use as-is (copy into session for stable path).
         shutil.copy2(image, out)
         return out
 
-    # App-sized firmware.bin
     build_dir = Path(args.build_dir).expanduser().resolve() if args.build_dir else None
     return compose_flash_from_app_bin(image, build_dir, out)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     missing = check_host_deps()
-    # ninja/git only required if we may build qemu
     hard = [m for m in missing if not m.startswith("python:")]
     if hard and not args.qemu:
-        # still try find existing qemu
         pass
 
     if _session_alive():
@@ -482,9 +478,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"stop:  ./m4sim stop\n",
             flush=True,
         )
-        if args.detach:
-            # Leave QEMU running; do not wait.
-            return 0
         if args.keep_alive:
             print("keep-alive: Ctrl-C to stop", flush=True)
             try:
@@ -494,15 +487,13 @@ def cmd_run(args: argparse.Namespace) -> int:
                 pass
             stop_session()
             return 0
-        # Default: keep running detached-like but wait if not --detach
-        # For smoke, wait is false via test command.
         if args.wait:
             try:
-                while proc.poll() is None:
-                    time.sleep(1)
+                proc.wait()
             except KeyboardInterrupt:
-                pass
-            stop_session()
+                stop_session()
+            return proc.returncode or 0
+        # Default and explicit --detach both return after protocol readiness.
         return 0
     except Exception:
         if proc.poll() is None:
@@ -528,13 +519,11 @@ def cmd_screenshot(args: argparse.Namespace) -> int:
     out = Path(args.output).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     frame = Path(st.get("frame") or (ART / "ssd1677-frame.pbm"))
-    # Prefer direct SSD1677 frame if present and non-empty.
     if frame.is_file() and frame.stat().st_size > 32:
         if out.suffix.lower() == ".pbm":
             shutil.copy2(frame, out)
             print(f"wrote {out} from {frame}")
             return 0
-        # convert via Pillow if available, else copy pbm alongside
         try:
             from PIL import Image
             img = Image.open(frame)
@@ -546,7 +535,6 @@ def cmd_screenshot(args: argparse.Namespace) -> int:
             shutil.copy2(frame, pbm_out)
             print(f"Pillow missing/failed; wrote {pbm_out}")
             return 0
-    # Fallback: m4adb screenshot if supported
     rc, text = m4adb_once(st["pty"], ["screenshot", str(out)], timeout=20)
     if rc != 0:
         raise M4SimError(f"screenshot failed\n{text}")
@@ -556,7 +544,6 @@ def cmd_screenshot(args: argparse.Namespace) -> int:
 def cmd_key(args: argparse.Namespace) -> int:
     st = require_session()
     name = args.name.lower()
-    # Map friendly names to m4adb / mapped buttons when available.
     aliases = {
         "back": ["key", "back"],
         "enter": ["key", "confirm"],
@@ -569,7 +556,6 @@ def cmd_key(args: argparse.Namespace) -> int:
     m4args = aliases.get(name, ["key", name])
     rc, text = m4adb_once(st["pty"], m4args, timeout=12)
     if rc != 0:
-        # Try tap as fallback for some firmwares
         if name in ("enter", "confirm"):
             rc2, text2 = m4adb_once(st["pty"], ["tap", "240", "400"], timeout=12)
             if rc2 == 0:
@@ -595,7 +581,6 @@ def cmd_ui(args: argparse.Namespace) -> int:
 
 def cmd_test_smoke(args: argparse.Namespace) -> int:
     """Clean-session smoke: build qemu if needed, boot, ping, optional key, stop."""
-    # Isolate session
     global DEFAULT_SESSION, ART, STATE
     smoke_root = Path(os.environ.get("M4SIM_SMOKE_TMP", "/tmp/m4sim-smoke"))
     if smoke_root.exists():
@@ -613,7 +598,6 @@ def cmd_test_smoke(args: argparse.Namespace) -> int:
         qemu=args.qemu,
         build_qemu=True,
         fresh_sd=True,
-        # macOS newfs_msdos rejects tiny FAT32 volumes; keep ≥64 MiB.
         sd_size_mb=64,
         no_sd=False,
         no_net=False,
@@ -630,10 +614,8 @@ def cmd_test_smoke(args: argparse.Namespace) -> int:
         rc, out = m4adb_once(st["pty"], ["ping"], timeout=10)
         if rc != 0 or '"protocol"' not in out:
             raise M4SimError(f"smoke ping failed\n{out}")
-        # Best-effort key (may be no-op on some builds)
         m4adb_once(st["pty"], ["status"], timeout=10)
         frame = Path(st.get("frame") or (ART / "ssd1677-frame.pbm"))
-        # Wait briefly for first frame
         for _ in range(20):
             if frame.is_file() and frame.stat().st_size > 32:
                 break
@@ -676,10 +658,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-net", action="store_true")
     run.add_argument("--psram-mb", type=int, default=8, choices=(8, 16, 32))
     run.add_argument("--ready-seconds", type=float, default=90.0)
-    run.add_argument("--detach", action="store_true", default=True,
-                     help="return after ready (default)")
-    run.add_argument("--keep-alive", action="store_true", help="block until Ctrl-C")
-    run.add_argument("--wait", action="store_true", help="block until QEMU exits")
+    mode = run.add_mutually_exclusive_group()
+    mode.add_argument("--detach", action="store_true", help="return after ready (default)")
+    mode.add_argument("--keep-alive", action="store_true", help="block until Ctrl-C")
+    mode.add_argument("--wait", action="store_true", help="block until QEMU exits")
     run.add_argument("--force", action="store_true", help="stop existing session first")
 
     sub.add_parser("stop", help="stop QEMU session")
