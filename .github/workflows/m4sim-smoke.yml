@@ -8,6 +8,7 @@ on:
     paths:
       - 'm4sim'
       - 'simulator/m4sim.py'
+      - 'simulator/tests/**'
       - 'simulator/qemu/**'
       - 'simulator/tools/murphy_flash_image.py'
       - 'firmware/scripts/m4adb.py'
@@ -68,6 +69,16 @@ jobs:
             export QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
           fi
           ./m4sim test smoke --plugin-debug --ready-seconds 150
+
+      - name: m4sim test network-manager (real Home UI)
+        env:
+          QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa
+          M4SIM_NETWORK_TMP: ${{ runner.temp }}/m4sim-network-manager
+        run: |
+          if [[ ! -x "$QEMU_XTENSA" ]]; then
+            export QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+          fi
+          ./m4sim test network-manager --plugin-debug --skip-build --ready-seconds 150
 
       - name: Stage portable m4sim runtime bundle
         if: success()
@@ -197,4 +208,13 @@ jobs:
           name: m4sim-smoke
           path: |
             ${{ runner.temp }}/m4sim-smoke/**
+          if-no-files-found: ignore
+
+      - name: Upload network manager artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4sim-network-manager
+          path: |
+            ${{ runner.temp }}/m4sim-network-manager/**
           if-no-files-found: ignore
