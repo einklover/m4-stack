@@ -1,0 +1,24 @@
+name: Murphy Stage 14 regression contracts
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/src/activities/ActivityWithSubactivity.*'
+      - 'firmware/src/activities/network/CrossPointWebServerActivity.*'
+      - 'firmware/src/activities/network/CalibreConnectActivity.*'
+      - 'firmware/src/apps/M4xProgressiveLoader.*'
+      - 'simulator/tests/test_stage14_regressions.py'
+      - '.github/workflows/m4-stage14-regressions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Stage 14 invariants
+        run: python3 -m unittest -v simulator/tests/test_stage14_regressions.py
