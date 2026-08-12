@@ -18,6 +18,7 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+BOOTSTRAP_ENV = "M4_STAGE13_PYTHON_BOOTSTRAPPED"
 
 
 def run(cmd: list[str], *, cwd: Path | None = None) -> None:
@@ -25,8 +26,23 @@ def run(cmd: list[str], *, cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd or ROOT, check=True)
 
 
-def ensure_ci_dependencies() -> None:
-    """Install the small set omitted by the legacy QEMU-only workflow."""
+def venv_python(venv: Path) -> Path:
+    """Return the interpreter path for the isolated Stage-13 host environment."""
+    if os.name == "nt":
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
+def dependency_install_command(python: Path) -> list[str]:
+    """Keep Stage-13 Python packages attached to the interpreter that uses them."""
+    return [
+        str(python), "-m", "pip", "install", "--disable-pip-version-check",
+        "platformio", "pyserial", "fonttools",
+    ]
+
+
+def ensure_ci_dependencies() -> Path:
+    """Install CI-only host dependencies and return an isolated Python."""
     required = ["mkfs.fat", "mcopy"]
     need_apt = any(shutil.which(x) is None for x in required)
     font_candidates = [
@@ -39,18 +55,42 @@ def ensure_ci_dependencies() -> None:
         run(["sudo", "apt-get", "update"])
         run([
             "sudo", "apt-get", "install", "-y", "--no-install-recommends",
-            "dosfstools", "mtools", "fonts-wqy-zenhei", "python3-pip",
+            "dosfstools", "mtools", "fonts-wqy-zenhei", "python3-pip", "python3-venv",
         ])
 
-    # Use user site to avoid mutating the runner image's system Python.
-    run([sys.executable, "-m", "pip", "install", "--user", "platformio", "pyserial", "fonttools"])
-    local_bin = str(Path.home() / ".local/bin")
-    os.environ["PATH"] = local_bin + os.pathsep + os.environ.get("PATH", "")
+    # GitHub's Ubuntu runner may have the user site disabled for the current
+    # process.  A successful `pip --user` therefore does not guarantee that a
+    # subsequent `import fontTools` in this process can see the package.  Build
+    # one tiny disposable venv and re-exec the E2E runner through it instead.
+    runner_temp = Path(os.environ.get("RUNNER_TEMP", "/tmp"))
+    venv = runner_temp / "m4-stage13-python"
+    if venv.exists():
+        shutil.rmtree(venv)
+    run([sys.executable, "-m", "venv", str(venv)])
+    python = venv_python(venv)
+    run(dependency_install_command(python))
+    run([
+        str(python), "-c",
+        "import fontTools, platformio, serial; print('Stage13 Python bootstrap OK')",
+    ])
+
+    os.environ["PATH"] = str(python.parent) + os.pathsep + os.environ.get("PATH", "")
     if shutil.which("pio") is None:
-        raise RuntimeError("PlatformIO CLI not available after install")
+        raise RuntimeError("PlatformIO CLI not available in Stage-13 venv")
 
     # The checked-out firmware intentionally vendors no generated external deps.
     run(["bash", "scripts/bootstrap_deps.sh"], cwd=ROOT)
+    return python
+
+
+def run_in_bootstrap_python(python: Path, qemu: Path) -> int:
+    """Re-enter this runner with the exact interpreter owning CI packages."""
+    env = os.environ.copy()
+    env[BOOTSTRAP_ENV] = "1"
+    env["PATH"] = str(python.parent) + os.pathsep + env.get("PATH", "")
+    cmd = [str(python), str(Path(__file__).resolve()), str(qemu)]
+    print("+", " ".join(cmd), flush=True)
+    return subprocess.run(cmd, cwd=ROOT, env=env, check=False).returncode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,7 +103,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        ensure_ci_dependencies()
+        if os.environ.get(BOOTSTRAP_ENV) != "1":
+            python = ensure_ci_dependencies()
+            return run_in_bootstrap_python(python, qemu)
+
         sys.path.insert(0, str(HERE))
         import run_full_e2e_ci as e2e
 
