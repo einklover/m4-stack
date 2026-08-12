@@ -209,8 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Boot three fresh real-UI Network Manager journeys.",
     )
     p.add_argument("image", nargs="?", help="optional debug-capable firmware.bin or 16MiB flash image")
-    p.add_argument("--plugin-debug", action="store_true", default=True,
-                   help="use murphy_m4_qemu_plugin (default)")
+    p.add_argument("--plugin-debug", action="store_true",
+                   help="force murphy_m4_qemu_plugin even when an image path is supplied")
     p.add_argument("--build-dir")
     p.add_argument("--skip-build", action="store_true",
                    help="reuse an existing murphy_m4_qemu_plugin PIO build")
