@@ -12,4 +12,17 @@ void addTable(std::vector<uint8_t>&f,size_t rec,const char*t,const std::vector<u
 std::vector<uint8_t> makeOtf(){auto c=makeCff();const int n=6;std::vector<uint8_t>f(12+n*16,0);put32(f,0,0x4f54544f);put16(f,4,n);size_t r=12;addTable(f,r,"CFF ",c);r+=16;std::vector<uint8_t>head(54);put16(head,18,1000);put16(head,42,800);addTable(f,r,"head",head);r+=16;std::vector<uint8_t>maxp(6);put32(maxp,0,0x00005000);put16(maxp,4,2);addTable(f,r,"maxp",maxp);r+=16;std::vector<uint8_t>hhea(36);put16(hhea,4,800);put16(hhea,6,uint16_t(-200));put16(hhea,8,100);put16(hhea,34,2);addTable(f,r,"hhea",hhea);r+=16;std::vector<uint8_t>hmtx;be16(hmtx,500);be16(hmtx,0);be16(hmtx,600);be16(hmtx,10);addTable(f,r,"hmtx",hmtx);r+=16;std::vector<uint8_t>cm;be16(cm,0);be16(cm,1);be16(cm,3);be16(cm,10);be32(cm,12);be16(cm,12);be16(cm,0);be32(cm,28);be32(cm,0);be32(cm,1);be32(cm,0x41);be32(cm,0x41);be32(cm,1);addTable(f,r,"cmap",cm);return f;}
 class VS:public ttf::TtfStream{std::vector<uint8_t>b;uint32_t p=0;public:VS(std::vector<uint8_t>x):b(std::move(x)){}uint32_t size()const override{return b.size();}bool seek(uint32_t x)override{if(x>b.size())return false;p=x;return true;}uint32_t read(void*d,uint32_t n)override{uint32_t z=std::min<uint32_t>(n,uint32_t(b.size()-p));if(z)std::memcpy(d,b.data()+p,z);p+=z;return z;}};
 }
-int main(){VS s(makeOtf());ttf::CffFont f;if(!f.init(s)){std::cerr<<f.lastError()<<'\n';return 1;}assert(f.unitsPerEm()==1000&&f.glyphCount()==2&&f.fontBBoxYMax()==800);uint16_t gid=0;assert(f.findGlyph('A',gid)&&gid==1);int32_t a,l;assert(f.glyphHMetrics(1,a,l)&&a==600&&l==10);int32_t asc,desc,gap;f.fontVMetrics(asc,desc,gap);assert(asc==800&&desc==-200&&gap==100);std::vector<ttf::Contour>o;assert(f.collectGlyph(1,o)&&o.size()==1&&o[0].pts.size()==5);std::cout<<"CFF1 Type2 + OpenType metrics OK\n";}
+int main(){
+  VS s(makeOtf()); ttf::CffFont f;
+  if(!f.init(s)){std::cerr<<f.lastError()<<'\n';return 1;}
+  assert(f.unitsPerEm()==1000&&f.glyphCount()==2&&f.fontBBoxYMax()==800);
+  uint16_t gid=0; assert(f.findGlyph('A',gid)&&gid==1);
+  int32_t a,l; assert(f.glyphHMetrics(1,a,l)&&a==600&&l==10);
+  int32_t asc,desc,gap; f.fontVMetrics(asc,desc,gap); assert(asc==800&&desc==-200&&gap==100);
+  std::vector<ttf::Contour>o; assert(f.collectGlyph(1,o)&&o.size()==1&&o[0].pts.size()==5);
+  ttf::GlyphBitmap gb; assert(f.rasterize(1,100,gb));
+  assert(gb.width==10&&gb.height==10&&gb.advance==60&&gb.data&&gb.packedLen==25);
+  bool anyInk=false; for(uint16_t i=0;i<gb.packedLen;++i) anyInk|=gb.data[i]!=0; assert(anyInk);
+  f.clearScratch();
+  std::cout<<"CFF1 Type2 + OpenType metrics + 2-bit raster OK\n";
+}
