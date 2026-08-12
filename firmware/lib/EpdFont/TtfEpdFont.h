@@ -4,26 +4,15 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <SDCardManager.h>
-
 #include <cstddef>
 #include <cstdint>
-
 #include "EpdFont.h"
 #include "TtfReader.h"
+#include "CffReader.h"
 
-// Runtime sfnt font backend for the existing EpdFont interface.
-//
-// The same rasterizer can read either:
-//   * an SD path (normal user/reader TTF/TTC/OTF/OTC), or
-//   * a const byte array in memory-mapped flash (tiny built-in emergency TTF).
-//
-// Only the table directory + cmap + bounded LRU metadata stay resident. Glyph
-// bitmaps are 2-bit grayscale (is2Bit=true) matching GfxRenderer's packing and
-// are allocated PSRAM-first. The flash constructor deliberately defaults to a
-// much smaller cache because an emergency/UI subset has very few glyphs.
-//
-// getGlyph()/loadGlyphBitmap() are const but mutate the LRU cache; guarded by a
-// mutex so the face can be shared across render tasks.
+// Runtime sfnt font backend for the existing EpdFont interface. Only the active
+// outline backend allocates resident cmap/raster scratch; glyph cache bitmaps
+// remain PSRAM-first and shared by glyf and CFF1 paths.
 class TtfEpdFont : public EpdFont {
  public:
   static constexpr uint16_t kDefaultRuntimeSlots = 512;
@@ -33,8 +22,6 @@ class TtfEpdFont : public EpdFont {
 
   TtfEpdFont(const String& path, uint16_t sizePx, uint16_t maxSlots = kDefaultRuntimeSlots,
              size_t cacheBudget = kDefaultRuntimeBudget);
-  // `data` is borrowed and must remain valid for the lifetime of this object.
-  // A `static const uint8_t[]` compiled into firmware is the intended source.
   TtfEpdFont(const uint8_t* data, uint32_t dataSize, uint16_t sizePx,
              uint16_t maxSlots = kDefaultEmbeddedSlots,
              size_t cacheBudget = kDefaultEmbeddedBudget);
@@ -44,54 +31,38 @@ class TtfEpdFont : public EpdFont {
   const uint8_t* loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffer,
                                  const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override;
   const EpdFontData* getData(const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override { return &data_; }
-
   bool isRuntimeTtf() const override { return true; }
 
   bool valid() const { return valid_; }
-  const char* lastError() const {
-    if (runtimeError_.length()) return runtimeError_.c_str();
-    if (!valid_ && path_.length() && String(font_.lastError()) == "not initialized") {
-      String n = path_;
-      n.toLowerCase();
-      if (n.endsWith(".otf") || n.endsWith(".otc")) {
-        return "OpenType face is CFF/CFF2, lacks glyf tables, or is invalid";
-      }
-      if (n.endsWith(".ttc")) {
-        return "font collection contains no supported glyf face or is invalid";
-      }
-    }
-    return font_.lastError();
-  }
+  const char* lastError() const;
   uint16_t sizePx() const { return sizePx_; }
   uint16_t maxSlots() const { return maxSlots_; }
   size_t cacheBudget() const { return cacheBudget_; }
-
-  // Exact cmap coverage check without the getGlyph() '?' fallback. UI code
-  // uses this before replacing the built-in CJK chrome with a user font so a
-  // partial/Latin font cannot turn system labels into question marks.
-  bool hasCodepoint(uint32_t cp) const {
-    uint16_t gid = 0;
-    return valid_ && font_.findGlyph(cp, gid) && gid != 0;
-  }
-
-  // Free cached bitmaps (called on font-switch to bound memory).
+  bool hasCodepoint(uint32_t cp) const;
   void clearCaches();
 
  private:
+  enum class Backend : uint8_t { Glyf, Cff1 };
   struct Entry {
-    uint32_t cp = 0xFFFFFFFF;  // key; 0xFFFFFFFF = empty
+    uint32_t cp = 0xFFFFFFFF;
     uint32_t lastAccess = 0;
     EpdGlyph glyph{};
     uint8_t* bitmap = nullptr;
     uint32_t bitmapSize = 0;
   };
 
-  // Ensure a codepoint's glyph+bitmap is cached; returns slot index or -1.
-  // Caller must hold mutex_.
   int ensureGlyph(uint32_t cp) const;
   void evictSlot(int slot) const;
   bool allocateEntries();
   bool finishInit(const char* sourceLabel);
+  bool backendFindGlyph(uint32_t cp, uint16_t& gid) const;
+  bool backendRasterize(uint16_t gid, ttf::GlyphBitmap& out) const;
+  bool backendPixelBox(uint16_t gid, int& x0, int& y0, int& x1, int& y1) const;
+  uint16_t backendUnitsPerEm() const;
+  int32_t backendBBoxYMax() const;
+  void backendVMetrics(int32_t& asc, int32_t& desc, int32_t& gap) const;
+  const char* backendError() const;
+  void backendClearScratch();
 
   String path_;
   String runtimeError_;
@@ -99,12 +70,14 @@ class TtfEpdFont : public EpdFont {
   uint16_t maxSlots_ = kDefaultRuntimeSlots;
   size_t cacheBudget_ = kDefaultRuntimeBudget;
   bool valid_ = false;
+  Backend backend_ = Backend::Glyf;
   EpdFontData data_{};
 
-  ttf::TtfStream* stream_ = nullptr;  // owned stream object; memory bytes are borrowed
+  ttf::TtfStream* stream_ = nullptr;
   mutable ttf::TtfFont font_;
+  mutable ttf::CffFont cffFont_;
 
-  mutable Entry* entries_ = nullptr;  // maxSlots_, PSRAM-first
+  mutable Entry* entries_ = nullptr;
   mutable uint32_t accessCounter_ = 0;
   mutable size_t cacheBytes_ = 0;
 #if defined(ESP32)
