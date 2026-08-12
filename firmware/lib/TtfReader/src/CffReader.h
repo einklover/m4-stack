@@ -27,6 +27,7 @@ class CffFont {
  private:
   struct IndexInfo { Slice whole; uint16_t count=0; uint8_t offSize=0; uint32_t offsetsOff=0,dataOff=0; };
   struct Table { uint32_t off=0,len=0; bool present=false; };
+  struct Intersection { float x=0; int8_t sign=0; };
   bool readAt(uint32_t off,void* dst,uint32_t n) const; bool parseIndex(uint32_t relOff,IndexInfo& out,uint32_t* nextRel=nullptr) const;
   bool indexObject(const IndexInfo& index,uint16_t item,Slice& object) const; bool parseTopDict(Slice dict); bool parsePrivateDict();
   bool initSfntMetrics(uint32_t faceOffset,uint16_t numTables); bool initCmap(); bool readOffset(uint32_t absOff,uint8_t offSize,uint32_t& value) const;
@@ -35,10 +36,10 @@ class CffFont {
   Slice cff_; IndexInfo charStringsInfo_,globalSubrsInfo_,localSubrsInfo_; Slice charStrings_,globalSubrs_,localSubrs_,privateDict_; uint16_t glyphCount_=0;
   Table head_,cmap_,hhea_,hmtx_,maxp_; uint16_t unitsPerEm_=0; int32_t ascender_=0,descender_=0,lineGap_=0,bboxYMax_=0; uint16_t numHMetrics_=0;
   std::vector<uint8_t> cmapData_; bool cmapIs12_=false; uint32_t cmapGroups_=0;
-  // Raster scratch is high-water and PSRAM-first on ESP32. It is intentionally
-  // retained between glyphs so large CJK glyphs do not churn the internal heap.
+  // High-water raster scratch: PSRAM-first on ESP32 and retained across glyphs.
+  // This avoids repeated allocations and preserves internal RAM for WiFi/TLS/Lua.
   uint8_t* covScratch_=nullptr; uint32_t covScratchCap_=0;
   uint8_t* packedScratch_=nullptr; uint32_t packedScratchCap_=0;
-  float* xScratch_=nullptr; int8_t* signScratch_=nullptr; uint32_t intersectionScratchCap_=0;
+  Intersection* intersectionScratch_=nullptr; uint32_t intersectionScratchCap_=0;
 };
 } // namespace ttf
