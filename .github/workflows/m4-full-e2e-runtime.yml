@@ -178,11 +178,12 @@ jobs:
             -o "$RUNNER_TEMP/e2e/murphy-e2e-16m.bin"
           test "$(stat -c %s "$RUNNER_TEMP/e2e/murphy-e2e-16m.bin")" = 16777216
 
-      - name: Build cumulative Murphy QEMU v3
+      - name: Build cumulative Murphy QEMU (unified build.py → v3)
         shell: bash
         run: |
           set -o pipefail
-          python3 simulator/qemu/build_patched_qemu_v3.py \
+          # Same entry as local ./m4sim / simulator/qemu/build.py
+          python3 simulator/qemu/build.py \
             --source-dir "$RUNNER_TEMP/e2e/espressif-qemu" --reconfigure -j 2 \
             2>&1 | tee "$RUNNER_TEMP/e2e-artifacts/qemu-build.log"
 

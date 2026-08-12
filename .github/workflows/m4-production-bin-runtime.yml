@@ -54,12 +54,13 @@ jobs:
         run: |
           python3 simulator/qemu/make_sd_image.py "$RUNNER_TEMP/murphy-sd.img" --size-mb 64
 
-      - name: Build Murphy-patched Espressif QEMU v2
+      - name: Build Murphy-patched Espressif QEMU (unified build.py → v3)
         shell: bash
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/runtime-artifacts"
-          python3 simulator/qemu/build_patched_qemu_v2.py \
+          # Same entry as local ./m4sim / simulator/qemu/build.py (series-v3).
+          python3 simulator/qemu/build.py \
             --source-dir "$RUNNER_TEMP/espressif-qemu" \
             --reconfigure -j 2 2>&1 | tee "$RUNNER_TEMP/runtime-artifacts/qemu-build.log"
 
@@ -68,9 +69,14 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
-          QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu/build-murphy-v2/qemu-system-xtensa
+          QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu/build-murphy-v3/qemu-system-xtensa
         run: |
           set -o pipefail
+          if [[ ! -x "$QEMU_XTENSA" && -x "${QEMU_XTENSA}-unsigned" ]]; then
+            export QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+          fi
+          # Prefer unified m4sim for protocol-ready path when production image
+          # supports m4adb; fall back to production probe runner for boot-only.
           python3 simulator/qemu/run_production_bin.py \
             "$RUNNER_TEMP/murphy-production-16m.bin" \
             --sd-image "$RUNNER_TEMP/murphy-sd.img" \
@@ -105,7 +111,7 @@ jobs:
           cp "$RUNNER_TEMP/production-firmware.sha256" "$RUNNER_TEMP/runtime-artifacts/" || true
           sha256sum "$RUNNER_TEMP/murphy-production-16m.bin" > "$RUNNER_TEMP/runtime-artifacts/full-flash.sha256" || true
           cp simulator/qemu/patches/upstream.json "$RUNNER_TEMP/runtime-artifacts/" || true
-          cp simulator/qemu/patches/series-v2 "$RUNNER_TEMP/runtime-artifacts/" || true
+          cp simulator/qemu/patches/series-v3 "$RUNNER_TEMP/runtime-artifacts/" || true
 
       - name: Comment runtime failure on PR
         if: failure() && github.event_name == 'pull_request'

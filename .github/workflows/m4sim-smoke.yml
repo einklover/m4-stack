@@ -1,0 +1,79 @@
+name: m4sim clean BIN smoke
+
+# Uses the same ./m4sim entry as local developers (not a hand-rolled QEMU cmdline).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'm4sim'
+      - 'simulator/m4sim.py'
+      - 'simulator/qemu/**'
+      - 'simulator/tools/murphy_flash_image.py'
+      - 'firmware/scripts/m4adb.py'
+      - 'firmware/scripts/m4adb_lib/**'
+      - 'firmware/platformio.ini'
+      - 'firmware/src/**'
+      - 'scripts/bootstrap_deps.sh'
+      - '.github/workflows/m4sim-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-pip python3-venv \
+            libglib2.0-dev libpixman-1-dev libgcrypt20-dev libslirp-dev libsdl2-dev \
+            flex bison dosfstools
+          python3 -m pip install --user -r simulator/qemu/requirements.txt platformio
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap firmware deps
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Build patched QEMU (single entry)
+        run: |
+          python3 simulator/qemu/build.py \
+            --source-dir "$RUNNER_TEMP/espressif-qemu-v3" \
+            --reconfigure -j 2
+          test -x "$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa" \
+            || test -x "$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa-unsigned"
+
+      - name: m4sim info
+        env:
+          QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa
+        run: |
+          if [[ ! -x "$QEMU_XTENSA" ]]; then
+            QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+            export QEMU_XTENSA
+          fi
+          ./m4sim info
+
+      - name: m4sim test smoke (plugin-debug path)
+        env:
+          QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa
+          M4SIM_SMOKE_TMP: ${{ runner.temp }}/m4sim-smoke
+        run: |
+          if [[ ! -x "$QEMU_XTENSA" ]]; then
+            export QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+          fi
+          ./m4sim test smoke --plugin-debug --ready-seconds 150
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4sim-smoke
+          path: |
+            ${{ runner.temp }}/m4sim-smoke/**
+          if-no-files-found: ignore
