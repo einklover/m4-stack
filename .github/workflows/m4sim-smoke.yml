@@ -79,8 +79,15 @@ jobs:
             QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
           fi
           B="$RUNNER_TEMP/m4sim-runtime"
-          mkdir -p "$B/bin" "$B/lib" "$B/python" "$B/firmware/scripts" "$B/simulator/tools"
+          mkdir -p "$B/bin" "$B/lib" "$B/pc-bios" "$B/python" "$B/firmware/scripts" "$B/simulator/tools"
           cp "$QEMU_XTENSA" "$B/bin/qemu-system-xtensa"
+
+          # The Espressif ESP32-S3 machine loads its ROM as a runtime data file.
+          # Local/CI builds find this implicitly through the QEMU source tree;
+          # portable validation must make the pinned upstream dependency explicit.
+          ROM="$RUNNER_TEMP/espressif-qemu-v3/pc-bios/esp32s3_rev0_rom.bin"
+          test -s "$ROM"
+          cp "$ROM" "$B/pc-bios/esp32s3_rev0_rom.bin"
 
           # These are the two non-baseline shared libraries missing from the
           # clean execution container used for cross-machine validation. Copy
@@ -96,7 +103,7 @@ jobs:
           set -euo pipefail
           HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
           export LD_LIBRARY_PATH="$HERE/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          exec "$HERE/qemu-system-xtensa" "$@"
+          exec "$HERE/qemu-system-xtensa" -L "$HERE/../pc-bios" "$@"
           EOF
           chmod +x "$B/bin/qemu-m4"
 
@@ -118,16 +125,17 @@ jobs:
           (
             cd "$B"
             sha256sum bin/qemu-system-xtensa lib/libslirp.so.0 lib/libsndio.so.7 \
-              flash-16m.bin murphy-sd.img > SHA256SUMS
+              pc-bios/esp32s3_rev0_rom.bin flash-16m.bin murphy-sd.img > SHA256SUMS
           )
 
           cat > "$B/README.txt" <<'EOF'
           This artifact is produced only after ./m4sim test smoke succeeds.
           It contains the exact Linux x86_64 patched QEMU v3, flash image, SD image,
-          m4adb Python runtime, libslirp, and libsndio used by that successful run.
+          m4adb Python runtime, required shared libraries, and the ESP32-S3 ROM from
+          the repository's pinned Espressif QEMU upstream checkout.
 
           It is a transport bundle, not a second simulator implementation.
-          Use bin/qemu-m4 so bundled runtime libraries are on LD_LIBRARY_PATH.
+          Use bin/qemu-m4 so bundled libraries and pc-bios are resolved explicitly.
           Set PYTHONPATH=<bundle>/python when invoking firmware/scripts/m4adb.py.
           Verify after extraction with: sha256sum -c SHA256SUMS
           EOF
