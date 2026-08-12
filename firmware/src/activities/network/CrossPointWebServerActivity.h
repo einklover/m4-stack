@@ -22,7 +22,7 @@ enum class WebServerActivityState {
 
 /** File-transfer entry activity: mode selection → network setup → server. */
 class CrossPointWebServerActivity final : public ActivityWithSubactivity {
-  enum class PendingParentAction : uint8_t { None, StartAccessPoint, StartWebServer };
+  enum class PendingParentAction : uint8_t { None, StartAccessPoint, EnterWifiSelection, StartWebServer };
 
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
