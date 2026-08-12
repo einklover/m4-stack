@@ -486,17 +486,40 @@ constexpr uint16_t kTwoByTwo = 0x0080;
 
 struct Component {
   uint16_t gid = 0;
+  bool pointAttach = false;
+  uint16_t parentPoint = 0;
+  uint16_t childPoint = 0;
   float tx = 0, ty = 0;
   float a = 1, b = 0, c = 0, d = 1;
 };
+
+bool flattenedPointAt(const std::vector<Contour>& contours, size_t startContour,
+                      uint32_t pointIndex, Pt& out) {
+  for (size_t i = startContour; i < contours.size(); ++i) {
+    if (pointIndex < contours[i].pts.size()) {
+      out = contours[i].pts[pointIndex];
+      return true;
+    }
+    pointIndex -= static_cast<uint32_t>(contours[i].pts.size());
+  }
+  return false;
+}
+
+void translateContours(std::vector<Contour>& contours, float dx, float dy) {
+  for (auto& contour : contours) {
+    for (auto& p : contour.pts) {
+      p.x += dx;
+      p.y += dy;
+    }
+  }
+}
 
 }  // namespace
 
 // Parse a glyph's outline into `out` (one contour per element), applying xform.
 // Compound components are fully decoded BEFORE recursing so nested calls do not
-// clobber the shared glyf scratch buffer. Returns false only for genuinely
-// unsupported input (malformed, or a compound component that references points
-// instead of XY offsets).
+// clobber the shared glyf scratch buffer. Both XY-offset and point-index
+// component placement are supported.
 bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& out, int depth) const {
   if (depth > 8 || gid >= (uint16_t)numGlyphs_) return false;
 
@@ -603,7 +626,9 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     return true;
   }
 
-  // Compound glyph: decode every component first, then recurse.
+  // Compound glyph: decode every component first, then recurse. Point-index
+  // attachments are resolved in final transformed coordinates, which keeps the
+  // algorithm correct even when the containing compound itself is transformed.
   std::vector<Component> comps;
   uint32_t pos = 10;
   while (true) {
@@ -612,19 +637,29 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     const uint16_t compGid = rd16(p + pos + 2);
     pos += 4;
     if (compGid >= (uint16_t)numGlyphs_) return false;
-    if ((flags & kArgsAreXY) == 0) return false;  // point-index args unsupported
 
     Component comp;
     comp.gid = compGid;
+    comp.pointAttach = (flags & kArgsAreXY) == 0;
     if ((flags & kArgWords) != 0) {
       if (sliceLen - pos < 4) return false;
-      comp.tx = (int16_t)rd16(p + pos);
-      comp.ty = (int16_t)rd16(p + pos + 2);
+      if (comp.pointAttach) {
+        comp.parentPoint = rd16(p + pos);
+        comp.childPoint = rd16(p + pos + 2);
+      } else {
+        comp.tx = (int16_t)rd16(p + pos);
+        comp.ty = (int16_t)rd16(p + pos + 2);
+      }
       pos += 4;
     } else {
       if (sliceLen - pos < 2) return false;
-      comp.tx = (int8_t)p[pos];
-      comp.ty = (int8_t)p[pos + 1];
+      if (comp.pointAttach) {
+        comp.parentPoint = p[pos];
+        comp.childPoint = p[pos + 1];
+      } else {
+        comp.tx = (int8_t)p[pos];
+        comp.ty = (int8_t)p[pos + 1];
+      }
       pos += 2;
     }
 
@@ -649,15 +684,38 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     if ((flags & kMoreComps) == 0) break;
   }
 
+  const size_t compoundStartContour = out.size();
   for (const auto& c : comps) {
     Xform child;
     child.a = xf.a * c.a + xf.c * c.b;
     child.b = xf.b * c.a + xf.d * c.b;
     child.c = xf.a * c.c + xf.c * c.d;
     child.d = xf.b * c.c + xf.d * c.d;
-    child.tx = xf.a * c.tx + xf.c * c.ty + xf.tx;
-    child.ty = xf.b * c.tx + xf.d * c.ty + xf.ty;
-    if (!collectGlyph(c.gid, child, out, depth + 1)) return false;
+
+    if (!c.pointAttach) {
+      child.tx = xf.a * c.tx + xf.c * c.ty + xf.tx;
+      child.ty = xf.b * c.tx + xf.d * c.ty + xf.ty;
+      if (!collectGlyph(c.gid, child, out, depth + 1)) return false;
+      continue;
+    }
+
+    // Point attachment: render the child with only its linear transform plus
+    // the parent's origin, then translate it so childPoint coincides with the
+    // already-emitted parentPoint. The first component cannot legally use this
+    // form because there is no parent point to attach to yet.
+    child.tx = xf.tx;
+    child.ty = xf.ty;
+    std::vector<Contour> childContours;
+    if (!collectGlyph(c.gid, child, childContours, depth + 1)) return false;
+
+    Pt parentAnchor{};
+    Pt childAnchor{};
+    if (!flattenedPointAt(out, compoundStartContour, c.parentPoint, parentAnchor) ||
+        !flattenedPointAt(childContours, 0, c.childPoint, childAnchor)) {
+      return false;
+    }
+    translateContours(childContours, parentAnchor.x - childAnchor.x, parentAnchor.y - childAnchor.y);
+    for (auto& contour : childContours) out.push_back(std::move(contour));
   }
   return true;
 }
