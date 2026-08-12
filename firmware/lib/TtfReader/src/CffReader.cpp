@@ -53,8 +53,6 @@ bool decodeDictNumber(const uint8_t* data, size_t len, size_t& pos, int32_t& out
     return true;
   }
   if (b0 == 30) {
-    // Real numbers are legal in Top DICT but irrelevant to the offsets needed
-    // by the runtime. Consume nibbles through the 0xF terminator.
     while (pos < len) {
       const uint8_t b = data[pos++];
       if ((b >> 4) == 0xF || (b & 0x0F) == 0xF) {
@@ -64,7 +62,6 @@ bool decodeDictNumber(const uint8_t* data, size_t len, size_t& pos, int32_t& out
     }
     return false;
   }
-  // 255 is reserved in CFF DICT data; 0..27/31 are operators.
   return false;
 }
 
@@ -108,9 +105,7 @@ bool CffFont::parseIndex(uint32_t relOff, IndexInfo& out, uint32_t* nextRel) con
 
   uint32_t first = 0, last = 0;
   if (!readOffset(abs + 3, offSize, first) ||
-      !readOffset(abs + 3 + static_cast<uint32_t>(count) * offSize, offSize, last)) {
-    return false;
-  }
+      !readOffset(abs + 3 + static_cast<uint32_t>(count) * offSize, offSize, last)) return false;
   if (first != 1 || last < first) return false;
   const uint64_t endRel64 = dataRel64 + static_cast<uint64_t>(last - 1u);
   if (endRel64 > cff_.len || endRel64 > 0xffffffffu) return false;
@@ -168,7 +163,7 @@ bool CffFont::parseTopDict(Slice dict) {
   size_t pos = 0;
   while (pos < bytes.size()) {
     const uint8_t b0 = bytes[pos];
-    if (b0 >= 28 || b0 >= 32) {
+    if (b0 >= 28) {
       int32_t value = 0;
       if (!decodeDictNumber(bytes.data(), bytes.size(), pos, value)) {
         lastError_ = "malformed CFF Top DICT number";
@@ -192,14 +187,14 @@ bool CffFont::parseTopDict(Slice dict) {
       op = static_cast<uint16_t>(0x0c00u | bytes[pos++]);
     }
 
-    if (op == 17) {  // CharStrings
+    if (op == 17) {
       if (operands.size() != 1 || operands[0] < 0) {
         lastError_ = "invalid CFF CharStrings offset";
         return false;
       }
       charStringsRel = static_cast<uint32_t>(operands[0]);
       haveCharStrings = true;
-    } else if (op == 18) {  // Private: size, offset
+    } else if (op == 18) {
       if (operands.size() != 2 || operands[0] < 0 || operands[1] < 0) {
         lastError_ = "invalid CFF Private DICT range";
         return false;
@@ -239,8 +234,10 @@ bool CffFont::init(TtfStream& stream, uint32_t faceOffset) {
   cff_ = Slice{};
   charStringsInfo_ = IndexInfo{};
   globalSubrsInfo_ = IndexInfo{};
+  localSubrsInfo_ = IndexInfo{};
   charStrings_ = Slice{};
   globalSubrs_ = Slice{};
+  localSubrs_ = Slice{};
   privateDict_ = Slice{};
   glyphCount_ = 0;
 
@@ -253,7 +250,7 @@ bool CffFont::init(TtfStream& stream, uint32_t faceOffset) {
     lastError_ = "failed to read OpenType face header";
     return false;
   }
-  if (rd32be(sfnt) != 0x4f54544fu) {  // 'OTTO'
+  if (rd32be(sfnt) != 0x4f54544fu) {
     lastError_ = "not an OTTO OpenType face";
     return false;
   }
@@ -323,6 +320,7 @@ bool CffFont::init(TtfStream& stream, uint32_t faceOffset) {
     return false;
   }
   if (!parseTopDict(topDict)) return false;
+  if (!parsePrivateDict()) return false;
 
   ready_ = true;
   lastError_ = "ok";
