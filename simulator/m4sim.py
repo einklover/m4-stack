@@ -44,11 +44,12 @@ DEFAULT_SESSION = Path(os.environ.get("M4SIM_TMP", "/tmp/m4sim"))
 ART = DEFAULT_SESSION / "artifacts"
 STATE = DEFAULT_SESSION / "state.json"
 
+# Automatic discovery is intentionally v3-only. Older patched QEMU builds may
+# still be used explicitly with --qemu for archaeology, but must never become
+# the implicit runtime source of truth.
 QEMU_CANDIDATES = [
     Path.home() / ".cache/murphy-m4/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa",
     Path.home() / ".cache/murphy-m4/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa-unsigned",
-    Path.home() / ".cache/murphy-m4/espressif-qemu-v2/build-murphy-v2/qemu-system-xtensa",
-    Path.home() / ".cache/murphy-m4/espressif-qemu/build-murphy/qemu-system-xtensa",
 ]
 
 
