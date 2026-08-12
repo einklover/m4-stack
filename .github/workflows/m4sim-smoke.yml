@@ -79,8 +79,19 @@ jobs:
             QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
           fi
           B="$RUNNER_TEMP/m4sim-runtime"
-          mkdir -p "$B/bin" "$B/python" "$B/firmware/scripts" "$B/simulator/tools"
+          mkdir -p "$B/bin" "$B/lib" "$B/python" "$B/firmware/scripts" "$B/simulator/tools"
           cp "$QEMU_XTENSA" "$B/bin/qemu-system-xtensa"
+          SLIRP="$(ldconfig -p | awk '/libslirp\.so/{print $NF; exit}')"
+          test -n "$SLIRP" && test -r "$SLIRP"
+          cp -L "$SLIRP" "$B/lib/libslirp.so.0"
+          cat > "$B/bin/qemu-m4" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$HERE/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$HERE/qemu-system-xtensa" "$@"
+          EOF
+          chmod +x "$B/bin/qemu-m4"
           cp "$RUNNER_TEMP/m4sim-smoke/artifacts/flash-16m.bin" "$B/flash-16m.bin"
           cp "$RUNNER_TEMP/m4sim-smoke/artifacts/murphy-sd.img" "$B/murphy-sd.img"
           cp "$RUNNER_TEMP/m4sim-smoke/artifacts/ssd1677-frame.pbm" "$B/boot-frame.pbm" 2>/dev/null || true
@@ -89,16 +100,17 @@ jobs:
           cp simulator/tools/m4_screen_viewer.py "$B/simulator/tools/" 2>/dev/null || true
           python3 -m pip install --quiet --target "$B/python" 'pyserial>=3.5'
           ldd "$QEMU_XTENSA" > "$B/qemu-ldd.txt" || true
-          "$QEMU_XTENSA" --version > "$B/qemu-version.txt"
-          "$QEMU_XTENSA" -machine help > "$B/qemu-machines.txt"
+          "$B/bin/qemu-m4" --version > "$B/qemu-version.txt"
+          "$B/bin/qemu-m4" -machine help > "$B/qemu-machines.txt"
           grep -q 'murphy-m4' "$B/qemu-machines.txt"
-          sha256sum "$B/bin/qemu-system-xtensa" "$B/flash-16m.bin" "$B/murphy-sd.img" > "$B/SHA256SUMS"
+          sha256sum "$B/bin/qemu-system-xtensa" "$B/lib/libslirp.so.0" "$B/flash-16m.bin" "$B/murphy-sd.img" > "$B/SHA256SUMS"
           cat > "$B/README.txt" <<'EOF'
           This artifact is produced only after ./m4sim test smoke succeeds.
           It contains the exact Linux x86_64 patched QEMU v3, flash image, SD image,
-          and m4adb Python runtime used by that successful smoke run.
+          m4adb Python runtime, and libslirp used by that successful smoke run.
 
           It is a transport bundle, not a second simulator implementation.
+          Use bin/qemu-m4 so the bundled libslirp is on LD_LIBRARY_PATH.
           Set PYTHONPATH=<bundle>/python when invoking firmware/scripts/m4adb.py.
           EOF
           printf '%s\n' "${GITHUB_SHA}" > "$B/git-sha.txt"
