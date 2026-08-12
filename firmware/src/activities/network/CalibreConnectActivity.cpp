@@ -122,7 +122,10 @@ void CalibreConnectActivity::stopWebServer() {
 
 void CalibreConnectActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    // Do not call subActivity->loop() directly: callbacks from WifiSelection
+    // may request exit/replacement. The base pump defers destruction until the
+    // child's current loop frame has returned, preventing callback-stack UAF.
+    pumpSubActivityFrame();
     return;
   }
 
