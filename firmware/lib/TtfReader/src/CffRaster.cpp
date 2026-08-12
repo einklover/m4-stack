@@ -26,7 +26,7 @@ void freeMem(void* p){if(!p)return;
 }
 bool differs(const Pt&a,const Pt&b){return std::fabs(a.x-b.x)>0.001f||std::fabs(a.y-b.y)>0.001f;}
 }
-CffFont::~CffFont(){clearScratch();}
+CffFont::~CffFont(){clearScratch();freeMem(cmapData_);cmapData_=nullptr;cmapLen_=cmapScratchCap_=0;}
 void CffFont::clearScratch(){
   freeMem(covScratch_); covScratch_=nullptr; covScratchCap_=0;
   freeMem(packedScratch_); packedScratch_=nullptr; packedScratchCap_=0;
@@ -42,8 +42,6 @@ bool CffFont::rasterize(uint16_t gid,uint16_t sizePx,GlyphBitmap&out){
   out={}; if(!ready_||gid>=glyphCount_||!unitsPerEm_)return false;
   int32_t adv=0,lsb=0; if(!glyphHMetrics(gid,adv,lsb))return false;
   const float scale=float(sizePx)/float(unitsPerEm_); out.advance=int16_t(std::lround(adv*scale));
-  // Keep exactly one outline representation. We deliberately scan Contour
-  // edges in place instead of materialising a second Seg vector.
   std::vector<Contour> contours; if(!collectGlyph(gid,contours))return false;
   bool first=true; float mnx=0,mxx=0,mny=0,mxy=0; uint32_t segmentCount=0;
   for(const auto&c:contours){
@@ -64,8 +62,6 @@ bool CffFont::rasterize(uint16_t gid,uint16_t sizePx,GlyphBitmap&out){
     if(!p){lastError_="CFF intersection scratch OOM";return false;}
     intersectionScratch_=p;intersectionScratchCap_=segmentCount;
   }
-  // Two vertical samples per pixel. Intersections live in one reusable PSRAM
-  // buffer; no per-row vector allocation and no internal-heap churn.
   for(int py=0;py<h;++py)for(int sub=0;sub<2;++sub){
     const float yy=py+(sub?0.75f:0.25f); uint32_t count=0;
     auto addEdge=[&](const Pt&a,const Pt&b){
