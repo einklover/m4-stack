@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
-#include <vector>
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_heap_caps.h>
 #endif
@@ -76,28 +75,28 @@ bool CffFont::readOffset(uint32_t off, uint8_t n, uint32_t& v) const {
 bool CffFont::parseIndex(uint32_t rel, IndexInfo& out, uint32_t* next) const {
   out = {};
   if (!cff_.valid() || rel > cff_.len || cff_.len - rel < 2) return false;
-  const uint32_t a = cff_.off + rel;
+  const uint32_t abs = cff_.off + rel;
   uint8_t b[2];
-  if (!readAt(a, b, 2)) return false;
+  if (!readAt(abs, b, 2)) return false;
   out.count = rd16be(b);
-  out.whole.off = a;
+  out.whole.off = abs;
   if (!out.count) {
     out.whole.len = 2;
     if (next) *next = rel + 2;
     return true;
   }
   uint8_t os = 0;
-  if (!readAt(a + 2, &os, 1) || os < 1 || os > 4) return false;
+  if (!readAt(abs + 2, &os, 1) || os < 1 || os > 4) return false;
   const uint64_t offsetsBytes = uint64_t(out.count + 1u) * os;
   const uint64_t dataRel = uint64_t(rel) + 3u + offsetsBytes;
   if (dataRel > cff_.len) return false;
   uint32_t first = 0, last = 0;
-  if (!readOffset(a + 3, os, first) ||
-      !readOffset(a + 3 + uint32_t(out.count) * os, os, last) || first != 1 || last < first) return false;
+  if (!readOffset(abs + 3, os, first) ||
+      !readOffset(abs + 3 + uint32_t(out.count) * os, os, last) || first != 1 || last < first) return false;
   const uint64_t end = dataRel + last - 1u;
   if (end > cff_.len || end > 0xffffffffu) return false;
   out.offSize = os;
-  out.offsetsOff = a + 3;
+  out.offsetsOff = abs + 3;
   out.dataOff = cff_.off + uint32_t(dataRel);
   out.whole.len = uint32_t(end - rel);
   if (next) *next = uint32_t(end);
@@ -126,45 +125,273 @@ bool CffFont::indexObject(Slice idx, uint16_t item, Slice& o) const {
 }
 
 bool CffFont::parseTopDict(Slice dict) {
-  if (!dict.valid() || dict.len > 65536) { lastError_ = "CFF Top DICT invalid or too large"; return false; }
-  std::vector<uint8_t> bytes(dict.len);
-  if (!readAt(dict.off, bytes.data(), dict.len)) return false;
+  if (!dict.valid() || dict.len > 64u * 1024u) {
+    lastError_ = "CFF Top DICT invalid or too large";
+    return false;
+  }
+  if (dict.len > type2ScratchCap_) {
+    auto* p = static_cast<uint8_t*>(reallocPsramFirst(type2Scratch_, dict.len));
+    if (!p) { lastError_ = "CFF Top DICT PSRAM allocation failed"; return false; }
+    type2Scratch_ = p;
+    type2ScratchCap_ = dict.len;
+  }
+  if (!readAt(dict.off, type2Scratch_, dict.len)) return false;
+  const uint8_t* bytes = type2Scratch_;
   int32_t stack[48];
-  size_t sp = 0;
+  size_t sp = 0, pos = 0;
   uint32_t charStringsRel = 0, privateSize = 0, privateRel = 0;
-  bool haveCharStrings = false;
-  size_t pos = 0;
-  while (pos < bytes.size()) {
+  bool haveCharStrings = false, haveFdArray = false, haveFdSelect = false;
+  while (pos < dict.len) {
     const uint8_t x = bytes[pos];
     if (x >= 28) {
       int32_t v = 0;
-      if (!decodeDictNumber(bytes.data(), bytes.size(), pos, v) || sp >= 48) return false;
+      if (!decodeDictNumber(bytes, dict.len, pos, v) || sp >= 48) return false;
       stack[sp++] = v;
       continue;
     }
     ++pos;
     uint16_t op = x;
     if (x == 12) {
-      if (pos >= bytes.size()) return false;
+      if (pos >= dict.len) return false;
       op = uint16_t(0x0c00 | bytes[pos++]);
     }
-    if (op == 17) {
+    if (op == 17) {  // CharStrings
       if (sp != 1 || stack[0] < 0) return false;
-      charStringsRel = uint32_t(stack[0]); haveCharStrings = true;
-    } else if (op == 18) {
+      charStringsRel = uint32_t(stack[0]);
+      haveCharStrings = true;
+    } else if (op == 18) {  // Private
       if (sp != 2 || stack[0] < 0 || stack[1] < 0) return false;
-      privateSize = uint32_t(stack[0]); privateRel = uint32_t(stack[1]);
+      privateSize = uint32_t(stack[0]);
+      privateRel = uint32_t(stack[1]);
+    } else if (op == 0x0c1e) {  // ROS
+      if (sp != 3 || stack[0] < 0 || stack[1] < 0 || stack[2] < 0) return false;
+      cidKeyed_ = true;
+    } else if (op == 0x0c24) {  // FDArray
+      if (sp != 1 || stack[0] < 0) return false;
+      fdArrayRel_ = uint32_t(stack[0]);
+      haveFdArray = true;
+    } else if (op == 0x0c25) {  // FDSelect
+      if (sp != 1 || stack[0] < 0) return false;
+      fdSelectRel_ = uint32_t(stack[0]);
+      haveFdSelect = true;
     }
     sp = 0;
   }
-  if (!haveCharStrings || charStringsRel >= cff_.len) { lastError_ = "CFF Top DICT missing CharStrings"; return false; }
+  if (!haveCharStrings || charStringsRel >= cff_.len) {
+    lastError_ = "CFF Top DICT missing CharStrings";
+    return false;
+  }
   if (privateSize) {
     if (privateRel > cff_.len || privateSize > cff_.len - privateRel) return false;
     privateDict_ = {cff_.off + privateRel, privateSize};
   }
-  if (!parseIndex(charStringsRel, charStringsInfo_) || !charStringsInfo_.count) return false;
+  if (cidKeyed_ && (!haveFdArray || !haveFdSelect || fdArrayRel_ >= cff_.len || fdSelectRel_ >= cff_.len)) {
+    lastError_ = "CID CFF missing FDArray or FDSelect";
+    return false;
+  }
+  if (!parseIndex(charStringsRel, charStringsInfo_) || !charStringsInfo_.count) {
+    lastError_ = "invalid CFF CharStrings INDEX";
+    return false;
+  }
   charStrings_ = charStringsInfo_.whole;
   glyphCount_ = charStringsInfo_.count;
+  return true;
+}
+
+bool CffFont::parsePrivateSubrs(Slice dict, IndexInfo& outInfo, Slice& outSlice) {
+  outInfo = {};
+  outSlice = {};
+  if (!dict.valid()) return true;
+  if (dict.len > 64u * 1024u) { lastError_ = "CFF Private DICT too large"; return false; }
+  if (dict.len > type2ScratchCap_) {
+    auto* p = static_cast<uint8_t*>(reallocPsramFirst(type2Scratch_, dict.len));
+    if (!p) { lastError_ = "CFF Private DICT PSRAM allocation failed"; return false; }
+    type2Scratch_ = p;
+    type2ScratchCap_ = dict.len;
+  }
+  if (!readAt(dict.off, type2Scratch_, dict.len)) return false;
+  const uint8_t* bytes = type2Scratch_;
+  int32_t stack[48];
+  size_t sp = 0, pos = 0;
+  int32_t subrsRel = -1;
+  while (pos < dict.len) {
+    const uint8_t x = bytes[pos];
+    if (x >= 28) {
+      int32_t v = 0;
+      if (!decodeDictNumber(bytes, dict.len, pos, v) || sp >= 48) return false;
+      stack[sp++] = v;
+      continue;
+    }
+    ++pos;
+    uint16_t op = x;
+    if (x == 12) {
+      if (pos >= dict.len) return false;
+      op = uint16_t(0x0c00 | bytes[pos++]);
+    }
+    if (op == 19) {  // Subrs, relative to Private DICT start
+      if (sp != 1 || stack[0] < 0) return false;
+      subrsRel = stack[0];
+    }
+    sp = 0;
+  }
+  if (subrsRel < 0) return true;
+  const uint64_t abs = uint64_t(dict.off) + uint32_t(subrsRel);
+  if (abs < cff_.off || abs >= uint64_t(cff_.off) + cff_.len) {
+    lastError_ = "CFF local Subrs outside table";
+    return false;
+  }
+  if (!parseIndex(uint32_t(abs - cff_.off), outInfo, nullptr)) {
+    lastError_ = "invalid CFF local Subr INDEX";
+    return false;
+  }
+  outSlice = outInfo.whole;
+  return true;
+}
+
+bool CffFont::parseFontDict(Slice dict, FdInfo& out) {
+  out = {};
+  if (!dict.valid() || dict.len > 64u * 1024u) return false;
+  if (dict.len > type2ScratchCap_) {
+    auto* p = static_cast<uint8_t*>(reallocPsramFirst(type2Scratch_, dict.len));
+    if (!p) return false;
+    type2Scratch_ = p;
+    type2ScratchCap_ = dict.len;
+  }
+  if (!readAt(dict.off, type2Scratch_, dict.len)) return false;
+  const uint8_t* bytes = type2Scratch_;
+  int32_t stack[48];
+  size_t sp = 0, pos = 0;
+  uint32_t privateSize = 0, privateRel = 0;
+  while (pos < dict.len) {
+    const uint8_t x = bytes[pos];
+    if (x >= 28) {
+      int32_t v = 0;
+      if (!decodeDictNumber(bytes, dict.len, pos, v) || sp >= 48) return false;
+      stack[sp++] = v;
+      continue;
+    }
+    ++pos;
+    uint16_t op = x;
+    if (x == 12) {
+      if (pos >= dict.len) return false;
+      op = uint16_t(0x0c00 | bytes[pos++]);
+    }
+    if (op == 18) {
+      if (sp != 2 || stack[0] < 0 || stack[1] < 0) return false;
+      privateSize = uint32_t(stack[0]);
+      privateRel = uint32_t(stack[1]);
+    }
+    sp = 0;
+  }
+  if (!privateSize) return true;
+  if (privateRel > cff_.len || privateSize > cff_.len - privateRel) return false;
+  out.privateDict = {cff_.off + privateRel, privateSize};
+  return parsePrivateSubrs(out.privateDict, out.localSubrsInfo, out.localSubrs);
+}
+
+bool CffFont::initFdSelect() {
+  fdSelectLen_ = 0;
+  if (!fdCount_ || fdSelectRel_ >= cff_.len) return false;
+  uint8_t hdr[3] = {};
+  if (!readAt(cff_.off + fdSelectRel_, hdr, 1)) return false;
+  uint32_t len = 0;
+  if (hdr[0] == 0) {
+    len = 1u + glyphCount_;
+  } else if (hdr[0] == 3) {
+    if (cff_.len - fdSelectRel_ < 3 || !readAt(cff_.off + fdSelectRel_, hdr, 3)) return false;
+    const uint16_t ranges = rd16be(hdr + 1);
+    if (!ranges) return false;
+    len = 3u + uint32_t(ranges) * 3u + 2u;
+  } else {
+    lastError_ = "unsupported CFF FDSelect format";
+    return false;
+  }
+  if (len > cff_.len - fdSelectRel_) return false;
+  if (len > fdSelectCapacity_) {
+    auto* p = static_cast<uint8_t*>(reallocPsramFirst(fdSelectData_, len));
+    if (!p) { lastError_ = "CFF FDSelect PSRAM allocation failed"; return false; }
+    fdSelectData_ = p;
+    fdSelectCapacity_ = len;
+  }
+  if (!readAt(cff_.off + fdSelectRel_, fdSelectData_, len)) return false;
+  fdSelectLen_ = len;
+  if (fdSelectData_[0] == 0) {
+    for (uint32_t gid = 0; gid < glyphCount_; ++gid) {
+      if (fdSelectData_[1u + gid] >= fdCount_) return false;
+    }
+  } else {
+    const uint16_t ranges = rd16be(fdSelectData_ + 1);
+    const uint8_t* r = fdSelectData_ + 3;
+    uint16_t prev = 0;
+    for (uint16_t i = 0; i < ranges; ++i) {
+      const uint16_t first = rd16be(r + uint32_t(i) * 3u);
+      const uint8_t fd = r[uint32_t(i) * 3u + 2u];
+      if ((i == 0 && first != 0) || (i && first <= prev) || fd >= fdCount_) return false;
+      prev = first;
+    }
+    const uint16_t sentinel = rd16be(r + uint32_t(ranges) * 3u);
+    if (sentinel != glyphCount_ || sentinel <= prev) return false;
+  }
+  return true;
+}
+
+bool CffFont::initCidData() {
+  IndexInfo fdArray;
+  if (!parseIndex(fdArrayRel_, fdArray, nullptr) || !fdArray.count || fdArray.count > 256) {
+    lastError_ = "invalid CID CFF FDArray";
+    return false;
+  }
+  const uint16_t count = fdArray.count;
+  if (count > fdCapacity_) {
+    auto* p = static_cast<FdInfo*>(reallocPsramFirst(fdInfos_, size_t(count) * sizeof(FdInfo)));
+    if (!p) { lastError_ = "CID CFF FD metadata PSRAM allocation failed"; return false; }
+    fdInfos_ = p;
+    fdCapacity_ = count;
+  }
+  fdCount_ = count;
+  for (uint16_t i = 0; i < count; ++i) {
+    fdInfos_[i] = FdInfo{};
+    Slice dict;
+    if (!indexObject(fdArray, i, dict) || !parseFontDict(dict, fdInfos_[i])) {
+      lastError_ = "invalid CID CFF Font DICT";
+      return false;
+    }
+  }
+  if (!initFdSelect()) return false;
+  return true;
+}
+
+bool CffFont::selectGlyphFd(uint16_t gid, uint16_t& fd) const {
+  fd = 0;
+  if (!cidKeyed_) return true;
+  if (!fdSelectData_ || !fdSelectLen_ || gid >= glyphCount_) return false;
+  if (fdSelectData_[0] == 0) {
+    fd = fdSelectData_[1u + gid];
+    return fd < fdCount_;
+  }
+  const uint16_t ranges = rd16be(fdSelectData_ + 1);
+  const uint8_t* r = fdSelectData_ + 3;
+  uint16_t lo = 0, hi = ranges;
+  while (lo < hi) {
+    const uint16_t mid = uint16_t((uint32_t(lo) + hi) / 2u);
+    if (rd16be(r + uint32_t(mid) * 3u) <= gid) lo = uint16_t(mid + 1u);
+    else hi = mid;
+  }
+  if (!lo) return false;
+  const uint16_t idx = uint16_t(lo - 1u);
+  const uint16_t next = idx + 1u < ranges ? rd16be(r + uint32_t(idx + 1u) * 3u)
+                                          : rd16be(r + uint32_t(ranges) * 3u);
+  if (gid >= next) return false;
+  fd = r[uint32_t(idx) * 3u + 2u];
+  return fd < fdCount_;
+}
+
+bool CffFont::prepareGlyphLocalSubrs(uint16_t gid) const {
+  if (!cidKeyed_) return true;
+  uint16_t fd = 0;
+  if (!selectGlyphFd(gid, fd)) return false;
+  localSubrsInfo_ = fdInfos_[fd].localSubrsInfo;
+  localSubrs_ = fdInfos_[fd].localSubrs;
   return true;
 }
 
@@ -210,15 +437,13 @@ bool CffFont::initCmap() {
   if (!readAt(cmap_.off, h, 4)) return false;
   const uint16_t n = rd16be(h + 2);
   if (!n || n > 256 || cmap_.len < 4 + uint32_t(n) * 8) return false;
-  // Directory is at most 2KB; keep this one small automatic buffer in internal
-  // RAM instead of dynamically allocating it.
-  uint8_t dir[2048];
-  const uint32_t dirLen = uint32_t(n) * 8;
-  if (!readAt(cmap_.off + 4, dir, dirLen)) return false;
+  // Scan each 8-byte encoding record directly from SD. This is a one-time
+  // font-open cost and avoids a 2KB internal-stack directory buffer.
   uint32_t best = 0;
   int score = -1;
   for (uint16_t i = 0; i < n; ++i) {
-    const uint8_t* e = dir + uint32_t(i) * 8;
+    uint8_t e[8];
+    if (!readAt(cmap_.off + 4u + uint32_t(i) * 8u, e, 8)) return false;
     const uint32_t o = rd32be(e + 4);
     if (o + 2 > cmap_.len) continue;
     uint8_t f[2];
@@ -315,7 +540,9 @@ bool CffFont::glyphHMetrics(uint16_t gid, int32_t& adv, int32_t& lsb) const {
   return true;
 }
 
-void CffFont::fontVMetrics(int32_t& a, int32_t& d, int32_t& g) const { a = ascender_; d = descender_; g = lineGap_; }
+void CffFont::fontVMetrics(int32_t& a, int32_t& d, int32_t& g) const {
+  a = ascender_; d = descender_; g = lineGap_;
+}
 
 bool CffFont::init(TtfStream& stream, uint32_t face) {
   ready_ = false;
@@ -323,19 +550,28 @@ bool CffFont::init(TtfStream& stream, uint32_t face) {
   stream_ = &stream;
   fileSize_ = stream.size();
   cff_ = {};
-  charStringsInfo_ = globalSubrsInfo_ = localSubrsInfo_ = {};
-  charStrings_ = globalSubrs_ = localSubrs_ = privateDict_ = {};
+  charStringsInfo_ = globalSubrsInfo_ = {};
+  localSubrsInfo_ = {};
+  charStrings_ = globalSubrs_ = privateDict_ = {};
+  localSubrs_ = {};
   glyphCount_ = unitsPerEm_ = numHMetrics_ = 0;
-  cmapLen_ = 0;  // retain high-water PSRAM allocation for reuse
+  cmapLen_ = 0;
+  cidKeyed_ = false;
+  fdArrayRel_ = fdSelectRel_ = 0;
+  fdCount_ = 0;
+  fdSelectLen_ = 0;
   if (face > fileSize_ || fileSize_ - face < 12) return false;
   uint8_t h[12];
-  if (!readAt(face, h, 12) || rd32be(h) != 0x4f54544f) { lastError_ = "not an OTTO OpenType face"; return false; }
+  if (!readAt(face, h, 12) || rd32be(h) != 0x4f54544f) {
+    lastError_ = "not an OTTO OpenType face";
+    return false;
+  }
   const uint16_t nt = rd16be(h + 4);
-  if (!nt || nt > 128 || uint64_t(face) + 12 + uint64_t(nt) * 16 > fileSize_) return false;
+  if (!nt || nt > 128 || uint64_t(face) + 12u + uint64_t(nt) * 16u > fileSize_) return false;
   bool sawCff2 = false;
   for (uint16_t i = 0; i < nt; ++i) {
     uint8_t r[16];
-    if (!readAt(face + 12 + uint32_t(i) * 16, r, 16)) return false;
+    if (!readAt(face + 12u + uint32_t(i) * 16u, r, 16)) return false;
     const uint32_t k = rd32be(r), o = rd32be(r + 8), l = rd32be(r + 12);
     if (k == tag("CFF2")) sawCff2 = true;
     if (k == tag("CFF ")) {
@@ -343,17 +579,27 @@ bool CffFont::init(TtfStream& stream, uint32_t face) {
       cff_ = {o, l};
     }
   }
-  if (!cff_.valid()) { lastError_ = sawCff2 ? "CFF2 face is not supported yet" : "OTTO face has no CFF table"; return false; }
+  if (!cff_.valid()) {
+    lastError_ = sawCff2 ? "CFF2 face is not supported yet" : "OTTO face has no CFF table";
+    return false;
+  }
   uint8_t ch[4];
   if (!readAt(cff_.off, ch, 4) || ch[0] != 1 || ch[2] < 4 || ch[2] > cff_.len || ch[3] < 1 || ch[3] > 4) return false;
   uint32_t rel = ch[2];
   IndexInfo names, top, strings;
   if (!parseIndex(rel, names, &rel) || !names.count ||
       !parseIndex(rel, top, &rel) || top.count != 1 ||
-      !parseIndex(rel, strings, &rel) || !parseIndex(rel, globalSubrsInfo_)) return false;
+      !parseIndex(rel, strings, &rel) ||
+      !parseIndex(rel, globalSubrsInfo_)) return false;
   globalSubrs_ = globalSubrsInfo_.whole;
   Slice td;
-  if (!indexObject(top, 0, td) || !parseTopDict(td) || !parsePrivateDict() || !initSfntMetrics(face, nt)) return false;
+  if (!indexObject(top, 0, td) || !parseTopDict(td)) return false;
+  if (cidKeyed_) {
+    if (!initCidData()) return false;
+  } else {
+    if (!parsePrivateSubrs(privateDict_, localSubrsInfo_, localSubrs_)) return false;
+  }
+  if (!initSfntMetrics(face, nt)) return false;
   ready_ = true;
   lastError_ = "ok";
   return true;
