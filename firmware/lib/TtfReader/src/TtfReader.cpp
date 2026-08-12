@@ -361,7 +361,11 @@ bool TtfFont::initCmap() {
     }
     cmapIs12_ = false;
     const uint16_t segCount = (uint16_t)(rd16(data + 6) / 2);
-    if (segCount == 0 || avail < 14u + (uint32_t)segCount * 10u) {
+    // Format 4's fixed arrays occupy 16 + 8*segCount bytes:
+    // header(14), endCode, reservedPad(2), startCode, idDelta and
+    // idRangeOffset. glyphIdArray is optional and may be empty.
+    const uint32_t minLen = 16u + static_cast<uint32_t>(segCount) * 8u;
+    if (segCount == 0 || avail < minLen) {
       lastError_ = "cmap4 invalid segment count";
       return false;
     }
