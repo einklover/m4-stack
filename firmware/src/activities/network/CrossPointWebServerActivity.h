@@ -11,7 +11,6 @@
 #include "activities/ActivityWithSubactivity.h"
 #include "network/CrossPointWebServer.h"
 
-// Web server activity states
 enum class WebServerActivityState {
   MODE_SELECTION,
   WIFI_SELECTION,
@@ -23,6 +22,8 @@ enum class WebServerActivityState {
 
 /** File-transfer entry activity: mode selection → network setup → server. */
 class CrossPointWebServerActivity final : public ActivityWithSubactivity {
+  enum class PendingParentAction : uint8_t { None, StartAccessPoint, StartWebServer };
+
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   bool updateRequired = false;
@@ -37,6 +38,7 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   std::string setupError;
   bool autoStartSavedSta = false;
   unsigned long lastHandleClientTime = 0;
+  PendingParentAction pendingParentAction = PendingParentAction::None;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
@@ -44,6 +46,7 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   void renderServerRunning() const;
   void showSetupError(const char* message);
   void reopenModeSelection();
+  void runPendingParentAction();
 
   void onNetworkModeSelected(NetworkMode mode);
   void onWifiSelectionComplete(bool connected);
