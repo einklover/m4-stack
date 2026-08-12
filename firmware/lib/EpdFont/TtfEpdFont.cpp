@@ -97,7 +97,49 @@ class TtcFaceStream : public ttf::TtfStream {
 };
 
 enum class OpenTypeKind:uint8_t{Glyf,Cff1,Cff2,Invalid};
-OpenTypeKind probeOpenType(SdTtfStream& s){if(s.size()<12)return OpenTypeKind::Invalid;uint8_t h[12];if(!s.seek(0)||s.read(h,12)!=12||std::memcmp(h,"OTTO",4)!=0)return OpenTypeKind::Invalid;uint16_t nt=be16(h+4);if(!nt||nt>128||12u+uint32_t(nt)*16u>s.size())return OpenTypeKind::Invalid;bool head=false,maxp=false,loca=false,cmap=false,hhea=false,hmtx=false,glyf=false,cff=false,cff2=false;for(uint16_t i=0;i<nt;++i){uint8_t r[16];if(!s.seek(12u+uint32_t(i)*16u)||s.read(r,16)!=16)return OpenTypeKind::Invalid;uint32_t t=be32(r),o=be32(r+8),l=be32(r+12);if(o>s.size()||l>s.size()-o)return OpenTypeKind::Invalid;head|=t==0x68656164u;maxp|=t==0x6d617870u;loca|=t==0x6c6f6361u;cmap|=t==0x636d6170u;hhea|=t==0x68686561u;hmtx|=t==0x686d7478u;glyf|=t==0x676c7966u;cff|=t==0x43464620u;cff2|=t==0x43464632u;}if(head&&maxp&&loca&&cmap&&hhea&&hmtx&&glyf)return OpenTypeKind::Glyf;if(head&&maxp&&cmap&&hhea&&hmtx&&cff)return OpenTypeKind::Cff1;if(cff2)return OpenTypeKind::Cff2;return OpenTypeKind::Invalid;}
+
+OpenTypeKind probeSfntFace(SdTtfStream& s,uint32_t faceOff){
+  if(faceOff>s.size()||s.size()-faceOff<12)return OpenTypeKind::Invalid;
+  uint8_t h[12];if(!s.seek(faceOff)||s.read(h,12)!=12)return OpenTypeKind::Invalid;
+  const uint32_t sig=be32(h);
+  if(sig!=0x00010000u&&sig!=0x74727565u&&sig!=0x4f54544fu)return OpenTypeKind::Invalid;
+  const uint16_t nt=be16(h+4);
+  if(!nt||nt>128||uint64_t(faceOff)+12u+uint64_t(nt)*16u>s.size())return OpenTypeKind::Invalid;
+  bool head=false,maxp=false,loca=false,cmap=false,hhea=false,hmtx=false,glyf=false,cff=false,cff2=false;
+  for(uint16_t i=0;i<nt;++i){
+    uint8_t r[16];if(!s.seek(faceOff+12u+uint32_t(i)*16u)||s.read(r,16)!=16)return OpenTypeKind::Invalid;
+    const uint32_t t=be32(r),o=be32(r+8),l=be32(r+12);
+    // TTC/OTC table offsets are absolute from the beginning of the collection.
+    if(o>s.size()||l>s.size()-o)return OpenTypeKind::Invalid;
+    head|=t==0x68656164u;maxp|=t==0x6d617870u;loca|=t==0x6c6f6361u;cmap|=t==0x636d6170u;
+    hhea|=t==0x68686561u;hmtx|=t==0x686d7478u;glyf|=t==0x676c7966u;
+    cff|=t==0x43464620u;cff2|=t==0x43464632u;
+  }
+  if(head&&maxp&&loca&&cmap&&hhea&&hmtx&&glyf)return OpenTypeKind::Glyf;
+  if(sig==0x4f54544fu&&head&&maxp&&cmap&&hhea&&hmtx&&cff)return OpenTypeKind::Cff1;
+  if(sig==0x4f54544fu&&cff2)return OpenTypeKind::Cff2;
+  return OpenTypeKind::Invalid;
+}
+OpenTypeKind probeOpenType(SdTtfStream& s){return probeSfntFace(s,0);}
+
+bool probeCollection(SdTtfStream& s,uint32_t& faceOff,OpenTypeKind& kind,bool& sawCff2){
+  faceOff=0;kind=OpenTypeKind::Invalid;sawCff2=false;
+  if(s.size()<16)return false;
+  uint8_t h[12];if(!s.seek(0)||s.read(h,12)!=12||std::memcmp(h,"ttcf",4)!=0)return false;
+  const uint32_t count=be32(h+8);
+  if(!count||count>64||12u+uint64_t(count)*4u>s.size())return false;
+  for(uint32_t i=0;i<count;++i){
+    uint8_t b[4];if(!s.seek(12u+i*4u)||s.read(b,4)!=4)return false;
+    const uint32_t off=be32(b);const OpenTypeKind candidate=probeSfntFace(s,off);
+    if(candidate==OpenTypeKind::Cff2){sawCff2=true;continue;}
+    if(candidate==OpenTypeKind::Cff1||candidate==OpenTypeKind::Glyf){
+      faceOff=off;kind=candidate;
+      char line[160];snprintf(line,sizeof(line),"collection_face_probe index=%lu offset=%lu backend=%s",static_cast<unsigned long>(i),static_cast<unsigned long>(off),candidate==OpenTypeKind::Cff1?"cff1":"glyf");m4AppendFontDiagnostic(line);
+      return true;
+    }
+  }
+  return false;
+}
 
 void* ttfAlloc(size_t n){
 #if defined(ESP32) && defined(BOARD_HAS_PSRAM)
@@ -122,15 +164,20 @@ bool TtfEpdFont::hasCodepoint(uint32_t cp) const{uint16_t gid=0;return valid_&&b
 
 bool TtfEpdFont::allocateEntries(){if(maxSlots_==0)maxSlots_=1;if(cacheBudget_==0)cacheBudget_=1;entries_=static_cast<Entry*>(ttfAlloc(sizeof(Entry)*maxSlots_));if(!entries_){runtimeError_="glyph cache metadata allocation failed";return false;}for(uint16_t i=0;i<maxSlots_;++i)new(&entries_[i])Entry();return true;}
 
-bool TtfEpdFont::finishInit(const char* label){if(!stream_)return false;const bool ok=backend_==Backend::Cff1?cffFont_.init(*stream_):font_.init(*stream_);if(!ok){Serial.printf("[TTF] Invalid runtime font %s backend=%s: %s\n",label?label:"?",backend_==Backend::Cff1?"cff1":"glyf",backendError());return false;}const uint16_t upm=backendUnitsPerEm();if(!upm)return false;const float scale=float(sizePx_)/float(upm);int32_t asc=0,desc=0,gap=0;backendVMetrics(asc,desc,gap);const int rawAsc=int(std::lround(asc*scale)),rawDesc=int(std::lround(desc*scale)),gapPx=std::max(0,int(std::lround(gap*scale))),bboxTop=std::max(0,int(std::lround(backendBBoxYMax()*scale)));bool refValid=false;uint32_t refCp=0;int refTop=0,refBottom=0;static constexpr uint32_t samples[]={0x56FD,0x7530,0x4E2D,0x6C38,0x4E00,'H','M'};for(uint32_t cp:samples){uint16_t gid=0;if(!backendFindGlyph(cp,gid)||gid==0)continue;int x0=0,y0=0,x1=0,y1=0;if(!backendPixelBox(gid,x0,y0,x1,y1))continue;int top=std::max(0,-y0),bottom=std::max(0,y1),height=top+bottom;if(height<std::max(2,int(sizePx_)/2)||height>255)continue;refValid=true;refCp=cp;refTop=top;refBottom=bottom;break;}const int nominal=std::max(1,int(sizePx_));int ascPx=refValid?clampMetric(refTop,std::max(1,int(std::lround(nominal*.55f))),std::max(1,int(std::lround(nominal*1.10f)))):clampMetric(rawAsc,std::max(1,int(std::lround(nominal*.60f))),std::max(1,int(std::lround(nominal*1.10f))));int descMag=std::max(0,-rawDesc);if(refValid)descMag=std::max(descMag,refBottom);descMag=clampMetric(descMag,0,std::max(1,int(std::lround(nominal*.30f))));const int descPx=-descMag;const int clippedGap=std::min(gapPx,std::max(0,int(std::lround(nominal*.25f))));int line=std::max(ascPx+descMag+clippedGap,nominal);line=std::min(line,std::max(nominal,int(std::lround(nominal*1.35f))));line=std::max(1,std::min(255,line));data_.bitmap=nullptr;data_.glyph=nullptr;data_.intervals=nullptr;data_.intervalCount=0;data_.advanceY=uint8_t(line);data_.ascender=ascPx;data_.descender=descPx;data_.is2Bit=true;valid_=true;Serial.printf("[TTF] Loaded %s backend=%s @%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X slots=%u budget=%u\n",label?label:"?",backend_==Backend::Cff1?"cff1":"glyf",sizePx_,upm,data_.advanceY,data_.ascender,data_.descender,bboxTop,static_cast<unsigned>(refValid?refCp:0),static_cast<unsigned>(maxSlots_),static_cast<unsigned>(cacheBudget_));return true;}
+bool TtfEpdFont::finishInit(const char* label){if(!stream_)return false;const bool ok=backend_==Backend::Cff1?cffFont_.init(*stream_,cffFaceOffset_):font_.init(*stream_);if(!ok){Serial.printf("[TTF] Invalid runtime font %s backend=%s: %s\n",label?label:"?",backend_==Backend::Cff1?"cff1":"glyf",backendError());return false;}const uint16_t upm=backendUnitsPerEm();if(!upm)return false;const float scale=float(sizePx_)/float(upm);int32_t asc=0,desc=0,gap=0;backendVMetrics(asc,desc,gap);const int rawAsc=int(std::lround(asc*scale)),rawDesc=int(std::lround(desc*scale)),gapPx=std::max(0,int(std::lround(gap*scale))),bboxTop=std::max(0,int(std::lround(backendBBoxYMax()*scale)));bool refValid=false;uint32_t refCp=0;int refTop=0,refBottom=0;static constexpr uint32_t samples[]={0x56FD,0x7530,0x4E2D,0x6C38,0x4E00,'H','M'};for(uint32_t cp:samples){uint16_t gid=0;if(!backendFindGlyph(cp,gid)||gid==0)continue;int x0=0,y0=0,x1=0,y1=0;if(!backendPixelBox(gid,x0,y0,x1,y1))continue;int top=std::max(0,-y0),bottom=std::max(0,y1),height=top+bottom;if(height<std::max(2,int(sizePx_)/2)||height>255)continue;refValid=true;refCp=cp;refTop=top;refBottom=bottom;break;}const int nominal=std::max(1,int(sizePx_));int ascPx=refValid?clampMetric(refTop,std::max(1,int(std::lround(nominal*.55f))),std::max(1,int(std::lround(nominal*1.10f)))):clampMetric(rawAsc,std::max(1,int(std::lround(nominal*.60f))),std::max(1,int(std::lround(nominal*1.10f))));int descMag=std::max(0,-rawDesc);if(refValid)descMag=std::max(descMag,refBottom);descMag=clampMetric(descMag,0,std::max(1,int(std::lround(nominal*.30f))));const int descPx=-descMag;const int clippedGap=std::min(gapPx,std::max(0,int(std::lround(nominal*.25f))));int line=std::max(ascPx+descMag+clippedGap,nominal);line=std::min(line,std::max(nominal,int(std::lround(nominal*1.35f))));line=std::max(1,std::min(255,line));data_.bitmap=nullptr;data_.glyph=nullptr;data_.intervals=nullptr;data_.intervalCount=0;data_.advanceY=uint8_t(line);data_.ascender=ascPx;data_.descender=descPx;data_.is2Bit=true;valid_=true;Serial.printf("[TTF] Loaded %s backend=%s @%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X slots=%u budget=%u\n",label?label:"?",backend_==Backend::Cff1?"cff1":"glyf",sizePx_,upm,data_.advanceY,data_.ascender,data_.descender,bboxTop,static_cast<unsigned>(refValid?refCp:0),static_cast<unsigned>(maxSlots_),static_cast<unsigned>(cacheBudget_));return true;}
 
 TtfEpdFont::TtfEpdFont(const String& path,uint16_t sizePx,uint16_t maxSlots,size_t budget):EpdFont(&data_),path_(path),sizePx_(sizePx),maxSlots_(maxSlots),cacheBudget_(budget){
 #if defined(ESP32)
   mutex_=xSemaphoreCreateMutex();
 #endif
   auto*sd=new(std::nothrow)SdTtfStream();if(!sd||!sd->open(path_)){runtimeError_="font file open failed";delete sd;return;}uint8_t magic[4]={};const bool have=sd->seek(0)&&sd->read(magic,4)==4;
-  if(have&&std::memcmp(magic,"ttcf",4)==0){auto*c=new(std::nothrow)TtcFaceStream(sd);if(!c||!c->init()){runtimeError_="font collection contains no supported glyf face";delete c;if(!c)delete sd;return;}stream_=c;backend_=Backend::Glyf;}
-  else if(have&&std::memcmp(magic,"OTTO",4)==0){const OpenTypeKind kind=probeOpenType(*sd);if(kind==OpenTypeKind::Cff1){sd->seek(0);stream_=sd;backend_=Backend::Cff1;m4AppendFontDiagnostic("opentype_cff1_backend enabled");}else if(kind==OpenTypeKind::Glyf){auto*o=new(std::nothrow)GlyfOpenTypeStream(sd);if(!o||!o->init()){runtimeError_="OpenType glyf adapter failed";delete o;if(!o)delete sd;return;}stream_=o;backend_=Backend::Glyf;}else{runtimeError_=kind==OpenTypeKind::Cff2?"CFF2 variable OpenType is not supported yet":"invalid OpenType font";delete sd;return;}}
+  if(have&&std::memcmp(magic,"ttcf",4)==0){
+    uint32_t faceOff=0;OpenTypeKind kind=OpenTypeKind::Invalid;bool sawCff2=false;
+    if(!probeCollection(*sd,faceOff,kind,sawCff2)){runtimeError_=sawCff2?"font collection contains only unsupported CFF2 faces":"font collection contains no supported glyf/CFF1 face";delete sd;return;}
+    if(kind==OpenTypeKind::Cff1){stream_=sd;backend_=Backend::Cff1;cffFaceOffset_=faceOff;m4AppendFontDiagnostic("collection_cff1_zero_copy enabled");}
+    else{auto*c=new(std::nothrow)TtcFaceStream(sd);if(!c||!c->init()){runtimeError_="TrueType collection glyf adapter failed";delete c;if(!c)delete sd;return;}stream_=c;backend_=Backend::Glyf;}
+  }
+  else if(have&&std::memcmp(magic,"OTTO",4)==0){const OpenTypeKind kind=probeOpenType(*sd);if(kind==OpenTypeKind::Cff1){sd->seek(0);stream_=sd;backend_=Backend::Cff1;cffFaceOffset_=0;m4AppendFontDiagnostic("opentype_cff1_backend enabled");}else if(kind==OpenTypeKind::Glyf){auto*o=new(std::nothrow)GlyfOpenTypeStream(sd);if(!o||!o->init()){runtimeError_="OpenType glyf adapter failed";delete o;if(!o)delete sd;return;}stream_=o;backend_=Backend::Glyf;}else{runtimeError_=kind==OpenTypeKind::Cff2?"CFF2 variable OpenType is not supported yet":"invalid OpenType font";delete sd;return;}}
   else{sd->seek(0);stream_=sd;backend_=Backend::Glyf;}
   if(!finishInit(path_.c_str()))return;if(!allocateEntries()){valid_=false;return;}
 }
