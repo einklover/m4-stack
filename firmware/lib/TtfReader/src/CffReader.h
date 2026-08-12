@@ -1,8 +1,7 @@
 // CffReader — streamed Compact Font Format 1 parser for OpenType/CFF faces.
 //
-// This layer intentionally stops at validated CFF metadata/INDEX discovery.
-// Type 2 CharString execution and rasterization are built on top of it so the
-// container/parser can be fuzzed and host-tested independently.
+// Pure C++ with no Arduino dependency. CFF INDEXes and CharStrings stay in the
+// seekable font stream; only the active DICT/CharString is read while executing.
 #pragma once
 
 #include <cstddef>
@@ -35,11 +34,17 @@ class CffFont {
   Slice cffTable() const { return cff_; }
   Slice charStringsIndex() const { return charStrings_; }
   Slice globalSubrsIndex() const { return globalSubrs_; }
+  Slice localSubrsIndex() const { return localSubrs_; }
   Slice privateDict() const { return privateDict_; }
 
   // Return an INDEX object by zero-based item number without loading the whole
   // INDEX into RAM. `index` must be a validated INDEX slice from this object.
   bool indexObject(Slice index, uint16_t item, Slice& object) const;
+
+  // Execute a CFF1 Type 2 CharString and return flattened outline contours in
+  // font units. Cubic Beziers are adaptively subdivided into on-curve points so
+  // the existing renderer can reuse the same contour/raster path as TrueType.
+  bool collectGlyph(uint16_t gid, std::vector<Contour>& out) const;
 
  private:
   struct IndexInfo {
@@ -54,18 +59,23 @@ class CffFont {
   bool parseIndex(uint32_t relOff, IndexInfo& out, uint32_t* nextRel = nullptr) const;
   bool indexObject(const IndexInfo& index, uint16_t item, Slice& object) const;
   bool parseTopDict(Slice dict);
+  bool parsePrivateDict();
   bool readOffset(uint32_t absOff, uint8_t offSize, uint32_t& value) const;
+  bool executeType2(Slice code, std::vector<Contour>& out, int depth,
+                    float& x, float& y, uint32_t& stemCount) const;
 
   TtfStream* stream_ = nullptr;
   uint32_t fileSize_ = 0;
   bool ready_ = false;
-  const char* lastError_ = "not initialized";
+  mutable const char* lastError_ = "not initialized";
 
   Slice cff_;
   IndexInfo charStringsInfo_;
   IndexInfo globalSubrsInfo_;
+  IndexInfo localSubrsInfo_;
   Slice charStrings_;
   Slice globalSubrs_;
+  Slice localSubrs_;
   Slice privateDict_;
   uint16_t glyphCount_ = 0;
 };
