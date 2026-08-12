@@ -1,3 +1,6 @@
+> **Clean-machine entry:** `./m4sim` — see [docs/M4SIM_CLEAN_SETUP.md](../../docs/M4SIM_CLEAN_SETUP.md) and [LOCAL_RUNTIME_CHAIN.md](LOCAL_RUNTIME_CHAIN.md).
+> Build QEMU with `python3 simulator/qemu/build.py` (v3 series only).
+
 # ESP32-S3 QEMU layer
 
 This directory is the CPU/SoC execution layer of M4Sim. The deterministic
