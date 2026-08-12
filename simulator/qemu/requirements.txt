@@ -1,0 +1,5 @@
+# Host Python packages for the m4sim / QEMU plugin-debug path.
+# Install: python3 -m pip install -r simulator/qemu/requirements.txt
+pyserial>=3.5
+# Optional: convert PBM frame dumps without relying on system tools.
+Pillow>=10.0.0
