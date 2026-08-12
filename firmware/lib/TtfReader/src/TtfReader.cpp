@@ -206,7 +206,6 @@ bool TtfFont::init(TtfStream& s) {
   }
   kern_ = findTable(kTagKern);  // optional
 
-  // --- head ---
   if (head_.len < 54) {
     lastError_ = "head table too small";
     return false;
@@ -217,9 +216,6 @@ bool TtfFont::init(TtfStream& s) {
     return false;
   }
   unitsPerEm_ = rd16(head + 18);
-  // head.yMax is the font-wide maximum outline height above the baseline.
-  // Keep it signed: malformed fonts with a negative value will simply fall
-  // back to the hhea ascender when the face is constructed.
   bboxYMax_ = rds16(head + 42);
   const int16_t indexToLocFormat = rds16(head + 50);
   longLoca_ = (indexToLocFormat != 0);
@@ -228,7 +224,6 @@ bool TtfFont::init(TtfStream& s) {
     return false;
   }
 
-  // --- maxp ---
   if (maxp_.len < 6) {
     lastError_ = "maxp table too small";
     return false;
@@ -244,7 +239,6 @@ bool TtfFont::init(TtfStream& s) {
     return false;
   }
 
-  // --- hhea ---
   if (hhea_.len < 36) {
     lastError_ = "hhea table too small";
     return false;
@@ -263,14 +257,12 @@ bool TtfFont::init(TtfStream& s) {
     return false;
   }
 
-  // --- loca sanity ---
   const uint32_t locaEntry = longLoca_ ? 4 : 2;
   if (loca_.len < locaEntry * (uint32_t)numGlyphs_) {
     lastError_ = "loca table too small";
     return false;
   }
 
-  // --- cmap ---
   if (!initCmap()) return false;
 
   ready_ = true;
@@ -304,8 +296,6 @@ bool TtfFont::initCmap() {
     return false;
   }
 
-  // Prefer format 12 (full Unicode) then format 4 (BMP). Platform weighting:
-  // Windows 3/10 (UCS-4) > Windows 3/1 (BMP) > Unicode platform 0.
   uint32_t bestOff = 0;
   int bestScore = -1;
   for (uint16_t i = 0; i < numTables; i++) {
@@ -332,8 +322,6 @@ bool TtfFont::initCmap() {
     return false;
   }
 
-  // Load the chosen subtable fully into RAM (bounded by cmap table length;
-  // typically tens of KB, PSRAM on device).
   const uint32_t avail = cmap_.len - bestOff;
   if (avail > 2u * 1024u * 1024u) {
     lastError_ = "cmap subtable exceeds memory safety limit";
@@ -361,16 +349,13 @@ bool TtfFont::initCmap() {
     }
     cmapIs12_ = false;
     const uint16_t segCount = (uint16_t)(rd16(data + 6) / 2);
-    // Format 4's fixed arrays occupy 16 + 8*segCount bytes:
-    // header(14), endCode, reservedPad(2), startCode, idDelta and
-    // idRangeOffset. glyphIdArray is optional and may be empty.
     const uint32_t minLen = 16u + static_cast<uint32_t>(segCount) * 8u;
     if (segCount == 0 || avail < minLen) {
       lastError_ = "cmap4 invalid segment count";
       return false;
     }
     nGroups_ = segCount;
-  } else {  // format 12
+  } else {
     if (avail < 16) {
       lastError_ = "cmap12 too small";
       return false;
@@ -390,11 +375,10 @@ bool TtfFont::findGlyph(uint32_t cp, uint16_t& gid) const {
   gid = 0;
   if (!ready_ || !cmapData_) return false;
   if (!cmapIs12_) {
-    // Format 4: endCode, startCode, idDelta, idRangeOffset arrays.
     const uint8_t* p = cmapData_;
     const uint32_t segSize = nGroups_ * 2;
     const uint8_t* endCode = p + 14;
-    const uint8_t* startCode = endCode + segSize + 2;  // + reservedPad
+    const uint8_t* startCode = endCode + segSize + 2;
     const uint8_t* idDelta = startCode + segSize;
     const uint8_t* idRange = idDelta + segSize;
 
@@ -405,9 +389,9 @@ bool TtfFont::findGlyph(uint32_t cp, uint16_t& gid) const {
       if (cp > end) lo = mid + 1;
       else hi = mid;
     }
-    if (lo >= nGroups_) return true;  // above all segments -> .notdef
+    if (lo >= nGroups_) return true;
     const uint16_t start = rd16(startCode + lo * 2);
-    if (cp < start) return true;  // gap -> .notdef
+    if (cp < start) return true;
     const int16_t delta = rds16(idDelta + lo * 2);
     const uint16_t rangeOff = rd16(idRange + lo * 2);
     if (rangeOff == 0) {
@@ -416,12 +400,11 @@ bool TtfFont::findGlyph(uint32_t cp, uint16_t& gid) const {
     }
     const uint32_t base = (uint32_t)(idRange - p) + lo * 2;
     const uint32_t idxOff = base + rangeOff + (cp - start) * 2;
-    if (idxOff + 2 > cmapLen_) return true;  // out of range -> .notdef
+    if (idxOff + 2 > cmapLen_) return true;
     gid = rd16(p + idxOff);
     if (gid != 0) gid = (uint16_t)((int32_t)gid + delta);
     return true;
   }
-  // Format 12: groups of (startChar, endChar, startGlyph), binary search.
   const uint8_t* groups = cmapData_ + 16;
   uint32_t lo = 0, hi = nGroups_;
   while (lo < hi) {
@@ -471,10 +454,7 @@ void TtfFont::fontVMetrics(int32_t& ascUnits, int32_t& descUnits, int32_t& gapUn
   gapUnits = lineGap_;
 }
 
-// --- outline collection -------------------------------------------------------
-
 namespace {
-
 constexpr uint16_t kOnCurve = 0x01;
 constexpr uint16_t kXShort = 0x02;
 constexpr uint16_t kYShort = 0x04;
@@ -517,17 +497,10 @@ void translateContours(std::vector<Contour>& contours, float dx, float dy) {
     }
   }
 }
-
 }  // namespace
 
-// Parse a glyph's outline into `out` (one contour per element), applying xform.
-// Compound components are fully decoded BEFORE recursing so nested calls do not
-// clobber the shared glyf scratch buffer. Both XY-offset and point-index
-// component placement are supported.
 bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& out, int depth) const {
   if (depth > 8 || gid >= (uint16_t)numGlyphs_) return false;
-
-  // loca[gid], loca[gid+1]
   uint32_t gStart = 0, gEnd = 0;
   const uint32_t base = loca_.off + (uint32_t)gid * (longLoca_ ? 4 : 2);
   uint8_t lb[8];
@@ -540,7 +513,7 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     gStart = (uint32_t)rd16(lb) * 2;
     gEnd = (uint32_t)rd16(lb + 2) * 2;
   }
-  if (gStart == gEnd) return true;  // empty glyph (e.g. space)
+  if (gStart == gEnd) return true;
   if (gStart > gEnd || gStart > glyf_.len || gEnd > glyf_.len) return false;
 
   const uint32_t sliceLen = gEnd - gStart;
@@ -556,13 +529,12 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
 
   const int16_t numContours = rds16(p);
   if (numContours >= 0) {
-    // Simple glyph.
-    if (numContours == 0) return true;  // valid empty glyph (typically space)
+    if (numContours == 0) return true;
     if (sliceLen < 10 + (size_t)numContours * 2 + 2) return false;
     const uint8_t* endPts = p + 10;
     const uint16_t lastEndPt = rd16(endPts + (size_t)(numContours - 1) * 2);
     const uint32_t pointCount = (uint32_t)lastEndPt + 1;
-    if (pointCount > 4096) return false;  // sanity
+    if (pointCount > 4096) return false;
     const uint16_t instLen = rd16(endPts + (size_t)numContours * 2);
     const uint8_t* flagsPtr = endPts + (size_t)numContours * 2 + 2 + instLen;
     if (flagsPtr >= p + sliceLen) return false;
@@ -630,9 +602,6 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     return true;
   }
 
-  // Compound glyph: decode every component first, then recurse. Point-index
-  // attachments are resolved in final transformed coordinates, which keeps the
-  // algorithm correct even when the containing compound itself is transformed.
   std::vector<Component> comps;
   uint32_t pos = 10;
   while (true) {
@@ -641,7 +610,6 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     const uint16_t compGid = rd16(p + pos + 2);
     pos += 4;
     if (compGid >= (uint16_t)numGlyphs_) return false;
-
     Component comp;
     comp.gid = compGid;
     comp.pointAttach = (flags & kArgsAreXY) == 0;
@@ -666,7 +634,6 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
       }
       pos += 2;
     }
-
     if ((flags & kTwoByTwo) != 0) {
       if (sliceLen - pos < 8) return false;
       comp.a = (int16_t)rd16(p + pos) / 16384.0f;
@@ -695,23 +662,16 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     child.b = xf.b * c.a + xf.d * c.b;
     child.c = xf.a * c.c + xf.c * c.d;
     child.d = xf.b * c.c + xf.d * c.d;
-
     if (!c.pointAttach) {
       child.tx = xf.a * c.tx + xf.c * c.ty + xf.tx;
       child.ty = xf.b * c.tx + xf.d * c.ty + xf.ty;
       if (!collectGlyph(c.gid, child, out, depth + 1)) return false;
       continue;
     }
-
-    // Point attachment: render the child with only its linear transform plus
-    // the parent's origin, then translate it so childPoint coincides with the
-    // already-emitted parentPoint. The first component cannot legally use this
-    // form because there is no parent point to attach to yet.
     child.tx = xf.tx;
     child.ty = xf.ty;
     std::vector<Contour> childContours;
     if (!collectGlyph(c.gid, child, childContours, depth + 1)) return false;
-
     Pt parentAnchor{};
     Pt childAnchor{};
     if (!flattenedPointAt(out, compoundStartContour, c.parentPoint, parentAnchor) ||
@@ -729,7 +689,6 @@ bool TtfFont::glyphPixelBox(uint16_t gid, uint16_t sizePx, int& x0, int& y0, int
   std::vector<Contour> contours;
   if (!collectGlyph(gid, Xform{}, contours, 0)) return false;
   const float scale = (float)sizePx / (float)unitsPerEm_;
-
   float minX = 0, maxX = 0, minY = 0, maxY = 0;
   bool first = true;
   for (const auto& c : contours) {
@@ -746,8 +705,7 @@ bool TtfFont::glyphPixelBox(uint16_t gid, uint16_t sizePx, int& x0, int& y0, int
       }
     }
   }
-  if (first) return true;  // empty glyph (space)
-
+  if (first) return true;
   x0 = (int)std::floor(minX * scale);
   y0 = (int)std::floor(-maxY * scale);
   x1 = (int)std::ceil(maxX * scale);
@@ -755,53 +713,31 @@ bool TtfFont::glyphPixelBox(uint16_t gid, uint16_t sizePx, int& x0, int& y0, int
   return true;
 }
 
-// --- rasterizer ---------------------------------------------------------------
-
 namespace {
-
-struct Seg {
-  float x0, y0, x1, y1;
-};
-
-// Emit the quadratic p0-ctrl-end adaptively subdivided until the control-point
-// deviation from the chord is below ~0.5px.
+struct Seg { float x0, y0, x1, y1; };
 void emitQuad(const Pt& p0, const Pt& ctrl, const Pt& end, std::vector<Seg>& out) {
   const float dx = end.x - p0.x;
   const float dy = end.y - p0.y;
   const float chordLen = std::sqrt(dx * dx + dy * dy);
-  const float dev =
-      std::fabs((ctrl.x - p0.x) * dy - (ctrl.y - p0.y) * dx) / std::max(chordLen, 1e-3f);
+  const float dev = std::fabs((ctrl.x - p0.x) * dy - (ctrl.y - p0.y) * dx) / std::max(chordLen, 1e-3f);
   const int k = (dev > 0.5f) ? std::min(32, 1 + (int)(dev / 0.5f)) : 1;
   for (int s = 0; s < k; s++) {
     const float t0 = (float)s / k;
     const float t1 = (float)(s + 1) / k;
     const float mt0 = 1.0f - t0;
     const float mt1 = 1.0f - t1;
-    out.push_back(
-        {mt0 * mt0 * p0.x + 2 * mt0 * t0 * ctrl.x + t0 * t0 * end.x,
-         mt0 * mt0 * p0.y + 2 * mt0 * t0 * ctrl.y + t0 * t0 * end.y,
-         mt1 * mt1 * p0.x + 2 * mt1 * t1 * ctrl.x + t1 * t1 * end.x,
-         mt1 * mt1 * p0.y + 2 * mt1 * t1 * ctrl.y + t1 * t1 * end.y});
+    out.push_back({mt0 * mt0 * p0.x + 2 * mt0 * t0 * ctrl.x + t0 * t0 * end.x,
+                   mt0 * mt0 * p0.y + 2 * mt0 * t0 * ctrl.y + t0 * t0 * end.y,
+                   mt1 * mt1 * p0.x + 2 * mt1 * t1 * ctrl.x + t1 * t1 * end.x,
+                   mt1 * mt1 * p0.y + 2 * mt1 * t1 * ctrl.y + t1 * t1 * end.y});
   }
 }
-
-// Tesselate one closed contour (points already in pixel space, y-down) into
-// line segments. Handles quadratic on/off-curve reconstruction per spec,
-// including all-off-curve and trailing-off-curve contours.
 void tesselateContour(const std::vector<Pt>& pts, std::vector<Seg>& out) {
   const size_t n = pts.size();
   if (n < 2) return;
-
-  // Locate an on-curve point to start from.
   size_t startIdx = n;
-  for (size_t i = 0; i < n; i++) {
-    if (pts[i].on) {
-      startIdx = i;
-      break;
-    }
-  }
+  for (size_t i = 0; i < n; i++) if (pts[i].on) { startIdx = i; break; }
   if (startIdx == n) {
-    // All off-curve: emit implied midpoints between every consecutive pair.
     std::vector<Pt> mids;
     mids.reserve(n);
     for (size_t i = 0; i < n; i++) {
@@ -816,15 +752,10 @@ void tesselateContour(const std::vector<Pt>& pts, std::vector<Seg>& out) {
     }
     return;
   }
-
-  // Rotate so seq[0] is on-curve.
   std::vector<Pt> seq;
   seq.reserve(n);
   for (size_t i = 0; i < n; i++) seq.push_back(pts[(startIdx + i) % n]);
   const size_t m = seq.size();
-
-  // Walk the loop. `cur` is the current on-curve point; i indexes the next
-  // sequence element to consume (wrapping).
   Pt cur = seq[0];
   size_t i = 1;
   while (i < m) {
@@ -844,170 +775,70 @@ void tesselateContour(const std::vector<Pt>& pts, std::vector<Seg>& out) {
         const Pt mid = {(ctrl.x + after.x) * 0.5f, (ctrl.y + after.y) * 0.5f, true};
         emitQuad(cur, ctrl, mid, out);
         cur = mid;
-        i += 1;  // `after` (off-curve) becomes the next control
+        i += 1;
       }
     }
   }
-  // Close the loop back to seq[0] (unless the final quad already landed on it).
-  if (std::fabs(cur.x - seq[0].x) > 0.01f || std::fabs(cur.y - seq[0].y) > 0.01f) {
+  if (std::fabs(cur.x - seq[0].x) > 0.01f || std::fabs(cur.y - seq[0].y) > 0.01f)
     out.push_back({cur.x, cur.y, seq[0].x, seq[0].y});
-  }
 }
-
 }  // namespace
 
 bool TtfFont::rasterize(uint16_t gid, uint16_t sizePx, GlyphBitmap& out) {
   out = GlyphBitmap{};
   if (!ready_) return false;
   const float scale = (float)sizePx / (float)unitsPerEm_;
-
   int32_t advUnits = 0, lsbUnits = 0;
   glyphHMetrics(gid, advUnits, lsbUnits);
   out.advance = (int16_t)std::lround(advUnits * scale);
-
   std::vector<Contour> contours;
   if (!collectGlyph(gid, Xform{}, contours, 0)) return false;
-
   float minX = 0, maxX = 0, minY = 0, maxY = 0;
   bool first = true;
-  for (const auto& c : contours) {
-    for (const auto& p : c.pts) {
-      if (first) {
-        minX = maxX = p.x;
-        minY = maxY = p.y;
-        first = false;
-      } else {
-        minX = std::min(minX, p.x);
-        maxX = std::max(maxX, p.x);
-        minY = std::min(minY, p.y);
-        maxY = std::max(maxY, p.y);
-      }
-    }
+  for (const auto& c : contours) for (const auto& p : c.pts) {
+    if (first) { minX=maxX=p.x; minY=maxY=p.y; first=false; }
+    else { minX=std::min(minX,p.x); maxX=std::max(maxX,p.x); minY=std::min(minY,p.y); maxY=std::max(maxY,p.y); }
   }
-  if (first) return true;  // empty glyph
-
-  const int x0 = (int)std::floor(minX * scale);
-  const int y0 = (int)std::floor(-maxY * scale);
-  const int x1 = (int)std::ceil(maxX * scale);
-  const int y1 = (int)std::ceil(-minY * scale);
-  const int w = x1 - x0;
-  const int h = y1 - y0;
-  if (w <= 0 || h <= 0) return true;
-  if (w > 255 || h > 255) {
-    lastError_ = "glyph larger than 255px (EpdGlyph limit)";
-    return false;
-  }
-
-  // Transform points into bitmap space (y-down), then tesselate to segments.
+  if (first) return true;
+  const int x0=(int)std::floor(minX*scale), y0=(int)std::floor(-maxY*scale);
+  const int x1=(int)std::ceil(maxX*scale), y1=(int)std::ceil(-minY*scale);
+  const int w=x1-x0, h=y1-y0;
+  if (w<=0||h<=0) return true;
+  if (w>255||h>255) { lastError_="glyph larger than 255px (EpdGlyph limit)"; return false; }
   std::vector<Seg> segs;
   std::vector<Pt> pxs;
   for (const auto& c : contours) {
-    if (c.pts.size() < 2) continue;
-    pxs.clear();
-    pxs.reserve(c.pts.size());
-    for (const auto& p : c.pts) {
-      pxs.push_back({p.x * scale - x0, -p.y * scale - y0, true});
-    }
-    tesselateContour(pxs, segs);
+    if (c.pts.size()<2) continue;
+    pxs.clear(); pxs.reserve(c.pts.size());
+    for (const auto& p : c.pts) pxs.push_back({p.x*scale-x0,-p.y*scale-y0,p.on});
+    tesselateContour(pxs,segs);
   }
   if (segs.empty()) return true;
-
-  const uint32_t npix = (uint32_t)w * (uint32_t)h;
-  if (npix > covScratchCap_) {
-    uint8_t* nb = (uint8_t*)ttfRealloc(covScratch_, npix);
-    if (!nb) return false;
-    covScratch_ = nb;
-    covScratchCap_ = npix;
-  }
-  std::memset(covScratch_, 0, npix);
-
-  // 2x supersampled scanline fill with non-zero winding. Coverage per pixel is
-  // the exact horizontal overlap of the inside spans with the pixel column,
-  // stored at 4x fixed point (two sub-rows => cov4 in [0,8]); this preserves
-  // thin diagonal strokes that point-sampling would miss.
+  const uint32_t npix=(uint32_t)w*(uint32_t)h;
+  if (npix>covScratchCap_) { uint8_t* nb=(uint8_t*)ttfRealloc(covScratch_,npix); if(!nb)return false; covScratch_=nb; covScratchCap_=npix; }
+  std::memset(covScratch_,0,npix);
   std::vector<float> xs;
   std::vector<int8_t> signs;
-  xs.reserve(segs.size());
-  signs.reserve(segs.size());
-  for (int py = 0; py < h; py++) {
-    for (int sub = 0; sub < 2; sub++) {
-      const float y = py + (sub == 0 ? 0.25f : 0.75f);
-      xs.clear();
-      signs.clear();
-      for (const auto& seg : segs) {
-        const float ymin = std::min(seg.y0, seg.y1);
-        const float ymax = std::max(seg.y0, seg.y1);
-        if (y >= ymin && y < ymax) {
-          xs.push_back(seg.x0 + (y - seg.y0) * (seg.x1 - seg.x0) / (seg.y1 - seg.y0));
-          signs.push_back((seg.y1 > seg.y0) ? 1 : -1);
-        }
-      }
-      for (size_t i = 1; i < xs.size(); i++) {
-        const float v = xs[i];
-        const int8_t s = signs[i];
-        size_t j = i;
-        while (j > 0 && xs[j - 1] > v) {
-          xs[j] = xs[j - 1];
-          signs[j] = signs[j - 1];
-          j--;
-        }
-        xs[j] = v;
-        signs[j] = s;
-      }
-      int winding = 0;
-      for (size_t i = 0; i + 1 < xs.size(); i++) {
-        winding += signs[i];
-        if (winding == 0) continue;
-        const float xa = xs[i];
-        const float xb = xs[i + 1];
-        const int pxa = (int)std::floor(xa);
-        const int pxb = (int)std::ceil(xb);
-        for (int px = pxa; px < pxb; px++) {
-          if (px < 0 || px >= w) continue;
-          const float xlo = (px > xa) ? (float)px : xa;
-          const float xhi = (px + 1 < xb) ? (float)(px + 1) : xb;
-          if (xhi > xlo) covScratch_[(size_t)py * w + px] += (uint8_t)((xhi - xlo) * 4.0f + 0.5f);
-        }
-      }
-    }
+  xs.reserve(segs.size()); signs.reserve(segs.size());
+  for(int py=0;py<h;py++) for(int sub=0;sub<2;sub++) {
+    const float y=py+(sub==0?0.25f:0.75f);
+    xs.clear(); signs.clear();
+    for(const auto& seg:segs){ const float ymin=std::min(seg.y0,seg.y1),ymax=std::max(seg.y0,seg.y1); if(y>=ymin&&y<ymax){ xs.push_back(seg.x0+(y-seg.y0)*(seg.x1-seg.x0)/(seg.y1-seg.y0)); signs.push_back((seg.y1>seg.y0)?1:-1); } }
+    for(size_t i=1;i<xs.size();i++){const float v=xs[i];const int8_t s=signs[i];size_t j=i;while(j>0&&xs[j-1]>v){xs[j]=xs[j-1];signs[j]=signs[j-1];j--;}xs[j]=v;signs[j]=s;}
+    int winding=0;for(size_t i=0;i+1<xs.size();i++){winding+=signs[i];if(winding==0)continue;const float xa=xs[i],xb=xs[i+1];const int pxa=(int)std::floor(xa),pxb=(int)std::ceil(xb);for(int px=pxa;px<pxb;px++){if(px<0||px>=w)continue;const float xlo=(px>xa)?(float)px:xa;const float xhi=(px+1<xb)?(float)(px+1):xb;if(xhi>xlo)covScratch_[(size_t)py*w+px]+=(uint8_t)((xhi-xlo)*4.0f+0.5f);}}
   }
-
-  // Pack 2-bit (0=white .. 3=black), 4 px/byte MSB-first.
-  const uint32_t packedLen = (npix + 3) / 4;
-  if (packedLen > packedScratchCap_) {
-    uint8_t* nb = (uint8_t*)ttfReallocPsram(packedScratch_, packedLen);
-    if (!nb) return false;
-    packedScratch_ = nb;
-    packedScratchCap_ = packedLen;
-  }
-  std::memset(packedScratch_, 0, packedLen);
-  for (uint32_t i = 0; i < npix; i++) {
-    uint8_t lvl = (uint8_t)(((uint32_t)covScratch_[i] * 3u + 7u) / 8u);
-    if (lvl > 3) lvl = 3;
-    const uint8_t shift = (3 - (i % 4)) * 2;
-    packedScratch_[i / 4] |= (uint8_t)(lvl << shift);
-  }
-
-  out.data = packedScratch_;
-  out.width = (int16_t)w;
-  out.height = (int16_t)h;
-  out.xoff = (int16_t)x0;
-  out.yoff = (int16_t)(-y0);
-  out.packedLen = (uint16_t)packedLen;
-  lastError_ = "ok";
-  return true;
+  const uint32_t packedLen=(npix+3)/4;
+  if(packedLen>packedScratchCap_){uint8_t*nb=(uint8_t*)ttfReallocPsram(packedScratch_,packedLen);if(!nb)return false;packedScratch_=nb;packedScratchCap_=packedLen;}
+  std::memset(packedScratch_,0,packedLen);
+  for(uint32_t i=0;i<npix;i++){uint8_t lvl=(uint8_t)(((uint32_t)covScratch_[i]*3u+7u)/8u);if(lvl>3)lvl=3;const uint8_t shift=(3-(i%4))*2;packedScratch_[i/4]|=(uint8_t)(lvl<<shift);}
+  out.data=packedScratch_; out.width=(int16_t)w; out.height=(int16_t)h; out.xoff=(int16_t)x0; out.yoff=(int16_t)(-y0); out.packedLen=(uint16_t)packedLen;
+  lastError_="ok"; return true;
 }
 
 void TtfFont::clearScratch() {
-  ttfFree(glyfScratch_);
-  glyfScratch_ = nullptr;
-  glyfScratchCap_ = 0;
-  ttfFree(covScratch_);
-  covScratch_ = nullptr;
-  covScratchCap_ = 0;
-  ttfFree(packedScratch_);
-  packedScratch_ = nullptr;
-  packedScratchCap_ = 0;
+  ttfFree(glyfScratch_); glyfScratch_=nullptr; glyfScratchCap_=0;
+  ttfFree(covScratch_); covScratch_=nullptr; covScratchCap_=0;
+  ttfFree(packedScratch_); packedScratch_=nullptr; packedScratchCap_=0;
 }
 
 }  // namespace ttf
