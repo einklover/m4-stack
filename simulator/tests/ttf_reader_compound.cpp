@@ -116,6 +116,10 @@ std::vector<uint8_t> buildFont() {
   beS16(fmt4, static_cast<int16_t>(2 - 0x0041)); beS16(fmt4, 1);
   be16(fmt4, 0); be16(fmt4, 0);
   cmap.insert(cmap.end(), fmt4.begin(), fmt4.end());
+  // Keep two harmless bytes after the subtable because the current production
+  // parser conservatively validates against the enclosing cmap table size.
+  // A separate parser fix relaxes that legacy guard to the spec minimum.
+  be16(cmap, 0);
   tables.push_back({"cmap", cmap});
 
   std::vector<uint8_t> glyf;
