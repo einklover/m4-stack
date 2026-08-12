@@ -48,7 +48,20 @@ class TtfEpdFont : public EpdFont {
   bool isRuntimeTtf() const override { return true; }
 
   bool valid() const { return valid_; }
-  const char* lastError() const { return runtimeError_.length() ? runtimeError_.c_str() : font_.lastError(); }
+  const char* lastError() const {
+    if (runtimeError_.length()) return runtimeError_.c_str();
+    if (!valid_ && path_.length() && String(font_.lastError()) == "not initialized") {
+      String n = path_;
+      n.toLowerCase();
+      if (n.endsWith(".otf") || n.endsWith(".otc")) {
+        return "OpenType face is CFF/CFF2, lacks glyf tables, or is invalid";
+      }
+      if (n.endsWith(".ttc")) {
+        return "font collection contains no supported glyf face or is invalid";
+      }
+    }
+    return font_.lastError();
+  }
   uint16_t sizePx() const { return sizePx_; }
   uint16_t maxSlots() const { return maxSlots_; }
   size_t cacheBudget() const { return cacheBudget_; }
