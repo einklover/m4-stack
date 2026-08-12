@@ -9,6 +9,8 @@
 namespace {
 void be16(std::vector<uint8_t>& v,uint16_t x){v.push_back(uint8_t(x>>8));v.push_back(uint8_t(x));}
 void be32(std::vector<uint8_t>& v,uint32_t x){v.push_back(uint8_t(x>>24));v.push_back(uint8_t(x>>16));v.push_back(uint8_t(x>>8));v.push_back(uint8_t(x));}
+uint16_t get16(const std::vector<uint8_t>& v,size_t o){return uint16_t((uint16_t(v[o])<<8)|v[o+1]);}
+uint32_t get32(const std::vector<uint8_t>& v,size_t o){return (uint32_t(v[o])<<24)|(uint32_t(v[o+1])<<16)|(uint32_t(v[o+2])<<8)|v[o+3];}
 void put16(std::vector<uint8_t>& v,size_t o,uint16_t x){v[o]=uint8_t(x>>8);v[o+1]=uint8_t(x);}
 void put32(std::vector<uint8_t>& v,size_t o,uint32_t x){v[o]=uint8_t(x>>24);v[o+1]=uint8_t(x>>16);v[o+2]=uint8_t(x>>8);v[o+3]=uint8_t(x);}
 void dictInt(std::vector<uint8_t>& out,int32_t n){out.push_back(29);be32(out,uint32_t(n));}
@@ -23,9 +25,6 @@ std::vector<uint8_t> squareSubr(int width){
   return {t2(width),t2(0),t2(0),t2(100),t2(-width),t2(0),t2(0),t2(-100),5,11};
 }
 std::vector<uint8_t> arithmeticSquareSubr(){
-  // 25 25 add -> 50; save it in transient[0], then get it back for dx.
-  // The opposite edge computes -25 + -25 -> -50. This keeps the fixture
-  // deterministic while exercising add/put/get inside a local subroutine.
   return {
       t2(25),t2(25),12,10,t2(0),12,20,
       t2(0),12,21,t2(0),
@@ -108,6 +107,23 @@ std::vector<uint8_t> makeOtf(const std::vector<uint8_t>& cff,uint16_t glyphs,con
   return f;
 }
 
+std::vector<uint8_t> makeOtc(std::vector<uint8_t> face,uint32_t faceOff=32){
+  assert(faceOff>=16 && (faceOff&3u)==0 && face.size()>=12);
+  const uint16_t tables=get16(face,4);
+  assert(12u+uint32_t(tables)*16u<=face.size());
+  for(uint16_t i=0;i<tables;++i){
+    const size_t rec=12u+size_t(i)*16u;
+    put32(face,rec+8,get32(face,rec+8)+faceOff);
+  }
+  std::vector<uint8_t> out(faceOff,0);
+  std::memcpy(out.data(),"ttcf",4);
+  put32(out,4,0x00010000u);
+  put32(out,8,1);
+  put32(out,12,faceOff);
+  out.insert(out.end(),face.begin(),face.end());
+  return out;
+}
+
 class VectorStream final:public ttf::TtfStream{
  public:explicit VectorStream(std::vector<uint8_t> bytes):bytes_(std::move(bytes)){}
   uint32_t size()const override{return uint32_t(bytes_.size());}
@@ -131,10 +147,20 @@ void testCid(bool format3){
   assert(aw==10&&ah==10&&aa==60&&ai);
   assert(f.rasterize(b,100,gb));assert(gb.width==5&&gb.height==10&&gb.advance==60&&hasInk(gb));
 }
+void testCollectionFaceOffset(){
+  constexpr uint32_t faceOff=32;
+  VectorStream s(makeOtc(makeOtf(makeCidCff(true),3,{{0x41,1},{0x42,2}}),faceOff));
+  ttf::CffFont f;
+  if(!f.init(s,faceOff)){std::cerr<<"OTC CFF1 init failed: "<<f.lastError()<<'\n';std::abort();}
+  assert(f.isCidKeyed()&&f.fdCount()==2);
+  uint16_t gid=0;assert(f.findGlyph('B',gid)&&gid==2);
+  ttf::GlyphBitmap gb;assert(f.rasterize(gid,100,gb));
+  assert(gb.width==5&&gb.height==10&&gb.advance==60&&hasInk(gb));
+}
 } // namespace
 
 int main(){
-  testPlain();testCid(false);testCid(true);
-  std::cout<<"CFF1 CID FDSelect + per-FD Subrs + arithmetic/transient VM + 2-bit raster OK\n";
+  testPlain();testCid(false);testCid(true);testCollectionFaceOffset();
+  std::cout<<"CFF1 CID FDSelect + per-FD Subrs + arithmetic/transient VM + OTC face-offset + 2-bit raster OK\n";
   return 0;
 }
