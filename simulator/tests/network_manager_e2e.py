@@ -139,7 +139,7 @@ def _assert_parent_stable(pty: str, proc: Any, qlog: Path, *, seconds: float) ->
 
 
 def _enter_real_mode_selection(pty: str, proc: Any, qlog: Path) -> None:
-    # Fresh SD + blank/default settings produce the canonical Home menu:
+    # Fresh SD + pristine flash/default settings produce the canonical Home menu:
     # My Library, Recents, File transfer, Apps, Settings.
     _wait_activity(pty, proc, qlog, "Home", seconds=30.0)
     _send_key(pty, "down")
@@ -155,10 +155,15 @@ def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
     if mode_root.exists():
         shutil.rmtree(mode_root, ignore_errors=True)
     _set_session(mode_root)
+    # QEMU's MTD drive is writable. Give every journey a pristine copy so NVS
+    # or other flash writes from mode 1 cannot change Home/settings for mode 2/3.
+    mode_flash = mode_root / "flash-16m.bin"
+    mode_flash.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(flash, mode_flash)
     sd = m4sim.ensure_sd(fresh=True, size_mb=64)
     proc = None
     try:
-        proc, pty, qlog = m4sim.boot_qemu(qemu, flash, sd, open_eth=True, psram_mb=8)
+        proc, pty, qlog = m4sim.boot_qemu(qemu, mode_flash, sd, open_eth=True, psram_mb=8)
         ping = m4sim.wait_m4adb_ready(pty, proc, seconds=ready_seconds, qemu_log=qlog)
         _enter_real_mode_selection(pty, proc, qlog)
 
