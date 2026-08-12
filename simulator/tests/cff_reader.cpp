@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -19,8 +20,11 @@ void put32(std::vector<uint8_t>& v, size_t off, uint32_t x) {
 void pad4(std::vector<uint8_t>& v) { while (v.size() & 3u) v.push_back(0); }
 
 void dictInt(std::vector<uint8_t>& out, int32_t n) {
-  // Keep the fixture deterministic: longint works for every offset we emit.
   out.push_back(29); be32(out, static_cast<uint32_t>(n));
+}
+uint8_t type2Small(int n) {
+  assert(n >= -107 && n <= 107);
+  return static_cast<uint8_t>(n + 139);
 }
 
 void addIndex(std::vector<uint8_t>& cff, const std::vector<std::vector<uint8_t>>& objs) {
@@ -35,10 +39,8 @@ void addIndex(std::vector<uint8_t>& cff, const std::vector<std::vector<uint8_t>>
 
 std::vector<uint8_t> makeCff() {
   std::vector<uint8_t> cff = {1, 0, 4, 2};
-  addIndex(cff, {{'M','4','C','F','F'}});  // Name INDEX
+  addIndex(cff, {{'M','4','C','F','F'}});
 
-  // Top DICT size is fixed because offsets are encoded as 5-byte longints.
-  // We build once with placeholders, then derive table-relative offsets.
   std::vector<uint8_t> top;
   dictInt(top, 0); top.push_back(17);                    // CharStrings
   dictInt(top, 2); dictInt(top, 0); top.push_back(18);  // Private size/off
@@ -48,22 +50,31 @@ std::vector<uint8_t> makeCff() {
   addIndex(cff, {});  // Global Subr INDEX
 
   const uint32_t charStringsRel = static_cast<uint32_t>(cff.size());
-  addIndex(cff, {{14}, {139, 139, 21, 14}});  // .notdef endchar; tiny rmoveto/endchar
-  const uint32_t privateRel = static_cast<uint32_t>(cff.size());
-  cff.push_back(139); cff.push_back(20);  // defaultWidthX=0
+  // Glyph 1: rmoveto 0,0; callsubr(-107 => biased subr 0); endchar.
+  addIndex(cff, {{14}, {type2Small(0), type2Small(0), 21, type2Small(-107), 10, 14}});
 
-  // Top INDEX layout: count(2), offSize(1), two offsets(4), then dict bytes.
-  // Each DICT longint is opcode 29 followed by four value bytes.
+  const uint32_t privateRel = static_cast<uint32_t>(cff.size());
+  // Private DICT: Subrs offset=2. The local Subr INDEX begins immediately
+  // after this two-byte DICT and is outside Private's declared size, per CFF1.
+  cff.push_back(type2Small(2)); cff.push_back(19);
+  const std::vector<uint8_t> squareSubr = {
+      type2Small(100), type2Small(0),
+      type2Small(0), type2Small(100),
+      type2Small(-100), type2Small(0),
+      type2Small(0), type2Small(-100),
+      5, 11};  // rlineto, return
+  addIndex(cff, {squareSubr});
+
   const size_t dictAbs = topIndexStart + 7;
-  put32(cff, dictAbs + 1, charStringsRel);  // CharStrings longint value
-  put32(cff, dictAbs + 12, privateRel);     // Private offset longint value
+  put32(cff, dictAbs + 1, charStringsRel);
+  put32(cff, dictAbs + 12, privateRel);
   return cff;
 }
 
 std::vector<uint8_t> makeOtf(bool corruptCffLength = false) {
   auto cff = makeCff();
   std::vector<uint8_t> otf(12 + 16, 0);
-  put32(otf, 0, 0x4f54544f);  // OTTO
+  put32(otf, 0, 0x4f54544f);
   put16(otf, 4, 1);
   std::memcpy(otf.data() + 12, "CFF ", 4);
   const uint32_t off = 28;
@@ -102,16 +113,36 @@ int main() {
     assert(font.glyphCount() == 2);
     assert(font.charStringsIndex().valid());
     assert(font.globalSubrsIndex().valid());
+    assert(font.localSubrsIndex().valid());
     assert(font.privateDict().len == 2);
+
     ttf::CffFont::Slice glyph;
     assert(font.indexObject(font.charStringsIndex(), 1, glyph));
-    assert(glyph.len == 4);
+    assert(glyph.len == 6);
+
+    std::vector<ttf::Contour> contours;
+    if (!font.collectGlyph(1, contours)) {
+      std::cerr << "Type2 execution failed: " << font.lastError() << '\n';
+      return 2;
+    }
+    assert(contours.size() == 1);
+    assert(contours[0].pts.size() == 5);
+    const auto& p0 = contours[0].pts[0];
+    const auto& p1 = contours[0].pts[1];
+    const auto& p2 = contours[0].pts[2];
+    const auto& p3 = contours[0].pts[3];
+    const auto& p4 = contours[0].pts[4];
+    assert(std::fabs(p0.x) < 0.001f && std::fabs(p0.y) < 0.001f);
+    assert(std::fabs(p1.x - 100) < 0.001f && std::fabs(p1.y) < 0.001f);
+    assert(std::fabs(p2.x - 100) < 0.001f && std::fabs(p2.y - 100) < 0.001f);
+    assert(std::fabs(p3.x) < 0.001f && std::fabs(p3.y - 100) < 0.001f);
+    assert(std::fabs(p4.x) < 0.001f && std::fabs(p4.y) < 0.001f);
   }
   {
     VectorStream s(makeOtf(true));
     ttf::CffFont font;
     assert(!font.init(s));
   }
-  std::cout << "streamed CFF1 metadata parser OK\n";
+  std::cout << "streamed CFF1 parser + Type2 local-subr outline OK\n";
   return 0;
 }
