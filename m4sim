@@ -3,4 +3,12 @@
 # Delegates to simulator/m4sim.py — same path used by local dev and CI.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# Keep real multi-session journeys isolated from the core single-session CLI,
+# while preserving one public entry point for local development and CI.
+if [[ "${1:-}" == "test" && "${2:-}" == "network-manager" ]]; then
+  shift 2
+  exec python3 "$ROOT/simulator/tests/network_manager_e2e.py" "$@"
+fi
+
 exec python3 "$ROOT/simulator/m4sim.py" "$@"
