@@ -81,9 +81,16 @@ jobs:
           B="$RUNNER_TEMP/m4sim-runtime"
           mkdir -p "$B/bin" "$B/lib" "$B/python" "$B/firmware/scripts" "$B/simulator/tools"
           cp "$QEMU_XTENSA" "$B/bin/qemu-system-xtensa"
-          SLIRP="$(ldconfig -p | awk '/libslirp\.so/{print $NF; exit}')"
-          test -n "$SLIRP" && test -r "$SLIRP"
-          cp -L "$SLIRP" "$B/lib/libslirp.so.0"
+
+          # These are the two non-baseline shared libraries missing from the
+          # clean execution container used for cross-machine validation. Copy
+          # their resolved SONAME targets rather than runner symlinks.
+          for SONAME in libslirp.so.0 libsndio.so.7; do
+            LIB="$(ldconfig -p | awk -v n="$SONAME" '$1 == n {print $NF; exit}')"
+            test -n "$LIB" && test -r "$LIB"
+            cp -L "$LIB" "$B/lib/$SONAME"
+          done
+
           cat > "$B/bin/qemu-m4" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -92,6 +99,7 @@ jobs:
           exec "$HERE/qemu-system-xtensa" "$@"
           EOF
           chmod +x "$B/bin/qemu-m4"
+
           cp "$RUNNER_TEMP/m4sim-smoke/artifacts/flash-16m.bin" "$B/flash-16m.bin"
           cp "$RUNNER_TEMP/m4sim-smoke/artifacts/murphy-sd.img" "$B/murphy-sd.img"
           cp "$RUNNER_TEMP/m4sim-smoke/artifacts/ssd1677-frame.pbm" "$B/boot-frame.pbm" 2>/dev/null || true
@@ -99,19 +107,29 @@ jobs:
           cp -a firmware/scripts/m4adb_lib "$B/firmware/scripts/"
           cp simulator/tools/m4_screen_viewer.py "$B/simulator/tools/" 2>/dev/null || true
           python3 -m pip install --quiet --target "$B/python" 'pyserial>=3.5'
+
           ldd "$QEMU_XTENSA" > "$B/qemu-ldd.txt" || true
           "$B/bin/qemu-m4" --version > "$B/qemu-version.txt"
           "$B/bin/qemu-m4" -machine help > "$B/qemu-machines.txt"
           grep -q 'murphy-m4' "$B/qemu-machines.txt"
-          sha256sum "$B/bin/qemu-system-xtensa" "$B/lib/libslirp.so.0" "$B/flash-16m.bin" "$B/murphy-sd.img" > "$B/SHA256SUMS"
+
+          # Write relocatable paths so `cd bundle && sha256sum -c SHA256SUMS`
+          # works after artifact download, not only on the GitHub runner.
+          (
+            cd "$B"
+            sha256sum bin/qemu-system-xtensa lib/libslirp.so.0 lib/libsndio.so.7 \
+              flash-16m.bin murphy-sd.img > SHA256SUMS
+          )
+
           cat > "$B/README.txt" <<'EOF'
           This artifact is produced only after ./m4sim test smoke succeeds.
           It contains the exact Linux x86_64 patched QEMU v3, flash image, SD image,
-          m4adb Python runtime, and libslirp used by that successful smoke run.
+          m4adb Python runtime, libslirp, and libsndio used by that successful run.
 
           It is a transport bundle, not a second simulator implementation.
-          Use bin/qemu-m4 so the bundled libslirp is on LD_LIBRARY_PATH.
+          Use bin/qemu-m4 so bundled runtime libraries are on LD_LIBRARY_PATH.
           Set PYTHONPATH=<bundle>/python when invoking firmware/scripts/m4adb.py.
+          Verify after extraction with: sha256sum -c SHA256SUMS
           EOF
           printf '%s\n' "${GITHUB_SHA}" > "$B/git-sha.txt"
 
