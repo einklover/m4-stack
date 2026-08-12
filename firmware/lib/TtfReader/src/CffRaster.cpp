@@ -28,6 +28,7 @@ bool differs(const Pt&a,const Pt&b){return std::fabs(a.x-b.x)>0.001f||std::fabs(
 }
 CffFont::~CffFont(){clearScratch();freeMem(cmapData_);cmapData_=nullptr;cmapLen_=cmapScratchCap_=0;}
 void CffFont::clearScratch(){
+  freeMem(type2Scratch_); type2Scratch_=nullptr; type2ScratchCap_=0;
   freeMem(covScratch_); covScratch_=nullptr; covScratchCap_=0;
   freeMem(packedScratch_); packedScratch_=nullptr; packedScratchCap_=0;
   freeMem(intersectionScratch_); intersectionScratch_=nullptr; intersectionScratchCap_=0;
