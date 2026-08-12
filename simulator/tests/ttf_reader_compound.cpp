@@ -22,6 +22,13 @@ void be32(std::vector<uint8_t>& v, uint32_t x) {
   v.push_back(static_cast<uint8_t>(x >> 8));
   v.push_back(static_cast<uint8_t>(x));
 }
+uint16_t get16(const std::vector<uint8_t>& v, size_t off) {
+  return static_cast<uint16_t>((uint16_t(v[off]) << 8) | v[off + 1]);
+}
+uint32_t get32(const std::vector<uint8_t>& v, size_t off) {
+  return (uint32_t(v[off]) << 24) | (uint32_t(v[off + 1]) << 16) |
+         (uint32_t(v[off + 2]) << 8) | uint32_t(v[off + 3]);
+}
 void put16(std::vector<uint8_t>& v, size_t off, uint16_t x) {
   v[off] = static_cast<uint8_t>(x >> 8);
   v[off + 1] = static_cast<uint8_t>(x);
@@ -39,12 +46,12 @@ void pad4(std::vector<uint8_t>& v) {
 
 std::vector<uint8_t> simpleSquare(int16_t size) {
   std::vector<uint8_t> g;
-  beS16(g, 1);              // numberOfContours
+  beS16(g, 1);
   beS16(g, 0); beS16(g, 0);
   beS16(g, size); beS16(g, size);
-  be16(g, 3);               // endPtsOfContours[0]
-  be16(g, 0);               // instructionLength
-  for (int i = 0; i < 4; ++i) g.push_back(0x01);  // on-curve, 16-bit deltas
+  be16(g, 3);
+  be16(g, 0);
+  for (int i = 0; i < 4; ++i) g.push_back(0x01);
   const int16_t xs[4] = {0, size, 0, static_cast<int16_t>(-size)};
   const int16_t ys[4] = {0, 0, size, 0};
   for (int16_t x : xs) beS16(g, x);
@@ -54,20 +61,17 @@ std::vector<uint8_t> simpleSquare(int16_t size) {
 
 std::vector<uint8_t> compoundPointAttached() {
   std::vector<uint8_t> g;
-  beS16(g, -1);             // compound glyph
+  beS16(g, -1);
   beS16(g, 0); beS16(g, 0); beS16(g, 600); beS16(g, 600);
 
-  // Component 0: glyph 0 at (0,0), followed by another component.
-  be16(g, 0x0001 | 0x0002 | 0x0020);  // ARG_WORDS | ARGS_XY | MORE_COMPONENTS
+  be16(g, 0x0001 | 0x0002 | 0x0020);
   be16(g, 0);
   beS16(g, 0); beS16(g, 0);
 
-  // Component 1: glyph 1, deliberately WITHOUT ARGS_ARE_XY_VALUES.
-  // Attach child point 0 to parent point 2. Older M4 code rejected this form.
-  be16(g, 0x0001);          // ARG_WORDS only => args are point indices
+  be16(g, 0x0001);
   be16(g, 1);
-  be16(g, 2);               // parent point index
-  be16(g, 0);               // child point index
+  be16(g, 2);
+  be16(g, 0);
   return g;
 }
 
@@ -81,29 +85,28 @@ std::vector<uint8_t> buildFont() {
 
   std::vector<uint8_t> head(54, 0);
   put32(head, 0, 0x00010000u);
-  put32(head, 12, 0x5f0f3cf5u);  // magicNumber
-  put16(head, 18, 1000);          // unitsPerEm
+  put32(head, 12, 0x5f0f3cf5u);
+  put16(head, 18, 1000);
   putS16(head, 36, 0); putS16(head, 38, 0);
   putS16(head, 40, 600); putS16(head, 42, 600);
-  putS16(head, 50, 1);            // long loca
+  putS16(head, 50, 1);
   tables.push_back({"head", head});
 
   std::vector<uint8_t> maxp(6, 0);
   put32(maxp, 0, 0x00010000u);
-  put16(maxp, 4, 3);              // three glyphs
+  put16(maxp, 4, 3);
   tables.push_back({"maxp", maxp});
 
   std::vector<uint8_t> hhea(36, 0);
   put32(hhea, 0, 0x00010000u);
   putS16(hhea, 4, 800); putS16(hhea, 6, -200);
-  put16(hhea, 34, 3);             // numberOfHMetrics
+  put16(hhea, 34, 3);
   tables.push_back({"hhea", hhea});
 
   std::vector<uint8_t> hmtx;
   for (int i = 0; i < 3; ++i) { be16(hmtx, 700); beS16(hmtx, 0); }
   tables.push_back({"hmtx", hmtx});
 
-  // cmap format 4: map U+0041 ('A') to glyph 2 plus the mandatory sentinel.
   std::vector<uint8_t> cmap;
   be16(cmap, 0); be16(cmap, 1);
   be16(cmap, 3); be16(cmap, 1); be32(cmap, 12);
@@ -116,9 +119,6 @@ std::vector<uint8_t> buildFont() {
   beS16(fmt4, static_cast<int16_t>(2 - 0x0041)); beS16(fmt4, 1);
   be16(fmt4, 0); be16(fmt4, 0);
   cmap.insert(cmap.end(), fmt4.begin(), fmt4.end());
-  // Keep two harmless bytes after the subtable because the current production
-  // parser conservatively validates against the enclosing cmap table size.
-  // A separate parser fix relaxes that legacy guard to the spec minimum.
   be16(cmap, 0);
   tables.push_back({"cmap", cmap});
 
@@ -146,7 +146,7 @@ std::vector<uint8_t> buildFont() {
     const auto& t = tables[i];
     const size_t rec = 12u + static_cast<size_t>(i) * 16u;
     std::memcpy(font.data() + rec, t.tag.data(), 4);
-    put32(font, rec + 4, 0);  // checksum not used by the reader
+    put32(font, rec + 4, 0);
     put32(font, rec + 8, off);
     put32(font, rec + 12, static_cast<uint32_t>(t.data.size()));
     font.insert(font.end(), t.data.begin(), t.data.end());
@@ -154,6 +154,27 @@ std::vector<uint8_t> buildFont() {
     off = static_cast<uint32_t>(font.size());
   }
   return font;
+}
+
+std::vector<uint8_t> wrapCollection(std::vector<uint8_t> face, uint32_t faceOff, bool otto) {
+  assert(faceOff >= 16 && (faceOff & 3u) == 0);
+  assert(face.size() >= 12);
+  const uint16_t tables = get16(face, 4);
+  assert(12u + uint32_t(tables) * 16u <= face.size());
+
+  if (otto) put32(face, 0, 0x4f54544fu);
+  for (uint16_t i = 0; i < tables; ++i) {
+    const size_t rec = 12u + static_cast<size_t>(i) * 16u;
+    put32(face, rec + 8, get32(face, rec + 8) + faceOff);
+  }
+
+  std::vector<uint8_t> collection(faceOff, 0);
+  std::memcpy(collection.data(), "ttcf", 4);
+  put32(collection, 4, 0x00010000u);
+  put32(collection, 8, 1);
+  put32(collection, 12, faceOff);
+  collection.insert(collection.end(), face.begin(), face.end());
+  return collection;
 }
 
 class VectorStream final : public ttf::TtfStream {
@@ -177,16 +198,7 @@ class VectorStream final : public ttf::TtfStream {
   uint32_t pos_ = 0;
 };
 
-}  // namespace
-
-int main() {
-  VectorStream stream(buildFont());
-  ttf::TtfFont font;
-  if (!font.init(stream)) {
-    std::cerr << "font init failed: " << font.lastError() << '\n';
-    return 1;
-  }
-
+void verifyCompound(ttf::TtfFont& font) {
   uint16_t gid = 0;
   assert(font.findGlyph('A', gid));
   assert(gid == 2);
@@ -208,7 +220,33 @@ int main() {
   assert(font.rasterize(gid, 32, bitmap));
   assert(bitmap.width > 0 && bitmap.height > 0);
   assert(bitmap.data != nullptr && bitmap.packedLen > 0);
+}
 
-  std::cout << "point-attached compound glyph OK: " << bitmap.width << 'x' << bitmap.height << '\n';
+}  // namespace
+
+int main() {
+  {
+    VectorStream stream(buildFont());
+    ttf::TtfFont font;
+    if (!font.init(stream)) {
+      std::cerr << "standalone font init failed: " << font.lastError() << '\n';
+      return 1;
+    }
+    verifyCompound(font);
+  }
+
+  constexpr uint32_t faceOff = 32;
+  for (bool otto : {false, true}) {
+    VectorStream stream(wrapCollection(buildFont(), faceOff, otto));
+    ttf::TtfFont font;
+    if (!font.init(stream, faceOff)) {
+      std::cerr << (otto ? "OTC OTTO+glyf" : "TTC glyf")
+                << " init failed: " << font.lastError() << '\n';
+      return 1;
+    }
+    verifyCompound(font);
+  }
+
+  std::cout << "point-attached compound + zero-copy TTC/OTC glyf faces OK\n";
   return 0;
 }
