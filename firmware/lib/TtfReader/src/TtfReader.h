@@ -60,10 +60,15 @@ class TtfFont {
   TtfFont& operator=(const TtfFont&) = delete;
   ~TtfFont();
 
-  // Parse + validate one glyf sfnt face. faceOffset=0 is a normal TTF/OTF;
-  // non-zero addresses a face directory inside TTC/OTC. TableRecord offsets
-  // are intentionally interpreted as absolute file offsets per OpenType spec.
-  bool init(TtfStream& s, uint32_t faceOffset = 0);
+  // Legacy standalone-face entry. Kept explicit so existing callers and the
+  // original implementation stay source-compatible while collection support
+  // is introduced without a large parser rewrite.
+  bool init(TtfStream& s);
+
+  // Parse + validate one glyf sfnt face at an absolute file offset. This is
+  // the zero-copy TTC/OTC entry: TableRecord offsets remain absolute from the
+  // beginning of the collection, exactly as stored in OpenType collections.
+  bool init(TtfStream& s, uint32_t faceOffset);
 
   bool ready() const { return ready_; }
   const char* lastError() const { return lastError_; }
