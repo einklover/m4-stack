@@ -96,6 +96,9 @@ class TtfFont {
   Table findTable(uint32_t key) const;
   bool readAt(uint32_t off, void* dst, uint32_t n) const;
   bool initCmap();
+  // Low-stack version used by the unified face-offset path. Scans cmap
+  // encoding records one at a time and retains only the selected subtable.
+  bool initCmapStreamed();
   bool collectGlyphInternal(uint16_t gid, const Xform& xf, std::vector<Contour>& out, int depth) const;
 
   TtfStream* s_ = nullptr;
