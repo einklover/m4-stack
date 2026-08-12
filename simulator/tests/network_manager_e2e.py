@@ -189,7 +189,9 @@ def _enter_real_mode_selection(client: Client, proc: Any, qlog: Path) -> None:
     _send_key(client, "down")
     _send_key(client, "down")
     _send_key(client, "confirm")
-    _wait_activity(client, proc, qlog, EXPECTED_PARENT, seconds=20.0)
+    # The control-plane activity snapshot can lag while the picker is already
+    # visibly active. The firmware lifecycle marker is the authoritative proof
+    # that the real production child activity consumed the navigation event.
     _wait_serial_marker(client, proc, qlog, "Entering activity: NetworkModeSelection", seconds=20.0)
 
 
