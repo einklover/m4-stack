@@ -6,6 +6,11 @@
 #include "TtfReader.h"
 
 #include <cstdint>
+#include <cstdlib>
+
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_heap_caps.h>
+#endif
 
 namespace ttf {
 namespace {
@@ -32,7 +37,155 @@ uint32_t rd32Face(const uint8_t* p) {
          (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
 
+void* faceAllocPsram(size_t n) {
+  if (!n) return nullptr;
+#if defined(ARDUINO_ARCH_ESP32)
+  void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!p) p = heap_caps_malloc(n, MALLOC_CAP_8BIT);
+  return p;
+#else
+  return std::malloc(n);
+#endif
+}
+
+void faceFree(void* p) {
+  if (!p) return;
+#if defined(ARDUINO_ARCH_ESP32)
+  heap_caps_free(p);
+#else
+  std::free(p);
+#endif
+}
+
 }  // namespace
+
+bool TtfFont::initCmapStreamed() {
+  if (cmap_.len < 4) {
+    lastError_ = "cmap table too small";
+    return false;
+  }
+
+  uint8_t header[4];
+  if (!readAt(cmap_.off, header, sizeof(header))) {
+    lastError_ = "failed to read cmap header";
+    return false;
+  }
+  const uint16_t numTables = rd16Face(header + 2);
+  if (!numTables || numTables > 256 ||
+      cmap_.len < 4u + uint32_t(numTables) * 8u) {
+    lastError_ = "invalid cmap directory";
+    return false;
+  }
+
+  // Stream one 8-byte encoding record at a time. The old parser used a fixed
+  // 2048-byte stack directory; font activation happens close to reader/network
+  // setup, so keeping that stack pressure out of internal RAM is worthwhile.
+  uint32_t bestOffset = 0;
+  int bestScore = -1;
+  for (uint16_t i = 0; i < numTables; ++i) {
+    uint8_t record[8];
+    if (!readAt(cmap_.off + 4u + uint32_t(i) * 8u, record, sizeof(record))) {
+      lastError_ = "failed to read cmap encoding record";
+      return false;
+    }
+    const uint16_t platform = rd16Face(record);
+    const uint16_t encoding = rd16Face(record + 2);
+    const uint32_t offset = rd32Face(record + 4);
+    if (offset > cmap_.len || cmap_.len - offset < 2) continue;
+
+    uint8_t formatBytes[2];
+    if (!readAt(cmap_.off + offset, formatBytes, sizeof(formatBytes))) continue;
+    const uint16_t format = rd16Face(formatBytes);
+    if (format != 4 && format != 12) continue;
+
+    int score = format == 12 ? 100 : 0;
+    if (platform == 3 && encoding == 10) score += 40;
+    else if (platform == 3 && encoding == 1) score += 30;
+    else if (platform == 0) score += 20;
+    if (score > bestScore) {
+      bestScore = score;
+      bestOffset = offset;
+    }
+  }
+
+  if (bestScore < 0) {
+    lastError_ = "no suitable cmap subtable (need format 4 or 12)";
+    return false;
+  }
+
+  const uint32_t available = cmap_.len - bestOffset;
+  uint8_t prefix[8] = {};
+  if (!readAt(cmap_.off + bestOffset, prefix, sizeof(prefix))) {
+    lastError_ = "failed to read cmap subtable header";
+    return false;
+  }
+  const uint16_t format = rd16Face(prefix);
+  uint32_t exactLength = 0;
+  if (format == 4) {
+    exactLength = rd16Face(prefix + 2);
+    if (exactLength < 16) {
+      lastError_ = "cmap4 declared length too small";
+      return false;
+    }
+  } else if (format == 12) {
+    exactLength = rd32Face(prefix + 4);
+    if (exactLength < 16) {
+      lastError_ = "cmap12 declared length too small";
+      return false;
+    }
+  } else {
+    lastError_ = "selected cmap format changed during read";
+    return false;
+  }
+
+  if (exactLength > available || exactLength > 2u * 1024u * 1024u) {
+    lastError_ = "cmap subtable length out of range";
+    return false;
+  }
+
+  uint8_t* data = static_cast<uint8_t*>(faceAllocPsram(exactLength));
+  if (!data) {
+    lastError_ = "cmap alloc failed";
+    return false;
+  }
+  if (!readAt(cmap_.off + bestOffset, data, exactLength)) {
+    faceFree(data);
+    lastError_ = "failed to read cmap subtable";
+    return false;
+  }
+
+  uint32_t groups = 0;
+  bool is12 = false;
+  if (format == 4) {
+    const uint16_t segCount = static_cast<uint16_t>(rd16Face(data + 6) / 2u);
+    const uint32_t minLength = 16u + uint32_t(segCount) * 8u;
+    if (!segCount || exactLength < minLength) {
+      faceFree(data);
+      lastError_ = "cmap4 invalid segment count";
+      return false;
+    }
+    groups = segCount;
+  } else {
+    is12 = true;
+    groups = rd32Face(data + 12);
+    if (uint64_t(16) + uint64_t(groups) * 12u > exactLength) {
+      faceFree(data);
+      lastError_ = "cmap12 invalid group count";
+      return false;
+    }
+  }
+
+  // Swap only after full validation; a failed re-init therefore never leaks or
+  // destroys the previous cmap allocation. Both allocators use heap_caps_free
+  // on ESP32, so this is compatible with cmap blocks created by the legacy path.
+  faceFree(cmapData_);
+  cmapData_ = data;
+  cmapLen_ = exactLength;
+  cmapIs12_ = is12;
+  nGroups_ = groups;
+  lastError_ = "ok";
+  return true;
+}
 
 bool TtfFont::init(TtfStream& s, uint32_t faceOffset) {
   ready_ = false;
@@ -41,8 +194,8 @@ bool TtfFont::init(TtfStream& s, uint32_t faceOffset) {
   fileSize_ = s.size();
 
   // Reset face-specific metadata. High-water glyph scratch is deliberately
-  // retained across re-init; initCmap() replaces/frees the old cmap only after
-  // the new one has been read successfully.
+  // retained across re-init; the cmap is swapped only after the new subtable
+  // has been completely validated.
   head_ = Table{};
   maxp_ = Table{};
   loca_ = Table{};
@@ -111,9 +264,6 @@ bool TtfFont::init(TtfStream& s, uint32_t faceOffset) {
     const uint32_t off = rd32Face(rec + 8);
     const uint32_t len = rd32Face(rec + 12);
 
-    // In TTC/OTC, offsets are relative to the beginning of the entire
-    // collection, not the face directory. Validate once here and preserve the
-    // absolute value so every existing table reader remains zero-copy.
     if (off > fileSize_ || len > fileSize_ - off) {
       lastError_ = "font table out of file range";
       return false;
@@ -191,7 +341,7 @@ bool TtfFont::init(TtfStream& s, uint32_t faceOffset) {
     return false;
   }
 
-  if (!initCmap()) return false;
+  if (!initCmapStreamed()) return false;
 
   ready_ = true;
   lastError_ = "ok";
