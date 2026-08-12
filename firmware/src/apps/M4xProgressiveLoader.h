@@ -34,6 +34,10 @@
 
 #include <SDCardManager.h>
 
+// SdFat's legacy SysCall.h defines nullptr as a C macro.  That macro breaks
+// the C++ standard library when this header is included before <memory>-using
+// provider/catalog headers.  Keep the SDK include, but restore real C++11
+// nullptr semantics for the rest of this translation unit.
 #ifdef nullptr
 #undef nullptr
 #endif
@@ -61,6 +65,7 @@ struct Status {
   bool done = false;
   const char* error = "";
   const char* path = "";
+  // Human phase for plugin loading UI (never null).
   const char* phaseName = "idle";
 };
 
@@ -69,12 +74,11 @@ struct ChapterSpec {
   std::vector<std::pair<std::string, std::string>> headers;
   std::string relOut;
   std::string absOut;
-  std::vector<std::string> jsonPath;
-  std::string field;
+  std::vector<std::string> jsonPath;  // empty = root
+  std::string field;                  // e.g. "content"; empty = raw body
   bool rawBody = false;
   size_t earlyBytes = 2048;
   size_t maxBytes = 4 * 1024 * 1024;
-  // Maximum time without forward I/O progress, not a total-transfer deadline.
   uint32_t timeoutMs = 30000;
   bool followRedirects = false;
   M4PluginReaderBridge::OpenRequest open;
@@ -89,15 +93,15 @@ struct TocSpec {
   std::vector<std::string> fields;
   size_t earlyRows = 40;
   size_t maxBytes = 8 * 1024 * 1024;
-  // Maximum time without forward I/O progress, not a total-transfer deadline.
   uint32_t timeoutMs = 30000;
   bool followRedirects = false;
   int uidField0 = 0;
   int titleField0 = 1;
-  int vipField0 = -1;
+  int vipField0 = -1;  // optional VIP flag column for native TOC titles
   M4PluginReaderSession::TocRequest open;
 };
 
+// Live file sink (visible to reader mid-download).
 class FileSink final : public M4xJsonStream::Sink {
  public:
   explicit FileSink(FsFile& f) : f_(f) {
@@ -151,12 +155,18 @@ class FileSink final : public M4xJsonStream::Sink {
   size_t written_ = 0;
 };
 
+// Global single-job session (one plugin load at a time).
 class Session {
  public:
   Status status() const;
+
+  // Cache hit → queue open immediately. Miss → arm for pump().
   bool beginChapter(ChapterSpec spec, std::string& err);
   bool beginToc(TocSpec spec, std::string& err);
+
+  // One cooperative slice. Returns true if more work remains.
   bool pump(uint32_t budgetMs, size_t budgetBytes);
+
   void cancel();
   bool active() const { return phase_ != Phase::Idle && phase_ != Phase::Done && phase_ != Phase::Failed; }
   bool needsPump() const {
@@ -165,6 +175,7 @@ class Session {
 
  private:
   enum class BodyMode : uint8_t { ContentLength, Chunked, UntilClose };
+  // Cooperative chunked decoder (HTTPClient getStream is raw; CDN is often chunked).
   enum class ChunkPhase : uint8_t { SizeLine, Data, CrlfAfterData, Trailers, Done };
 
   void fail(const char* e);
@@ -179,20 +190,18 @@ class Session {
   void closeHttp();
   std::string okMarkerPath() const;
   void writeOkMarker();
-  void removeOutputs();
+  void removeOutputs();  // incomplete chapter/toc + .ok (avoid cross-open stale cache)
   bool hasCompleteCache() const;
+  // Feed already-decoded payload bytes into JSON/raw sink. Returns false on hard fail.
   bool acceptPayload(const uint8_t* data, size_t len);
+  // Read up to want decoded payload bytes into out (handles chunked). Returns bytes decoded.
+  // *more=false when body complete; *hardFail set on protocol error.
   size_t readDecoded(uint8_t* out, size_t want, bool* more, const char** hardFail);
-  bool ioTimedOut(uint32_t now) const {
-    return timeoutMs_ > 0 && static_cast<uint32_t>(now - lastProgressMs_) >= timeoutMs_;
-  }
-  void noteIoProgress() { lastProgressMs_ = nowMsForProgress(); }
-  static uint32_t nowMsForProgress();
 
   Phase phase_ = Phase::Idle;
   Kind kind_ = Kind::None;
   const char* error_ = "";
-  size_t bytes_ = 0;
+  size_t bytes_ = 0;       // wire or payload progress for status (decoded payload preferred)
   size_t rows_ = 0;
   bool early_ = false;
   std::string relOut_;
@@ -200,18 +209,17 @@ class Session {
   size_t earlyThreshold_ = 0;
   size_t maxBytes_ = 0;
   uint32_t timeoutMs_ = 30000;
-  uint32_t startMs_ = 0;         // diagnostics / total elapsed only
-  uint32_t lastProgressMs_ = 0;  // inactivity timeout anchor
+  uint32_t startMs_ = 0;
   bool rawBody_ = false;
   size_t lastPublishedRows_ = 0;
 
   BodyMode bodyMode_ = BodyMode::UntilClose;
-  size_t contentRemain_ = 0;
+  size_t contentRemain_ = 0;  // ContentLength only
   ChunkPhase chunkPhase_ = ChunkPhase::SizeLine;
   size_t chunkRemain_ = 0;
   std::string chunkLine_;
   bool bodyEof_ = false;
-  bool streamComplete_ = false;
+  bool streamComplete_ = false;  // true only after finishOk
 
   ChapterSpec chapter_;
   TocSpec toc_;
