@@ -32,11 +32,17 @@ def function_body(src: str, signature: str) -> str:
     raise AssertionError(f"unterminated function {signature}")
 
 
+def strip_line_comments(src: str) -> str:
+    """Remove // comments so contracts inspect executable text, not prose."""
+    return "\n".join(line.split("//", 1)[0] for line in src.splitlines())
+
+
 class NetworkLifecycleContracts(unittest.TestCase):
     def assert_safe_child_pump(self, rel: str, signature: str) -> None:
         body = function_body(text(rel), signature)
-        self.assertIn("pumpSubActivityFrame();", body)
-        self.assertNotIn("subActivity->loop()", body)
+        executable = strip_line_comments(body)
+        self.assertIn("pumpSubActivityFrame();", executable)
+        self.assertNotRegex(executable, r"\bsubActivity\s*->\s*loop\s*\(")
 
     def test_transfer_activity_never_pumps_child_directly(self) -> None:
         self.assert_safe_child_pump(
@@ -55,9 +61,9 @@ class NetworkLifecycleContracts(unittest.TestCase):
         ap = function_body(src, "void CrossPointWebServerActivity::startAccessPoint()")
         server = function_body(src, "void CrossPointWebServerActivity::startWebServer()")
         self.assertIn('showSetupError("Hotspot startup failed")', ap)
-        self.assertNotIn("onGoBack();", ap)
+        self.assertNotIn("onGoBack();", strip_line_comments(ap))
         self.assertRegex(server, r"showSetupError\(\"Web server (memory allocation|startup) failed\"\)")
-        self.assertNotIn("onGoBack();", server)
+        self.assertNotIn("onGoBack();", strip_line_comments(server))
 
 
 class ProgressiveLoaderContracts(unittest.TestCase):
