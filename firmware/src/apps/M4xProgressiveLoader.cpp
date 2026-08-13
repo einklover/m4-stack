@@ -252,6 +252,7 @@ bool Session::connectHttp(const std::string& url,
   chunkPhase_ = ChunkPhase::SizeLine;
   chunkRemain_ = 0;
   chunkLine_.clear();
+  chunkCrlf_.reset();
   bodyEof_ = false;
   if (cl > 0) {
     bodyMode_ = BodyMode::ContentLength;
@@ -273,7 +274,7 @@ bool Session::connectHttp(const std::string& url,
   }
   // timeoutMs_ is an inactivity timeout, not a maximum lifetime for the whole
   // response. A long catalog may legitimately stream for minutes.
-  startMs_ = nowMs();
+  inactivity_.reset(nowMs());
 #if defined(ARDUINO_ARCH_ESP32)
   Serial.printf("[LOADER] connected mode=%d cl=%d te=%s\n", static_cast<int>(bodyMode_), cl,
                 http_->header("Transfer-Encoding").c_str());
@@ -292,7 +293,7 @@ bool Session::acceptPayload(const uint8_t* data, size_t len) {
   // Any decoded payload is forward progress. Renew the inactivity window so a
   // healthy multi-megabyte / multi-thousand-row catalog cannot time out merely
   // because its total transfer duration exceeds timeoutMs_.
-  startMs_ = nowMs();
+  inactivity_.onPayload(nowMs());
   if (kind_ == Kind::Chapter) {
     if (rawBody_) {
       if (!sink_ || !sink_->write(data, len)) {
@@ -338,7 +339,7 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
 
   size_t produced = 0;
   while (produced < want) {
-    if (static_cast<uint32_t>(nowMs() - startMs_) >= timeoutMs_) {
+    if (inactivity_.expired(nowMs(), timeoutMs_)) {
       *hardFail = "timeout";
       *more = false;
       return produced;
@@ -466,6 +467,7 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
 
     if (chunkPhase_ == ChunkPhase::Data) {
       if (chunkRemain_ == 0) {
+        chunkCrlf_.reset();
         chunkPhase_ = ChunkPhase::CrlfAfterData;
         continue;
       }
@@ -494,14 +496,15 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
       }
       produced += static_cast<size_t>(r);
       chunkRemain_ -= static_cast<size_t>(r);
-      if (chunkRemain_ == 0) chunkPhase_ = ChunkPhase::CrlfAfterData;
+      if (chunkRemain_ == 0) {
+        chunkCrlf_.reset();
+        chunkPhase_ = ChunkPhase::CrlfAfterData;
+      }
       continue;
     }
 
     if (chunkPhase_ == ChunkPhase::CrlfAfterData) {
-      uint8_t crlf[2];
-      size_t got = 0;
-      while (got < 2) {
+      while (!chunkCrlf_.complete()) {
         const int avail = stream_->available();
         if (avail <= 0) {
           if (!stream_->connected()) {
@@ -514,15 +517,18 @@ size_t Session::readDecoded(uint8_t* out, size_t want, bool* more, const char** 
           if (stream_->available() <= 0) return produced;
           continue;
         }
-        const int r = stream_->read(crlf + got, 2 - got);
+        size_t n = chunkCrlf_.remaining();
+        if (n > static_cast<size_t>(avail)) n = static_cast<size_t>(avail);
+        const int r = stream_->read(chunkCrlf_.writePtr(), n);
         if (r <= 0) return produced;
-        got += static_cast<size_t>(r);
+        chunkCrlf_.commit(static_cast<size_t>(r));
       }
-      if (crlf[0] != '\r' || crlf[1] != '\n') {
+      if (!chunkCrlf_.valid()) {
         *hardFail = "chunk_crlf_bad";
         *more = false;
         return produced;
       }
+      chunkCrlf_.reset();
       chunkPhase_ = ChunkPhase::SizeLine;
       continue;
     }
@@ -679,12 +685,13 @@ bool Session::beginChapter(ChapterSpec spec, std::string& err) {
   early_ = false;
   streamComplete_ = false;
   bytes_ = rows_ = 0;
-  startMs_ = nowMs();
+  inactivity_.reset(nowMs());
   bodyMode_ = BodyMode::UntilClose;
   contentRemain_ = 0;
   chunkPhase_ = ChunkPhase::SizeLine;
   chunkRemain_ = 0;
   chunkLine_.clear();
+  chunkCrlf_.reset();
   bodyEof_ = false;
 
   if (hasCompleteCache()) {
@@ -736,12 +743,13 @@ bool Session::beginToc(TocSpec spec, std::string& err) {
   streamComplete_ = false;
   bytes_ = rows_ = 0;
   lastPublishedRows_ = 0;
-  startMs_ = nowMs();
+  inactivity_.reset(nowMs());
   bodyMode_ = BodyMode::UntilClose;
   contentRemain_ = 0;
   chunkPhase_ = ChunkPhase::SizeLine;
   chunkRemain_ = 0;
   chunkLine_.clear();
+  chunkCrlf_.reset();
   bodyEof_ = false;
 
   if (hasCompleteCache()) {
@@ -812,7 +820,7 @@ bool Session::pump(uint32_t budgetMs, size_t budgetBytes) {
   size_t got = 0;
   uint8_t buf[1024];
   while (got < budgetBytes && static_cast<uint32_t>(nowMs() - t0) < budgetMs) {
-    if (static_cast<uint32_t>(nowMs() - startMs_) >= timeoutMs_) {
+    if (inactivity_.expired(nowMs(), timeoutMs_)) {
       fail("timeout");
       return false;
     }
