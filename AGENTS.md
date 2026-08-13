@@ -2,18 +2,19 @@
 
 This monorepo is the **default cwd and durable source of truth** for new AI / Codex work on Murphy M4.
 
-Do not rely on previous chat history when the repository contains a current handoff.
+Do not rely on previous chat history when the repository contains a current handoff and active GitHub Issues.
 
 ## Mandatory first read for every new session
 
 Read in this order before changing code:
 
 1. `AGENTS.md` — rules and safety boundaries
-2. `HANDOFF.md` — current checkpoint / what remains
+2. `HANDOFF.md` — thin entry point to the active work
 3. `docs/FAST_FIRMWARE_DEV.md` — fast build/test/cache workflow
-4. task-specific docs/code only after the above
+4. the active GitHub Issue(s) named by `HANDOFF.md`
+5. task-specific docs/code only after the above
 
-If the task materially changes current status, update `HANDOFF.md` before ending the work checkpoint.
+**Progress discipline:** update the relevant GitHub Issue with goals, status, measurements, failures, fixes and acceptance evidence. Update `HANDOFF.md` only when the active Issue set, branch strategy, or stable infrastructure entry points change.
 
 ## Layout
 
@@ -23,7 +24,7 @@ If the task materially changes current status, update `HANDOFF.md` before ending
 | `simulator/` | Murphy M4 host/QEMU simulator + E2E journeys |
 | `plugins/` | fanqie / jjwxc / weread (+ legado) |
 | `scripts/` | bootstrap + cross-cutting helpers |
-| `docs/` | persistent handoffs and development contracts |
+| `docs/` | stable handoffs and development contracts |
 | `VERSIONS.md` | pinned upstream SHAs |
 
 Upstream component repos still exist (`einklover/m4-firmware` etc.). Prefer committing here for multi-component work; mirror important fixes back to component repos when releasing.
@@ -83,15 +84,16 @@ As of 2026-08-13:
 - Network Manager real-Home 3-mode E2E passes
 - m4sim is therefore considered **frozen/stable enough for firmware development**
 
-Historical QEMU boot documents may describe earlier blockers; prefer `HANDOFF.md` and `docs/FAST_FIRMWARE_DEV.md` for current state.
+Historical QEMU boot documents may describe earlier blockers; prefer `HANDOFF.md`, the active Issues, and `docs/FAST_FIRMWARE_DEV.md` for current state.
 
 ## Where to start reading
 
-1. `HANDOFF.md` — current task/status
-2. `docs/FAST_FIRMWARE_DEV.md` — fastest correct development loop
-3. `README.md` — repository map
-4. `simulator/docs/CODEX_FIRMWARE_DEBUG_GUIDE.md` — simulator debugging details
-5. historical docs only when investigating old regressions
+1. `HANDOFF.md` — active Issue pointers / current branch / stable infrastructure status
+2. active GitHub Issues — current goals, progress and acceptance evidence
+3. `docs/FAST_FIRMWARE_DEV.md` — fastest correct development loop
+4. `README.md` — repository map
+5. `simulator/docs/CODEX_FIRMWARE_DEBUG_GUIDE.md` — simulator debugging details
+6. historical docs only when investigating old regressions
 
 ## Plugins / network pitfalls
 
