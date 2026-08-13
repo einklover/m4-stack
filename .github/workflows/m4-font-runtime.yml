@@ -5,10 +5,12 @@ on:
     paths:
       - 'firmware/lib/TtfReader/**'
       - 'firmware/lib/EpdFont/TtfEpdFont.*'
+      - 'firmware/lib/EpdFontLoader/**'
       - 'firmware/src/managers/FontManager.*'
       - 'simulator/tests/ttf_reader_*.cpp'
       - 'simulator/tests/cff_reader*.cpp'
       - 'simulator/tests/chinese_font_web_matrix.cpp'
+      - 'simulator/tests/test_runtime_font_memory_contract.py'
       - 'simulator/CMakeLists.txt'
       - '.github/workflows/m4-font-runtime.yml'
   workflow_dispatch:
@@ -25,6 +27,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Guard runtime sfnt memory lifetime
+        run: python3 -m unittest -v simulator/tests/test_runtime_font_memory_contract.py
 
       - name: Install real CID-CFF CJK fixture
         run: |
@@ -91,6 +96,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      - name: Guard runtime sfnt memory lifetime
+        run: python3 -m unittest -v simulator/tests/test_runtime_font_memory_contract.py
 
       - name: Install real CID-CFF CJK fixture
         run: |
