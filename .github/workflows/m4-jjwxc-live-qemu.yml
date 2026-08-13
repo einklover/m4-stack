@@ -1,0 +1,24 @@
+name: Murphy JJWXC live native QEMU E2E
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/src/activities/apps/NativeProviderBookActivity.*'
+      - 'firmware/src/apps/providers/JjwxcProvider.cpp'
+      - 'firmware/src/apps/providers/M4NativeProviderCatalog.*'
+      - 'plugins/m4-jjwxc-plugin/**'
+      - 'simulator/tests/jjwxc_native_live_qemu.py'
+      - '.github/workflows/m4-jjwxc-live-qemu.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-live-handoff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run JJWXC native live QEMU harness
+        run: python3 simulator/tests/jjwxc_native_live_qemu.py --help
