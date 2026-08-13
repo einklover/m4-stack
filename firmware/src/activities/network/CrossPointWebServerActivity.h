@@ -62,6 +62,12 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  std::string debugUiJson() override {
+    std::string out = "{\"subactivity\":\"";
+    if (subActivity) out += subActivity->getName();
+    out += "\"}";
+    return out;
+  }
   bool skipLoopDelay() override {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
     return false;
