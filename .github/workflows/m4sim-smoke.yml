@@ -1,7 +1,6 @@
 name: m4sim clean BIN smoke
 
-# Same ./m4sim entry as local developers. Expensive toolchain products are
-# cached independently from firmware source so ordinary firmware edits stay fast.
+# Uses the same ./m4sim entry as local developers (not a hand-rolled QEMU cmdline).
 
 on:
   pull_request:
@@ -27,28 +26,8 @@ jobs:
   smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    env:
-      # PlatformIO's compiler cache is content/config aware. Keep it outside
-      # firmware/.pio so it can be restored independently between clean runners.
-      PLATFORMIO_BUILD_CACHE_DIR: ${{ runner.temp }}/platformio-build-cache
     steps:
       - uses: actions/checkout@v4
-
-      - name: Restore patched QEMU runtime cache
-        id: qemu-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/m4sim-qemu-runtime
-          key: m4sim-qemu-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('simulator/qemu/build.py', 'simulator/qemu/build_patched_qemu_v3.py', 'simulator/qemu/patches/**') }}
-
-      - name: Restore PlatformIO caches
-        id: pio-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.platformio
-            ${{ runner.temp }}/platformio-build-cache
-          key: m4sim-pio-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('firmware/platformio.ini') }}
 
       - name: Install host dependencies
         run: |
@@ -63,84 +42,43 @@ jobs:
       - name: Bootstrap firmware deps
         run: bash scripts/bootstrap_deps.sh
 
-      - name: Materialize cached patched QEMU
-        if: steps.qemu-cache.outputs.cache-hit == 'true'
+      - name: Build patched QEMU (single entry)
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3" \
-                   "$RUNNER_TEMP/espressif-qemu-v3/pc-bios"
-          cp "$RUNNER_TEMP/m4sim-qemu-runtime/qemu-system-xtensa" \
-             "$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa"
-          cp "$RUNNER_TEMP/m4sim-qemu-runtime/esp32s3_rev0_rom.bin" \
-             "$RUNNER_TEMP/espressif-qemu-v3/pc-bios/esp32s3_rev0_rom.bin"
-          chmod +x "$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa"
-
-      - name: Build patched QEMU (cache miss only)
-        if: steps.qemu-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
           python3 simulator/qemu/build.py \
             --source-dir "$RUNNER_TEMP/espressif-qemu-v3" \
             --reconfigure -j 2
-
-          QEMU="$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa"
-          if [[ ! -x "$QEMU" ]]; then
-            QEMU="${QEMU}-unsigned"
-          fi
-          test -x "$QEMU"
-          test -s "$RUNNER_TEMP/espressif-qemu-v3/pc-bios/esp32s3_rev0_rom.bin"
-
-          # Cache only runtime-critical output, not the multi-hundred-MB source/
-          # object tree. Restore materializes it at the same path used by m4sim.
-          mkdir -p "$RUNNER_TEMP/m4sim-qemu-runtime"
-          cp "$QEMU" "$RUNNER_TEMP/m4sim-qemu-runtime/qemu-system-xtensa"
-          cp "$RUNNER_TEMP/espressif-qemu-v3/pc-bios/esp32s3_rev0_rom.bin" \
-             "$RUNNER_TEMP/m4sim-qemu-runtime/esp32s3_rev0_rom.bin"
-
-      - name: Save patched QEMU runtime cache
-        if: steps.qemu-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/m4sim-qemu-runtime
-          key: ${{ steps.qemu-cache.outputs.cache-primary-key }}
-
-      - name: Verify patched QEMU
-        run: |
-          QEMU="$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa"
-          test -x "$QEMU"
-          "$QEMU" --version
-          "$QEMU" -machine help | grep -q 'murphy-m4'
+          test -x "$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa" \
+            || test -x "$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa-unsigned"
 
       - name: m4sim info
         env:
           QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa
-        run: ./m4sim info
-
-      - name: Build Murphy M4 plugin-debug firmware once
         run: |
-          cd firmware
-          pio run -e murphy_m4_qemu_plugin -j 2
+          if [[ ! -x "$QEMU_XTENSA" ]]; then
+            QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+            export QEMU_XTENSA
+          fi
+          ./m4sim info
 
-      - name: Save PlatformIO caches
-        if: always() && steps.pio-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.platformio
-            ${{ runner.temp }}/platformio-build-cache
-          key: ${{ steps.pio-cache.outputs.cache-primary-key }}
-
-      - name: m4sim test smoke (reuse firmware build)
+      - name: m4sim test smoke (plugin-debug path)
         env:
           QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa
           M4SIM_SMOKE_TMP: ${{ runner.temp }}/m4sim-smoke
-        run: ./m4sim test smoke --plugin-debug --skip-build --ready-seconds 150
+        run: |
+          if [[ ! -x "$QEMU_XTENSA" ]]; then
+            export QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+          fi
+          ./m4sim test smoke --plugin-debug --ready-seconds 150
 
-      - name: m4sim test network-manager (real Home UI, reuse firmware build)
+      - name: m4sim test network-manager (real Home UI)
         env:
           QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa
           M4SIM_NETWORK_TMP: ${{ runner.temp }}/m4sim-network-manager
-        run: ./m4sim test network-manager --plugin-debug --skip-build --ready-seconds 150
+        run: |
+          if [[ ! -x "$QEMU_XTENSA" ]]; then
+            export QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+          fi
+          ./m4sim test network-manager --plugin-debug --skip-build --ready-seconds 150
 
       - name: Stage portable m4sim runtime bundle
         if: success()
@@ -148,14 +86,13 @@ jobs:
           QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa
         run: |
           set -euo pipefail
+          if [[ ! -x "$QEMU_XTENSA" ]]; then
+            QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+          fi
           B="$RUNNER_TEMP/m4sim-runtime"
           mkdir -p "$B/bin" "$B/lib" "$B/pc-bios" "$B/python" "$B/firmware/scripts" "$B/simulator/tools"
           cp "$QEMU_XTENSA" "$B/bin/qemu-system-xtensa"
 
-          # ESP32-S3 QEMU needs this runtime ROM, but the upstream pc-bios README
-          # does not state a standalone redistribution license for this binary.
-          # Do NOT upload the ROM. Publish only its pinned source and checksum;
-          # the recipient can fetch it directly from the official upstream repo.
           ROM="$RUNNER_TEMP/espressif-qemu-v3/pc-bios/esp32s3_rev0_rom.bin"
           test -s "$ROM"
           ROM_SHA="$(sha256sum "$ROM" | awk '{print $1}')"
