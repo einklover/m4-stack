@@ -457,27 +457,45 @@ bool CffFont::initCmap() {
     if (s > score) { score = s; best = o; }
   }
   if (score < 0) { lastError_ = "CFF OpenType has no cmap format 4/12"; return false; }
-  const uint32_t avail = cmap_.len - best;
-  if (avail > 2u * 1024u * 1024u) { lastError_ = "CFF cmap exceeds safety limit"; return false; }
-  if (avail > cmapScratchCap_) {
-    auto* p = static_cast<uint8_t*>(reallocPsramFirst(cmapData_, avail));
+
+  // Keep only the selected cmap subtable resident. Large CJK fonts often put
+  // several cmap subtables in one table; using `table_end - selected_offset`
+  // can retain hundreds of KB (or more) of unrelated cmap data for the entire
+  // lifetime of the active font. The declared subtable length is sufficient.
+  const uint32_t available = cmap_.len - best;
+  uint8_t prefix[8] = {};
+  if (available < sizeof(prefix) || !readAt(cmap_.off + best, prefix, sizeof(prefix))) return false;
+  const uint16_t fmt = rd16be(prefix);
+  uint32_t exactLen = 0;
+  if (fmt == 4) {
+    exactLen = rd16be(prefix + 2);
+    if (exactLen < 16) return false;
+  } else if (fmt == 12) {
+    exactLen = rd32be(prefix + 4);
+    if (exactLen < 16) return false;
+  } else {
+    return false;
+  }
+  if (exactLen > available || exactLen > 2u * 1024u * 1024u) {
+    lastError_ = "CFF cmap subtable length out of range";
+    return false;
+  }
+  if (exactLen > cmapScratchCap_) {
+    auto* p = static_cast<uint8_t*>(reallocPsramFirst(cmapData_, exactLen));
     if (!p) { lastError_ = "CFF cmap PSRAM allocation failed"; return false; }
     cmapData_ = p;
-    cmapScratchCap_ = avail;
+    cmapScratchCap_ = exactLen;
   }
-  if (!readAt(cmap_.off + best, cmapData_, avail)) return false;
-  cmapLen_ = avail;
-  const uint16_t fmt = rd16be(cmapData_);
+  if (!readAt(cmap_.off + best, cmapData_, exactLen)) return false;
+  cmapLen_ = exactLen;
   if (fmt == 4) {
-    if (avail < 14) return false;
     cmapIs12_ = false;
     cmapGroups_ = rd16be(cmapData_ + 6) / 2;
-    if (!cmapGroups_ || avail < 16u + cmapGroups_ * 8u) return false;
+    if (!cmapGroups_ || exactLen < 16u + cmapGroups_ * 8u) return false;
   } else {
-    if (avail < 16) return false;
     cmapIs12_ = true;
     cmapGroups_ = rd32be(cmapData_ + 12);
-    if (avail < 16u + uint64_t(cmapGroups_) * 12u) return false;
+    if (exactLen < 16u + uint64_t(cmapGroups_) * 12u) return false;
   }
   return true;
 }
