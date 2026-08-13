@@ -29,8 +29,9 @@ sys.path.insert(0, str(ROOT / "simulator"))
 sys.path.insert(0, str(ROOT / "firmware" / "scripts"))
 
 import m4sim  # noqa: E402
-from m4adb_lib.client import BridgeError, Client  # noqa: E402
+from m4adb_lib.client import BridgeError  # noqa: E402
 from m4adb_lib.transport import SerialTransport  # noqa: E402
+from m4adb_observing_client import ObservingClient as Client  # noqa: E402
 
 
 EXPECTED_PARENT = "CrossPointWebServer"
