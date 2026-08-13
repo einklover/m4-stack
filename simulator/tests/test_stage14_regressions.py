@@ -70,28 +70,38 @@ class ProgressiveLoaderContracts(unittest.TestCase):
     def test_timeout_is_renewed_after_http_connect(self) -> None:
         src = text("firmware/src/apps/M4xProgressiveLoader.cpp")
         body = function_body(src, "bool Session::connectHttp(")
-        self.assertIn("startMs_ = nowMs();", body)
+        self.assertIn("inactivity_.reset(nowMs());", strip_line_comments(body))
 
     def test_timeout_is_renewed_for_each_payload_progress(self) -> None:
         src = text("firmware/src/apps/M4xProgressiveLoader.cpp")
-        body = function_body(src, "bool Session::acceptPayload(")
-        anchor = body.index("startMs_ = nowMs();")
+        body = strip_line_comments(function_body(src, "bool Session::acceptPayload("))
+        anchor = body.index("inactivity_.onPayload(nowMs());")
         size_guard = body.index("if (bytes_ + len > maxBytes_)")
         self.assertGreater(anchor, size_guard)
 
-    def test_timeout_still_uses_wrap_safe_unsigned_delta(self) -> None:
+    def test_timeout_checks_use_shared_inactivity_window(self) -> None:
         src = text("firmware/src/apps/M4xProgressiveLoader.cpp")
         bodies = [
             function_body(src, "size_t Session::readDecoded("),
             function_body(src, "bool Session::pump("),
         ]
         for body in bodies:
-            self.assertIn("static_cast<uint32_t>(nowMs() - startMs_) >= timeoutMs_", body)
+            executable = strip_line_comments(body)
+            self.assertIn("inactivity_.expired(nowMs(), timeoutMs_)", executable)
+            self.assertNotIn("startMs_", executable)
+
+    def test_inactivity_helper_is_wrap_safe_and_payload_only(self) -> None:
+        hdr = text("firmware/src/apps/M4xProgressiveHttpState.h")
+        self.assertIn("class PayloadInactivityWindow", hdr)
+        self.assertIn("void onPayload(uint32_t nowMs)", hdr)
+        self.assertIn("static_cast<uint32_t>(nowMs - lastProgressMs_) >= timeoutMs", hdr)
+        self.assertIn("Transport/framing", hdr)
+        self.assertIn("only accepted body payload", hdr)
 
     def test_header_documents_inactivity_semantics(self) -> None:
         hdr = text("firmware/src/apps/M4xProgressiveLoader.h")
         self.assertGreaterEqual(hdr.count("no accepted payload progress"), 2)
-        self.assertIn("Inactivity anchor", hdr)
+        self.assertIn("M4xProgressiveHttpState::PayloadInactivityWindow inactivity_", hdr)
 
 
 if __name__ == "__main__":
