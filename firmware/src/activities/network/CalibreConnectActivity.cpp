@@ -11,6 +11,7 @@
 #include "WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "qemu/M4QemuNet.h"
 #include "util/M4UiText.h"
 
 namespace {
@@ -68,12 +69,16 @@ void CalibreConnectActivity::onEnter() {
   lastCompleteAt = 0;
   exitRequested = false;
 
-  if (WiFi.status() != WL_CONNECTED) {
+  // QEMU plugin-debug rides on open_eth rather than a modeled ESP32-S3 Wi-Fi
+  // radio. Use the shared compatibility layer here just like m4adb/network
+  // probes do; otherwise Calibre incorrectly opens WifiSelection and enters
+  // the unmodeled Wi-Fi scan path, blocking the main owner loop.
+  if (!M4QemuNet::staConnected()) {
     enterNewActivity(new WifiSelectionActivity(renderer, mappedInput,
                                                [this](const bool connected) { onWifiSelectionComplete(connected); }));
   } else {
-    connectedIP = WiFi.localIP().toString().c_str();
-    connectedSSID = WiFi.SSID().c_str();
+    connectedIP = M4QemuNet::localIpStd();
+    connectedSSID = M4QemuNet::ssidStd();
     startWebServer();
   }
 }
@@ -114,9 +119,9 @@ void CalibreConnectActivity::onWifiSelectionComplete(const bool connected) {
   if (subActivity) {
     connectedIP = static_cast<WifiSelectionActivity*>(subActivity.get())->getConnectedIP();
   } else {
-    connectedIP = WiFi.localIP().toString().c_str();
+    connectedIP = M4QemuNet::localIpStd();
   }
-  connectedSSID = WiFi.SSID().c_str();
+  connectedSSID = M4QemuNet::ssidStd();
   exitActivity();
   pendingStartServer = true;
 }
