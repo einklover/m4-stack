@@ -119,7 +119,7 @@ bool checkGlyph(Font& font, uint32_t cp, uint16_t sizePx) {
   int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   if (!font.glyphPixelBox(gid, sizePx, x0, y0, x1, y1) || x1 <= x0 || y1 <= y0) {
     std::cerr << "bad pixel box U+" << std::hex << cp << std::dec << " gid=" << gid
-              << " size=" << sizePx << "\n";
+              << " size=" << sizePx << " err=" << font.lastError() << "\n";
     return false;
   }
 
@@ -162,7 +162,7 @@ bool exerciseChinese(Font& font) {
 
 int main(int argc, char** argv) {
   if (argc != 3) {
-    std::cerr << "usage: m4_web_chinese_font_tests <font.ttf|font.otf|font.ttc> <face-index>\n";
+    std::cerr << "usage: m4_web_chinese_font_tests <font.ttf|font.otf|font.ttc|font.otc> <face-index>\n";
     return 2;
   }
 
@@ -189,21 +189,20 @@ int main(int argc, char** argv) {
   const bool cff1 = hasTable(stream, faceOffset, "CFF ");
   const bool cff2 = hasTable(stream, faceOffset, "CFF2");
   const bool glyf = hasTable(stream, faceOffset, "glyf") && hasTable(stream, faceOffset, "loca");
-  const bool variable = hasTable(stream, faceOffset, "fvar") || hasTable(stream, faceOffset, "gvar");
+  const bool variable = hasTable(stream, faceOffset, "fvar") || hasTable(stream, faceOffset, "gvar") || cff2;
 
   std::cout << "font=" << argv[1] << " face=" << faceIndex << " offset=" << faceOffset
-            << " backend=" << (cff1 ? "CFF1" : (glyf ? "glyf" : (cff2 ? "CFF2" : "unknown")))
+            << " backend=" << (cff2 ? "CFF2" : (cff1 ? "CFF1" : (glyf ? "glyf" : "unknown")))
             << " variable=" << (variable ? "yes" : "no") << "\n";
 
-  if (cff2) {
-    std::cerr << "CFF2 outline is not supported by the current runtime parser\n";
-    return 1;
-  }
-
-  if (cff1) {
+  if (cff1 || cff2) {
     ttf::CffFont font;
     if (!font.init(stream, faceOffset)) {
-      std::cerr << "CFF init failed: " << font.lastError() << "\n";
+      std::cerr << (cff2 ? "CFF2" : "CFF1") << " init failed: " << font.lastError() << "\n";
+      return 1;
+    }
+    if (font.isCff2() != cff2) {
+      std::cerr << "CFF parser mode mismatch\n";
       return 1;
     }
     if (!font.ready() || font.unitsPerEm() == 0 || font.glyphCount() == 0) {
@@ -211,9 +210,11 @@ int main(int argc, char** argv) {
       return 1;
     }
     if (!exerciseChinese(font)) return 1;
-    std::cout << "PASS CFF1 glyphs=" << font.glyphCount()
+    std::cout << "PASS " << (cff2 ? "CFF2-default" : "CFF1")
+              << " glyphs=" << font.glyphCount()
               << " cid=" << (font.isCidKeyed() ? "yes" : "no")
-              << " fdCount=" << font.fdCount() << "\n";
+              << " fdCount=" << font.fdCount()
+              << " fdSelectResident=" << font.fdSelectResidentBytes() << "\n";
     return 0;
   }
 
@@ -233,6 +234,6 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  std::cerr << "unsupported outline tables (need CFF1 or glyf/loca)\n";
+  std::cerr << "unsupported outline tables (need CFF1/CFF2 or glyf/loca)\n";
   return 1;
 }
