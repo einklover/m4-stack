@@ -16,6 +16,7 @@
 
 #include "apps/M4PluginReaderSession.h"
 #include "apps/M4xJsonStream.h"
+#include "apps/M4xProgressiveHttpState.h"
 #include "util/M4PluginReaderBridge.h"
 
 #include <cstddef>
@@ -199,9 +200,7 @@ class Session {
   size_t earlyThreshold_ = 0;
   size_t maxBytes_ = 0;
   uint32_t timeoutMs_ = 30000;
-  // Inactivity anchor. Reset after HTTP connects and whenever decoded payload
-  // advances. Unsigned subtraction in the pump remains millis()-wrap safe.
-  uint32_t startMs_ = 0;
+  M4xProgressiveHttpState::PayloadInactivityWindow inactivity_;
   bool rawBody_ = false;
   size_t lastPublishedRows_ = 0;
 
@@ -210,6 +209,7 @@ class Session {
   ChunkPhase chunkPhase_ = ChunkPhase::SizeLine;
   size_t chunkRemain_ = 0;
   std::string chunkLine_;
+  M4xProgressiveHttpState::ChunkCrlfAccumulator chunkCrlf_;
   bool bodyEof_ = false;
   bool streamComplete_ = false;
 
