@@ -1,0 +1,157 @@
+name: Murphy JJWXC live progressive E2E
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/src/apps/M4xProgressiveLoader.*'
+      - 'firmware/src/apps/M4xProgressiveHttpState.h'
+      - 'firmware/src/apps/M4xJsonStream.h'
+      - 'firmware/tests/native_app/test_jjwxc_catalog_shape.cpp'
+      - 'firmware/tests/native_app/test_jjwxc_live_stream.cpp'
+      - 'firmware/tests/native_app/test_progressive_http_state.cpp'
+      - 'plugins/m4-jjwxc-plugin/**'
+      - 'simulator/tests/jjwxc_live_fetch.py'
+      - 'scripts/bootstrap_deps.sh'
+      - '.github/workflows/m4-jjwxc-live.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-stream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile production streaming contracts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ifirmware/src \
+            firmware/tests/native_app/test_jjwxc_live_stream.cpp \
+            -o "$RUNNER_TEMP/test_jjwxc_live_stream"
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ifirmware/src \
+            firmware/tests/native_app/test_jjwxc_catalog_shape.cpp \
+            -o "$RUNNER_TEMP/test_jjwxc_catalog_shape"
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ifirmware/src \
+            firmware/tests/native_app/test_progressive_http_state.cpp \
+            -o "$RUNNER_TEMP/test_progressive_http_state"
+
+      - name: Preserve synthetic 5,000-row and inactivity contracts
+        run: |
+          "$RUNNER_TEMP/test_jjwxc_catalog_shape"
+          "$RUNNER_TEMP/test_progressive_http_state"
+
+      - name: Fetch live JJWXC long catalog without whole-body buffering
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/jjwxc-live" "$RUNNER_TEMP/jjwxc-evidence"
+          python3 simulator/tests/jjwxc_live_fetch.py catalog \
+            --book-id 3006768 \
+            --book-id 500593 \
+            --output "$RUNNER_TEMP/jjwxc-live/catalog.json" \
+            --summary "$RUNNER_TEMP/jjwxc-evidence/catalog-http.json" \
+            --timeout 45
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['RUNNER_TEMP'])/'jjwxc-evidence/catalog-http.json'
+          d = json.loads(p.read_text())
+          print('JJWXC_BOOK_ID=' + str(d['book_id']))
+          PY
+
+      - name: Stream live catalog through firmware RecordExtractor
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$RUNNER_TEMP/test_jjwxc_live_stream" \
+            "$RUNNER_TEMP/jjwxc-live/catalog.json" \
+            "$RUNNER_TEMP/jjwxc-live/catalog.tsv" \
+            | tee "$RUNNER_TEMP/jjwxc-evidence/catalog-verify.txt"
+          UID=$(sed -n 's/^first_free_uid=//p' "$RUNNER_TEMP/jjwxc-evidence/catalog-verify.txt" | head -1)
+          test -n "$UID"
+          echo "JJWXC_CHAPTER_ID=$UID" >> "$GITHUB_ENV"
+
+      - name: Fetch first free chapter over live HTTPS
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 simulator/tests/jjwxc_live_fetch.py chapter \
+            --book-id "$JJWXC_BOOK_ID" \
+            --chapter-id "$JJWXC_CHAPTER_ID" \
+            --output "$RUNNER_TEMP/jjwxc-live/chapter.json" \
+            --summary "$RUNNER_TEMP/jjwxc-evidence/chapter-http.json" \
+            --timeout 45
+
+      - name: Stream first chapter through firmware ScalarStreamExtractor
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$RUNNER_TEMP/test_jjwxc_live_stream" \
+            "$RUNNER_TEMP/jjwxc-live/catalog.json" \
+            "$RUNNER_TEMP/jjwxc-live/catalog.tsv" \
+            "$RUNNER_TEMP/jjwxc-live/chapter.json" \
+            "$RUNNER_TEMP/jjwxc-live/chapter.txt" \
+            | tee "$RUNNER_TEMP/jjwxc-evidence/full-verify.txt"
+
+      - name: Build compact Issue 19 evidence
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          evidence = root/'jjwxc-evidence'
+          def load_json(name):
+              p = evidence/name
+              return json.loads(p.read_text()) if p.is_file() else None
+          def load_kv(name):
+              p = evidence/name
+              out = {}
+              if p.is_file():
+                  for line in p.read_text(errors='replace').splitlines():
+                      if '=' in line:
+                          k,v = line.split('=',1)
+                          if re.fullmatch(r'[a-z_]+', k): out[k] = v
+              return out
+          out = {
+              'tested_sha': os.environ.get('GITHUB_SHA',''),
+              'catalog_http': load_json('catalog-http.json'),
+              'chapter_http': load_json('chapter-http.json'),
+              'stream_verify': load_kv('full-verify.txt') or load_kv('catalog-verify.txt'),
+              'raw_bodies_retained': False,
+          }
+          (evidence/'issue19-evidence.json').write_text(json.dumps(out, ensure_ascii=False, indent=2)+'\n')
+          print(json.dumps(out, ensure_ascii=False, indent=2))
+          PY
+          rm -f "$RUNNER_TEMP/jjwxc-live/catalog.json" \
+                "$RUNNER_TEMP/jjwxc-live/catalog.tsv" \
+                "$RUNNER_TEMP/jjwxc-live/chapter.json" \
+                "$RUNNER_TEMP/jjwxc-live/chapter.txt"
+
+      - name: Upload metadata-only live evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jjwxc-live-evidence
+          path: ${{ runner.temp }}/jjwxc-evidence/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  production-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PlatformIO
+        run: python -m pip install --disable-pip-version-check platformio==6.1.18
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+      - name: Compile Murphy M4 production profile
+        working-directory: firmware
+        run: pio run -e murphy_m4
