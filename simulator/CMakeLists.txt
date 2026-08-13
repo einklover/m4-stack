@@ -68,6 +68,18 @@ if(M4SIM_REAL_CJK_FONT)
   # Debian/Ubuntu packages. Keep the fixture outside the repository.
   add_test(NAME m4_cff_real_cjk_tests COMMAND m4_cff_real_cjk_tests "${M4SIM_REAL_CJK_FONT}" 2)
 endif()
+# Generic production-parser probe for real Chinese fonts downloaded by CI.
+# It detects CFF1 vs glyf/loca at runtime, supports TTC/OTC face offsets, and
+# rasterizes a shared Simplified-Chinese sample at multiple pixel sizes.
+add_executable(m4_web_chinese_font_tests
+  tests/chinese_font_web_matrix.cpp
+  ../firmware/lib/TtfReader/src/TtfReader.cpp
+  ../firmware/lib/TtfReader/src/TtfReaderFace.cpp
+  ../firmware/lib/TtfReader/src/CffReader.cpp
+  ../firmware/lib/TtfReader/src/CffType2.cpp
+  ../firmware/lib/TtfReader/src/CffRaster.cpp
+)
+target_include_directories(m4_web_chinese_font_tests PRIVATE ../firmware/lib/TtfReader/src)
 add_executable(m4_board_contract tools/board_contract.cpp)
 target_link_libraries(m4_board_contract PRIVATE m4_board_model)
 add_executable(m4_issue_contracts tests/issue_contracts.cpp)
