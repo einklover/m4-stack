@@ -5,12 +5,12 @@ This intentionally does not use the m4adb ``wifi_transfer`` shortcut because
 that debug operation may auto-start a saved/QEMU STA connection and bypass the
 real NetworkModeSelectionActivity. Each journey boots a fresh SD image, enters
 File transfer from Home with physical key events, selects one production mode,
-then proves the parent activity survives the child callback transition.
+then proves the parent and expected child activity remain stable.
 
-Firmware lifecycle logs live on the QEMU serial PTY, not QEMU stderr. Keep one
-m4adb Client open for each complete journey so status/key traffic also drains
-and records the real firmware serial stream. This makes child-activity markers
-observable without OCR or a debug-only navigation shortcut.
+The top-level status reports CrossPointWebServer while its nested activity is
+active. Use the existing structured ``ui`` dump to observe that child instead
+of relying on ordinary Serial lifecycle text, which is not part of the m4adb
+control-plane log in every QEMU/CI configuration.
 """
 from __future__ import annotations
 
@@ -36,9 +36,9 @@ from m4adb_observing_client import ObservingClient as Client  # noqa: E402
 
 EXPECTED_PARENT = "CrossPointWebServer"
 MODES = (
-    ("1-phone-to-device", 0, "after web server start"),
-    ("2-device-to-phone", 1, "after web server start"),
-    ("3-calibre-wifi", 2, "Entering activity: CalibreConnect"),
+    ("1-phone-to-device", 0, ""),
+    ("2-device-to-phone", 1, ""),
+    ("3-calibre-wifi", 2, "CalibreConnect"),
 )
 T = TypeVar("T")
 
@@ -85,6 +85,24 @@ def _status(client: Client) -> dict[str, Any]:
     return result
 
 
+def _ui(client: Client) -> dict[str, Any]:
+    result = _call_busy_retry(client.ui, retries=4)
+    if not isinstance(result, dict):
+        raise m4sim.M4SimError(f"unexpected ui response: {result!r}")
+    return result
+
+
+def _subactivity(ui: dict[str, Any]) -> str:
+    outer = ui.get("ui")
+    if not isinstance(outer, dict):
+        return ""
+    body = outer.get("body")
+    if not isinstance(body, dict):
+        return ""
+    value = body.get("subactivity")
+    return value if isinstance(value, str) else ""
+
+
 def _send_key(client: Client, name: str) -> None:
     blob = _call_busy_retry(lambda: client.key(name), retries=24)
     if not isinstance(blob, dict) or blob.get("op") != "key":
@@ -129,41 +147,32 @@ def _wait_activity(client: Client, proc: Any, qlog: Path, expected: str,
     )
 
 
-def _wait_serial_marker(client: Client, proc: Any, qlog: Path, marker: str,
-                        *, seconds: float) -> None:
-    """Observe a firmware lifecycle marker on the persistent serial stream.
-
-    A status request doubles as a bounded serial pump: Client.request() parses
-    and records any ordinary firmware log lines that arrive before/between the
-    protocol frames. Repeating it avoids a second reader racing the same PTY.
-    """
+def _wait_subactivity(client: Client, proc: Any, qlog: Path, expected: str,
+                      *, seconds: float) -> dict[str, Any]:
+    """Wait for the real nested Network Manager child via structured UI state."""
     deadline = time.monotonic() + seconds
+    last: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        if marker in _serial_text(client):
-            return
         if proc.poll() is not None:
-            break
+            raise m4sim.M4SimError(
+                f"QEMU exited while waiting for subactivity={expected!r} rc={proc.returncode}\n{_qemu_tail(qlog)}"
+            )
         try:
-            _status(client)
+            last = _ui(client)
         except m4sim.M4SimError:
-            # A display refresh may temporarily delay the bridge. Keep the
-            # lifecycle deadline authoritative, but never hide a QEMU crash.
-            if proc.poll() is not None:
-                break
-        if marker in _serial_text(client):
-            return
-        time.sleep(0.12)
-    serial_tail = "\n".join(client.serial_log[-120:])
+            time.sleep(0.15)
+            continue
+        if last.get("activity") == EXPECTED_PARENT and _subactivity(last) == expected:
+            return last
+        time.sleep(0.15)
     raise m4sim.M4SimError(
-        f"firmware serial marker not observed: {marker}\n"
-        f"--- firmware serial tail ---\n{serial_tail}\n"
-        f"--- qemu stderr tail ---\n{_qemu_tail(qlog, 2000)}"
+        f"subactivity never became {expected!r}; last={json.dumps(last, ensure_ascii=False)}"
     )
 
 
-def _assert_parent_stable(client: Client, proc: Any, qlog: Path,
-                          *, seconds: float) -> list[dict[str, Any]]:
-    """Continuously prove the old callback-stack bounce does not recur."""
+def _assert_mode_stable(client: Client, proc: Any, qlog: Path, expected_subactivity: str,
+                        *, seconds: float) -> list[dict[str, Any]]:
+    """Continuously prove the old mode-1/mode-3 callback bounce does not recur."""
     deadline = time.monotonic() + seconds
     samples: list[dict[str, Any]] = []
     while time.monotonic() < deadline:
@@ -172,12 +181,17 @@ def _assert_parent_stable(client: Client, proc: Any, qlog: Path,
                 f"QEMU exited during stability window rc={proc.returncode}\n{_qemu_tail(qlog)}"
             )
         st = _status(client)
-        samples.append(st)
-        activity = st.get("activity")
-        if activity != EXPECTED_PARENT:
+        ui = _ui(client)
+        sample = {
+            "activity": st.get("activity"),
+            "subactivity": _subactivity(ui),
+        }
+        samples.append(sample)
+        if sample["activity"] != EXPECTED_PARENT or sample["subactivity"] != expected_subactivity:
             raise m4sim.M4SimError(
-                "Network Manager bounced out of its parent after child callback: "
-                f"activity={activity!r}, expected={EXPECTED_PARENT!r}"
+                "Network Manager mode bounced after child callback: "
+                f"activity={sample['activity']!r}, subactivity={sample['subactivity']!r}, "
+                f"expected=({EXPECTED_PARENT!r}, {expected_subactivity!r})"
             )
         time.sleep(0.18)
     return samples
@@ -190,14 +204,13 @@ def _enter_real_mode_selection(client: Client, proc: Any, qlog: Path) -> None:
     _send_key(client, "down")
     _send_key(client, "down")
     _send_key(client, "confirm")
-    # The control-plane activity snapshot can lag while the picker is already
-    # visibly active. The firmware lifecycle marker is the authoritative proof
-    # that the real production child activity consumed the navigation event.
-    _wait_serial_marker(client, proc, qlog, "Entering activity: NetworkModeSelection", seconds=20.0)
+    # The picker is a nested child; top-level status intentionally remains the
+    # CrossPointWebServer parent. Structured UI state is the truthful signal.
+    _wait_subactivity(client, proc, qlog, "NetworkModeSelection", seconds=20.0)
 
 
 def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
-              label: str, down_count: int, expected_marker: str) -> dict[str, Any]:
+              label: str, down_count: int, expected_subactivity: str) -> dict[str, Any]:
     mode_root = base / label
     if mode_root.exists():
         shutil.rmtree(mode_root, ignore_errors=True)
@@ -223,13 +236,13 @@ def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
             _send_key(client, "down")
         _send_key(client, "confirm")
 
-        # Status alone still names the parent while the mode picker is open,
-        # so prove the real child consumed Confirm through firmware serial.
-        _wait_serial_marker(client, proc, qlog, "Exiting activity: NetworkModeSelection", seconds=20.0)
-        _wait_serial_marker(client, proc, qlog, expected_marker, seconds=30.0)
+        # Prove the picker consumed Confirm and reached the expected production
+        # child state. Modes 1/2 release the picker; mode 3 replaces it with
+        # CalibreConnect. This also detects the historical immediate bounce.
+        _wait_subactivity(client, proc, qlog, expected_subactivity, seconds=30.0)
 
         first = _wait_activity(client, proc, qlog, EXPECTED_PARENT, seconds=10.0)
-        samples = _assert_parent_stable(client, proc, qlog, seconds=3.0)
+        samples = _assert_mode_stable(client, proc, qlog, expected_subactivity, seconds=3.0)
         final_ping = _call_busy_retry(client.ping, retries=4)
         if not isinstance(final_ping, dict) or "protocol" not in final_ping or "firmware" not in final_ping:
             raise m4sim.M4SimError(f"post-transition ping incomplete: {final_ping}")
@@ -238,6 +251,7 @@ def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
             "mode": label,
             "ok": True,
             "activity": first.get("activity"),
+            "subactivity": expected_subactivity,
             "wifi_connected": first.get("wifi_connected"),
             "wifi_ip": first.get("wifi_ip"),
             "stability_samples": len(samples),
@@ -248,7 +262,10 @@ def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
         (mode_root / "result.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
-        print(f"NETWORK MODE PASS: {label} samples={len(samples)}", flush=True)
+        print(
+            f"NETWORK MODE PASS: {label} child={expected_subactivity or '<none>'} samples={len(samples)}",
+            flush=True,
+        )
         return result
     except BridgeError as exc:
         raise m4sim.M4SimError(f"m4adb {exc.key}: {exc.message}") from exc
@@ -295,8 +312,10 @@ def main(argv: list[str] | None = None) -> int:
         flash = m4sim.resolve_flash(ns)
 
         results = []
-        for label, down_count, marker in MODES:
-            results.append(_run_mode(base, qemu, flash, args.ready_seconds, label, down_count, marker))
+        for label, down_count, expected_subactivity in MODES:
+            results.append(
+                _run_mode(base, qemu, flash, args.ready_seconds, label, down_count, expected_subactivity)
+            )
 
         summary = {"ok": True, "modes": results}
         (base / "network-manager-summary.json").write_text(
