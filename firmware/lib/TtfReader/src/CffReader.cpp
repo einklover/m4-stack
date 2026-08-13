@@ -27,6 +27,14 @@ void* reallocPsramFirst(void* p, size_t n) {
   return std::realloc(p, n);
 #endif
 }
+void freeMem(void* p) {
+  if (!p) return;
+#if defined(ARDUINO_ARCH_ESP32)
+  heap_caps_free(p);
+#else
+  std::free(p);
+#endif
+}
 bool decodeDictNumber(const uint8_t* data, size_t len, size_t& pos, int32_t& out) {
   if (pos >= len) return false;
   const uint8_t b0 = data[pos++];
@@ -290,22 +298,50 @@ bool CffFont::parseFontDict(Slice dict, FdInfo& out) {
 }
 
 bool CffFont::initFdSelect() {
+  fdSelectFormat_ = 0xff;
   fdSelectLen_ = 0;
   if (!fdCount_ || fdSelectRel_ >= cff_.len) return false;
   uint8_t hdr[3] = {};
   if (!readAt(cff_.off + fdSelectRel_, hdr, 1)) return false;
-  uint32_t len = 0;
+
   if (hdr[0] == 0) {
-    len = 1u + glyphCount_;
-  } else if (hdr[0] == 3) {
-    if (cff_.len - fdSelectRel_ < 3 || !readAt(cff_.off + fdSelectRel_, hdr, 3)) return false;
-    const uint16_t ranges = rd16be(hdr + 1);
-    if (!ranges) return false;
-    len = 3u + uint32_t(ranges) * 3u + 2u;
-  } else {
+    const uint32_t len = 1u + glyphCount_;
+    if (len > cff_.len - fdSelectRel_) return false;
+
+    // Format 0 is one FD byte per glyph and can therefore cost ~64KB for CJK.
+    // Validate it with a tiny fixed stack buffer, then leave the table on SD;
+    // selectGlyphFd() reads only the requested byte. This keeps resident memory
+    // independent of glyph count for the uncompressed representation.
+    uint8_t block[64];
+    uint32_t gid = 0;
+    while (gid < glyphCount_) {
+      const uint32_t take = std::min<uint32_t>(sizeof(block), uint32_t(glyphCount_) - gid);
+      if (!readAt(cff_.off + fdSelectRel_ + 1u + gid, block, take)) return false;
+      for (uint32_t i = 0; i < take; ++i) {
+        if (block[i] >= fdCount_) return false;
+      }
+      gid += take;
+    }
+
+    // Re-init can move a CffFont from a format-3 face to format 0. Release the
+    // previous compressed range buffer instead of retaining stale high-water
+    // PSRAM that the active font no longer needs.
+    freeMem(fdSelectData_);
+    fdSelectData_ = nullptr;
+    fdSelectCapacity_ = 0;
+    fdSelectFormat_ = 0;
+    fdSelectLen_ = len;
+    return true;
+  }
+
+  if (hdr[0] != 3) {
     lastError_ = "unsupported CFF FDSelect format";
     return false;
   }
+  if (cff_.len - fdSelectRel_ < 3 || !readAt(cff_.off + fdSelectRel_, hdr, 3)) return false;
+  const uint16_t ranges = rd16be(hdr + 1);
+  if (!ranges) return false;
+  const uint32_t len = 3u + uint32_t(ranges) * 3u + 2u;
   if (len > cff_.len - fdSelectRel_) return false;
   if (len > fdSelectCapacity_) {
     auto* p = static_cast<uint8_t*>(reallocPsramFirst(fdSelectData_, len));
@@ -314,24 +350,18 @@ bool CffFont::initFdSelect() {
     fdSelectCapacity_ = len;
   }
   if (!readAt(cff_.off + fdSelectRel_, fdSelectData_, len)) return false;
+  fdSelectFormat_ = 3;
   fdSelectLen_ = len;
-  if (fdSelectData_[0] == 0) {
-    for (uint32_t gid = 0; gid < glyphCount_; ++gid) {
-      if (fdSelectData_[1u + gid] >= fdCount_) return false;
-    }
-  } else {
-    const uint16_t ranges = rd16be(fdSelectData_ + 1);
-    const uint8_t* r = fdSelectData_ + 3;
-    uint16_t prev = 0;
-    for (uint16_t i = 0; i < ranges; ++i) {
-      const uint16_t first = rd16be(r + uint32_t(i) * 3u);
-      const uint8_t fd = r[uint32_t(i) * 3u + 2u];
-      if ((i == 0 && first != 0) || (i && first <= prev) || fd >= fdCount_) return false;
-      prev = first;
-    }
-    const uint16_t sentinel = rd16be(r + uint32_t(ranges) * 3u);
-    if (sentinel != glyphCount_ || sentinel <= prev) return false;
+  const uint8_t* r = fdSelectData_ + 3;
+  uint16_t prev = 0;
+  for (uint16_t i = 0; i < ranges; ++i) {
+    const uint16_t first = rd16be(r + uint32_t(i) * 3u);
+    const uint8_t fd = r[uint32_t(i) * 3u + 2u];
+    if ((i == 0 && first != 0) || (i && first <= prev) || fd >= fdCount_) return false;
+    prev = first;
   }
+  const uint16_t sentinel = rd16be(r + uint32_t(ranges) * 3u);
+  if (sentinel != glyphCount_ || sentinel <= prev) return false;
   return true;
 }
 
@@ -364,11 +394,16 @@ bool CffFont::initCidData() {
 bool CffFont::selectGlyphFd(uint16_t gid, uint16_t& fd) const {
   fd = 0;
   if (!cidKeyed_) return true;
-  if (!fdSelectData_ || !fdSelectLen_ || gid >= glyphCount_) return false;
-  if (fdSelectData_[0] == 0) {
-    fd = fdSelectData_[1u + gid];
+  if (gid >= glyphCount_) return false;
+
+  if (fdSelectFormat_ == 0) {
+    uint8_t selector = 0;
+    if (!readAt(cff_.off + fdSelectRel_ + 1u + gid, &selector, 1)) return false;
+    fd = selector;
     return fd < fdCount_;
   }
+
+  if (fdSelectFormat_ != 3 || !fdSelectData_ || fdSelectLen_ < 5) return false;
   const uint16_t ranges = rd16be(fdSelectData_ + 1);
   const uint8_t* r = fdSelectData_ + 3;
   uint16_t lo = 0, hi = ranges;
@@ -577,6 +612,7 @@ bool CffFont::init(TtfStream& stream, uint32_t face) {
   cidKeyed_ = false;
   fdArrayRel_ = fdSelectRel_ = 0;
   fdCount_ = 0;
+  fdSelectFormat_ = 0xff;
   fdSelectLen_ = 0;
   if (face > fileSize_ || fileSize_ - face < 12) return false;
   uint8_t h[12];
