@@ -21,6 +21,12 @@ void addIndex(std::vector<uint8_t>& c,const std::vector<std::vector<uint8_t>>& o
   for(const auto& o:objects){off=uint16_t(off+o.size());be16(c,off);}
   for(const auto& o:objects)c.insert(c.end(),o.begin(),o.end());
 }
+void addIndex2(std::vector<uint8_t>& c,const std::vector<std::vector<uint8_t>>& objects){
+  be32(c,uint32_t(objects.size())); if(objects.empty())return;
+  c.push_back(2); uint16_t off=1; be16(c,off);
+  for(const auto& o:objects){off=uint16_t(off+o.size());be16(c,off);}
+  for(const auto& o:objects)c.insert(c.end(),o.begin(),o.end());
+}
 std::vector<uint8_t> squareSubr(int width){
   return {t2(width),t2(0),t2(0),t2(100),t2(-width),t2(0),t2(0),t2(-100),5,11};
 }
@@ -89,14 +95,73 @@ std::vector<uint8_t> makeCidCff(bool format3){
   return c;
 }
 
+std::vector<uint8_t> makeVariationStoreOneRegion(){
+  // CFF2 VariationStore = uint16 length + ItemVariationStore. The single
+  // ItemVariationData has no delta sets (CFF2 deltas live in CharStrings) and
+  // one region index, exactly what blend needs to derive k=1.
+  std::vector<uint8_t> body;
+  be16(body,1);       // ItemVariationStore format
+  be32(body,20);      // variationRegionListOffset
+  be16(body,1);       // itemVariationDataCount
+  be32(body,12);      // offset[0]
+  be16(body,0);       // itemCount
+  be16(body,0);       // wordDeltaCount
+  be16(body,1);       // regionIndexCount
+  be16(body,0);       // regionIndexes[0]
+  be16(body,1);       // axisCount
+  be16(body,1);       // regionCount
+  be16(body,0);       // startCoord 0
+  be16(body,0x4000);  // peakCoord 1
+  be16(body,0x4000);  // endCoord 1
+  std::vector<uint8_t> out;be16(out,uint16_t(body.size()));out.insert(out.end(),body.begin(),body.end());return out;
+}
+
+std::vector<uint8_t> makeCff2(){
+  // TopDICT offsets use fixed-width DICT integers so they can be patched after
+  // the streamed structures have been laid out.
+  std::vector<uint8_t> top;
+  const size_t csPatch=top.size();dictInt(top,0);top.push_back(17);
+  const size_t fdPatch=top.size();dictInt(top,0);top.push_back(12);top.push_back(36);
+  const size_t varPatch=top.size();dictInt(top,0);top.push_back(24);
+
+  std::vector<uint8_t> c={2,0,5,0,0};put16(c,3,uint16_t(top.size()));
+  const size_t topAbs=c.size();c.insert(c.end(),top.begin(),top.end());
+  addIndex2(c,{});  // GlobalSubrINDEX
+
+  // GID 0 is a harmless move-only .notdef. GID 1 executes an actual CFF2
+  // blend: defaults (0,0), deltas (20,30), n=2 -> default instance keeps 0,0.
+  const std::vector<uint8_t> gid0={t2(0),t2(0),21};
+  const std::vector<uint8_t> gid1={
+      t2(0),t2(0),t2(20),t2(30),t2(2),16,21,
+      t2(100),t2(0),t2(0),t2(100),t2(-100),t2(0),t2(0),t2(-100),5};
+  const uint32_t csRel=uint32_t(c.size());addIndex2(c,{gid0,gid1});
+
+  std::vector<uint8_t> fd;
+  dictInt(fd,2);const size_t privatePatch=fd.size();dictInt(fd,0);fd.push_back(18);
+  const uint32_t fdRel=uint32_t(c.size());addIndex2(c,{fd});
+  const size_t fdData=size_t(fdRel)+9;
+
+  const uint32_t privateRel=uint32_t(c.size());
+  c.push_back(t2(0));c.push_back(22);  // default vsindex = 0
+
+  const uint32_t varRel=uint32_t(c.size());
+  const auto store=makeVariationStoreOneRegion();c.insert(c.end(),store.begin(),store.end());
+
+  put32(c,topAbs+csPatch+1,csRel);
+  put32(c,topAbs+fdPatch+1,fdRel);
+  put32(c,topAbs+varPatch+1,varRel);
+  put32(c,fdData+privatePatch+1,privateRel);
+  return c;
+}
+
 void addTable(std::vector<uint8_t>& f,size_t rec,const char* tag,const std::vector<uint8_t>& data){
   while(f.size()&3u)f.push_back(0);const uint32_t off=uint32_t(f.size());
   std::memcpy(f.data()+rec,tag,4);put32(f,rec+8,off);put32(f,rec+12,uint32_t(data.size()));
   f.insert(f.end(),data.begin(),data.end());
 }
-std::vector<uint8_t> makeOtf(const std::vector<uint8_t>& cff,uint16_t glyphs,const std::vector<std::pair<uint32_t,uint16_t>>& cmapEntries){
+std::vector<uint8_t> makeOtf(const std::vector<uint8_t>& cff,uint16_t glyphs,const std::vector<std::pair<uint32_t,uint16_t>>& cmapEntries,const char* outlineTag="CFF "){
   constexpr int tables=6;std::vector<uint8_t> f(12+tables*16,0);put32(f,0,0x4f54544f);put16(f,4,tables);size_t r=12;
-  addTable(f,r,"CFF ",cff);r+=16;
+  addTable(f,r,outlineTag,cff);r+=16;
   std::vector<uint8_t> head(54);put16(head,18,1000);put16(head,42,800);addTable(f,r,"head",head);r+=16;
   std::vector<uint8_t> maxp(6);put32(maxp,0,0x00005000);put16(maxp,4,glyphs);addTable(f,r,"maxp",maxp);r+=16;
   std::vector<uint8_t> hhea(36);put16(hhea,4,800);put16(hhea,6,uint16_t(-200));put16(hhea,8,100);put16(hhea,34,glyphs);addTable(f,r,"hhea",hhea);r+=16;
@@ -134,14 +199,14 @@ class VectorStream final:public ttf::TtfStream{
 
 bool hasInk(const ttf::GlyphBitmap& gb){for(uint16_t i=0;i<gb.packedLen;++i)if(gb.data[i])return true;return false;}
 void testPlain(){
-  VectorStream s(makeOtf(makePlainCff(),2,{{0x41,1}}));ttf::CffFont f;assert(f.init(s));assert(!f.isCidKeyed());
+  VectorStream s(makeOtf(makePlainCff(),2,{{0x41,1}}));ttf::CffFont f;assert(f.init(s));assert(!f.isCff2());assert(!f.isCidKeyed());
   uint16_t gid=0;assert(f.findGlyph('A',gid)&&gid==1);ttf::GlyphBitmap gb;assert(f.rasterize(gid,100,gb));
   assert(gb.width==10&&gb.height==10&&gb.advance==60&&gb.packedLen==25&&hasInk(gb));
 }
 void testCid(bool format3){
   VectorStream s(makeOtf(makeCidCff(format3),3,{{0x41,1},{0x42,2}}));ttf::CffFont f;
   if(!f.init(s)){std::cerr<<"CID init failed: "<<f.lastError()<<'\n';std::abort();}
-  assert(f.isCidKeyed()&&f.fdCount()==2);
+  assert(!f.isCff2()&&f.isCidKeyed()&&f.fdCount()==2);
   if(format3)assert(f.fdSelectResidentBytes()==11);else assert(f.fdSelectResidentBytes()==0);
   uint16_t a=0,b=0;assert(f.findGlyph('A',a)&&a==1);assert(f.findGlyph('B',b)&&b==2);
   ttf::GlyphBitmap ga,gb;assert(f.rasterize(a,100,ga));const int aw=ga.width,ah=ga.height,aa=ga.advance;const bool ai=hasInk(ga);
@@ -167,10 +232,21 @@ void testCollectionFaceOffset(){
   ttf::GlyphBitmap gb;assert(f.rasterize(gid,100,gb));
   assert(gb.width==5&&gb.height==10&&gb.advance==60&&hasInk(gb));
 }
+void testCff2DefaultBlend(){
+  VectorStream s(makeOtf(makeCff2(),2,{{0x41,1}},"CFF2"));ttf::CffFont f;
+  if(!f.init(s)){std::cerr<<"CFF2 init failed: "<<f.lastError()<<'\n';std::abort();}
+  assert(f.isCff2()&&f.isCidKeyed()&&f.fdCount()==1&&f.fdSelectResidentBytes()==0);
+  uint16_t gid=0;assert(f.findGlyph('A',gid)&&gid==1);
+  ttf::GlyphBitmap gb;if(!f.rasterize(gid,100,gb)){std::cerr<<"CFF2 raster failed: "<<f.lastError()<<'\n';std::abort();}
+  assert(gb.width==10&&gb.height==10&&gb.advance==60&&gb.packedLen==25&&hasInk(gb));
+  f.clearScratch();
+  // Lazy CFF2 operand/raster scratch must be recreatable after a cache clear.
+  assert(f.rasterize(gid,100,gb)&&gb.width==10&&hasInk(gb));
+}
 } // namespace
 
 int main(){
-  testPlain();testCid(false);testCid(true);testFdSelectReinitReleasesRanges();testCollectionFaceOffset();
-  std::cout<<"CFF1 CID streamed FDSelect0 + resident FDSelect3 + per-FD Subrs + arithmetic/transient VM + OTC face-offset + 2-bit raster OK\n";
+  testPlain();testCid(false);testCid(true);testFdSelectReinitReleasesRanges();testCollectionFaceOffset();testCff2DefaultBlend();
+  std::cout<<"CFF1/CFF2 streamed INDEX + CID/FontDICT + default blend + low-resident FDSelect + 2-bit raster OK\n";
   return 0;
 }
