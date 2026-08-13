@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  M4_REAL_CJK_FONT: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+
 jobs:
   host-font:
     runs-on: ubuntu-24.04
@@ -22,14 +25,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install real CID-CFF CJK fixture
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          test -f "$M4_REAL_CJK_FONT"
+
       - name: Configure simulator host tests
-        run: cmake -S simulator -B "$RUNNER_TEMP/m4-sim" -DCMAKE_BUILD_TYPE=Debug -DM4SIM_BUILD_NATIVE_SMOKE=OFF
+        run: cmake -S simulator -B "$RUNNER_TEMP/m4-sim" -DCMAKE_BUILD_TYPE=Debug -DM4SIM_BUILD_NATIVE_SMOKE=OFF -DM4SIM_REAL_CJK_FONT="$M4_REAL_CJK_FONT"
 
       - name: Build production runtime font regressions
-        run: cmake --build "$RUNNER_TEMP/m4-sim" --target m4_ttf_reader_compound_tests m4_cff_reader_tests -j 2
+        run: cmake --build "$RUNNER_TEMP/m4-sim" --target m4_ttf_reader_compound_tests m4_cff_reader_tests m4_cff_real_cjk_tests -j 2
 
       - name: Run runtime font regressions
-        run: ctest --test-dir "$RUNNER_TEMP/m4-sim" --output-on-failure -R '^m4_(ttf|cff)_reader_'
+        run: ctest --test-dir "$RUNNER_TEMP/m4-sim" --output-on-failure -R '^m4_(ttf|cff)_reader_|^m4_cff_real_cjk_tests$'
 
   host-font-sanitized:
     runs-on: ubuntu-24.04
@@ -37,10 +46,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install real CID-CFF CJK fixture
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          test -f "$M4_REAL_CJK_FONT"
+
       - name: Configure ASan and UBSan
-        run: cmake -S simulator -B "$RUNNER_TEMP/m4-sim-san" -DCMAKE_BUILD_TYPE=Debug -DM4SIM_BUILD_NATIVE_SMOKE=OFF -DM4SIM_SANITIZE=ON
+        run: cmake -S simulator -B "$RUNNER_TEMP/m4-sim-san" -DCMAKE_BUILD_TYPE=Debug -DM4SIM_BUILD_NATIVE_SMOKE=OFF -DM4SIM_SANITIZE=ON -DM4SIM_REAL_CJK_FONT="$M4_REAL_CJK_FONT"
 
       - name: Build and run sanitized font regressions
         run: |
-          cmake --build "$RUNNER_TEMP/m4-sim-san" --target m4_ttf_reader_compound_tests m4_cff_reader_tests -j 2
-          ctest --test-dir "$RUNNER_TEMP/m4-sim-san" --output-on-failure -R '^m4_(ttf|cff)_reader_'
+          cmake --build "$RUNNER_TEMP/m4-sim-san" --target m4_ttf_reader_compound_tests m4_cff_reader_tests m4_cff_real_cjk_tests -j 2
+          ctest --test-dir "$RUNNER_TEMP/m4-sim-san" --output-on-failure -R '^m4_(ttf|cff)_reader_|^m4_cff_real_cjk_tests$'
