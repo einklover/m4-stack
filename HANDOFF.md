@@ -40,6 +40,33 @@ Always inspect the current HEAD before editing because this handoff intentionall
 
 **Decision:** m4sim is now frozen/stable enough for firmware development. Do not add simulator features unless a future production firmware change demonstrates a simulator correctness gap.
 
+### Fast CI loop
+
+Daily firmware feedback now has a separate workflow:
+
+```text
+.github/workflows/m4-fast.yml
+```
+
+It is deliberately separate from the conservative full gate `.github/workflows/m4sim-smoke.yml`.
+
+The fast loop:
+
+- caches patched QEMU independently from firmware source
+- caches `~/.platformio` plus `PLATFORMIO_BUILD_CACHE_DIR`
+- builds `murphy_m4_qemu_plugin` once
+- runs smoke with `--skip-build`
+- runs Network Manager E2E with `--skip-build`
+
+First seed run on 2026-08-13: PASS. Timings from that cold-cache run:
+
+- QEMU build: 3m35s
+- plugin-debug firmware build: 6m12s
+- smoke after explicit build: 13s
+- Network Manager E2E: 42s
+
+Both cache post-save steps completed successfully. A subsequent run that starts after this seed is the cache-hit performance check. New agents should use the fast-loop result for ordinary iteration and reserve the full gate for checkpoints.
+
 ### Runtime fonts
 
 The runtime font path has already been expanded and host/CI-validated for modern Chinese font packaging, including:
