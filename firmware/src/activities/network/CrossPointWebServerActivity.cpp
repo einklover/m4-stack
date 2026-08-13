@@ -55,7 +55,10 @@ void CrossPointWebServerActivity::onEnter() {
   pendingParentAction = PendingParentAction::None;
   updateRequired = true;
 
-  xTaskCreate(&CrossPointWebServerActivity::taskTrampoline, "WebServerActivityTask", 2048, this, 1,
+  // Server-running rendering builds QR codes with a 512-byte scratch buffer in
+  // addition to the text/rendering call stack. Match the other network display
+  // tasks: 2KB is not enough for this path and trips the FreeRTOS stack canary.
+  xTaskCreate(&CrossPointWebServerActivity::taskTrampoline, "WebServerActivityTask", 4096, this, 1,
               &displayTaskHandle);
 
   if (autoStartSavedSta && M4QemuNet::staConnected()) {
