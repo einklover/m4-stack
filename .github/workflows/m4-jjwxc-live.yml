@@ -70,9 +70,9 @@ jobs:
             "$RUNNER_TEMP/jjwxc-live/catalog.json" \
             "$RUNNER_TEMP/jjwxc-live/catalog.tsv" \
             | tee "$RUNNER_TEMP/jjwxc-evidence/catalog-verify.txt"
-          UID=$(sed -n 's/^first_free_uid=//p' "$RUNNER_TEMP/jjwxc-evidence/catalog-verify.txt" | head -1)
-          test -n "$UID"
-          echo "JJWXC_CHAPTER_ID=$UID" >> "$GITHUB_ENV"
+          CHAPTER_UID=$(sed -n 's/^first_free_uid=//p' "$RUNNER_TEMP/jjwxc-evidence/catalog-verify.txt" | head -1)
+          test -n "$CHAPTER_UID"
+          echo "JJWXC_CHAPTER_ID=$CHAPTER_UID" >> "$GITHUB_ENV"
 
       - name: Fetch first free chapter over live HTTPS
         shell: bash
@@ -98,6 +98,8 @@ jobs:
 
       - name: Build compact Issue 19 evidence
         if: always()
+        env:
+          ISSUE19_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -117,7 +119,7 @@ jobs:
                           if re.fullmatch(r'[a-z_]+', k): out[k] = v
               return out
           out = {
-              'tested_sha': os.environ.get('GITHUB_SHA',''),
+              'tested_sha': os.environ.get('ISSUE19_HEAD_SHA',''),
               'catalog_http': load_json('catalog-http.json'),
               'chapter_http': load_json('chapter-http.json'),
               'stream_verify': load_kv('full-verify.txt') or load_kv('catalog-verify.txt'),
