@@ -32,6 +32,7 @@ CffFont::~CffFont(){
 }
 void CffFont::clearScratch(){
   freeMem(type2Scratch_); type2Scratch_=nullptr; type2ScratchCap_=0;
+  freeMem(operandScratch_); operandScratch_=nullptr; operandScratchCap_=0;
   freeMem(edgeScratch_); edgeScratch_=nullptr; edgeScratchCap_=0;
   freeMem(covScratch_); covScratch_=nullptr; covScratchCap_=0;
   freeMem(packedScratch_); packedScratch_=nullptr; packedScratchCap_=0;
@@ -41,7 +42,7 @@ bool CffFont::glyphPixelBox(uint16_t gid,uint16_t sizePx,int&x0,int&y0,int&x1,in
   x0=y0=x1=y1=0;if(!prepareGlyphLocalSubrs(gid))return false;EdgeBuildState s;if(!collectEdges(gid,s))return false;if(!s.haveBounds)return true;const float k=float(sizePx)/float(unitsPerEm_);x0=int(std::floor(s.minX*k));y0=int(std::floor(-s.maxY*k));x1=int(std::ceil(s.maxX*k));y1=int(std::ceil(-s.minY*k));return true;
 }
 bool CffFont::rasterize(uint16_t gid,uint16_t sizePx,GlyphBitmap&out){
-  out={};if(!ready_||gid>=glyphCount_||!unitsPerEm_)return false;if(!prepareGlyphLocalSubrs(gid)){lastError_="failed to select CID CFF Font DICT";return false;}int32_t adv=0,lsb=0;if(!glyphHMetrics(gid,adv,lsb))return false;const float scale=float(sizePx)/float(unitsPerEm_);out.advance=int16_t(std::lround(adv*scale));
+  out={};if(!ready_||gid>=glyphCount_||!unitsPerEm_)return false;if(!prepareGlyphLocalSubrs(gid)){lastError_="failed to select CFF Font DICT";return false;}int32_t adv=0,lsb=0;if(!glyphHMetrics(gid,adv,lsb))return false;const float scale=float(sizePx)/float(unitsPerEm_);out.advance=int16_t(std::lround(adv*scale));
   EdgeBuildState state;if(!collectEdges(gid,state))return false;if(!state.haveBounds||!state.count)return true;
   const int x0=int(std::floor(state.minX*scale)),y0=int(std::floor(-state.maxY*scale)),x1=int(std::ceil(state.maxX*scale)),y1=int(std::ceil(-state.minY*scale));const int w=x1-x0,h=y1-y0;if(w<=0||h<=0)return true;if(w>255||h>255){lastError_="CFF glyph larger than 255px";return false;}
   const uint32_t pixels=uint32_t(w)*uint32_t(h);if(pixels>covScratchCap_){auto*p=(uint8_t*)reallocPsramFirst(covScratch_,pixels);if(!p){lastError_="CFF coverage scratch OOM";return false;}covScratch_=p;covScratchCap_=pixels;}std::memset(covScratch_,0,pixels);
