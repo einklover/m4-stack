@@ -1,6 +1,7 @@
 #include "CffReader.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #if defined(ARDUINO_ARCH_ESP32)
@@ -58,6 +59,9 @@ bool decodeDictNumber(const uint8_t* data, size_t len, size_t& pos, int32_t& out
     out = int32_t(rd32be(data + pos)); pos += 4; return true;
   }
   if (b0 == 30) {
+    // DICT real. We only need exact integer values for offsets/counts; real
+    // values are hint/FontMatrix operands. Preserve stack shape without
+    // materializing a decimal string.
     while (pos < len) {
       const uint8_t b = data[pos++];
       if ((b >> 4) == 15 || (b & 15) == 15) { out = 0; return true; }
@@ -100,7 +104,7 @@ bool CffFont::parseIndex(uint32_t rel, IndexInfo& out, uint32_t* next) const {
   if (dataRel > cff_.len) return false;
   uint32_t first = 0, last = 0;
   if (!readOffset(abs + 3, os, first) ||
-      !readOffset(abs + 3 + uint32_t(out.count) * os, os, last) || first != 1 || last < first) return false;
+      !readOffset(abs + 3 + out.count * os, os, last) || first != 1 || last < first) return false;
   const uint64_t end = dataRel + last - 1u;
   if (end > cff_.len || end > 0xffffffffu) return false;
   out.offSize = os;
@@ -111,11 +115,49 @@ bool CffFont::parseIndex(uint32_t rel, IndexInfo& out, uint32_t* next) const {
   return true;
 }
 
-bool CffFont::indexObject(const IndexInfo& idx, uint16_t item, Slice& o) const {
+bool CffFont::parseIndex2(uint32_t rel, IndexInfo& out, uint32_t* next) const {
+  out = {};
+  if (!cff_.valid() || rel > cff_.len || cff_.len - rel < 4) return false;
+  const uint32_t abs = cff_.off + rel;
+  uint8_t b[4];
+  if (!readAt(abs, b, 4)) return false;
+  out.count = rd32be(b);
+  out.whole.off = abs;
+  if (!out.count) {
+    out.whole.len = 4;
+    if (next) *next = rel + 4;
+    return true;
+  }
+  // A malformed 32-bit count must not turn into an unbounded offset walk.
+  // CharStrings are ultimately constrained by maxp.numGlyphs; subr/FD indexes
+  // above this safety ceiling are not practical on M4 and would be hostile to
+  // both execution time and metadata arithmetic.
+  if (out.count > 1024u * 1024u) return false;
+  uint8_t os = 0;
+  if (!readAt(abs + 4, &os, 1) || os < 1 || os > 4) return false;
+  const uint64_t offsetsBytes = uint64_t(out.count + 1u) * os;
+  const uint64_t dataRel = uint64_t(rel) + 5u + offsetsBytes;
+  if (dataRel > cff_.len) return false;
+  uint32_t first = 0, last = 0;
+  if (!readOffset(abs + 5, os, first) ||
+      !readOffset(abs + 5 + out.count * os, os, last) || first != 1 || last < first) return false;
+  const uint64_t end = dataRel + last - 1u;
+  if (end > cff_.len || end > 0xffffffffu) return false;
+  out.offSize = os;
+  out.offsetsOff = abs + 5;
+  out.dataOff = cff_.off + uint32_t(dataRel);
+  out.whole.len = uint32_t(end - rel);
+  if (next) *next = uint32_t(end);
+  return true;
+}
+
+bool CffFont::indexObject(const IndexInfo& idx, uint32_t item, Slice& o) const {
   o = {};
   if (item >= idx.count || !idx.count || !idx.offSize) return false;
   uint32_t a = 0, b = 0;
-  const uint32_t e = idx.offsetsOff + uint32_t(item) * idx.offSize;
+  const uint64_t entry = uint64_t(idx.offsetsOff) + uint64_t(item) * idx.offSize;
+  if (entry > 0xffffffffu) return false;
+  const uint32_t e = uint32_t(entry);
   if (!readOffset(e, idx.offSize, a) || !readOffset(e + idx.offSize, idx.offSize, b) || !a || b < a) return false;
   const uint64_t off = uint64_t(idx.dataOff) + a - 1u;
   const uint64_t len = uint64_t(b) - a;
@@ -128,8 +170,48 @@ bool CffFont::indexObject(const IndexInfo& idx, uint16_t item, Slice& o) const {
 bool CffFont::indexObject(Slice idx, uint16_t item, Slice& o) const {
   if (!idx.valid() || idx.off < cff_.off || idx.off - cff_.off >= cff_.len) return false;
   IndexInfo p;
-  if (!parseIndex(idx.off - cff_.off, p) || p.whole.len != idx.len) return false;
+  const bool ok = cff2_ ? parseIndex2(idx.off - cff_.off, p) : parseIndex(idx.off - cff_.off, p);
+  if (!ok || p.whole.len != idx.len) return false;
   return indexObject(p, item, o);
+}
+
+bool CffFont::ensureOperandScratch(uint32_t count) const {
+  if (count <= operandScratchCap_) return true;
+  if (!cff2_ || count > 513) return false;
+  auto* p = static_cast<float*>(reallocPsramFirst(operandScratch_, size_t(count) * sizeof(float)));
+  if (!p) { lastError_ = "CFF2 operand PSRAM scratch OOM"; return false; }
+  operandScratch_ = p;
+  operandScratchCap_ = count;
+  return true;
+}
+
+bool CffFont::variationRegionCount(uint16_t vsIndex, uint16_t& count) const {
+  count = 0;
+  if (!cff2_ || !variationStoreRel_ || variationStoreRel_ >= cff_.len) return false;
+  uint8_t lenBytes[2];
+  if (!readAt(cff_.off + variationStoreRel_, lenBytes, 2)) return false;
+  const uint16_t storeLen = rd16be(lenBytes);
+  if (storeLen < 8 || uint32_t(variationStoreRel_) + 2u + storeLen > cff_.len) return false;
+  const uint32_t base = cff_.off + variationStoreRel_ + 2u;
+  uint8_t hdr[8];
+  if (!readAt(base, hdr, sizeof(hdr)) || rd16be(hdr) != 1) return false;
+  const uint16_t dataCount = rd16be(hdr + 6);
+  if (vsIndex >= dataCount) return false;
+  const uint32_t offsetsEnd = 8u + uint32_t(dataCount) * 4u;
+  if (offsetsEnd > storeLen) return false;
+  uint8_t offBytes[4];
+  if (!readAt(base + 8u + uint32_t(vsIndex) * 4u, offBytes, 4)) return false;
+  const uint32_t itemOff = rd32be(offBytes);
+  if (itemOff > storeLen || storeLen - itemOff < 6) return false;
+  uint8_t item[6];
+  if (!readAt(base + itemOff, item, sizeof(item))) return false;
+  // CFF2 uses ItemVariationData only for regionIndexes; delta sets live in
+  // CharStrings/PrivateDICTs, so itemCount and wordDeltaCount must be zero.
+  if (rd16be(item) != 0 || rd16be(item + 2) != 0) return false;
+  const uint16_t k = rd16be(item + 4);
+  if (uint64_t(itemOff) + 6u + uint64_t(k) * 2u > storeLen) return false;
+  count = k;
+  return true;
 }
 
 bool CffFont::parseTopDict(Slice dict) {
@@ -163,25 +245,28 @@ bool CffFont::parseTopDict(Slice dict) {
       if (pos >= dict.len) return false;
       op = uint16_t(0x0c00 | bytes[pos++]);
     }
-    if (op == 17) {  // CharStrings
+    if (op == 17) {  // CharStringINDEXOffset / CFF1 CharStrings
       if (sp != 1 || stack[0] < 0) return false;
       charStringsRel = uint32_t(stack[0]);
       haveCharStrings = true;
-    } else if (op == 18) {  // Private
+    } else if (!cff2_ && op == 18) {  // CFF1 Private
       if (sp != 2 || stack[0] < 0 || stack[1] < 0) return false;
       privateSize = uint32_t(stack[0]);
       privateRel = uint32_t(stack[1]);
-    } else if (op == 0x0c1e) {  // ROS
+    } else if (!cff2_ && op == 0x0c1e) {  // CFF1 ROS
       if (sp != 3 || stack[0] < 0 || stack[1] < 0 || stack[2] < 0) return false;
       cidKeyed_ = true;
-    } else if (op == 0x0c24) {  // FDArray
+    } else if (op == 0x0c24) {  // FDArray / CFF2 FontDICTINDEXOffset
       if (sp != 1 || stack[0] < 0) return false;
       fdArrayRel_ = uint32_t(stack[0]);
       haveFdArray = true;
-    } else if (op == 0x0c25) {  // FDSelect
+    } else if (op == 0x0c25) {  // FDSelect / CFF2 FontDICTSelectOffset
       if (sp != 1 || stack[0] < 0) return false;
       fdSelectRel_ = uint32_t(stack[0]);
       haveFdSelect = true;
+    } else if (cff2_ && op == 24) {  // VariationStoreOffset
+      if (sp != 1 || stack[0] <= 0) return false;
+      variationStoreRel_ = uint32_t(stack[0]);
     }
     sp = 0;
   }
@@ -189,26 +274,44 @@ bool CffFont::parseTopDict(Slice dict) {
     lastError_ = "CFF Top DICT missing CharStrings";
     return false;
   }
-  if (privateSize) {
+  if (!cff2_ && privateSize) {
     if (privateRel > cff_.len || privateSize > cff_.len - privateRel) return false;
     privateDict_ = {cff_.off + privateRel, privateSize};
   }
-  if (cidKeyed_ && (!haveFdArray || !haveFdSelect || fdArrayRel_ >= cff_.len || fdSelectRel_ >= cff_.len)) {
+  if (cff2_) {
+    cidKeyed_ = true;  // CFF2 always uses FontDICTINDEX, even with one font dict.
+    if (!haveFdArray || fdArrayRel_ >= cff_.len) {
+      lastError_ = "CFF2 Top DICT missing FontDICTINDEX";
+      return false;
+    }
+  } else if (cidKeyed_ && (!haveFdArray || !haveFdSelect || fdArrayRel_ >= cff_.len || fdSelectRel_ >= cff_.len)) {
     lastError_ = "CID CFF missing FDArray or FDSelect";
     return false;
   }
-  if (!parseIndex(charStringsRel, charStringsInfo_) || !charStringsInfo_.count) {
-    lastError_ = "invalid CFF CharStrings INDEX";
+  const bool indexOk = cff2_ ? parseIndex2(charStringsRel, charStringsInfo_)
+                             : parseIndex(charStringsRel, charStringsInfo_);
+  if (!indexOk || !charStringsInfo_.count || charStringsInfo_.count > 65535u) {
+    lastError_ = cff2_ ? "invalid CFF2 CharStringINDEX" : "invalid CFF CharStrings INDEX";
     return false;
   }
   charStrings_ = charStringsInfo_.whole;
-  glyphCount_ = charStringsInfo_.count;
+  glyphCount_ = uint16_t(charStringsInfo_.count);
+  if (cff2_ && variationStoreRel_) {
+    uint16_t k = 0;
+    if (!variationRegionCount(0, k)) {
+      lastError_ = "invalid CFF2 VariationStore";
+      return false;
+    }
+  }
+  (void)haveFdSelect;
   return true;
 }
 
-bool CffFont::parsePrivateSubrs(Slice dict, IndexInfo& outInfo, Slice& outSlice) {
+bool CffFont::parsePrivateSubrs(Slice dict, IndexInfo& outInfo, Slice& outSlice,
+                                uint16_t* defaultVsIndex) {
   outInfo = {};
   outSlice = {};
+  if (defaultVsIndex) *defaultVsIndex = 0;
   if (!dict.valid()) return true;
   if (dict.len > 64u * 1024u) { lastError_ = "CFF Private DICT too large"; return false; }
   if (dict.len > type2ScratchCap_) {
@@ -219,15 +322,22 @@ bool CffFont::parsePrivateSubrs(Slice dict, IndexInfo& outInfo, Slice& outSlice)
   }
   if (!readAt(dict.off, type2Scratch_, dict.len)) return false;
   const uint8_t* bytes = type2Scratch_;
-  int32_t stack[48];
+  float localStack[48];
+  float* stack = localStack;
+  const uint32_t stackCap = cff2_ ? 513u : 48u;
+  if (cff2_) {
+    if (!ensureOperandScratch(stackCap)) return false;
+    stack = operandScratch_;
+  }
   size_t sp = 0, pos = 0;
   int32_t subrsRel = -1;
+  uint16_t vsIndex = 0;
   while (pos < dict.len) {
     const uint8_t x = bytes[pos];
     if (x >= 28) {
       int32_t v = 0;
-      if (!decodeDictNumber(bytes, dict.len, pos, v) || sp >= 48) return false;
-      stack[sp++] = v;
+      if (!decodeDictNumber(bytes, dict.len, pos, v) || sp >= stackCap) return false;
+      stack[sp++] = float(v);
       continue;
     }
     ++pos;
@@ -238,17 +348,45 @@ bool CffFont::parsePrivateSubrs(Slice dict, IndexInfo& outInfo, Slice& outSlice)
     }
     if (op == 19) {  // Subrs, relative to Private DICT start
       if (sp != 1 || stack[0] < 0) return false;
-      subrsRel = stack[0];
+      subrsRel = int32_t(std::lround(stack[0]));
+      sp = 0;
+      continue;
     }
+    if (cff2_ && op == 22) {  // PrivateDICT vsindex
+      if (sp != 1 || stack[0] < 0 || stack[0] > 65535.f) return false;
+      vsIndex = uint16_t(std::lround(stack[0]));
+      uint16_t k = 0;
+      if (!variationRegionCount(vsIndex, k)) return false;
+      sp = 0;
+      continue;
+    }
+    if (cff2_ && op == 23) {  // PrivateDICT blend, default instance
+      if (!sp) return false;
+      const int32_t n = int32_t(std::lround(stack[sp - 1]));
+      uint16_t k = 0;
+      if (n < 0 || !variationRegionCount(vsIndex, k)) return false;
+      const uint64_t involved = uint64_t(n) * (uint64_t(k) + 1u) + 1u;
+      if (involved > sp) return false;
+      const size_t base = sp - size_t(involved);
+      // At normalized default coordinates all variation deltas contribute zero;
+      // retain only the n default operands and drop n*k deltas plus n.
+      sp = base + size_t(n);
+      continue;
+    }
+    // We do not apply hinting in the M4 rasterizer, but all other PrivateDICT
+    // operators still delimit their operand sequence.
     sp = 0;
   }
+  if (defaultVsIndex) *defaultVsIndex = vsIndex;
   if (subrsRel < 0) return true;
   const uint64_t abs = uint64_t(dict.off) + uint32_t(subrsRel);
   if (abs < cff_.off || abs >= uint64_t(cff_.off) + cff_.len) {
     lastError_ = "CFF local Subrs outside table";
     return false;
   }
-  if (!parseIndex(uint32_t(abs - cff_.off), outInfo, nullptr)) {
+  const bool ok = cff2_ ? parseIndex2(uint32_t(abs - cff_.off), outInfo)
+                        : parseIndex(uint32_t(abs - cff_.off), outInfo);
+  if (!ok) {
     lastError_ = "invalid CFF local Subr INDEX";
     return false;
   }
@@ -270,6 +408,7 @@ bool CffFont::parseFontDict(Slice dict, FdInfo& out) {
   int32_t stack[48];
   size_t sp = 0, pos = 0;
   uint32_t privateSize = 0, privateRel = 0;
+  bool havePrivate = false;
   while (pos < dict.len) {
     const uint8_t x = bytes[pos];
     if (x >= 28) {
@@ -288,44 +427,45 @@ bool CffFont::parseFontDict(Slice dict, FdInfo& out) {
       if (sp != 2 || stack[0] < 0 || stack[1] < 0) return false;
       privateSize = uint32_t(stack[0]);
       privateRel = uint32_t(stack[1]);
+      havePrivate = true;
     }
     sp = 0;
   }
-  if (!privateSize) return true;
+  if (cff2_ && !havePrivate) return false;
+  if (!privateSize) return !cff2_ || privateRel == 0;
   if (privateRel > cff_.len || privateSize > cff_.len - privateRel) return false;
   out.privateDict = {cff_.off + privateRel, privateSize};
-  return parsePrivateSubrs(out.privateDict, out.localSubrsInfo, out.localSubrs);
+  return parsePrivateSubrs(out.privateDict, out.localSubrsInfo, out.localSubrs,
+                           cff2_ ? &out.defaultVsIndex : nullptr);
 }
 
 bool CffFont::initFdSelect() {
   fdSelectFormat_ = 0xff;
   fdSelectLen_ = 0;
-  if (!fdCount_ || fdSelectRel_ >= cff_.len) return false;
-  uint8_t hdr[3] = {};
+  if (!fdCount_) return false;
+  if (fdCount_ == 1 && fdSelectRel_ == 0) {
+    freeMem(fdSelectData_);
+    fdSelectData_ = nullptr;
+    fdSelectCapacity_ = 0;
+    fdSelectFormat_ = 0xfe;  // implicit single FontDICT
+    return true;
+  }
+  if (!fdSelectRel_ || fdSelectRel_ >= cff_.len) return false;
+  uint8_t hdr[5] = {};
   if (!readAt(cff_.off + fdSelectRel_, hdr, 1)) return false;
 
   if (hdr[0] == 0) {
+    if (fdCount_ > 256) return false;
     const uint32_t len = 1u + glyphCount_;
     if (len > cff_.len - fdSelectRel_) return false;
-
-    // Format 0 is one FD byte per glyph and can therefore cost ~64KB for CJK.
-    // Validate it with a tiny fixed stack buffer, then leave the table on SD;
-    // selectGlyphFd() reads only the requested byte. This keeps resident memory
-    // independent of glyph count for the uncompressed representation.
     uint8_t block[64];
     uint32_t gid = 0;
     while (gid < glyphCount_) {
       const uint32_t take = std::min<uint32_t>(sizeof(block), uint32_t(glyphCount_) - gid);
       if (!readAt(cff_.off + fdSelectRel_ + 1u + gid, block, take)) return false;
-      for (uint32_t i = 0; i < take; ++i) {
-        if (block[i] >= fdCount_) return false;
-      }
+      for (uint32_t i = 0; i < take; ++i) if (block[i] >= fdCount_) return false;
       gid += take;
     }
-
-    // Re-init can move a CffFont from a format-3 face to format 0. Release the
-    // previous compressed range buffer instead of retaining stale high-water
-    // PSRAM that the active font no longer needs.
     freeMem(fdSelectData_);
     fdSelectData_ = nullptr;
     fdSelectCapacity_ = 0;
@@ -334,47 +474,80 @@ bool CffFont::initFdSelect() {
     return true;
   }
 
-  if (hdr[0] != 3) {
-    lastError_ = "unsupported CFF FDSelect format";
-    return false;
+  if (hdr[0] == 3) {
+    if (fdCount_ > 256 || cff_.len - fdSelectRel_ < 3 ||
+        !readAt(cff_.off + fdSelectRel_, hdr, 3)) return false;
+    const uint16_t ranges = rd16be(hdr + 1);
+    if (!ranges) return false;
+    const uint32_t len = 3u + uint32_t(ranges) * 3u + 2u;
+    if (len > cff_.len - fdSelectRel_) return false;
+    if (len > fdSelectCapacity_) {
+      auto* p = static_cast<uint8_t*>(reallocPsramFirst(fdSelectData_, len));
+      if (!p) { lastError_ = "CFF FDSelect PSRAM allocation failed"; return false; }
+      fdSelectData_ = p;
+      fdSelectCapacity_ = len;
+    }
+    if (!readAt(cff_.off + fdSelectRel_, fdSelectData_, len)) return false;
+    fdSelectFormat_ = 3;
+    fdSelectLen_ = len;
+    const uint8_t* r = fdSelectData_ + 3;
+    uint16_t prev = 0;
+    for (uint16_t i = 0; i < ranges; ++i) {
+      const uint16_t first = rd16be(r + uint32_t(i) * 3u);
+      const uint8_t fd = r[uint32_t(i) * 3u + 2u];
+      if ((i == 0 && first != 0) || (i && first <= prev) || fd >= fdCount_) return false;
+      prev = first;
+    }
+    const uint16_t sentinel = rd16be(r + uint32_t(ranges) * 3u);
+    if (sentinel != glyphCount_ || sentinel <= prev) return false;
+    return true;
   }
-  if (cff_.len - fdSelectRel_ < 3 || !readAt(cff_.off + fdSelectRel_, hdr, 3)) return false;
-  const uint16_t ranges = rd16be(hdr + 1);
-  if (!ranges) return false;
-  const uint32_t len = 3u + uint32_t(ranges) * 3u + 2u;
-  if (len > cff_.len - fdSelectRel_) return false;
-  if (len > fdSelectCapacity_) {
-    auto* p = static_cast<uint8_t*>(reallocPsramFirst(fdSelectData_, len));
-    if (!p) { lastError_ = "CFF FDSelect PSRAM allocation failed"; return false; }
-    fdSelectData_ = p;
-    fdSelectCapacity_ = len;
+
+  if (cff2_ && hdr[0] == 4) {
+    if (cff_.len - fdSelectRel_ < 5 || !readAt(cff_.off + fdSelectRel_, hdr, 5)) return false;
+    const uint32_t ranges = rd32be(hdr + 1);
+    if (!ranges || ranges > glyphCount_) return false;
+    const uint64_t len64 = 5u + uint64_t(ranges) * 6u + 4u;
+    if (len64 > cff_.len - fdSelectRel_) return false;
+    uint32_t prev = 0;
+    for (uint32_t i = 0; i < ranges; ++i) {
+      uint8_t rec[6];
+      if (!readAt(cff_.off + fdSelectRel_ + 5u + i * 6u, rec, sizeof(rec))) return false;
+      const uint32_t first = rd32be(rec);
+      const uint16_t fd = rd16be(rec + 4);
+      if ((i == 0 && first != 0) || (i && first <= prev) || fd >= fdCount_) return false;
+      prev = first;
+    }
+    uint8_t sentinelBytes[4];
+    if (!readAt(cff_.off + fdSelectRel_ + 5u + ranges * 6u, sentinelBytes, 4)) return false;
+    const uint32_t sentinel = rd32be(sentinelBytes);
+    if (sentinel != glyphCount_ || sentinel <= prev) return false;
+    // Format 4 can approach hundreds of KB. Keep it entirely on SD and binary
+    // search six-byte range records when a glyph is requested.
+    freeMem(fdSelectData_);
+    fdSelectData_ = nullptr;
+    fdSelectCapacity_ = 0;
+    fdSelectFormat_ = 4;
+    fdSelectLen_ = uint32_t(len64);
+    return true;
   }
-  if (!readAt(cff_.off + fdSelectRel_, fdSelectData_, len)) return false;
-  fdSelectFormat_ = 3;
-  fdSelectLen_ = len;
-  const uint8_t* r = fdSelectData_ + 3;
-  uint16_t prev = 0;
-  for (uint16_t i = 0; i < ranges; ++i) {
-    const uint16_t first = rd16be(r + uint32_t(i) * 3u);
-    const uint8_t fd = r[uint32_t(i) * 3u + 2u];
-    if ((i == 0 && first != 0) || (i && first <= prev) || fd >= fdCount_) return false;
-    prev = first;
-  }
-  const uint16_t sentinel = rd16be(r + uint32_t(ranges) * 3u);
-  if (sentinel != glyphCount_ || sentinel <= prev) return false;
-  return true;
+
+  lastError_ = "unsupported CFF FDSelect format";
+  return false;
 }
 
 bool CffFont::initCidData() {
   IndexInfo fdArray;
-  if (!parseIndex(fdArrayRel_, fdArray, nullptr) || !fdArray.count || fdArray.count > 256) {
-    lastError_ = "invalid CID CFF FDArray";
+  const bool ok = cff2_ ? parseIndex2(fdArrayRel_, fdArray) : parseIndex(fdArrayRel_, fdArray);
+  const uint32_t maxFd = cff2_ ? 4096u : 256u;
+  if (!ok || !fdArray.count || fdArray.count > maxFd || fdArray.count > 65535u) {
+    lastError_ = cff2_ ? "invalid CFF2 FontDICTINDEX" : "invalid CID CFF FDArray";
     return false;
   }
-  const uint16_t count = fdArray.count;
+  const uint16_t count = uint16_t(fdArray.count);
   if (count > fdCapacity_) {
     auto* p = static_cast<FdInfo*>(reallocPsramFirst(fdInfos_, size_t(count) * sizeof(FdInfo)));
-    if (!p) { lastError_ = "CID CFF FD metadata PSRAM allocation failed"; return false; }
+    if (!p) { lastError_ = "CFF FD metadata PSRAM allocation failed"; return false; }
     fdInfos_ = p;
     fdCapacity_ = count;
   }
@@ -383,7 +556,7 @@ bool CffFont::initCidData() {
     fdInfos_[i] = FdInfo{};
     Slice dict;
     if (!indexObject(fdArray, i, dict) || !parseFontDict(dict, fdInfos_[i])) {
-      lastError_ = "invalid CID CFF Font DICT";
+      lastError_ = cff2_ ? "invalid CFF2 FontDICT" : "invalid CID CFF Font DICT";
       return false;
     }
   }
@@ -394,7 +567,8 @@ bool CffFont::initCidData() {
 bool CffFont::selectGlyphFd(uint16_t gid, uint16_t& fd) const {
   fd = 0;
   if (!cidKeyed_) return true;
-  if (gid >= glyphCount_) return false;
+  if (gid >= glyphCount_ || !fdCount_) return false;
+  if (fdSelectFormat_ == 0xfe) return fdCount_ == 1;
 
   if (fdSelectFormat_ == 0) {
     uint8_t selector = 0;
@@ -403,30 +577,66 @@ bool CffFont::selectGlyphFd(uint16_t gid, uint16_t& fd) const {
     return fd < fdCount_;
   }
 
-  if (fdSelectFormat_ != 3 || !fdSelectData_ || fdSelectLen_ < 5) return false;
-  const uint16_t ranges = rd16be(fdSelectData_ + 1);
-  const uint8_t* r = fdSelectData_ + 3;
-  uint16_t lo = 0, hi = ranges;
-  while (lo < hi) {
-    const uint16_t mid = uint16_t((uint32_t(lo) + hi) / 2u);
-    if (rd16be(r + uint32_t(mid) * 3u) <= gid) lo = uint16_t(mid + 1u);
-    else hi = mid;
+  if (fdSelectFormat_ == 3 && fdSelectData_ && fdSelectLen_ >= 5) {
+    const uint16_t ranges = rd16be(fdSelectData_ + 1);
+    const uint8_t* r = fdSelectData_ + 3;
+    uint16_t lo = 0, hi = ranges;
+    while (lo < hi) {
+      const uint16_t mid = uint16_t((uint32_t(lo) + hi) / 2u);
+      if (rd16be(r + uint32_t(mid) * 3u) <= gid) lo = uint16_t(mid + 1u);
+      else hi = mid;
+    }
+    if (!lo) return false;
+    const uint16_t idx = uint16_t(lo - 1u);
+    const uint16_t next = idx + 1u < ranges ? rd16be(r + uint32_t(idx + 1u) * 3u)
+                                            : rd16be(r + uint32_t(ranges) * 3u);
+    if (gid >= next) return false;
+    fd = r[uint32_t(idx) * 3u + 2u];
+    return fd < fdCount_;
   }
-  if (!lo) return false;
-  const uint16_t idx = uint16_t(lo - 1u);
-  const uint16_t next = idx + 1u < ranges ? rd16be(r + uint32_t(idx + 1u) * 3u)
-                                          : rd16be(r + uint32_t(ranges) * 3u);
-  if (gid >= next) return false;
-  fd = r[uint32_t(idx) * 3u + 2u];
-  return fd < fdCount_;
+
+  if (fdSelectFormat_ == 4) {
+    uint8_t h[5];
+    if (!readAt(cff_.off + fdSelectRel_, h, sizeof(h))) return false;
+    const uint32_t ranges = rd32be(h + 1);
+    uint32_t lo = 0, hi = ranges;
+    while (lo < hi) {
+      const uint32_t mid = (lo + hi) / 2u;
+      uint8_t rec[4];
+      if (!readAt(cff_.off + fdSelectRel_ + 5u + mid * 6u, rec, 4)) return false;
+      if (rd32be(rec) <= gid) lo = mid + 1u; else hi = mid;
+    }
+    if (!lo) return false;
+    const uint32_t idx = lo - 1u;
+    uint8_t rec[6];
+    if (!readAt(cff_.off + fdSelectRel_ + 5u + idx * 6u, rec, sizeof(rec))) return false;
+    uint32_t next = 0;
+    if (idx + 1u < ranges) {
+      uint8_t nextBytes[4];
+      if (!readAt(cff_.off + fdSelectRel_ + 5u + (idx + 1u) * 6u, nextBytes, 4)) return false;
+      next = rd32be(nextBytes);
+    } else {
+      uint8_t sentinel[4];
+      if (!readAt(cff_.off + fdSelectRel_ + 5u + ranges * 6u, sentinel, 4)) return false;
+      next = rd32be(sentinel);
+    }
+    if (gid >= next) return false;
+    fd = rd16be(rec + 4);
+    return fd < fdCount_;
+  }
+  return false;
 }
 
 bool CffFont::prepareGlyphLocalSubrs(uint16_t gid) const {
-  if (!cidKeyed_) return true;
+  if (!cidKeyed_) {
+    activeDefaultVsIndex_ = 0;
+    return true;
+  }
   uint16_t fd = 0;
   if (!selectGlyphFd(gid, fd)) return false;
   localSubrsInfo_ = fdInfos_[fd].localSubrsInfo;
   localSubrs_ = fdInfos_[fd].localSubrs;
+  activeDefaultVsIndex_ = fdInfos_[fd].defaultVsIndex;
   return true;
 }
 
@@ -472,8 +682,6 @@ bool CffFont::initCmap() {
   if (!readAt(cmap_.off, h, 4)) return false;
   const uint16_t n = rd16be(h + 2);
   if (!n || n > 256 || cmap_.len < 4 + uint32_t(n) * 8) return false;
-  // Scan each 8-byte encoding record directly from SD. This is a one-time
-  // font-open cost and avoids a 2KB internal-stack directory buffer.
   uint32_t best = 0;
   int score = -1;
   for (uint16_t i = 0; i < n; ++i) {
@@ -492,11 +700,6 @@ bool CffFont::initCmap() {
     if (s > score) { score = s; best = o; }
   }
   if (score < 0) { lastError_ = "CFF OpenType has no cmap format 4/12"; return false; }
-
-  // Keep only the selected cmap subtable resident. Large CJK fonts often put
-  // several cmap subtables in one table; using `table_end - selected_offset`
-  // can retain hundreds of KB (or more) of unrelated cmap data for the entire
-  // lifetime of the active font. The declared subtable length is sufficient.
   const uint32_t available = cmap_.len - best;
   uint8_t prefix[8] = {};
   if (available < sizeof(prefix) || !readAt(cmap_.off + best, prefix, sizeof(prefix))) return false;
@@ -508,9 +711,7 @@ bool CffFont::initCmap() {
   } else if (fmt == 12) {
     exactLen = rd32be(prefix + 4);
     if (exactLen < 16) return false;
-  } else {
-    return false;
-  }
+  } else return false;
   if (exactLen > available || exactLen > 2u * 1024u * 1024u) {
     lastError_ = "CFF cmap subtable length out of range";
     return false;
@@ -602,6 +803,7 @@ bool CffFont::init(TtfStream& stream, uint32_t face) {
   lastError_ = "not initialized";
   stream_ = &stream;
   fileSize_ = stream.size();
+  cff2_ = false;
   cff_ = {};
   charStringsInfo_ = globalSubrsInfo_ = {};
   localSubrsInfo_ = {};
@@ -610,8 +812,9 @@ bool CffFont::init(TtfStream& stream, uint32_t face) {
   glyphCount_ = unitsPerEm_ = numHMetrics_ = 0;
   cmapLen_ = 0;
   cidKeyed_ = false;
-  fdArrayRel_ = fdSelectRel_ = 0;
+  fdArrayRel_ = fdSelectRel_ = variationStoreRel_ = 0;
   fdCount_ = 0;
+  activeDefaultVsIndex_ = 0;
   fdSelectFormat_ = 0xff;
   fdSelectLen_ = 0;
   if (face > fileSize_ || fileSize_ - face < 12) return false;
@@ -622,38 +825,61 @@ bool CffFont::init(TtfStream& stream, uint32_t face) {
   }
   const uint16_t nt = rd16be(h + 4);
   if (!nt || nt > 128 || uint64_t(face) + 12u + uint64_t(nt) * 16u > fileSize_) return false;
-  bool sawCff2 = false;
+  Slice cff1, cff2;
   for (uint16_t i = 0; i < nt; ++i) {
     uint8_t r[16];
     if (!readAt(face + 12u + uint32_t(i) * 16u, r, 16)) return false;
     const uint32_t k = rd32be(r), o = rd32be(r + 8), l = rd32be(r + 12);
-    if (k == tag("CFF2")) sawCff2 = true;
-    if (k == tag("CFF ")) {
-      if (o > fileSize_ || l > fileSize_ - o || l < 4) return false;
-      cff_ = {o, l};
-    }
+    if ((k == tag("CFF ") || k == tag("CFF2")) &&
+        (o > fileSize_ || l > fileSize_ - o || l < 4)) return false;
+    if (k == tag("CFF ")) cff1 = {o, l};
+    else if (k == tag("CFF2")) cff2 = {o, l};
   }
-  if (!cff_.valid()) {
-    lastError_ = sawCff2 ? "CFF2 face is not supported yet" : "OTTO face has no CFF table";
+  if (cff2.valid()) {
+    cff2_ = true;
+    cff_ = cff2;
+    uint8_t ch[5];
+    if (cff_.len < 5 || !readAt(cff_.off, ch, sizeof(ch)) || ch[0] != 2 || ch[1] != 0 || ch[2] < 5) {
+      lastError_ = "invalid CFF2 header";
+      return false;
+    }
+    const uint32_t headerSize = ch[2];
+    const uint32_t topSize = rd16be(ch + 3);
+    if (!topSize || headerSize > cff_.len || topSize > cff_.len - headerSize) {
+      lastError_ = "invalid CFF2 TopDICT size";
+      return false;
+    }
+    const Slice top{cff_.off + headerSize, topSize};
+    const uint32_t globalRel = headerSize + topSize;
+    if (!parseIndex2(globalRel, globalSubrsInfo_)) {
+      lastError_ = "invalid CFF2 GlobalSubrINDEX";
+      return false;
+    }
+    globalSubrs_ = globalSubrsInfo_.whole;
+    if (!parseTopDict(top) || !initCidData() || !initSfntMetrics(face, nt)) return false;
+  } else if (cff1.valid()) {
+    cff_ = cff1;
+    uint8_t ch[4];
+    if (!readAt(cff_.off, ch, 4) || ch[0] != 1 || ch[2] < 4 || ch[2] > cff_.len || ch[3] < 1 || ch[3] > 4) return false;
+    uint32_t rel = ch[2];
+    IndexInfo names, top, strings;
+    if (!parseIndex(rel, names, &rel) || !names.count ||
+        !parseIndex(rel, top, &rel) || top.count != 1 ||
+        !parseIndex(rel, strings, &rel) ||
+        !parseIndex(rel, globalSubrsInfo_)) return false;
+    globalSubrs_ = globalSubrsInfo_.whole;
+    Slice td;
+    if (!indexObject(top, 0, td) || !parseTopDict(td)) return false;
+    if (cidKeyed_) {
+      if (!initCidData()) return false;
+    } else {
+      if (!parsePrivateSubrs(privateDict_, localSubrsInfo_, localSubrs_)) return false;
+    }
+    if (!initSfntMetrics(face, nt)) return false;
+  } else {
+    lastError_ = "OTTO face has no CFF/CFF2 table";
     return false;
   }
-  uint8_t ch[4];
-  if (!readAt(cff_.off, ch, 4) || ch[0] != 1 || ch[2] < 4 || ch[2] > cff_.len || ch[3] < 1 || ch[3] > 4) return false;
-  uint32_t rel = ch[2];
-  IndexInfo names, top, strings;
-  if (!parseIndex(rel, names, &rel) || !names.count ||
-      !parseIndex(rel, top, &rel) || top.count != 1 ||
-      !parseIndex(rel, strings, &rel) ||
-      !parseIndex(rel, globalSubrsInfo_)) return false;
-  globalSubrs_ = globalSubrsInfo_.whole;
-  Slice td;
-  if (!indexObject(top, 0, td) || !parseTopDict(td)) return false;
-  if (cidKeyed_) {
-    if (!initCidData()) return false;
-  } else {
-    if (!parsePrivateSubrs(privateDict_, localSubrsInfo_, localSubrs_)) return false;
-  }
-  if (!initSfntMetrics(face, nt)) return false;
   ready_ = true;
   lastError_ = "ok";
   return true;
