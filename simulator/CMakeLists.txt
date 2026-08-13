@@ -7,6 +7,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 option(M4SIM_SANITIZE "Enable AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
 option(M4SIM_BUILD_NATIVE_SMOKE "Build the lightweight host/native backend smoke" ON)
+set(M4SIM_REAL_CJK_FONT "" CACHE FILEPATH "Optional real Noto CJK TTC/OTC fixture")
 add_compile_options(-Wall -Wextra)
 if(M4SIM_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
@@ -52,6 +53,21 @@ add_executable(m4_cff_reader_tests
 )
 target_include_directories(m4_cff_reader_tests PRIVATE ../firmware/lib/TtfReader/src)
 add_test(NAME m4_cff_reader_tests COMMAND m4_cff_reader_tests)
+if(M4SIM_REAL_CJK_FONT)
+  if(NOT EXISTS "${M4SIM_REAL_CJK_FONT}")
+    message(FATAL_ERROR "M4SIM_REAL_CJK_FONT does not exist: ${M4SIM_REAL_CJK_FONT}")
+  endif()
+  add_executable(m4_cff_real_cjk_tests
+    tests/cff_reader_real_noto.cpp
+    ../firmware/lib/TtfReader/src/CffReader.cpp
+    ../firmware/lib/TtfReader/src/CffType2.cpp
+    ../firmware/lib/TtfReader/src/CffRaster.cpp
+  )
+  target_include_directories(m4_cff_real_cjk_tests PRIVATE ../firmware/lib/TtfReader/src)
+  # NotoSansCJK-Regular.ttc face 2 is the Simplified Chinese face on
+  # Debian/Ubuntu packages. Keep the fixture outside the repository.
+  add_test(NAME m4_cff_real_cjk_tests COMMAND m4_cff_real_cjk_tests "${M4SIM_REAL_CJK_FONT}" 2)
+endif()
 add_executable(m4_board_contract tools/board_contract.cpp)
 target_link_libraries(m4_board_contract PRIVATE m4_board_model)
 add_executable(m4_issue_contracts tests/issue_contracts.cpp)
