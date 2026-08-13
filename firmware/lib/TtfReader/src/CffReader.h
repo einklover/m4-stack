@@ -14,6 +14,10 @@ class CffFont {
   uint16_t glyphCount() const{return glyphCount_;} uint16_t unitsPerEm() const{return unitsPerEm_;}
   int32_t fontBBoxYMax() const{return bboxYMax_;}
   bool isCidKeyed() const{return cidKeyed_;} uint16_t fdCount() const{return fdCount_;}
+  // Persistent bytes retained specifically for FDSelect. Format 0 is streamed
+  // directly from the font and therefore reports zero resident bytes; compact
+  // format 3 ranges remain resident for fast binary search.
+  uint32_t fdSelectResidentBytes() const{return fdSelectFormat_==3?fdSelectLen_:0;}
   Slice cffTable() const{return cff_;} Slice charStringsIndex() const{return charStrings_;}
   Slice globalSubrsIndex() const{return globalSubrs_;} Slice localSubrsIndex() const{return localSubrs_;}
   Slice privateDict() const{return privateDict_;}
@@ -61,11 +65,13 @@ class CffFont {
   bool appendEdge(EdgeBuildState& state,float x0,float y0,float x1,float y1) const;
   TtfStream* stream_=nullptr; uint32_t fileSize_=0; bool ready_=false; mutable const char* lastError_="not initialized";
   Slice cff_; IndexInfo charStringsInfo_,globalSubrsInfo_; mutable IndexInfo localSubrsInfo_; Slice charStrings_,globalSubrs_; mutable Slice localSubrs_; Slice privateDict_; uint16_t glyphCount_=0;
-  // CID-keyed CFF keeps only per-FD offsets/INDEX metadata resident. Both this
-  // array and FDSelect are PSRAM-first high-water buffers; CharStrings and
-  // LocalSubrs themselves remain on SD and are streamed on demand.
+  // CID-keyed CFF keeps only per-FD offsets/INDEX metadata resident. Format 3
+  // FDSelect ranges are PSRAM-first; format 0 is validated in small chunks and
+  // then streamed one selector byte per glyph. CharStrings and LocalSubrs
+  // themselves remain on SD and are streamed on demand.
   bool cidKeyed_=false; uint32_t fdArrayRel_=0,fdSelectRel_=0;
   FdInfo* fdInfos_=nullptr; uint16_t fdCount_=0,fdCapacity_=0;
+  uint8_t fdSelectFormat_=0xff;
   uint8_t* fdSelectData_=nullptr; uint32_t fdSelectLen_=0,fdSelectCapacity_=0;
   Table head_,cmap_,hhea_,hmtx_,maxp_; uint16_t unitsPerEm_=0; int32_t ascender_=0,descender_=0,lineGap_=0,bboxYMax_=0; uint16_t numHMetrics_=0;
   uint8_t* cmapData_=nullptr; uint32_t cmapLen_=0,cmapScratchCap_=0; bool cmapIs12_=false; uint32_t cmapGroups_=0;
