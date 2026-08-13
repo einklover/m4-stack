@@ -59,6 +59,29 @@ Before declaring a firmware task done:
 4. full `pio run -e murphy_m4`
 5. real-device smoke for hardware-only behaviour
 
+## GitHub CI entry points
+
+There are intentionally two different workflows:
+
+### Daily feedback: `.github/workflows/m4-fast.yml`
+
+Use this as the normal firmware-development signal.
+
+It:
+
+- caches the patched QEMU build/runtime independently from firmware source
+- caches `~/.platformio` and `PLATFORMIO_BUILD_CACHE_DIR`
+- builds `murphy_m4_qemu_plugin` once
+- runs smoke with `--skip-build`
+- runs Network Manager E2E with `--skip-build`
+- uploads only short-lived diagnostics
+
+A new agent should use this result to continue ordinary implementation. **Do not wait for the full m4sim gate before every edit.**
+
+### Checkpoint gate: `.github/workflows/m4sim-smoke.yml`
+
+This is the slower, last-known-good full simulator gate. Keep it conservative and use it when declaring a checkpoint/release/freeze result. Do not casually refactor it just to shave seconds from the daily loop.
+
 ## Persistent local caches
 
 Preferred local paths:
@@ -138,7 +161,7 @@ CI should use cache keys with different invalidation rules.
 QEMU cache key must depend on:
 
 ```text
-runner OS + arch
+runner OS (and arch if heterogeneous runners are introduced)
 hash(simulator/qemu/build.py)
 hash(simulator/qemu/build_patched_qemu_v3.py)
 hash(simulator/qemu/patches/**)
@@ -150,7 +173,7 @@ On an exact QEMU cache hit, skip `build.py` entirely. Do not restore a QEMU buil
 
 ### PlatformIO cache
 
-Use `PLATFORMIO_BUILD_CACHE_DIR` and cache it across runs. Its config/toolchain key should be tied to `firmware/platformio.ini` and the runner platform, while newer commits may restore the latest compatible prefix.
+Use `PLATFORMIO_BUILD_CACHE_DIR` and cache it across runs. Its stable compatibility key is tied to `firmware/platformio.ini` and the runner platform. The cache provides a baseline of reusable compiler objects; source files changed after that baseline are recompiled normally.
 
 Also cache `~/.platformio` (packages/platform downloads) with `firmware/platformio.ini` as an invalidation input.
 
@@ -167,6 +190,8 @@ A future image such as `ghcr.io/einklover/m4sim-ci:<version>` should contain sta
 - PlatformIO CLI
 
 Do **not** bake fast-changing Murphy QEMU patch output or firmware binaries into the base image. Keep those as caches/artifacts keyed by their real inputs. This avoids rebuilding a large image for each QEMU patch or firmware edit.
+
+Only introduce the Docker/GHCR layer after the cache-based fast loop is measured. The purpose of Docker is reproducibility and removing repeated apt/pip setup; it should not become a new source of image rebuild latency.
 
 ## Test selection rule for agents
 
@@ -202,8 +227,9 @@ When the user says “continue” or asks to modify M4 firmware:
 3. identify the smallest relevant test
 4. preserve QEMU and PlatformIO caches
 5. make the firmware change
-6. run the targeted fast loop
-7. run full gate only at the task checkpoint
-8. update `HANDOFF.md` when the current task/status materially changes
+6. use `m4 fast firmware loop` / targeted local commands for feedback
+7. continue implementation once the fast signal is green; do not block on unrelated full gates
+8. run the full gate only at the task checkpoint
+9. update `HANDOFF.md` when the current task/status materially changes
 
 The repository, not prior chat history, is the durable handoff mechanism.
