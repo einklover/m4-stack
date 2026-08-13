@@ -57,6 +57,10 @@ jobs:
             'https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf'
           fetch_font SourceHanSans-Regular.ttc \
             'https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/OTC/SourceHanSans-Regular.ttc'
+          # Real CFF2 variable CJK outline. The runtime intentionally renders
+          # only its default instance; VariationStore metadata remains streamed.
+          fetch_font SourceHanSansSC-VF.otf \
+            'https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/Variable/OTF/SourceHanSansSC-VF.otf'
           fetch_font LXGWWenKai-Regular.ttf \
             'https://raw.githubusercontent.com/lxgw/LxgwWenKai/main/fonts/TTF/LXGWWenKai-Regular.ttf'
           fetch_font 'NotoSansSC[wght].ttf' \
@@ -87,6 +91,7 @@ jobs:
           for face in 0 1 2 3 4; do
             "$BIN" "$FONTDIR/SourceHanSans-Regular.ttc" "$face"
           done
+          "$BIN" "$FONTDIR/SourceHanSansSC-VF.otf" 0
           "$BIN" "$FONTDIR/LXGWWenKai-Regular.ttf" 0
           "$BIN" "$FONTDIR/NotoSansSC[wght].ttf" 0
           "$BIN" "$FONTDIR/ZCOOLXiaoWei-Regular.ttf" 0
