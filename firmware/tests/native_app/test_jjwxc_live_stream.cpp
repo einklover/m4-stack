@@ -17,6 +17,7 @@ class FileSink final : public M4xJsonStream::Sink {
 
   bool good() const { return out_.good(); }
   size_t bytes() const { return bytes_; }
+  void flush() { out_.flush(); }
 
   bool write(const uint8_t* data, size_t len) override {
     if (!data || !out_) return false;
@@ -101,11 +102,15 @@ int main(int argc, char** argv) {
     std::cerr << "catalog_parse_failed=" << M4xJsonStream::errorString(catalog.error()) << "\n";
     return 4;
   }
+  // Mirror the device loader's forceFlush() before FileRows becomes visible to
+  // the TOC reader; without this, the host verifier can race its own ofstream.
+  catalogSink.flush();
 
   size_t tsvRows = 0;
   const std::string freeUid = firstFreeChapter(argv[2], tsvRows);
   if (catalog.recordCount() != tsvRows || tsvRows < 100 || freeUid.empty()) {
-    std::cerr << "catalog_validation_failed rows=" << tsvRows << " free_uid=" << (freeUid.empty() ? 0 : 1) << "\n";
+    std::cerr << "catalog_validation_failed records=" << catalog.recordCount()
+              << " rows=" << tsvRows << " free_uid=" << (freeUid.empty() ? 0 : 1) << "\n";
     return 5;
   }
   if (catalog.peakBufferedBytes() > M4xJsonStream::RecordExtractor::kMaxBufferedBytes) {
@@ -129,6 +134,7 @@ int main(int argc, char** argv) {
       std::cerr << "chapter_parse_failed=" << M4xJsonStream::errorString(chapter.error()) << "\n";
       return 8;
     }
+    chapterSink.flush();
     if (!chapter.fieldSeen() || chapter.bytesWritten() < 32 || chapterSink.bytes() != chapter.bytesWritten()) {
       std::cerr << "chapter_validation_failed bytes=" << chapter.bytesWritten() << "\n";
       return 9;
