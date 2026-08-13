@@ -139,6 +139,15 @@ class MemoryTtfStream : public ttf::TtfStream {
 
 enum class OpenTypeKind : uint8_t { Glyf, Cff1, Cff2, Invalid };
 
+const char* kindName(OpenTypeKind kind) {
+  switch (kind) {
+    case OpenTypeKind::Glyf: return "glyf";
+    case OpenTypeKind::Cff1: return "cff1";
+    case OpenTypeKind::Cff2: return "cff2-default";
+    default: return "invalid";
+  }
+}
+
 OpenTypeKind probeSfntFace(SdTtfStream& stream, uint32_t faceOffset) {
   if (faceOffset > stream.size() || stream.size() - faceOffset < 12) {
     return OpenTypeKind::Invalid;
@@ -188,10 +197,9 @@ OpenTypeKind probeSfntFace(SdTtfStream& stream, uint32_t faceOffset) {
   if (head && maxp && loca && cmap && hhea && hmtx && glyf) {
     return OpenTypeKind::Glyf;
   }
-  if (signature == 0x4f54544fu && head && maxp && cmap && hhea && hmtx && cff) {
-    return OpenTypeKind::Cff1;
-  }
-  if (signature == 0x4f54544fu && cff2) return OpenTypeKind::Cff2;
+  const bool cffCore = signature == 0x4f54544fu && head && maxp && cmap && hhea && hmtx;
+  if (cffCore && cff2) return OpenTypeKind::Cff2;
+  if (cffCore && cff) return OpenTypeKind::Cff1;
   return OpenTypeKind::Invalid;
 }
 
@@ -221,19 +229,16 @@ bool probeCollection(SdTtfStream& stream, uint32_t& faceOffset,
     if (!stream.seek(12u + i * 4u) || stream.read(rawOffset, 4) != 4) return false;
     const uint32_t candidateOffset = be32(rawOffset);
     const OpenTypeKind candidate = probeSfntFace(stream, candidateOffset);
-    if (candidate == OpenTypeKind::Cff2) {
-      sawCff2 = true;
-      continue;
-    }
-    if (candidate == OpenTypeKind::Cff1 || candidate == OpenTypeKind::Glyf) {
+    if (candidate == OpenTypeKind::Cff2) sawCff2 = true;
+    if (candidate == OpenTypeKind::Cff1 || candidate == OpenTypeKind::Cff2 ||
+        candidate == OpenTypeKind::Glyf) {
       faceOffset = candidateOffset;
       kind = candidate;
       char line[160];
       snprintf(line, sizeof(line),
                "collection_face_probe index=%lu offset=%lu backend=%s",
                static_cast<unsigned long>(i),
-               static_cast<unsigned long>(candidateOffset),
-               candidate == OpenTypeKind::Cff1 ? "cff1" : "glyf");
+               static_cast<unsigned long>(candidateOffset), kindName(candidate));
       m4AppendFontDiagnostic(line);
       return true;
     }
@@ -260,33 +265,41 @@ int clampMetric(int value, int low, int high) {
 void* TtfEpdFont::ttfAlloc(size_t n) { return ::ttfAlloc(n); }
 void TtfEpdFont::ttfFree(void* p) { ::ttfFree(p); }
 
+const char* TtfEpdFont::backendName() const {
+  switch (backend_) {
+    case Backend::Glyf: return "glyf";
+    case Backend::Cff1: return "cff1";
+    case Backend::Cff2: return "cff2-default";
+  }
+  return "unknown";
+}
 const char* TtfEpdFont::backendError() const {
-  return backend_ == Backend::Cff1 ? cffFont_.lastError() : font_.lastError();
+  return usesCffBackend() ? cffFont_.lastError() : font_.lastError();
 }
 uint16_t TtfEpdFont::backendUnitsPerEm() const {
-  return backend_ == Backend::Cff1 ? cffFont_.unitsPerEm() : font_.unitsPerEm();
+  return usesCffBackend() ? cffFont_.unitsPerEm() : font_.unitsPerEm();
 }
 int32_t TtfEpdFont::backendBBoxYMax() const {
-  return backend_ == Backend::Cff1 ? cffFont_.fontBBoxYMax() : font_.fontBBoxYMax();
+  return usesCffBackend() ? cffFont_.fontBBoxYMax() : font_.fontBBoxYMax();
 }
 bool TtfEpdFont::backendFindGlyph(uint32_t cp, uint16_t& gid) const {
-  return backend_ == Backend::Cff1 ? cffFont_.findGlyph(cp, gid) : font_.findGlyph(cp, gid);
+  return usesCffBackend() ? cffFont_.findGlyph(cp, gid) : font_.findGlyph(cp, gid);
 }
 bool TtfEpdFont::backendRasterize(uint16_t gid, ttf::GlyphBitmap& out) const {
-  return backend_ == Backend::Cff1 ? cffFont_.rasterize(gid, sizePx_, out)
-                                   : font_.rasterize(gid, sizePx_, out);
+  return usesCffBackend() ? cffFont_.rasterize(gid, sizePx_, out)
+                          : font_.rasterize(gid, sizePx_, out);
 }
 bool TtfEpdFont::backendPixelBox(uint16_t gid, int& x0, int& y0, int& x1, int& y1) const {
-  return backend_ == Backend::Cff1
+  return usesCffBackend()
       ? cffFont_.glyphPixelBox(gid, sizePx_, x0, y0, x1, y1)
       : font_.glyphPixelBox(gid, sizePx_, x0, y0, x1, y1);
 }
 void TtfEpdFont::backendVMetrics(int32_t& asc, int32_t& desc, int32_t& gap) const {
-  if (backend_ == Backend::Cff1) cffFont_.fontVMetrics(asc, desc, gap);
+  if (usesCffBackend()) cffFont_.fontVMetrics(asc, desc, gap);
   else font_.fontVMetrics(asc, desc, gap);
 }
 void TtfEpdFont::backendClearScratch() {
-  if (backend_ == Backend::Cff1) cffFont_.clearScratch();
+  if (usesCffBackend()) cffFont_.clearScratch();
   else font_.clearScratch();
 }
 const char* TtfEpdFont::lastError() const {
@@ -311,15 +324,20 @@ bool TtfEpdFont::allocateEntries() {
 
 bool TtfEpdFont::finishInit(const char* label) {
   if (!stream_) return false;
-  const bool ok = backend_ == Backend::Cff1
+  const bool ok = usesCffBackend()
       ? cffFont_.init(*stream_, faceOffset_)
       : font_.init(*stream_, faceOffset_);
   if (!ok) {
     Serial.printf("[TTF] Invalid runtime font %s backend=%s: %s\n",
-                  label ? label : "?",
-                  backend_ == Backend::Cff1 ? "cff1" : "glyf",
-                  backendError());
+                  label ? label : "?", backendName(), backendError());
     return false;
+  }
+  if (usesCffBackend()) {
+    const bool expectedCff2 = backend_ == Backend::Cff2;
+    if (cffFont_.isCff2() != expectedCff2) {
+      runtimeError_ = "OpenType CFF backend probe/parser mismatch";
+      return false;
+    }
   }
 
   const uint16_t upm = backendUnitsPerEm();
@@ -380,8 +398,7 @@ bool TtfEpdFont::finishInit(const char* label) {
   valid_ = true;
 
   Serial.printf("[TTF] Loaded %s backend=%s face=%lu @%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X slots=%u budget=%u\n",
-                label ? label : "?",
-                backend_ == Backend::Cff1 ? "cff1" : "glyf",
+                label ? label : "?", backendName(),
                 static_cast<unsigned long>(faceOffset_), sizePx_, upm,
                 data_.advanceY, data_.ascender, data_.descender, bboxTop,
                 static_cast<unsigned>(refValid ? refCp : 0),
@@ -411,29 +428,31 @@ TtfEpdFont::TtfEpdFont(const String& path, uint16_t sizePx,
     bool sawCff2 = false;
     if (!probeCollection(*sd, faceOffset_, kind, sawCff2)) {
       runtimeError_ = sawCff2
-          ? "font collection contains only unsupported CFF2 faces"
-          : "font collection contains no supported glyf/CFF1 face";
+          ? "font collection contains no usable CFF2 default face"
+          : "font collection contains no supported glyf/CFF face";
       delete sd;
       return;
     }
     stream_ = sd;
-    backend_ = kind == OpenTypeKind::Cff1 ? Backend::Cff1 : Backend::Glyf;
-    m4AppendFontDiagnostic(kind == OpenTypeKind::Cff1
-        ? "collection_cff1_zero_copy enabled"
-        : "collection_glyf_zero_copy enabled");
+    backend_ = kind == OpenTypeKind::Cff2 ? Backend::Cff2
+             : kind == OpenTypeKind::Cff1 ? Backend::Cff1
+                                          : Backend::Glyf;
+    char diag[96];
+    snprintf(diag, sizeof(diag), "collection_%s_zero_copy enabled", kindName(kind));
+    m4AppendFontDiagnostic(diag);
   } else if (haveMagic && std::memcmp(magic, "OTTO", 4) == 0) {
     const OpenTypeKind kind = probeOpenType(*sd);
-    if (kind == OpenTypeKind::Cff1 || kind == OpenTypeKind::Glyf) {
+    if (kind == OpenTypeKind::Cff1 || kind == OpenTypeKind::Cff2 || kind == OpenTypeKind::Glyf) {
       stream_ = sd;
       faceOffset_ = 0;
-      backend_ = kind == OpenTypeKind::Cff1 ? Backend::Cff1 : Backend::Glyf;
-      m4AppendFontDiagnostic(kind == OpenTypeKind::Cff1
-          ? "opentype_cff1_backend enabled"
-          : "opentype_glyf_zero_copy enabled");
+      backend_ = kind == OpenTypeKind::Cff2 ? Backend::Cff2
+               : kind == OpenTypeKind::Cff1 ? Backend::Cff1
+                                            : Backend::Glyf;
+      char diag[96];
+      snprintf(diag, sizeof(diag), "opentype_%s_backend enabled", kindName(kind));
+      m4AppendFontDiagnostic(diag);
     } else {
-      runtimeError_ = kind == OpenTypeKind::Cff2
-          ? "CFF2 variable OpenType is not supported yet"
-          : "invalid OpenType font";
+      runtimeError_ = "invalid OpenType font";
       delete sd;
       return;
     }
