@@ -104,7 +104,22 @@ def _subactivity(ui: dict[str, Any]) -> str:
 
 
 def _send_key(client: Client, name: str) -> None:
-    blob = _call_busy_retry(lambda: client.key(name), retries=24)
+    # A physical key can legitimately arrive while the previous e-ink refresh
+    # still owns the input bridge for a few seconds. Wait for that bounded
+    # backpressure instead of tying correctness to a fixed retry count.
+    deadline = time.monotonic() + 8.0
+    while True:
+        try:
+            blob = client.key(name)
+            break
+        except BridgeError as exc:
+            if exc.key != "busy":
+                raise m4sim.M4SimError(f"m4adb {exc.key}: {exc.message}") from exc
+            if time.monotonic() >= deadline:
+                raise m4sim.M4SimError(
+                    f"m4adb busy: input bridge stayed busy while sending {name!r}"
+                ) from exc
+            time.sleep(0.12)
     if not isinstance(blob, dict) or blob.get("op") != "key":
         raise m4sim.M4SimError(f"unexpected key response for {name}: {blob}")
 
