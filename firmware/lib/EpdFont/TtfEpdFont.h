@@ -38,6 +38,9 @@ class TtfEpdFont : public EpdFont {
   uint16_t sizePx() const { return sizePx_; }
   uint16_t maxSlots() const { return maxSlots_; }
   size_t cacheBudget() const { return cacheBudget_; }
+  size_t cacheBytes() const { return cacheBytes_; }
+  uint32_t faceOffset() const { return faceOffset_; }
+  const char* runtimeBackendName() const { return backendName(); }
   bool hasCodepoint(uint32_t cp) const;
   void clearCaches();
 
