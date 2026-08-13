@@ -12,7 +12,7 @@
 
 // Runtime sfnt font backend for the existing EpdFont interface. Only the active
 // outline backend allocates resident cmap/raster scratch; glyph cache bitmaps
-// remain PSRAM-first and shared by glyf and CFF1 paths.
+// remain PSRAM-first and shared by glyf/CFF1/CFF2 paths.
 class TtfEpdFont : public EpdFont {
  public:
   static constexpr uint16_t kDefaultRuntimeSlots = 512;
@@ -42,7 +42,7 @@ class TtfEpdFont : public EpdFont {
   void clearCaches();
 
  private:
-  enum class Backend : uint8_t { Glyf, Cff1 };
+  enum class Backend : uint8_t { Glyf, Cff1, Cff2 };
   struct Entry {
     uint32_t cp = 0xFFFFFFFF;
     uint32_t lastAccess = 0;
@@ -51,6 +51,7 @@ class TtfEpdFont : public EpdFont {
     uint32_t bitmapSize = 0;
   };
 
+  bool usesCffBackend() const { return backend_ != Backend::Glyf; }
   int ensureGlyph(uint32_t cp) const;
   void evictSlot(int slot) const;
   bool allocateEntries();
@@ -62,6 +63,7 @@ class TtfEpdFont : public EpdFont {
   int32_t backendBBoxYMax() const;
   void backendVMetrics(int32_t& asc, int32_t& desc, int32_t& gap) const;
   const char* backendError() const;
+  const char* backendName() const;
   void backendClearScratch();
 
   String path_;
@@ -72,7 +74,7 @@ class TtfEpdFont : public EpdFont {
   bool valid_ = false;
   Backend backend_ = Backend::Glyf;
   // Absolute sfnt directory offset in the original stream. Zero for standalone
-  // fonts; non-zero for both glyf and CFF1 faces inside TTC/OTC collections.
+  // fonts; non-zero for glyf/CFF1/CFF2 faces inside TTC/OTC collections.
   uint32_t faceOffset_ = 0;
   EpdFontData data_{};
 
