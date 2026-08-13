@@ -40,9 +40,15 @@ class TtfEpdFont : public EpdFont {
   size_t cacheBudget() const { return cacheBudget_; }
   size_t cacheBytes() const { return cacheBytes_; }
   uint32_t faceOffset() const { return faceOffset_; }
+  int32_t collectionFaceIndex() const { return collectionFaceIndex_; }
   const char* runtimeBackendName() const { return backendName(); }
   bool hasCodepoint(uint32_t cp) const;
   void clearCaches();
+
+  // Returns 0 for standalone/invalid files. Collection aliases use
+  // "name#<index>.ttc|otc"; the method resolves such aliases to the physical
+  // file before reading the TTC header.
+  static uint32_t collectionFaceCount(const String& path);
 
  private:
   enum class Backend : uint8_t { Glyf, Cff1, Cff2 };
@@ -79,6 +85,9 @@ class TtfEpdFont : public EpdFont {
   // Absolute sfnt directory offset in the original stream. Zero for standalone
   // fonts; non-zero for glyf/CFF1/CFF2 faces inside TTC/OTC collections.
   uint32_t faceOffset_ = 0;
+  // -1 for standalone fonts; otherwise the selected collection index. Plain
+  // collection filenames retain legacy auto-first-supported behavior.
+  int32_t collectionFaceIndex_ = -1;
   EpdFontData data_{};
 
   ttf::TtfStream* stream_ = nullptr;
