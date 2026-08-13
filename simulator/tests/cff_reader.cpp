@@ -142,17 +142,27 @@ void testCid(bool format3){
   VectorStream s(makeOtf(makeCidCff(format3),3,{{0x41,1},{0x42,2}}));ttf::CffFont f;
   if(!f.init(s)){std::cerr<<"CID init failed: "<<f.lastError()<<'\n';std::abort();}
   assert(f.isCidKeyed()&&f.fdCount()==2);
+  if(format3)assert(f.fdSelectResidentBytes()==11);else assert(f.fdSelectResidentBytes()==0);
   uint16_t a=0,b=0;assert(f.findGlyph('A',a)&&a==1);assert(f.findGlyph('B',b)&&b==2);
   ttf::GlyphBitmap ga,gb;assert(f.rasterize(a,100,ga));const int aw=ga.width,ah=ga.height,aa=ga.advance;const bool ai=hasInk(ga);
   assert(aw==10&&ah==10&&aa==60&&ai);
   assert(f.rasterize(b,100,gb));assert(gb.width==5&&gb.height==10&&gb.advance==60&&hasInk(gb));
+}
+void testFdSelectReinitReleasesRanges(){
+  ttf::CffFont f;
+  VectorStream format3(makeOtf(makeCidCff(true),3,{{0x41,1},{0x42,2}}));
+  assert(f.init(format3));assert(f.fdSelectResidentBytes()==11);
+  VectorStream format0(makeOtf(makeCidCff(false),3,{{0x41,1},{0x42,2}}));
+  assert(f.init(format0));assert(f.fdSelectResidentBytes()==0);
+  uint16_t gid=0;assert(f.findGlyph('B',gid)&&gid==2);
+  ttf::GlyphBitmap gb;assert(f.rasterize(gid,100,gb));assert(gb.width==5&&hasInk(gb));
 }
 void testCollectionFaceOffset(){
   constexpr uint32_t faceOff=32;
   VectorStream s(makeOtc(makeOtf(makeCidCff(true),3,{{0x41,1},{0x42,2}}),faceOff));
   ttf::CffFont f;
   if(!f.init(s,faceOff)){std::cerr<<"OTC CFF1 init failed: "<<f.lastError()<<'\n';std::abort();}
-  assert(f.isCidKeyed()&&f.fdCount()==2);
+  assert(f.isCidKeyed()&&f.fdCount()==2);assert(f.fdSelectResidentBytes()==11);
   uint16_t gid=0;assert(f.findGlyph('B',gid)&&gid==2);
   ttf::GlyphBitmap gb;assert(f.rasterize(gid,100,gb));
   assert(gb.width==5&&gb.height==10&&gb.advance==60&&hasInk(gb));
@@ -160,7 +170,7 @@ void testCollectionFaceOffset(){
 } // namespace
 
 int main(){
-  testPlain();testCid(false);testCid(true);testCollectionFaceOffset();
-  std::cout<<"CFF1 CID FDSelect + per-FD Subrs + arithmetic/transient VM + OTC face-offset + 2-bit raster OK\n";
+  testPlain();testCid(false);testCid(true);testFdSelectReinitReleasesRanges();testCollectionFaceOffset();
+  std::cout<<"CFF1 CID streamed FDSelect0 + resident FDSelect3 + per-FD Subrs + arithmetic/transient VM + OTC face-offset + 2-bit raster OK\n";
   return 0;
 }
