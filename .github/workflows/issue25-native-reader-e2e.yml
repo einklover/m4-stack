@@ -2,7 +2,8 @@ name: issue25 native reader full QEMU E2E
 
 on:
   push:
-    branches: [agent/native-reader-ux-e2e]
+    branches:
+      - agent/native-reader-ux-e2e
   workflow_dispatch:
 
 permissions:
@@ -13,10 +14,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      QEMU_SOURCE: ${{ runner.temp }}/issue25-qemu
-      FANQIE_WORK: ${{ runner.temp }}/issue25-fanqie
-      WEREAD_WORK: ${{ runner.temp }}/issue25-weread
-      ARTIFACT_ROOT: ${{ runner.temp }}/issue25-artifacts
+      QEMU_SOURCE: ${{ github.workspace }}/.issue25-qemu
+      FANQIE_WORK: ${{ github.workspace }}/.issue25-fanqie
+      WEREAD_WORK: ${{ github.workspace }}/.issue25-weread
+      ARTIFACT_ROOT: ${{ github.workspace }}/.issue25-artifacts
     steps:
       - uses: actions/checkout@v4
 
@@ -37,8 +38,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.QEMU_SOURCE }}/build-murphy-v3
-            ${{ env.QEMU_SOURCE }}/pc-bios
+            ${{ github.workspace }}/.issue25-qemu/build-murphy-v3
+            ${{ github.workspace }}/.issue25-qemu/pc-bios
           key: issue25-qemu-v3-${{ runner.os }}-${{ hashFiles('simulator/qemu/build.py', 'simulator/qemu/build_patched_qemu_v3.py', 'simulator/qemu/patches/**') }}
 
       - name: Bootstrap firmware dependencies
@@ -90,7 +91,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: issue25-fanqie-${{ github.run_id }}
-          path: ${{ env.ARTIFACT_ROOT }}/fanqie
+          path: ${{ github.workspace }}/.issue25-artifacts/fanqie
           if-no-files-found: warn
           retention-days: 3
 
@@ -106,9 +107,10 @@ jobs:
           cp "$ARTIFACT_ROOT/weread/01-qr-screen.pbm" "$ARTIFACT_ROOT/qr/qr-screen.pbm" || true
           python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
           import qrcode
-          root = Path(__import__('os').environ['ARTIFACT_ROOT']) / 'qr'
+          root = Path(os.environ['ARTIFACT_ROOT']) / 'qr'
           data = json.loads((root / 'qr.json').read_text(encoding='utf-8'))
           url = data['qr_url']
           if not url.startswith('https://weread.qq.com/web/confirm?uid='):
@@ -121,7 +123,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: issue25-weread-live-qr-${{ github.run_id }}
-          path: ${{ env.ARTIFACT_ROOT }}/qr
+          path: ${{ github.workspace }}/.issue25-artifacts/qr
           if-no-files-found: error
           retention-days: 1
 
@@ -150,6 +152,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: issue25-weread-${{ github.run_id }}
-          path: ${{ env.ARTIFACT_ROOT }}/weread
+          path: ${{ github.workspace }}/.issue25-artifacts/weread
           if-no-files-found: warn
           retention-days: 3
