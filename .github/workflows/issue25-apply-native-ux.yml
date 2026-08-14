@@ -1,0 +1,50 @@
+name: issue25 apply native reader UX
+
+on:
+  push:
+    branches: [agent/native-reader-ux-e2e]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-reader-ux-e2e
+          fetch-depth: 0
+
+      - name: Apply deterministic source patch
+        run: python3 scripts/issue25_apply_native_reader_ux.py
+
+      - name: Verify expected architecture markers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ! grep -q 'M4NativeProviderHomeTemplate' firmware/src/activities/apps/NativeAppActivity.cpp
+          grep -q 'tilesCount_ > 0 && tilesFocused_' firmware/src/activities/apps/NativeAppActivity.cpp
+          grep -q 'category.key == selectedCategoryKey_' firmware/src/apps/native/M4NativeAppControllerFactory.cpp
+          grep -q 'qr_url' firmware/src/activities/apps/NativeProviderLoginActivity.cpp
+          grep -q 'kLoginTimeoutMs' firmware/src/apps/providers/M4NativeProviderLogin.cpp
+
+      - name: Commit patched sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if git diff --quiet; then
+            echo 'No patch diff to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add firmware/src/activities/apps/NativeAppActivity.cpp \
+                  firmware/src/apps/native/M4NativeAppControllerFactory.cpp \
+                  firmware/src/activities/apps/NativeProviderLoginActivity.cpp \
+                  firmware/src/apps/providers/M4NativeProviderLogin.cpp
+          git commit -m 'ui(native): unify provider entry UX and tile focus (#25)'
+          git push origin HEAD:agent/native-reader-ux-e2e
