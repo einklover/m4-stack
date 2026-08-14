@@ -9,7 +9,6 @@
 
 #include "MappedInputManager.h"
 #include "apps/native/M4NativeAppControllerFactory.h"
-#include "apps/native/M4NativeProviderHomeTemplate.h"
 #include "apps/providers/M4NativeProviderDiscovery.h"
 #include "apps/providers/M4NativeProviderIo.h"
 #include "apps/providers/M4NativeProviderManager.h"
