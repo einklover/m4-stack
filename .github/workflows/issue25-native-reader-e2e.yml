@@ -104,6 +104,54 @@ jobs:
           test -x "$QEMU"
           "$QEMU" -machine help | grep -q 'murphy-m4'
 
+      - name: Fanqie install and launch diagnostic
+        continue-on-error: true
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import json
+          import os
+          import time
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location('native_reader_e2e', 'simulator/tests/native_reader_ux_qemu.py')
+          mod = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          spec.loader.exec_module(mod)
+
+          root = Path(os.environ['ARTIFACT_ROOT']) / 'fanqie'
+          root.mkdir(parents=True, exist_ok=True)
+          work = Path(os.environ['FANQIE_WORK'] + '-diag')
+          pty = ''
+          try:
+              pty, state = mod.start_sim(Path(os.environ['QEMU_SOURCE']), work)
+              (root / 'diag-state.json').write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+              mod.save_status(pty, root / 'diag-00-status-boot.json')
+
+              cp, obj = mod.m4adb(pty, ['install', 'plugins/m4-fanqie-plugin', '--transport', 'usb',
+                                        '--ready-timeout', '20', '--commit-timeout', '120',
+                                        '--overall-timeout', '180'], timeout=220, check=False)
+              (root / 'diag-01-install.txt').write_text(cp.stdout or '', encoding='utf-8')
+              (root / 'diag-01-install-parsed.json').write_text(json.dumps(obj, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+              cp, obj = mod.m4adb(pty, ['launch', mod.FANQIE_APP], timeout=45, check=False)
+              (root / 'diag-02-launch.txt').write_text(cp.stdout or '', encoding='utf-8')
+              (root / 'diag-02-launch-parsed.json').write_text(json.dumps(obj, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+              mod.save_status(pty, root / 'diag-03-status-immediate.json')
+              time.sleep(3)
+              mod.save_status(pty, root / 'diag-04-status-after-3s.json')
+
+              cp, obj = mod.m4adb(pty, ['ui'], timeout=25, check=False)
+              (root / 'diag-05-ui-raw.txt').write_text(cp.stdout or '', encoding='utf-8')
+              (root / 'diag-05-ui-parsed.json').write_text(json.dumps(obj, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+              (root / 'diag-05-ui-body.json').write_text(json.dumps(mod.nested_body(obj), ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+              mod.screenshot(pty, root / 'diag-06-screen.pbm')
+          finally:
+              mod.stop_sim(work)
+          PY
+
       - name: Fanqie full interactive reader journey
         id: fanqie
         shell: bash
