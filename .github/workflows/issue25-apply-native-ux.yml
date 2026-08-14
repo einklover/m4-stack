@@ -1,5 +1,6 @@
 name: issue25 apply native reader UX
 
+# Temporary migration workflow for #25; remove after the full QEMU journey passes.
 on:
   push:
     branches: [agent/native-reader-ux-e2e]
