@@ -1,0 +1,155 @@
+name: issue25 native reader full QEMU E2E
+
+on:
+  push:
+    branches: [agent/native-reader-ux-e2e]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-reader-journey:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      QEMU_SOURCE: ${{ runner.temp }}/issue25-qemu
+      FANQIE_WORK: ${{ runner.temp }}/issue25-fanqie
+      WEREAD_WORK: ${{ runner.temp }}/issue25-weread
+      ARTIFACT_ROOT: ${{ runner.temp }}/issue25-artifacts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-pip python3-venv \
+            libglib2.0-dev libpixman-1-dev libgcrypt20-dev libslirp-dev libsdl2-dev \
+            flex bison dosfstools mtools git
+          python3 -m pip install --user platformio pyserial qrcode pillow
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          mkdir -p "$ARTIFACT_ROOT/fanqie" "$ARTIFACT_ROOT/weread" "$ARTIFACT_ROOT/qr"
+
+      - name: Cache patched Murphy QEMU
+        id: qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.QEMU_SOURCE }}/build-murphy-v3
+            ${{ env.QEMU_SOURCE }}/pc-bios
+          key: issue25-qemu-v3-${{ runner.os }}-${{ hashFiles('simulator/qemu/build.py', 'simulator/qemu/build_patched_qemu_v3.py', 'simulator/qemu/patches/**') }}
+
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Enable same-session QR introspection in QEMU profile only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('firmware/platformio.ini')
+          s = p.read_text(encoding='utf-8')
+          anchor = '  -DM4_QEMU_PLUGIN_DEBUG=1\n'
+          if anchor not in s:
+              raise SystemExit('murphy_m4_qemu_plugin anchor missing')
+          if '  -DM4_QEMU_E2E=1\n' not in s:
+              s = s.replace(anchor, anchor + '  -DM4_QEMU_E2E=1\n', 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+          git diff -- firmware/platformio.ini
+
+      - name: Build plugin-debug firmware
+        working-directory: firmware
+        run: pio run -e murphy_m4_qemu_plugin -j 2
+
+      - name: Build cumulative Murphy QEMU
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        run: python3 simulator/qemu/build.py --source-dir "$QEMU_SOURCE" --reconfigure -j 2
+
+      - name: Resolve cached Murphy QEMU
+        shell: bash
+        run: |
+          QEMU="$QEMU_SOURCE/build-murphy-v3/qemu-system-xtensa"
+          if [ ! -x "$QEMU" ]; then QEMU="${QEMU}-unsigned"; fi
+          test -x "$QEMU"
+          "$QEMU" -machine help | grep -q 'murphy-m4'
+
+      - name: Fanqie full interactive reader journey
+        id: fanqie
+        shell: bash
+        run: |
+          python3 simulator/tests/native_reader_ux_qemu.py fanqie \
+            --qemu-source "$QEMU_SOURCE" \
+            --work "$FANQIE_WORK" \
+            --artifacts "$ARTIFACT_ROOT/fanqie"
+
+      - name: Upload Fanqie journey evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue25-fanqie-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_ROOT }}/fanqie
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Start WeRead same-session login and capture QR
+        id: weread_start
+        shell: bash
+        run: |
+          python3 simulator/tests/native_reader_ux_qemu.py weread-start \
+            --qemu-source "$QEMU_SOURCE" \
+            --work "$WEREAD_WORK" \
+            --artifacts "$ARTIFACT_ROOT/weread"
+          cp "$ARTIFACT_ROOT/weread/qr.json" "$ARTIFACT_ROOT/qr/qr.json"
+          cp "$ARTIFACT_ROOT/weread/01-qr-screen.pbm" "$ARTIFACT_ROOT/qr/qr-screen.pbm" || true
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import qrcode
+          root = Path(__import__('os').environ['ARTIFACT_ROOT']) / 'qr'
+          data = json.loads((root / 'qr.json').read_text(encoding='utf-8'))
+          url = data['qr_url']
+          if not url.startswith('https://weread.qq.com/web/confirm?uid='):
+              raise SystemExit('bad qr url')
+          qrcode.make(url).save(root / 'weread-login.png')
+          print('same-session WeRead QR image prepared (URL intentionally not logged)')
+          PY
+
+      - name: Upload live WeRead QR
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue25-weread-live-qr-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_ROOT }}/qr
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Finish WeRead bookshelf to reader journey
+        id: weread_finish
+        shell: bash
+        run: |
+          python3 simulator/tests/native_reader_ux_qemu.py weread-finish \
+            --work "$WEREAD_WORK" \
+            --artifacts "$ARTIFACT_ROOT/weread"
+
+      - name: Stop any remaining WeRead QEMU
+        if: always()
+        shell: bash
+        run: |
+          python3 simulator/tests/native_reader_ux_qemu.py stop \
+            --work "$WEREAD_WORK" --artifacts "$ARTIFACT_ROOT/weread" || true
+
+      - name: Build production Murphy profile
+        if: steps.fanqie.outcome == 'success' && steps.weread_finish.outcome == 'success'
+        working-directory: firmware
+        run: pio run -e murphy_m4 -j 2
+
+      - name: Upload WeRead journey evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue25-weread-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_ROOT }}/weread
+          if-no-files-found: warn
+          retention-days: 3
