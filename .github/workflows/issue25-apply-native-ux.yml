@@ -19,6 +19,11 @@ jobs:
           ref: agent/native-reader-ux-e2e
           fetch-depth: 0
 
+      - name: Remove legacy home-template include
+        shell: bash
+        run: |
+          sed -i '/#include "apps\/native\/M4NativeProviderHomeTemplate.h"/d' firmware/src/activities/apps/NativeAppActivity.cpp
+
       - name: Apply deterministic source patch
         run: python3 scripts/issue25_apply_native_reader_ux.py
 
@@ -46,5 +51,5 @@ jobs:
                   firmware/src/apps/native/M4NativeAppControllerFactory.cpp \
                   firmware/src/activities/apps/NativeProviderLoginActivity.cpp \
                   firmware/src/apps/providers/M4NativeProviderLogin.cpp
-          git commit -m 'ui(native): unify provider entry UX and tile focus (#25)'
+          git commit -m 'fix(native): remove stale provider home include (#25)'
           git push origin HEAD:agent/native-reader-ux-e2e
