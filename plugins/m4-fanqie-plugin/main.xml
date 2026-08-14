@@ -1,62 +1,29 @@
 <?xml version="1.0"?>
-<m4ui version="1" start="home" theme="wap">
+<m4ui version="1" start="home" theme="wap" fullscreen="true">
   <screen id="home" title="番茄小说" class="compact">
-    <text text="我的书架" class="hero" />
-    <text text="@page.status" class="meta inset" />
-    <divider class="hairline inset" />
+    <text text="分类热推" class="hero inset"/>
+    <tiles
+      id="categories"
+      source="provider.categories"
+      pageSize="8"
+      height="116"
+      onActivate="provider.selectCategory"
+      class="compact"/>
+    <text text="@page.status" class="meta inset"/>
+    <text text="@page.heading" class="section inset"/>
     <list
       id="books"
-      source="provider.books"
+      source="provider.recommend"
       titleField="title"
       subtitleField="author"
-      valueField="progress"
       onActivate="provider.openBook"
-      class="inset"
-      pageSize="8" />
+      class="ranked inset compact"/>
     <buttons
       back="返回"
-      primary="阅读"
-      left="发现"
+      primary="详情"
       right="刷新"
       onBack="system.back"
       onPrimary="provider.openSelected"
-      onLeft="ui.go:discover"
-      onRight="provider.refresh" />
-  </screen>
-
-  <screen id="discover" title="番茄 · 发现" class="compact">
-    <text text="发现" class="section" />
-    <flowText
-      text="推荐  ·  分类  ·  完结  ·  新书&#10;男频  ·  女频  ·  玄幻  ·  都市"
-      class="compact inset" />
-    <spacer height="6" />
-    <text text="墨水屏书单" class="section" />
-    <flowText
-      text="作品名  ·  作者  ·  状态  ·  最近更新&#10;默认不下载大封面，不使用无限瀑布流"
-      class="compact inset" />
-    <text
-      text="首页当前自动载入公开都市书单，可随时刷新。"
-      class="meta inset" />
-    <buttons
-      back="书架"
-      right="排行"
-      onBack="ui.go:home"
-      onRight="ui.go:rank" />
-  </screen>
-
-  <screen id="rank" title="番茄 · 排行" class="compact">
-    <text text="排行榜" class="section" />
-    <flowText
-      text="阅读榜  ·  新书榜&#10;男频  ·  女频  ·  分类榜&#10;连载 / 完结  ·  最近更新"
-      class="compact inset" height="86" />
-    <divider class="hairline inset" />
-    <text
-      text="榜单采用高密度文字行，优先翻页速度和可读性。"
-      class="meta inset" />
-    <buttons
-      back="书架"
-      left="发现"
-      onBack="ui.go:home"
-      onLeft="ui.go:discover" />
+      onRight="provider.refresh"/>
   </screen>
 </m4ui>
