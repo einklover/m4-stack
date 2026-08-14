@@ -31,7 +31,7 @@ jobs:
             flex bison dosfstools mtools git
           python3 -m pip install --user platformio pyserial qrcode pillow
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          mkdir -p "$ARTIFACT_ROOT/fanqie" "$ARTIFACT_ROOT/weread" "$ARTIFACT_ROOT/qr"
+          mkdir -p "$ARTIFACT_ROOT/fanqie" "$ARTIFACT_ROOT/weread" "$ARTIFACT_ROOT/qr" "$ARTIFACT_ROOT/build"
 
       - name: Cache patched Murphy QEMU
         id: qemu-cache
@@ -62,8 +62,35 @@ jobs:
           git diff -- firmware/platformio.ini
 
       - name: Build plugin-debug firmware
+        id: build_firmware
+        continue-on-error: true
         working-directory: firmware
-        run: pio run -e murphy_m4_qemu_plugin -j 2
+        shell: bash
+        run: |
+          set -o pipefail
+          pio run -e murphy_m4_qemu_plugin -j 2 2>&1 | tee "$ARTIFACT_ROOT/build/platformio.log"
+
+      - name: Extract firmware build errors
+        if: always()
+        shell: bash
+        run: |
+          grep -n -E '(^|[[:space:]])(error:|fatal error:)|undefined reference|collect2:|FAILED|Error [0-9]+' \
+            "$ARTIFACT_ROOT/build/platformio.log" > "$ARTIFACT_ROOT/build/errors.txt" || true
+          tail -n 120 "$ARTIFACT_ROOT/build/errors.txt" || true
+
+      - name: Upload firmware build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue25-build-${{ github.run_id }}
+          path: ${{ github.workspace }}/.issue25-artifacts/build
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Stop on firmware build failure
+        if: steps.build_firmware.outcome != 'success'
+        shell: bash
+        run: exit 1
 
       - name: Build cumulative Murphy QEMU
         if: steps.qemu-cache.outputs.cache-hit != 'true'
