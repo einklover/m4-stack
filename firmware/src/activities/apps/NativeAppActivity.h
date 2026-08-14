@@ -58,13 +58,16 @@ class NativeAppActivity final : public ActivityWithSubactivity {
   std::string listNodeId_;
   std::string listAction_;
 
-  // Bounded category tiles are a fixed 4-column touch target above the flex
-  // list. They intentionally do not add another focus model: hardware keys
-  // continue to operate the book list while M4 touch selects a category.
+  // Category tiles participate in the same hardware focus model as the list.
+  // On screens with tiles, focus starts in the tile grid; Down from the last
+  // tile row enters the book list and Up from its first row returns to tiles.
+  // Touch updates the same focus state, so key and touch behavior stay in sync.
   int tilesTop_ = 0;
   int tilesHeight_ = 0;
   int tilesCount_ = 0;
   int tilesColumns_ = 4;
+  int tilesSelectedIndex_ = 0;
+  bool tilesFocused_ = true;
   const M4NativeUi::Node* tilesNode_ = nullptr;
 
   std::string buttonActions_[4];
@@ -77,5 +80,4 @@ class NativeAppActivity final : public ActivityWithSubactivity {
   int flowPageIndex_ = 0;
   bool flowHasMore_ = false;
   bool flowVisible_ = false;
-
 };
