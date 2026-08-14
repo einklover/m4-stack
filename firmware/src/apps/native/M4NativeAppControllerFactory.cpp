@@ -285,6 +285,7 @@ class ProviderController final : public BaseController {
       out.key = category.key;
       out.title = category.title;
       out.subtitle = category.subtitle;
+      out.value = category.key == selectedCategoryKey_ ? "selected" : "";
       return true;
     }
 

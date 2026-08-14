@@ -114,6 +114,8 @@ void NativeAppActivity::onEnter() {
   screenId_ = document_.startScreen;
   selectedIndex_ = 0;
   tabIndex_ = 0;
+  tilesSelectedIndex_ = 0;
+  tilesFocused_ = true;
   resetFlowPaging();
   controllerRevision_ = controller_ ? controller_->revision() : 0;
   updateRequired_ = true;
@@ -167,17 +169,6 @@ void NativeAppActivity::onExit() {
 
 bool NativeAppActivity::loadDocument() {
   M4NativeUi::Limits limits;
-  if (const char* builtin = M4NativeProviderHomeTemplate::xmlFor(app_.provider)) {
-    const size_t n = std::strlen(builtin);
-    auto parsed = M4NativeUi::parse(builtin, n, limits);
-    if (!parsed) {
-      setError(std::string("ui_parse:") + M4NativeUi::errorKey(parsed.error));
-      return false;
-    }
-    document_ = std::move(parsed.document);
-    return true;
-  }
-
   std::string path = app_.path;
   if (!path.empty() && path.back() != '/') path += '/';
   path += app_.entry.empty() ? "main.xml" : app_.entry;
@@ -287,6 +278,8 @@ void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi
       screenId_ = result.screenId;
       selectedIndex_ = 0;
       tabIndex_ = 0;
+      tilesSelectedIndex_ = 0;
+      tilesFocused_ = true;
       resetFlowPaging();
       updateRequired_ = true;
       return;
@@ -411,9 +404,48 @@ void NativeAppActivity::loop() {
     return;
   }
 
+  if (tilesCount_ > 0 && tilesFocused_) {
+    tilesSelectedIndex_ = std::max(0, std::min(tilesSelectedIndex_, tilesCount_ - 1));
+    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      if (tilesSelectedIndex_ >= tilesColumns_) tilesSelectedIndex_ -= tilesColumns_;
+      updateRequired_ = true;
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      if (tilesSelectedIndex_ + tilesColumns_ < tilesCount_) {
+        tilesSelectedIndex_ += tilesColumns_;
+      } else if (listCount_ > 0) {
+        tilesFocused_ = false;
+        selectedIndex_ = 0;
+      }
+      updateRequired_ = true;
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      if (tilesSelectedIndex_ % tilesColumns_ > 0) --tilesSelectedIndex_;
+      updateRequired_ = true;
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      const int col = tilesSelectedIndex_ % tilesColumns_;
+      if (col + 1 < tilesColumns_ && tilesSelectedIndex_ + 1 < tilesCount_) ++tilesSelectedIndex_;
+      updateRequired_ = true;
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (tilesNode_) handleAction(tilesNode_->action, tilesNode_, tilesSelectedIndex_);
+      return;
+    }
+  }
+
   if (listCount_ > 0) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-      selectedIndex_ = (selectedIndex_ + listCount_ - 1) % listCount_;
+      if (selectedIndex_ == 0 && tilesCount_ > 0) {
+        tilesFocused_ = true;
+        tilesSelectedIndex_ = std::max(0, std::min(tilesSelectedIndex_, tilesCount_ - 1));
+      } else {
+        selectedIndex_ = (selectedIndex_ + listCount_ - 1) % listCount_;
+      }
       updateRequired_ = true;
       return;
     }
@@ -508,6 +540,9 @@ void NativeAppActivity::loop() {
       const int index = row * columns + col;
       if (col >= 0 && col < columns && row >= 0 && row < rows && index >= 0 &&
           index < tilesCount_ && inCellX < cellWidth && inCellY < cellHeight) {
+        tilesSelectedIndex_ = index;
+        tilesFocused_ = true;
+        updateRequired_ = true;
         handleAction(tilesNode_->action, tilesNode_, index);
         return;
       }
@@ -530,6 +565,7 @@ void NativeAppActivity::loop() {
   const int rowHeight = M4UiText::listRowHeight(renderer, UI_10_FONT_ID, baseRowHeight, hasSubtitle);
   if (TouchHitGeometry::listIndexFromPoint(ty, listTop_, listHeight_, rowHeight,
                                            listCount_, selectedIndex_, hit)) {
+    tilesFocused_ = false;
     selectedIndex_ = hit;
     updateRequired_ = true;
     if (!listAction_.empty()) handleAction(listAction_, nullptr, hit);
@@ -696,6 +732,7 @@ void NativeAppActivity::render() {
         tilesCount_ = count;
         tilesColumns_ = columns;
         tilesNode_ = &node;
+        if (count > 0) tilesSelectedIndex_ = std::max(0, std::min(tilesSelectedIndex_, count - 1));
         for (int i = 0; i < count; ++i) {
           M4NativeUi::Row row;
           if (!controller_->rowAt(node.source, static_cast<size_t>(i), row)) continue;
@@ -703,10 +740,16 @@ void NativeAppActivity::render() {
           const int r = i / columns;
           const int x = pad + col * (cellWidth + gap);
           const int tileY = y + r * (cellHeight + gap);
-          const bool selected = row.value == "selected";
-          if (selected && cellWidth > 8 && cellHeight > 8) renderer.fillRoundedRect(x + 3, tileY + 3, cellWidth - 6, cellHeight - 6, 7, Color::LightGray);
-          const std::string titleText = M4UiText::truncated(renderer, UI_10_FONT_ID, row.title.c_str(), std::max(1, cellWidth - 8), selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
-          M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, tileY, cellWidth, cellHeight, titleText.c_str(), true, selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 4);
+          const bool active = row.value == "selected";
+          const bool focused = tilesFocused_ && i == tilesSelectedIndex_;
+          if (focused && cellWidth > 8 && cellHeight > 8) {
+            renderer.fillRoundedRect(x + 3, tileY + 3, cellWidth - 6, cellHeight - 6, 7, Color::LightGray);
+          }
+          const auto family = (active || focused) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+          const std::string titleText = M4UiText::truncated(renderer, UI_10_FONT_ID, row.title.c_str(),
+                                                            std::max(1, cellWidth - 8), family);
+          M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, tileY, cellWidth, cellHeight,
+                                     titleText.c_str(), true, family, 4);
         }
         y += height;
         break;
@@ -805,8 +848,12 @@ void NativeAppActivity::render() {
 
 std::string NativeAppActivity::debugUiJson() {
   if (subActivity) return subActivity->debugUiJson();
+  const bool tileFocus = tilesCount_ > 0 && tilesFocused_;
   return "{\"kind\":\"native_app\",\"app_id\":\"" + jsonEscape(app_.id) +
          "\",\"provider\":\"" + jsonEscape(app_.provider) + "\",\"screen\":\"" +
-         jsonEscape(screenId_) + "\",\"selected\":" + std::to_string(selectedIndex_) +
+         jsonEscape(screenId_) + "\",\"focus\":\"" + (tileFocus ? "tiles" : "list") +
+         "\",\"tile_selected\":" + std::to_string(tilesSelectedIndex_) +
+         ",\"tiles\":" + std::to_string(tilesCount_) +
+         ",\"selected\":" + std::to_string(selectedIndex_) +
          ",\"rows\":" + std::to_string(listCount_) + ",\"error\":\"" + jsonEscape(error_) + "\"}";
 }

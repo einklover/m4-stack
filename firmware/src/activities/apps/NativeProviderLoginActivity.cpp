@@ -114,7 +114,12 @@ void NativeProviderLoginActivity::render(bool force) {
 
 std::string NativeProviderLoginActivity::debugUiJson() {
   const auto s = M4NativeProviderLogin::snapshot();
-  return std::string("{\"kind\":\"native_provider_login\",\"provider\":\"") + providerId_ +
-         "\",\"phase\":" + std::to_string(static_cast<int>(s.phase)) +
-         ",\"has_qr\":" + (s.qrUrl.empty() ? "false" : "true") + "}";
+  std::string out = std::string("{\"kind\":\"native_provider_login\",\"provider\":\"") + providerId_ +
+                    "\",\"phase\":" + std::to_string(static_cast<int>(s.phase)) +
+                    ",\"has_qr\":" + (s.qrUrl.empty() ? "false" : "true");
+#ifdef M4_QEMU_E2E
+  if (!s.qrUrl.empty()) out += ",\"qr_url\":\"" + s.qrUrl + "\"";
+#endif
+  out += "}";
+  return out;
 }

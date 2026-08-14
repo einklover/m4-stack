@@ -205,7 +205,12 @@ bool wereadLogin(const std::string& root) {
   publish(Phase::WaitingScan, "请用微信或微信读书扫码", nullptr, &qr);
 
   const uint32_t started = millis();
-  while (millis() - started < 120000u) {
+#ifdef M4_QEMU_E2E
+  constexpr uint32_t kLoginTimeoutMs = 10u * 60u * 1000u;
+#else
+  constexpr uint32_t kLoginTimeoutMs = 120000u;
+#endif
+  while (millis() - started < kLoginTimeoutMs) {
     if (!waitCancelable(2000)) {
       publish(Phase::Cancelled, "已取消");
       return false;
