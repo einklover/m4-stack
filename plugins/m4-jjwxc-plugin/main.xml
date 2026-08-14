@@ -1,45 +1,29 @@
 <?xml version="1.0"?>
-<m4ui version="1" start="home" theme="wap">
+<m4ui version="1" start="home" theme="wap" fullscreen="true">
   <screen id="home" title="晋江文学城" class="compact">
-    <text text="@page.heading" class="hero" />
-    <text text="@page.status" class="meta inset" />
-    <divider class="hairline inset" />
+    <text text="分类热推" class="hero inset"/>
+    <tiles
+      id="categories"
+      source="provider.categories"
+      pageSize="8"
+      height="116"
+      onActivate="provider.selectCategory"
+      class="compact"/>
+    <text text="@page.status" class="meta inset"/>
+    <text text="@page.heading" class="section inset"/>
     <list
       id="books"
-      source="provider.books"
+      source="provider.recommend"
       titleField="title"
       subtitleField="author"
-      valueField="progress"
       onActivate="provider.openBook"
-      class="inset"
-      pageSize="8" />
+      class="ranked inset compact"/>
     <buttons
       back="返回"
-      primary="阅读"
-      left="频道"
+      primary="详情"
       right="刷新"
       onBack="system.back"
       onPrimary="provider.openSelected"
-      onLeft="ui.go:channels"
-      onRight="provider.refresh" />
-  </screen>
-
-  <screen id="channels" title="晋江 · 分类推荐" class="compact">
-    <text text="选择分类" class="section" />
-    <text text="选择后返回主页加载该分类推荐" class="meta inset" />
-    <divider class="hairline inset" />
-    <list
-      id="categories"
-      source="provider.categories"
-      titleField="title"
-      subtitleField="subtitle"
-      onActivate="provider.selectCategory"
-      class="inset"
-      pageSize="8" />
-    <buttons
-      back="书架"
-      primary="查看"
-      onBack="ui.go:home"
-      onPrimary="provider.selectCategory" />
+      onRight="provider.refresh"/>
   </screen>
 </m4ui>
