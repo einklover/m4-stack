@@ -21,6 +21,10 @@ from m4adb_lib.protocol import build_req
 class ObservingClient(Client):
     """Client.request() with lossless logging for the current read batch."""
 
+    def close(self) -> None:
+        """Close the underlying serial transport used by simulator journeys."""
+        self.t.close()
+
     def request(
         self,
         obj: dict[str, Any],
