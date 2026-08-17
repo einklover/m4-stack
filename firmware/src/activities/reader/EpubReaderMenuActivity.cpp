@@ -18,10 +18,6 @@
 #include <algorithm>
 
 namespace {
-// BaseTheme::drawProgressBar needs >4px height for a visible fill and also
-// draws percentage text below the bar. Reserve a fixed 32px block so that text
-// never overlaps the first 52px touch row while six quick actions still fit in
-// Murphy M4 landscape mode.
 constexpr int kQuickProgressBarHeight = 8;
 constexpr int kQuickProgressBlockHeight = 32;
 
@@ -33,8 +29,6 @@ struct LayoutPreset {
   uint8_t lineSpacing;
 };
 
-// Reader-friendly discrete presets: no continuous slider/redraw churn on E-Ink.
-// Keep the standard preset identical to the firmware defaults.
 constexpr LayoutPreset kCompactLayout{8, 8, 6, 6, 9};
 constexpr LayoutPreset kStandardLayout{10, 10, 10, 10, 10};
 constexpr LayoutPreset kRelaxedLayout{14, 14, 18, 18, 12};
@@ -61,8 +55,6 @@ int customAutoFontPx(uint8_t fontSize) {
 }
 
 int systemFontPx(uint8_t fontSize) {
-  // Keep this aligned with CrossPointSettings::getReaderFontId(). The built-in
-  // system family has three distinct effective body sizes on the current M4.
   switch (fontSize) {
     case CrossPointSettings::SMALL:
       return 12;
@@ -82,6 +74,7 @@ void EpubReaderMenuActivity::onEnter() {
   menuLayer_ = MenuLayer::QUICK;
   selectedIndex = 0;
   readerStyleDirty_ = false;
+  readerFontDirty_ = false;
   firstPaint_ = true;
   updateRequired = true;
 
@@ -151,7 +144,6 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
       if (increase) {
         if (oldSize == CrossPointSettings::SMALL) newSize = CrossPointSettings::MEDIUM;
         else if (oldSize == CrossPointSettings::MEDIUM) newSize = CrossPointSettings::LARGE;
-        // LARGE and EXTRA_LARGE are both 18px in the current system font map.
       } else {
         if (oldSize >= CrossPointSettings::LARGE) newSize = CrossPointSettings::MEDIUM;
         else if (oldSize == CrossPointSettings::MEDIUM) newSize = CrossPointSettings::SMALL;
@@ -164,6 +156,7 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
 
     if (changed) {
       readerStyleDirty_ = true;
+      readerFontDirty_ = true;
       SETTINGS.saveToFile();
     }
     updateRequired = true;
@@ -224,15 +217,21 @@ std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
 void EpubReaderMenuActivity::notifyParentStyleChanged() {
   if (!readerStyleDirty_) return;
 
-  // Keep the long-standing one-argument onBack ABI so both EPUB and TXT callers
-  // remain source-compatible. TXT already treats ROTATE_SCREEN reaching its
-  // parent callback as a pure "settings changed / rebuild pagination" signal;
-  // the menu itself owns orientation mutation, so this does not rotate anything.
-  // EPUB ignores this action and performs its normal font reload + section reset
-  // in onBack. This gives TXT the same one-shot reflow after quick typography
-  // changes without rebuilding on every A+/preset tap.
+  // Runtime sfnt size changes need the new face to exist before TXT compares
+  // cachedFontId with SETTINGS.getReaderFontId(). Layout-only presets deliberately
+  // skip this relatively expensive reload.
+  if (readerFontDirty_) {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    EpdFontLoader::loadFontsFromSd(renderer);
+    xSemaphoreGive(renderingMutex);
+  }
+
+  // Existing parent contract: TXT treats ROTATE_SCREEN as a one-shot settings
+  // reflow signal; EPUB performs its normal section reset when the menu closes.
   auto actionCallback = onAction;
   actionCallback(MenuAction::ROTATE_SCREEN);
+  readerStyleDirty_ = false;
+  readerFontDirty_ = false;
 }
 
 void EpubReaderMenuActivity::loop() {
@@ -244,9 +243,6 @@ void EpubReaderMenuActivity::loop() {
   const auto& items = activeMenuItems();
   if (items.empty()) return;
 
-  // Touch geometry intentionally mirrors renderScreen(). This also fixes the
-  // old portrait-inverted mismatch where rendering used a 50px top gutter but
-  // hit-testing did not, causing taps to activate the row above the visible one.
   if (mappedInput.hasTouch()) {
     if (mappedInput.wasBackGesture()) {
       if (returnToQuickMenu()) return;
@@ -261,9 +257,7 @@ void EpubReaderMenuActivity::loop() {
         renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted;
     const int hintGutterHeight = isPortraitInverted ? 50 : 0;
     int listTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
-    if (menuLayer_ == MenuLayer::QUICK) {
-      listTop += kQuickProgressBlockHeight;
-    }
+    if (menuLayer_ == MenuLayer::QUICK) listTop += kQuickProgressBlockHeight;
     const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
     const int totalItems = static_cast<int>(items.size());
     const int pageItems = std::max(1, listHeight / metrics.listRowHeight);
@@ -325,7 +319,6 @@ void EpubReaderMenuActivity::loop() {
 
     const auto selectedAction = selectedItem.action;
     if (selectedAction == MenuAction::ROTATE_SCREEN) {
-      // Cycle orientation preview locally; actual rotation happens on menu exit.
       pendingOrientation = (pendingOrientation + 1) % orientationLabels.size();
       updateRequired = true;
       return;
@@ -353,12 +346,12 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::TOGGLE_FONT) {
-      if (SETTINGS.fontFamily == CrossPointSettings::SYSTEM_FONT) {
-        SETTINGS.fontFamily = CrossPointSettings::FONT_CUSTOM;
-      } else {
-        SETTINGS.fontFamily = CrossPointSettings::SYSTEM_FONT;
-      }
+      SETTINGS.fontFamily = SETTINGS.fontFamily == CrossPointSettings::SYSTEM_FONT
+                                ? CrossPointSettings::FONT_CUSTOM
+                                : CrossPointSettings::SYSTEM_FONT;
       SETTINGS.saveToFile();
+      readerStyleDirty_ = true;
+      readerFontDirty_ = true;
       updateRequired = true;
       return;
     }
@@ -367,7 +360,10 @@ void EpubReaderMenuActivity::loop() {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       enterNewActivity(new FontSelectionActivity(renderer, mappedInput, [this](bool loaded) {
         exitActivity();
-        if (!loaded) {
+        if (loaded) {
+          readerStyleDirty_ = true;
+          readerFontDirty_ = true;
+        } else {
           xSemaphoreTake(renderingMutex, portMAX_DELAY);
           pendingPopup_ = L(Str::kFontLoadFailed);
           xSemaphoreGive(renderingMutex);
@@ -429,7 +425,7 @@ void EpubReaderMenuActivity::loop() {
       xSemaphoreGive(renderingMutex);
       return;
     }
-#endif  // CROSSPOINT_X3
+#endif
 
     if (selectedAction == MenuAction::LONG_PRESS_CONFIRM_MAPPING) {
 #ifdef CROSSPOINT_X3
@@ -445,18 +441,14 @@ void EpubReaderMenuActivity::loop() {
 
     if (selectedAction == MenuAction::BLUETOOTH_SETTINGS) {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      enterNewActivity(new SimpleBluetoothActivity(
-          renderer, mappedInput,
-          [this]() {
-            exitActivity();
-            updateRequired = true;
-          }));
+      enterNewActivity(new SimpleBluetoothActivity(renderer, mappedInput, [this]() {
+        exitActivity();
+        updateRequired = true;
+      }));
       xSemaphoreGive(renderingMutex);
       return;
     }
 
-    // The callback can delete this menu (reader swaps subactivities), so capture
-    // it locally and return immediately after invoking it.
     auto actionCallback = onAction;
     actionCallback(selectedAction);
     return;
@@ -492,10 +484,6 @@ void EpubReaderMenuActivity::renderScreen() {
   GUI.drawHeader(renderer, Rect{contentX, hintGutterHeight, contentWidth, metrics.headerHeight}, truncTitle.c_str());
 
   int listTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
-
-  // The quick layer shows actual whole-book progress without opening another
-  // screen. drawProgressBar also renders the percentage text below the bar, so
-  // the whole block is reserved before list hit-testing begins.
   if (menuLayer_ == MenuLayer::QUICK) {
     const int progress = std::max(0, std::min(bookProgressPercent, 100));
     const int sidePadding = std::max(12, metrics.contentSidePadding);
@@ -513,51 +501,30 @@ void EpubReaderMenuActivity::renderScreen() {
   GUI.drawList(
       renderer, Rect{contentX, listTop, contentWidth, listHeight}, totalItems, selectedIndex,
       [&items](int index) -> std::string { return items[static_cast<size_t>(index)].label; },
-      nullptr,
-      nullptr,
+      nullptr, nullptr,
       [this, &items](int index) -> std::string {
         const auto& item = items[static_cast<size_t>(index)];
-        if (item.internalAction != InternalAction::NONE) {
-          return styleValueFor(item.internalAction);
-        }
+        if (item.internalAction != InternalAction::NONE) return styleValueFor(item.internalAction);
 
         const auto action = item.action;
         if (action == MenuAction::GO_TO_PERCENT) {
           return std::to_string(std::max(0, std::min(bookProgressPercent, 100))) + "%";
         }
-        if (action == MenuAction::ROTATE_SCREEN) {
-          return std::string(orientationLabels[pendingOrientation]);
-        }
-        if (action == MenuAction::AUTO_PAGE_TURN) {
-          return std::string(autoPageTurnLabels[SETTINGS.autoPageTurnEnabled ? 1 : 0]);
-        }
-        if (action == MenuAction::TOGGLE_ANTI_ALIAS) {
-          return std::string(antiAliasLabels[SETTINGS.textAntiAliasing ? 1 : 0]);
-        }
-        if (action == MenuAction::TOGGLE_DARK_MODE) {
-          return std::string(darkModeLabels[SETTINGS.epubDarkMode ? 1 : 0]);
-        }
-        if (action == MenuAction::TOGGLE_FONT) {
-          return std::string(fontLabels[SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM ? 1 : 0]);
-        }
+        if (action == MenuAction::ROTATE_SCREEN) return std::string(orientationLabels[pendingOrientation]);
+        if (action == MenuAction::AUTO_PAGE_TURN) return std::string(autoPageTurnLabels[SETTINGS.autoPageTurnEnabled ? 1 : 0]);
+        if (action == MenuAction::TOGGLE_ANTI_ALIAS) return std::string(antiAliasLabels[SETTINGS.textAntiAliasing ? 1 : 0]);
+        if (action == MenuAction::TOGGLE_DARK_MODE) return std::string(darkModeLabels[SETTINGS.epubDarkMode ? 1 : 0]);
+        if (action == MenuAction::TOGGLE_FONT) return std::string(fontLabels[SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM ? 1 : 0]);
         if (action == MenuAction::SELECT_EXTERNAL_FONT) {
           const char* fontName = getExternalFontName();
           return strlen(fontName) > 0 ? std::string(fontName) : ">";
         }
-        if (action == MenuAction::TOGGLE_GLOBAL_NEXT_PAGE) {
-          return std::string(globalNextPageLabels[SETTINGS.globalNextPageModeEnabled ? 1 : 0]);
-        }
+        if (action == MenuAction::TOGGLE_GLOBAL_NEXT_PAGE) return std::string(globalNextPageLabels[SETTINGS.globalNextPageModeEnabled ? 1 : 0]);
 #ifdef CROSSPOINT_X3
-        if (action == MenuAction::TILT_PAGE_TURN) {
-          return std::string(tiltPageTurnLabels[SETTINGS.tiltPageTurnEnabled ? 1 : 0]);
-        }
+        if (action == MenuAction::TILT_PAGE_TURN) return std::string(tiltPageTurnLabels[SETTINGS.tiltPageTurnEnabled ? 1 : 0]);
 #endif
-        if (action == MenuAction::PAGE_TURN_MODE) {
-          return std::string(pageTurnModeLabels[SETTINGS.autoPageTurnMode ? 1 : 0]);
-        }
-        if (action == MenuAction::PAGE_TURN_INTERVAL) {
-          return std::to_string(SETTINGS.autoPageTurnInterval) + "秒";
-        }
+        if (action == MenuAction::PAGE_TURN_MODE) return std::string(pageTurnModeLabels[SETTINGS.autoPageTurnMode ? 1 : 0]);
+        if (action == MenuAction::PAGE_TURN_INTERVAL) return std::to_string(SETTINGS.autoPageTurnInterval) + "秒";
         if (action == MenuAction::LONG_PRESS_CONFIRM_MAPPING) {
           const uint8_t actionIdx = SETTINGS.longPressConfirmAction;
           const char* value = actionIdx < longPressConfirmLabels.size() ? longPressConfirmLabels[actionIdx] : "";
