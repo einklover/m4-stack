@@ -43,8 +43,18 @@ if [ "${1:-}" = "--test" ]; then
   PURE="Framebuffer Rle Header Preprocess PageStore XhsFeedParser"
   SRCS=""
   for c in $PURE; do SRCS="$SRCS $SRC/$c.java"; done
-  javac --release 11 -d "$OUT/testclasses" $SRCS "$TEST_SRC/TestMain.java"
+  PATCH_SRC="$SRC/browser/patch"
+  javac --release 11 -d "$OUT/testclasses" \
+    $SRCS \
+    "$PATCH_SRC/LogicalMonoFrame.java" \
+    "$PATCH_SRC/PatchRect.java" \
+    "$PATCH_SRC/FramePatch.java" \
+    "$PATCH_SRC/FrameDiffer.java" \
+    "$PATCH_SRC/PatchApplier.java" \
+    "$TEST_SRC/TestMain.java" \
+    "$TEST_SRC/BrowserPatchTest.java"
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.TestMain
+  java -cp "$OUT/testclasses" com.murphy.m4screenbridge.BrowserPatchTest
   exit 0
 fi
 
