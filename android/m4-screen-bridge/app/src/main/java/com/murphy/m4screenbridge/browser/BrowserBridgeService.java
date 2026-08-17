@@ -10,9 +10,13 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.Process;
 
 import com.murphy.m4screenbridge.MainActivity;
 import com.murphy.m4screenbridge.R;
+
+import java.io.FileDescriptor;
+import java.io.PrintWriter;
 
 /**
  * M1 owner for the virtual browser lifecycle. MainActivity is intentionally only a controller;
@@ -101,7 +105,14 @@ public final class BrowserBridgeService extends Service {
     public static String snapshot() {
         BrowserBridgeService s = instance;
         if (s == null || s.session == null) return "虚拟浏览器 M1：前台服务未启动";
-        return "FGS：运行中\n" + s.session.snapshot();
+        return "FGS：运行中 pid=" + Process.myPid() + "\n" + s.session.snapshot();
+    }
+
+    @Override
+    protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
+        writer.println("BrowserBridgeService");
+        writer.println("pid=" + Process.myPid());
+        writer.println(snapshot());
     }
 
     private void stopSessionAndSelf() {

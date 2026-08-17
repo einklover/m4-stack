@@ -121,7 +121,7 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 BrowserBridgeService.startJavaScriptSelfTest(MainActivity.this);
-                toast("自测页每秒改数字；关闭本界面或熄屏后服务应继续运行");
+                toast("自测页每秒翻转 40% 黑白区；关闭本界面或熄屏后服务应继续运行");
                 ui.postDelayed(() -> refresh(), 300);
             }
         }));

@@ -4,19 +4,25 @@ import android.content.Context;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.hardware.display.VirtualDisplayConfig;
 import android.media.Image;
 import android.media.ImageReader;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.Display;
 
+import android.util.Log;
+
+import com.murphy.m4screenbridge.browser.patch.ExtraDimCompensation;
 import com.murphy.m4screenbridge.browser.patch.FrameDiffer;
 import com.murphy.m4screenbridge.browser.patch.FramePatch;
 import com.murphy.m4screenbridge.browser.patch.LogicalMonoFrame;
 import com.murphy.m4screenbridge.browser.patch.PatchApplier;
+import com.murphy.m4screenbridge.browser.patch.RgbaFrameProbe;
 
 import java.nio.ByteBuffer;
 import java.util.Locale;
@@ -31,6 +37,8 @@ public final class VirtualBrowserSession {
     public static final int HEIGHT = 800;
     public static final int DENSITY_DPI = 160;
     private static final int MONO_THRESHOLD = 128;
+    private static final String TAG = "M4BrowserPatch";
+    private static final int PIXEL_COUNT = LogicalMonoFrame.WIDTH * LogicalMonoFrame.HEIGHT;
 
     private final Context host;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -48,7 +56,16 @@ public final class VirtualBrowserSession {
     private volatile int rowStride;
     private volatile int pixelStride;
     private volatile long lastFrameElapsedMs;
-    private volatile long lastSignature;
+    private volatile long lastRgbSignature;
+    private volatile long lastRgbaSignature;
+    private volatile int lastLumaMin;
+    private volatile int lastLumaMax;
+    private volatile int lastLumaMean;
+    private volatile int lastRgbaDarkPixels;
+    private volatile int lastBlackPixels;
+    private volatile String lastProbePixels = "";
+    private volatile int lastRgbGain256 = ExtraDimCompensation.UNITY_GAIN;
+    private volatile long applyErrors;
     private volatile String currentUrl = "";
     private volatile String error = "";
 
@@ -80,7 +97,16 @@ public final class VirtualBrowserSession {
         rowStride = 0;
         pixelStride = 0;
         lastFrameElapsedMs = 0;
-        lastSignature = 0;
+        lastRgbSignature = 0;
+        lastRgbaSignature = 0;
+        lastLumaMin = 0;
+        lastLumaMax = 0;
+        lastLumaMean = 0;
+        lastRgbaDarkPixels = 0;
+        lastBlackPixels = 0;
+        lastProbePixels = "";
+        lastRgbGain256 = ExtraDimCompensation.UNITY_GAIN;
+        applyErrors = 0;
         logicalFrame = null;
         logicalFrameId = -1;
         keyframeCount = 0;
@@ -105,13 +131,26 @@ public final class VirtualBrowserSession {
 
             int flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
                     | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY;
-            virtualDisplay = dm.createVirtualDisplay(
-                    "M4 EInk Browser",
-                    WIDTH,
-                    HEIGHT,
-                    DENSITY_DPI,
-                    reader.getSurface(),
-                    flags);
+            // Motorola Android 16 composed this display at brightnessDefault=0.0
+            // (minimum), so CSS #ffffff arrived as rgba(38,37,35,255) and never
+            // crossed the MONO1 threshold. Force full brightness on API 36+.
+            if (Build.VERSION.SDK_INT >= 36) {
+                VirtualDisplayConfig config = new VirtualDisplayConfig.Builder(
+                        "M4 EInk Browser", WIDTH, HEIGHT, DENSITY_DPI)
+                        .setSurface(reader.getSurface())
+                        .setFlags(flags)
+                        .setDefaultBrightness(1.0f)
+                        .build();
+                virtualDisplay = dm.createVirtualDisplay(config);
+            } else {
+                virtualDisplay = dm.createVirtualDisplay(
+                        "M4 EInk Browser",
+                        WIDTH,
+                        HEIGHT,
+                        DENSITY_DPI,
+                        reader.getSurface(),
+                        flags);
+            }
             if (virtualDisplay == null) throw new IllegalStateException("createVirtualDisplay returned null");
 
             Display display = virtualDisplay.getDisplay();
@@ -127,12 +166,25 @@ public final class VirtualBrowserSession {
     }
 
     public void startJavaScriptSelfTest() {
-        String html = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
-                + "<style>body{font-family:sans-serif;background:white;color:black;margin:24px}"
-                + "#n{font-size:72px;font-weight:bold}</style>"
-                + "<h2>M4 VirtualDisplay JavaScript self-test</h2>"
-                + "<div id=n>0</div><p>This number changes once per second.</p>"
-                + "<script>let n=0;setInterval(()=>document.getElementById('n').textContent=++n,1000);</script>";
+        // 480x320 block at y=160 is exactly 40% of 480x800 / 600 of 1500 tiles,
+        // so a black<->white flip stays under the 60% keyframe threshold.
+        String html = "<!doctype html><html><head>"
+                + "<meta name=viewport content='width=480,initial-scale=1,user-scalable=no'>"
+                + "<style>"
+                + "html,body{margin:0;padding:0;background:#ffffff;color:#000000;"
+                + "width:480px;height:800px;overflow:hidden;font-family:sans-serif}"
+                + "#hud{position:absolute;left:0;top:0;width:480px;height:48px;"
+                + "font-size:20px;font-weight:bold;padding:8px 12px;box-sizing:border-box;z-index:2}"
+                + "#blk{position:absolute;left:0;top:160px;width:480px;height:320px;"
+                + "background:#000000;z-index:1}"
+                + "</style></head><body>"
+                + "<div id=hud>M4 dirty-source <span id=n>0</span></div>"
+                + "<div id=blk></div>"
+                + "<script>let n=0,on=true;setInterval(function(){"
+                + "n++;on=!on;"
+                + "document.getElementById('n').textContent=n;"
+                + "document.getElementById('blk').style.background=on?'#000000':'#ffffff';"
+                + "},1000);</script></body></html>";
         start("data:text/html;charset=utf-8," + Uri.encode(html));
     }
 
@@ -159,8 +211,17 @@ public final class VirtualBrowserSession {
         if (imageWidth > 0) {
             sb.append(" | image ").append(imageWidth).append('x').append(imageHeight)
                     .append(" stride ").append(rowStride).append('/').append(pixelStride)
-                    .append(" | sig ").append(Long.toHexString(lastSignature));
+                    .append(" | rgbSig ").append(Long.toHexString(lastRgbSignature))
+                    .append(" | rgbaSig ").append(Long.toHexString(lastRgbaSignature));
             if (age >= 0) sb.append(" | age ").append(age).append("ms");
+            sb.append("\nluma min/max/mean ")
+                    .append(lastLumaMin).append('/').append(lastLumaMax).append('/').append(lastLumaMean)
+                    .append(" | rgbaDark ").append(lastRgbaDarkPixels)
+                    .append(" | black ").append(lastBlackPixels).append('/').append(PIXEL_COUNT)
+                    .append(String.format(Locale.ROOT, " (%.2f%%)",
+                            lastBlackPixels * 100.0 / PIXEL_COUNT));
+            if (!lastProbePixels.isEmpty()) sb.append("\npx ").append(lastProbePixels);
+            sb.append(" | gain ").append(lastRgbGain256);
         }
         sb.append("\npatch frame ").append(logicalFrameId)
                 .append(" | key ").append(keyframeCount)
@@ -170,7 +231,8 @@ public final class VirtualBrowserSession {
                 .append(" rects ").append(lastRectCount)
                 .append(" bytes ").append(lastPatchBytes)
                 .append(String.format(Locale.ROOT, " dirty %.2f%%", lastDirtyRatio * 100.0))
-                .append(" | total bytes ").append(patchPayloadBytes);
+                .append(" | total bytes ").append(patchPayloadBytes)
+                .append(" | applyErr ").append(applyErrors);
         if (!currentUrl.isEmpty()) sb.append("\nURL: ").append(currentUrl);
         if (!error.isEmpty()) sb.append("\n错误: ").append(error);
         return sb.toString();
@@ -190,16 +252,40 @@ public final class VirtualBrowserSession {
             rowStride = plane.getRowStride();
             pixelStride = plane.getPixelStride();
             ByteBuffer pixels = plane.getBuffer();
-            lastSignature = sampledSignature(pixels, imageWidth, imageHeight, rowStride, pixelStride);
+            RgbaFrameProbe probe = RgbaFrameProbe.inspect(pixels, imageWidth, imageHeight,
+                    rowStride, pixelStride);
+            lastRgbSignature = probe.rgbSignature;
+            lastRgbaSignature = probe.rgbaSignature;
+            lastLumaMin = probe.lumaMin;
+            lastLumaMax = probe.lumaMax;
+            lastLumaMean = probe.meanLuma();
+            lastRgbaDarkPixels = probe.lumaBelowThreshold;
+            lastProbePixels = RgbaFrameProbe.formatPixel(10, 10,
+                    RgbaFrameProbe.pixelRgba(pixels, 10, 10, rowStride, pixelStride))
+                    + " "
+                    + RgbaFrameProbe.formatPixel(240, 320,
+                    RgbaFrameProbe.pixelRgba(pixels, 240, 320, rowStride, pixelStride))
+                    + " "
+                    + RgbaFrameProbe.formatPixel(240, 700,
+                    RgbaFrameProbe.pixelRgba(pixels, 240, 700, rowStride, pixelStride));
 
+            lastRgbGain256 = ExtraDimCompensation.autoGain256(lastLumaMax, MONO_THRESHOLD);
             byte[] target = LogicalMonoFrame.fromRgba(pixels, imageWidth, imageHeight,
-                    rowStride, pixelStride, MONO_THRESHOLD);
-            processLogicalFrame(target);
+                    rowStride, pixelStride, MONO_THRESHOLD, lastRgbGain256);
+            lastBlackPixels = LogicalMonoFrame.countBlack(target);
+            try {
+                processLogicalFrame(target);
+            } catch (Throwable t) {
+                applyErrors++;
+                throw t;
+            }
 
             lastFrameElapsedMs = SystemClock.elapsedRealtime();
             frameCount++;
+            logFrame();
         } catch (Throwable t) {
             error = t.getClass().getSimpleName() + ": " + safeMessage(t);
+            Log.e(TAG, "frame failed: " + error, t);
         } finally {
             if (image != null) image.close();
         }
@@ -239,25 +325,18 @@ public final class VirtualBrowserSession {
         patchPayloadBytes += patch.payloadBytes();
     }
 
-    /** Lightweight content signature retained for M0/M1 real-device compositor diagnostics. */
-    static long sampledSignature(ByteBuffer source, int width, int height, int rowStride, int pixelStride) {
-        ByteBuffer b = source.duplicate();
-        long hash = 0xcbf29ce484222325L;
-        int yStep = Math.max(1, height / 50);
-        int xStep = Math.max(1, width / 30);
-        for (int y = 0; y < height; y += yStep) {
-            int row = y * rowStride;
-            for (int x = 0; x < width; x += xStep) {
-                int offset = row + x * pixelStride;
-                if (offset < 0 || offset >= b.limit()) continue;
-                int channels = Math.min(pixelStride, 4);
-                for (int c = 0; c < channels && offset + c < b.limit(); c++) {
-                    hash ^= b.get(offset + c) & 0xffL;
-                    hash *= 0x100000001b3L;
-                }
-            }
-        }
-        return hash;
+    private void logFrame() {
+        long age = lastFrameElapsedMs == 0 ? -1
+                : Math.max(0, SystemClock.elapsedRealtime() - lastFrameElapsedMs);
+        Log.i(TAG, String.format(Locale.ROOT,
+                "frames=%d patch=%d key=%d delta=%d same=%d tiles=%d/%d dirty=%.2f%% "
+                        + "rgbSig=%x rgbaSig=%x luma=%d/%d/%d rgbaDark=%d black=%d applyErr=%d "
+                        + "stride=%d/%d gain=%d age=%dms %s",
+                frameCount, logicalFrameId, keyframeCount, patchCount, unchangedFrameCount,
+                lastChangedTiles, FrameDiffer.TOTAL_TILES, lastDirtyRatio * 100.0,
+                lastRgbSignature, lastRgbaSignature, lastLumaMin, lastLumaMax, lastLumaMean,
+                lastRgbaDarkPixels, lastBlackPixels, applyErrors, rowStride, pixelStride,
+                lastRgbGain256, age, lastProbePixels));
     }
 
     private void stopInternal(boolean clearError) {

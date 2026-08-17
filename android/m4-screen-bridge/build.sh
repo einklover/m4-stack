@@ -47,6 +47,8 @@ if [ "${1:-}" = "--test" ]; then
   javac --release 11 -d "$OUT/testclasses" \
     $SRCS \
     "$PATCH_SRC/LogicalMonoFrame.java" \
+    "$PATCH_SRC/ExtraDimCompensation.java" \
+    "$PATCH_SRC/RgbaFrameProbe.java" \
     "$PATCH_SRC/PatchRect.java" \
     "$PATCH_SRC/FramePatch.java" \
     "$PATCH_SRC/FrameDiffer.java" \

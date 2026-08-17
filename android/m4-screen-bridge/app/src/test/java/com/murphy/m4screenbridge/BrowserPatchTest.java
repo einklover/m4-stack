@@ -1,9 +1,11 @@
 package com.murphy.m4screenbridge;
 
+import com.murphy.m4screenbridge.browser.patch.ExtraDimCompensation;
 import com.murphy.m4screenbridge.browser.patch.FrameDiffer;
 import com.murphy.m4screenbridge.browser.patch.FramePatch;
 import com.murphy.m4screenbridge.browser.patch.LogicalMonoFrame;
 import com.murphy.m4screenbridge.browser.patch.PatchApplier;
+import com.murphy.m4screenbridge.browser.patch.RgbaFrameProbe;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -21,6 +23,11 @@ public final class BrowserPatchTest {
         longPatchChain();
         baseMismatchRejected();
         rgbaStrideConversion();
+        blackPixelCount();
+        rgbSignatureIgnoresAlpha();
+        rgbaProbeLumaAndMotorolaStride();
+        highContrastStimulusStaysDelta();
+        extraDimCompensationRecoversWhite();
         System.out.println("OK: browser patch self-checks passed");
     }
 
@@ -167,6 +174,137 @@ public final class BrowserPatchTest {
                 LogicalMonoFrame.HEIGHT, rowStride, pixelStride, 128);
         assertTrue(LogicalMonoFrame.isBlack(mono, blackX, blackY), "RGBA black pixel");
         assertTrue(!LogicalMonoFrame.isBlack(mono, 122, 456), "RGBA neighbor stays white");
+    }
+
+    private static void blackPixelCount() {
+        byte[] white = LogicalMonoFrame.white();
+        assertEquals(0, LogicalMonoFrame.countBlack(white), "white frame has no black pixels");
+        LogicalMonoFrame.setBlack(white, 0, 0, true);
+        assertEquals(1, LogicalMonoFrame.countBlack(white), "one black pixel");
+        byte[] black = new byte[LogicalMonoFrame.SIZE];
+        assertEquals(LogicalMonoFrame.WIDTH * LogicalMonoFrame.HEIGHT,
+                LogicalMonoFrame.countBlack(black), "all-zero plane is all black");
+    }
+
+    private static void rgbSignatureIgnoresAlpha() {
+        ByteBuffer a = solidRgba(0x10, 0x20, 0x30, 0xFF, 1920, 4);
+        ByteBuffer b = solidRgba(0x10, 0x20, 0x30, 0x01, 1920, 4);
+        RgbaFrameProbe pa = RgbaFrameProbe.inspect(a, LogicalMonoFrame.WIDTH,
+                LogicalMonoFrame.HEIGHT, 1920, 4);
+        RgbaFrameProbe pb = RgbaFrameProbe.inspect(b, LogicalMonoFrame.WIDTH,
+                LogicalMonoFrame.HEIGHT, 1920, 4);
+        assertTrue(pa.rgbSignature == pb.rgbSignature, "RGB signature ignores alpha");
+        assertTrue(pa.rgbaSignature != pb.rgbaSignature, "RGBA signature sees alpha");
+        assertEquals(RgbaFrameProbe.luma(0x10, 0x20, 0x30), pa.lumaMin, "constant luma min");
+        assertEquals(pa.lumaMin, pa.lumaMax, "constant luma max");
+    }
+
+    private static void rgbaProbeLumaAndMotorolaStride() {
+        int pixelStride = 4;
+        int rowStride = 3072; // Motorola XT2437-4 padded ImageReader plane
+        ByteBuffer rgba = solidRgba(0xFF, 0xFF, 0xFF, 0xFF, rowStride, pixelStride);
+        fillRgbaRect(rgba, rowStride, pixelStride, 0, 160, LogicalMonoFrame.WIDTH, 320,
+                0x00, 0x00, 0x00, 0xFF);
+        RgbaFrameProbe probe = RgbaFrameProbe.inspect(rgba, LogicalMonoFrame.WIDTH,
+                LogicalMonoFrame.HEIGHT, rowStride, pixelStride);
+        assertEquals(0, probe.lumaMin, "black region luma min");
+        assertEquals(255, probe.lumaMax, "white chrome luma max");
+        assertTrue(probe.lumaMin < RgbaFrameProbe.LUMA_THRESHOLD
+                && probe.lumaMax >= RgbaFrameProbe.LUMA_THRESHOLD, "luma straddles threshold");
+        assertEquals(LogicalMonoFrame.WIDTH * 320, probe.lumaBelowThreshold,
+                "dark pixel count matches 40% block");
+        assertTrue(probe.meanLuma() > 100 && probe.meanLuma() < 200, "mean luma is mixed");
+        int[] whitePx = RgbaFrameProbe.pixelRgba(rgba, 10, 10, rowStride, pixelStride);
+        int[] blackPx = RgbaFrameProbe.pixelRgba(rgba, 240, 320, rowStride, pixelStride);
+        assertEquals(255, whitePx[0], "white probe R");
+        assertEquals(255, whitePx[3], "white probe A");
+        assertEquals(0, blackPx[0], "black probe R");
+        assertEquals(255, blackPx[3], "black probe A");
+
+        byte[] mono = LogicalMonoFrame.fromRgba(rgba, LogicalMonoFrame.WIDTH,
+                LogicalMonoFrame.HEIGHT, rowStride, pixelStride, 128);
+        assertEquals(LogicalMonoFrame.WIDTH * 320, LogicalMonoFrame.countBlack(mono),
+                "mono black count matches 40% block");
+    }
+
+    private static void highContrastStimulusStaysDelta() {
+        byte[] white = LogicalMonoFrame.white();
+        byte[] blackBlock = LogicalMonoFrame.white();
+        paintRect(blackBlock, 0, 160, LogicalMonoFrame.WIDTH, 320, true);
+        FramePatch toBlack = FrameDiffer.diff(white, 0, blackBlock, 1);
+        assertTrue(!toBlack.keyframe, "40% stimulus must stay a delta");
+        assertTrue(toBlack.changedTiles > 0, "40% stimulus dirty tiles");
+        assertTrue(toBlack.dirtyRatio() > 0.35 && toBlack.dirtyRatio() < 0.45,
+                "40% stimulus dirty ratio");
+        assertTrue(toBlack.dirtyRatio() < FrameDiffer.KEYFRAME_DIRTY_RATIO,
+                "40% stimulus below keyframe threshold");
+        assertArray(blackBlock, PatchApplier.apply(white, 0, toBlack), "black-block reconstruction");
+
+        byte[] backToWhite = LogicalMonoFrame.white();
+        FramePatch toWhite = FrameDiffer.diff(blackBlock, 1, backToWhite, 2);
+        assertTrue(!toWhite.keyframe, "return flip stays a delta");
+        assertEquals(toBlack.changedTiles, toWhite.changedTiles, "symmetric dirty tiles");
+        assertArray(backToWhite, PatchApplier.apply(blackBlock, 1, toWhite),
+                "white reconstruction");
+    }
+
+    private static void extraDimCompensationRecoversWhite() {
+        assertEquals(89, ExtraDimCompensation.strengthFromSlider(99,
+                ExtraDimCompensation.DEFAULT_STRENGTH_MIN,
+                ExtraDimCompensation.DEFAULT_STRENGTH_MAX), "slider 99 maps to strength 89");
+        float k = ExtraDimCompensation.componentValue(89,
+                ExtraDimCompensation.DEFAULT_A, ExtraDimCompensation.DEFAULT_B,
+                ExtraDimCompensation.DEFAULT_C);
+        assertTrue(k > 0.14f && k < 0.16f, "Motorola extra-dim k at strength 89");
+        assertEquals(ExtraDimCompensation.UNITY_GAIN,
+                ExtraDimCompensation.inverseGain256(false, 99), "inactive extra dim is unity");
+        int gain = ExtraDimCompensation.inverseGain256(true, 99);
+        assertTrue(gain > 1600 && gain < 1800, "inverse gain for slider 99");
+        assertTrue(ExtraDimCompensation.applyGain(38, gain) >= 250, "38 recovers near white");
+        assertEquals(0, ExtraDimCompensation.applyGain(0, gain), "black stays black");
+        int auto = ExtraDimCompensation.autoGain256(37, 128);
+        assertTrue(auto > ExtraDimCompensation.UNITY_GAIN, "auto gain when max luma < threshold");
+        assertTrue(ExtraDimCompensation.applyGain(38, auto) >= 250, "auto gain recovers 38");
+        assertEquals(ExtraDimCompensation.UNITY_GAIN,
+                ExtraDimCompensation.autoGain256(247, 128), "no auto gain when white already crosses");
+
+        int pixelStride = 4;
+        int rowStride = 3072;
+        ByteBuffer rgba = solidRgba(38, 37, 35, 255, rowStride, pixelStride);
+        fillRgbaRect(rgba, rowStride, pixelStride, 0, 160, LogicalMonoFrame.WIDTH, 320,
+                0, 0, 0, 255);
+        byte[] without = LogicalMonoFrame.fromRgba(rgba, LogicalMonoFrame.WIDTH,
+                LogicalMonoFrame.HEIGHT, rowStride, pixelStride, 128);
+        assertEquals(LogicalMonoFrame.WIDTH * LogicalMonoFrame.HEIGHT,
+                LogicalMonoFrame.countBlack(without), "uncompensated extra-dim is all black");
+        byte[] with = LogicalMonoFrame.fromRgba(rgba, LogicalMonoFrame.WIDTH,
+                LogicalMonoFrame.HEIGHT, rowStride, pixelStride, 128, gain);
+        assertEquals(LogicalMonoFrame.WIDTH * 320, LogicalMonoFrame.countBlack(with),
+                "compensated extra-dim keeps only the 40% block black");
+        FramePatch patch = FrameDiffer.diff(LogicalMonoFrame.white(), 0, with, 1);
+        assertTrue(!patch.keyframe, "compensated 40% stimulus stays a delta");
+        assertTrue(patch.dirtyRatio() > 0.35 && patch.dirtyRatio() < 0.45,
+                "compensated dirty ratio");
+    }
+
+    private static ByteBuffer solidRgba(int r, int g, int b, int a, int rowStride, int pixelStride) {
+        ByteBuffer rgba = ByteBuffer.allocate(rowStride * LogicalMonoFrame.HEIGHT);
+        fillRgbaRect(rgba, rowStride, pixelStride, 0, 0, LogicalMonoFrame.WIDTH,
+                LogicalMonoFrame.HEIGHT, r, g, b, a);
+        return rgba;
+    }
+
+    private static void fillRgbaRect(ByteBuffer rgba, int rowStride, int pixelStride,
+            int x0, int y0, int width, int height, int r, int g, int b, int a) {
+        for (int y = y0; y < y0 + height; y++) {
+            for (int x = x0; x < x0 + width; x++) {
+                int off = y * rowStride + x * pixelStride;
+                rgba.put(off, (byte) r);
+                rgba.put(off + 1, (byte) g);
+                rgba.put(off + 2, (byte) b);
+                if (pixelStride >= 4) rgba.put(off + 3, (byte) a);
+            }
+        }
     }
 
     private static void paintRect(byte[] frame, int x, int y, int width, int height, boolean black) {

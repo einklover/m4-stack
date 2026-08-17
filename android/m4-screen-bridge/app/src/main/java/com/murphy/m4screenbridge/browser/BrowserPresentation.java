@@ -3,9 +3,12 @@ package com.murphy.m4screenbridge.browser;
 import android.app.Presentation;
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.view.Display;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -24,6 +27,15 @@ final class BrowserPresentation extends Presentation {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        Window window = getWindow();
+        if (window != null) {
+            window.setFormat(PixelFormat.OPAQUE);
+            WindowManager.LayoutParams lp = window.getAttributes();
+            lp.screenBrightness = 1.0f;
+            lp.dimAmount = 0f;
+            window.setAttributes(lp);
+        }
 
         webView = new WebView(getContext());
         webView.setBackgroundColor(Color.WHITE);
