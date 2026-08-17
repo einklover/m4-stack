@@ -274,25 +274,27 @@ void FontSelectionActivity::render() const {
       if (index >= static_cast<int>(fontFamilies.size())) break;
 
       const auto r = grid.cellRect(slot);
-      const bool selected = index == selectedIndex;
+      const bool focused = index == selectedIndex;
       const bool active = SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM && fontFamilies[index] == current;
 
-      if (selected) {
-        renderer.fillRect(r.x, r.y, r.width, r.height, true);
-      } else {
-        renderer.drawRect(r.x, r.y, r.width, r.height, true);
-        if (active && r.width > 6 && r.height > 6) {
-          renderer.drawRect(r.x + 2, r.y + 2, r.width - 4, r.height - 4, true);
-        }
+      // Reference apps use a colored outline. On E-Ink we translate that to a
+      // double-line focus frame, while the loaded font gets a small stable ink
+      // marker. Navigating therefore changes very few pixels and ghosts less.
+      renderer.drawRect(r.x, r.y, r.width, r.height, true);
+      if (focused && r.width > 6 && r.height > 6) {
+        renderer.drawRect(r.x + 2, r.y + 2, r.width - 4, r.height - 4, true);
+      }
+      if (active && r.height > 16) {
+        renderer.fillRect(r.x + 7, r.y + 8, 3, r.height - 16, true);
       }
 
       const std::string label = M4UiText::truncated(renderer, UI_10_FONT_ID,
-                                                    fontFamilies[index].c_str(), r.width - 16,
-                                                    (selected || active) ? EpdFontFamily::BOLD
-                                                                         : EpdFontFamily::REGULAR);
-      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height,
-                                  label.c_str(), !selected,
-                                  (selected || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+                                                    fontFamilies[index].c_str(), r.width - 24,
+                                                    (focused || active) ? EpdFontFamily::BOLD
+                                                                        : EpdFontFamily::REGULAR);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x + 8, r.y, r.width - 8, r.height,
+                                  label.c_str(), true,
+                                  (focused || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     }
     drawScrollBar(static_cast<int>(fontFamilies.size()), grid.startY, grid.areaHeight);
   }
