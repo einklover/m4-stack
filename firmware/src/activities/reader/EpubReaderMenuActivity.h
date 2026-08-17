@@ -62,8 +62,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   void onExit() override;
   void loop() override;
 
-  // Structured reader-menu state for QEMU/m4adb regression assertions. Keep
-  // nested-child metadata compatible with ActivityWithSubactivity::debugUiJson().
   std::string debugUiJson() override {
     const char* layer = menuLayer_ == MenuLayer::QUICK ? "quick" :
                         (menuLayer_ == MenuLayer::STYLE ? "style" : "more");
@@ -79,6 +77,11 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     out += "\",\"items\":" + std::to_string(activeMenuItems().size());
     out += ",\"has_sync\":";
     out += hasSync ? "true" : "false";
+    out += ",\"overlay\":";
+    out += menuLayer_ == MenuLayer::MORE ? "false" : "true";
+    if (menuLayer_ == MenuLayer::STYLE) {
+      out += ",\"quick_fonts\":" + std::to_string(quickFontFamilies_.size() + 1);
+    }
     out += ",\"subactivity\":\"";
     if (subActivity) out += subActivity->getName();
     out += "\"";
@@ -113,27 +116,18 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   const std::vector<MenuItem> quickMenuItems = {
       {MenuAction::SELECT_CHAPTER, "目录"},
       {MenuAction::GO_TO_PERCENT, "进度"},
-      {MenuAction::READER_SETTINGS, "样式", InternalAction::OPEN_STYLE},
-      {MenuAction::ADD_BOOKMARK, "加书签"},
-      {MenuAction::BOOKMARK_MANAGER, "书签"},
+      {MenuAction::READER_SETTINGS, "字体", InternalAction::OPEN_STYLE},
       {MenuAction::GO_HOME, "更多", InternalAction::OPEN_MORE},
   };
 
-  // Indices are also the physical-button focus order used by the custom touch panel:
-  // 0 A-, 1 A+, 2 compact, 3 standard, 4 relaxed, 5 font, 6 detailed settings.
   const std::vector<MenuItem> styleMenuItems = {
       {MenuAction::READER_SETTINGS, "A-", InternalAction::FONT_DECREASE},
       {MenuAction::READER_SETTINGS, "A+", InternalAction::FONT_INCREASE},
       {MenuAction::READER_SETTINGS, "紧凑", InternalAction::LAYOUT_COMPACT},
       {MenuAction::READER_SETTINGS, "标准", InternalAction::LAYOUT_STANDARD},
       {MenuAction::READER_SETTINGS, "宽松", InternalAction::LAYOUT_RELAXED},
-      {MenuAction::SELECT_EXTERNAL_FONT, "字体"},
-      {MenuAction::READER_SETTINGS, "高级设置"},
   };
 
-  // One secondary level only: category prefixes make low-frequency options easy
-  // to scan without introducing yet another submenu. onEnter() removes actions
-  // unsupported by the concrete reader host (for example TXT progress sync).
   std::vector<MenuItem> moreMenuItems = {
       {MenuAction::AUTO_PAGE_TURN, "翻页 · 自动翻页"},
       {MenuAction::PAGE_TURN_INTERVAL, "翻页 · 自动间隔"},
@@ -145,6 +139,9 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
 #endif
       {MenuAction::TOGGLE_ANTI_ALIAS, "显示 · 抗锯齿"},
       {MenuAction::TOGGLE_DARK_MODE, "显示 · 暗黑模式"},
+      {MenuAction::SELECT_EXTERNAL_FONT, "显示 · 字体选择"},
+      {MenuAction::READER_SETTINGS, "显示 · 高级排版"},
+      {MenuAction::BOOKMARK_MANAGER, "书签 · 管理书签"},
       {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "控制 · 全局下一页"},
       {MenuAction::SYNC, "同步 · KOReader"},
       {MenuAction::SYNCY, "同步 · 开源阅读"},
@@ -157,6 +154,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   bool updateRequired = false;
   bool readerStyleDirty_ = false;
   bool readerFontDirty_ = false;
+  bool forceHalfRefresh_ = false;
+  std::vector<std::string> quickFontFamilies_;
   std::string pendingPopup_;
   bool firstPaint_ = true;
   TaskHandle_t displayTaskHandle = nullptr;
@@ -190,15 +189,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     return menuLayer_ == MenuLayer::QUICK ? quickMenuItems : moreMenuItems;
   }
 
-  bool returnToQuickMenu() {
-    if (menuLayer_ == MenuLayer::QUICK) return false;
-    const MenuLayer oldLayer = menuLayer_;
-    menuLayer_ = MenuLayer::QUICK;
-    selectedIndex = oldLayer == MenuLayer::STYLE ? 2 : static_cast<int>(quickMenuItems.size()) - 1;
-    updateRequired = true;
-    return true;
-  }
-
   const char* getExternalFontName() const {
     if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM && strlen(SETTINGS.customFontFamily) > 0) {
       return SETTINGS.customFontFamily;
@@ -216,4 +206,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   std::string currentFontSizeLabel() const;
   std::string styleValueFor(InternalAction action) const;
   void notifyParentStyleChanged();
+  void closeToReader();
+  void prepareQuickFontFamilies();
+  void applyQuickFontChoice(int slot);
 };
