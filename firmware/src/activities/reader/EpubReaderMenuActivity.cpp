@@ -24,6 +24,56 @@ namespace {
 // Murphy M4 landscape mode.
 constexpr int kQuickProgressBarHeight = 8;
 constexpr int kQuickProgressBlockHeight = 32;
+
+struct LayoutPreset {
+  uint8_t top;
+  uint8_t bottom;
+  uint8_t left;
+  uint8_t right;
+  uint8_t lineSpacing;
+};
+
+// Reader-friendly discrete presets: no continuous slider/redraw churn on E-Ink.
+// Keep the standard preset identical to the firmware defaults.
+constexpr LayoutPreset kCompactLayout{8, 8, 6, 6, 9};
+constexpr LayoutPreset kStandardLayout{10, 10, 10, 10, 10};
+constexpr LayoutPreset kRelaxedLayout{14, 14, 18, 18, 12};
+
+bool matchesLayout(const LayoutPreset& p) {
+  return SETTINGS.screenMargin_Top == p.top && SETTINGS.screenMargin_Bottom == p.bottom &&
+         SETTINGS.screenMargin_Left == p.left && SETTINGS.screenMargin_Right == p.right &&
+         SETTINGS.customLineSpacing == p.lineSpacing;
+}
+
+int customAutoFontPx(uint8_t fontSize) {
+  switch (fontSize) {
+    case CrossPointSettings::SMALL:
+      return 12;
+    case CrossPointSettings::MEDIUM:
+      return 14;
+    case CrossPointSettings::LARGE:
+      return 16;
+    case CrossPointSettings::EXTRA_LARGE:
+      return 18;
+    default:
+      return 16;
+  }
+}
+
+int systemFontPx(uint8_t fontSize) {
+  // Keep this aligned with CrossPointSettings::getReaderFontId(). The built-in
+  // system family has three distinct effective body sizes on the current M4.
+  switch (fontSize) {
+    case CrossPointSettings::SMALL:
+      return 12;
+    case CrossPointSettings::MEDIUM:
+      return 16;
+    case CrossPointSettings::LARGE:
+    case CrossPointSettings::EXTRA_LARGE:
+    default:
+      return 18;
+  }
+}
 }  // namespace
 
 void EpubReaderMenuActivity::onEnter() {
@@ -31,6 +81,7 @@ void EpubReaderMenuActivity::onEnter() {
   renderingMutex = xSemaphoreCreateMutex();
   menuLayer_ = MenuLayer::QUICK;
   selectedIndex = 0;
+  readerStyleDirty_ = false;
   firstPaint_ = true;
   updateRequired = true;
 
@@ -67,6 +118,109 @@ void EpubReaderMenuActivity::displayTaskLoop() {
   }
 }
 
+void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
+  if (action == InternalAction::OPEN_STYLE) {
+    menuLayer_ = MenuLayer::STYLE;
+    selectedIndex = 0;
+    updateRequired = true;
+    return;
+  }
+  if (action == InternalAction::OPEN_MORE) {
+    menuLayer_ = MenuLayer::MORE;
+    selectedIndex = 0;
+    updateRequired = true;
+    return;
+  }
+
+  if (action == InternalAction::FONT_DECREASE || action == InternalAction::FONT_INCREASE) {
+    const bool increase = action == InternalAction::FONT_INCREASE;
+    bool changed = false;
+
+    if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM) {
+      const int current = SETTINGS.customFontSize == 0
+                              ? customAutoFontPx(SETTINGS.fontSize)
+                              : std::max(12, std::min(48, static_cast<int>(SETTINGS.customFontSize)));
+      const int target = std::max(12, std::min(48, current + (increase ? 2 : -2)));
+      if (target != current) {
+        SETTINGS.customFontSize = static_cast<uint8_t>(target);
+        changed = true;
+      }
+    } else {
+      const uint8_t oldSize = SETTINGS.fontSize;
+      uint8_t newSize = oldSize;
+      if (increase) {
+        if (oldSize == CrossPointSettings::SMALL) newSize = CrossPointSettings::MEDIUM;
+        else if (oldSize == CrossPointSettings::MEDIUM) newSize = CrossPointSettings::LARGE;
+        // LARGE and EXTRA_LARGE are both 18px in the current system font map.
+      } else {
+        if (oldSize >= CrossPointSettings::LARGE) newSize = CrossPointSettings::MEDIUM;
+        else if (oldSize == CrossPointSettings::MEDIUM) newSize = CrossPointSettings::SMALL;
+      }
+      if (newSize != oldSize) {
+        SETTINGS.fontSize = newSize;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      readerStyleDirty_ = true;
+      SETTINGS.saveToFile();
+    }
+    updateRequired = true;
+    return;
+  }
+
+  const LayoutPreset* preset = nullptr;
+  if (action == InternalAction::LAYOUT_COMPACT) preset = &kCompactLayout;
+  else if (action == InternalAction::LAYOUT_STANDARD) preset = &kStandardLayout;
+  else if (action == InternalAction::LAYOUT_RELAXED) preset = &kRelaxedLayout;
+
+  if (preset) {
+    if (!matchesLayout(*preset)) {
+      SETTINGS.screenMargin_Top = preset->top;
+      SETTINGS.screenMargin_Bottom = preset->bottom;
+      SETTINGS.screenMargin_Left = preset->left;
+      SETTINGS.screenMargin_Right = preset->right;
+      SETTINGS.customLineSpacing = preset->lineSpacing;
+      SETTINGS.saveToFile();
+      readerStyleDirty_ = true;
+    }
+    updateRequired = true;
+  }
+}
+
+std::string EpubReaderMenuActivity::currentFontSizeLabel() const {
+  int px = 16;
+  if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM) {
+    px = SETTINGS.customFontSize == 0
+             ? customAutoFontPx(SETTINGS.fontSize)
+             : std::max(12, std::min(48, static_cast<int>(SETTINGS.customFontSize)));
+  } else {
+    px = systemFontPx(SETTINGS.fontSize);
+  }
+  return std::to_string(px) + "px";
+}
+
+std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
+  switch (action) {
+    case InternalAction::FONT_DECREASE:
+    case InternalAction::FONT_INCREASE:
+      return currentFontSizeLabel();
+    case InternalAction::LAYOUT_COMPACT:
+      return matchesLayout(kCompactLayout) ? "当前" : "0.9倍";
+    case InternalAction::LAYOUT_STANDARD:
+      return matchesLayout(kStandardLayout) ? "当前" : "1.0倍";
+    case InternalAction::LAYOUT_RELAXED:
+      return matchesLayout(kRelaxedLayout) ? "当前" : "1.2倍";
+    case InternalAction::OPEN_STYLE:
+    case InternalAction::OPEN_MORE:
+      return ">";
+    case InternalAction::NONE:
+    default:
+      return "";
+  }
+}
+
 void EpubReaderMenuActivity::loop() {
   if (subActivity) {
     subActivity->loop();
@@ -82,7 +236,7 @@ void EpubReaderMenuActivity::loop() {
   if (mappedInput.hasTouch()) {
     if (mappedInput.wasBackGesture()) {
       if (returnToQuickMenu()) return;
-      onBack(pendingOrientation);
+      onBack(pendingOrientation, readerStyleDirty_);
       return;
     }
 
@@ -149,13 +303,8 @@ void EpubReaderMenuActivity::loop() {
   activate_menu_item:
     const auto selectedItem = items[static_cast<size_t>(selectedIndex)];
 
-    // “更多” is internal navigation, not a reader callback. Keeping it inside
-    // this Activity avoids destroying/recreating the reader just to expose the
-    // legacy settings list.
-    if (selectedItem.opensMore) {
-      menuLayer_ = MenuLayer::MORE;
-      selectedIndex = 0;
-      updateRequired = true;
+    if (selectedItem.internalAction != InternalAction::NONE) {
+      applyInternalAction(selectedItem.internalAction);
       return;
     }
 
@@ -298,7 +447,7 @@ void EpubReaderMenuActivity::loop() {
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (returnToQuickMenu()) return;
-    onBack(pendingOrientation);
+    onBack(pendingOrientation, readerStyleDirty_);
     return;
   }
 }
@@ -320,7 +469,8 @@ void EpubReaderMenuActivity::renderScreen() {
   const int hintGutterHeight = isPortraitInverted ? 50 : 0;
 
   std::string headerTitle = title;
-  if (menuLayer_ == MenuLayer::MORE) headerTitle += " · 更多";
+  if (menuLayer_ == MenuLayer::STYLE) headerTitle += " · 排版";
+  else if (menuLayer_ == MenuLayer::MORE) headerTitle += " · 更多";
   const std::string truncTitle =
       M4UiText::truncated(renderer, UI_12_FONT_ID, headerTitle.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
   GUI.drawHeader(renderer, Rect{contentX, hintGutterHeight, contentWidth, metrics.headerHeight}, truncTitle.c_str());
@@ -351,7 +501,9 @@ void EpubReaderMenuActivity::renderScreen() {
       nullptr,
       [this, &items](int index) -> std::string {
         const auto& item = items[static_cast<size_t>(index)];
-        if (item.opensMore) return ">";
+        if (item.internalAction != InternalAction::NONE) {
+          return styleValueFor(item.internalAction);
+        }
 
         const auto action = item.action;
         if (action == MenuAction::GO_TO_PERCENT) {
@@ -406,7 +558,7 @@ void EpubReaderMenuActivity::renderScreen() {
         return ">";
       });
 
-  const char* backHint = menuLayer_ == MenuLayer::MORE ? "« 快捷" : "« 阅读";
+  const char* backHint = menuLayer_ == MenuLayer::QUICK ? "« 阅读" : "« 快捷";
   const auto labels = mappedInput.mapLabels(backHint, "选择", "向上", "向下");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
