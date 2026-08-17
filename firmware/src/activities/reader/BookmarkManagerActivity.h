@@ -29,8 +29,9 @@ class BookmarkManagerActivity final : public ActivityWithSubactivity {
   std::vector<Bookmark> bookmarks;
   int selectorIndex = 0;
   bool updateRequired = false;
+  bool firstPaint_ = true;
   bool deleteConfirmMode = false;
-  bool deleteConfirmSelected = false;  // false=取消, true=是
+  bool deleteConfirmSelected = false;  // false=取消, true=删除
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
 
