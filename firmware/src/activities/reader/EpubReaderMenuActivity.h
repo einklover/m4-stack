@@ -102,30 +102,29 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::READER_SETTINGS, "详细设置"},
   };
 
+  // Secondary reader-only controls. High-frequency navigation/bookmark/style
+  // actions live in QUICK/STYLE and are intentionally not duplicated here.
+  // Device-level Bluetooth already lives in System Settings. Long-press Confirm
+  // remains here until it gets an equivalent Controls entry, so no capability is lost.
   const std::vector<MenuItem> moreMenuItems = {
-      {MenuAction::SELECT_CHAPTER, "章节选择"},
+      // Reading behaviour
       {MenuAction::AUTO_PAGE_TURN, "自动翻页"},
-      {MenuAction::READER_SETTINGS, "阅读样式设置"},
-      {MenuAction::ADD_BOOKMARK, "添加书签"},
-      {MenuAction::BOOKMARK_MANAGER, "书签管理"},
-      {MenuAction::TOGGLE_ANTI_ALIAS, "抗锯齿"},
-      {MenuAction::GO_TO_PERCENT, "进度跳转"},
-      {MenuAction::TOGGLE_FONT, "字体"},
-      {MenuAction::SELECT_EXTERNAL_FONT, "外置字体"},
+      {MenuAction::PAGE_TURN_INTERVAL, "自动翻页间隔"},
+      {MenuAction::PAGE_TURN_MODE, "自动翻页方式"},
+      {MenuAction::ROTATE_SCREEN, "阅读方向"},
 #ifdef CROSSPOINT_X3
       {MenuAction::TILT_PAGE_TURN, "晃动翻页"},
       {MenuAction::TILT_PAGE_TURN_SETTINGS, "晃动翻页设置"},
 #endif
-      {MenuAction::PAGE_TURN_INTERVAL, "自动翻页间隔"},
-      {MenuAction::PAGE_TURN_MODE, "自动翻页方式"},
-      {MenuAction::ROTATE_SCREEN, "阅读方向"},
+      // Rendering / interaction
+      {MenuAction::TOGGLE_ANTI_ALIAS, "抗锯齿"},
       {MenuAction::TOGGLE_DARK_MODE, "暗黑模式"},
       {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "全局下一页"},
+      // Progress / maintenance
       {MenuAction::SYNC, "进度同步(koreader)"},
       {MenuAction::SYNCY, "进度同步(开源阅读)"},
       {MenuAction::DELETE_CACHE, "清理缓存"},
       {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "长按确认键功能"},
-      {MenuAction::BLUETOOTH_SETTINGS, "蓝牙设置"},
   };
 
   MenuLayer menuLayer_ = MenuLayer::QUICK;
