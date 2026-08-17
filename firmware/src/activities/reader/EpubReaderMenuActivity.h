@@ -103,8 +103,9 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   };
 
   // One secondary level only: category prefixes make low-frequency options easy
-  // to scan without introducing yet another submenu.
-  const std::vector<MenuItem> moreMenuItems = {
+  // to scan without introducing yet another submenu. onEnter() removes actions
+  // unsupported by the concrete reader host (for example TXT progress sync).
+  std::vector<MenuItem> moreMenuItems = {
       {MenuAction::AUTO_PAGE_TURN, "翻页 · 自动翻页"},
       {MenuAction::PAGE_TURN_INTERVAL, "翻页 · 自动间隔"},
       {MenuAction::PAGE_TURN_MODE, "翻页 · 自动方式"},
