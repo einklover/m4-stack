@@ -7,12 +7,12 @@
 #include "CrossPointSettings.h"
 #include "I18n.h"
 #include "MappedInputManager.h"
-#include "activities/settings/SimpleBluetoothActivity.h"
 #include "activities/settings/FontSelectionActivity.h"
+#include "activities/settings/SimpleBluetoothActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/M4UiText.h"
 #include "util/M4ListTouchPolicy.h"
+#include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
 #include <BluetoothHIDManager.h>
 #include <algorithm>
@@ -20,6 +20,8 @@
 void EpubReaderMenuActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex = xSemaphoreCreateMutex();
+  menuLayer_ = MenuLayer::QUICK;
+  selectedIndex = 0;
   firstPaint_ = true;
   updateRequired = true;
 
@@ -62,17 +64,30 @@ void EpubReaderMenuActivity::loop() {
     return;
   }
 
-  // Touch: list hit-test + swipe page matches renderScreen() list rect.
+  const auto& items = activeMenuItems();
+  if (items.empty()) return;
+
+  // Touch geometry intentionally mirrors renderScreen(). This also fixes the
+  // old portrait-inverted mismatch where rendering used a 50px top gutter but
+  // hit-testing did not, causing taps to activate the row above the visible one.
   if (mappedInput.hasTouch()) {
     if (mappedInput.wasBackGesture()) {
+      if (returnToQuickMenu()) return;
       onBack(pendingOrientation);
       return;
     }
-    auto metrics = UITheme::getInstance().getMetrics();
+
+    const auto metrics = UITheme::getInstance().getMetrics();
     const int pageHeight = renderer.getScreenHeight();
-    const int listTop = metrics.headerHeight + metrics.verticalSpacing;
+    const bool isPortraitInverted =
+        renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted;
+    const int hintGutterHeight = isPortraitInverted ? 50 : 0;
+    int listTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
+    if (menuLayer_ == MenuLayer::QUICK) {
+      listTop += metrics.bookProgressBarHeight + metrics.verticalSpacing;
+    }
     const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-    const int totalItems = static_cast<int>(menuItems.size());
+    const int totalItems = static_cast<int>(items.size());
     const int pageItems = std::max(1, listHeight / metrics.listRowHeight);
 
     M4ListTouchPolicy::Event te{};
@@ -81,6 +96,7 @@ void EpubReaderMenuActivity::loop() {
     else if (sw == MappedInputManager::SwipeDir::Down) te.swipe = M4ListTouchPolicy::Swipe::Down;
     else if (sw == MappedInputManager::SwipeDir::Left) te.swipe = M4ListTouchPolicy::Swipe::Left;
     else if (sw == MappedInputManager::SwipeDir::Right) te.swipe = M4ListTouchPolicy::Swipe::Right;
+
     int dx = 0, dy = 0, tx = 0, ty = 0;
     te = M4ListTouchPolicy::mergeFrame(false, te.swipe, mappedInput.wasScreenTouchDown(dx, dy), dx, dy,
                                        mappedInput.wasScreenTapped(tx, ty), tx, ty);
@@ -89,43 +105,52 @@ void EpubReaderMenuActivity::loop() {
     layout.listHeight = listHeight;
     layout.rowStep = metrics.listRowHeight;
     layout.itemCount = totalItems;
-    layout.selectedIndex = static_cast<int>(selectedIndex);
+    layout.selectedIndex = selectedIndex;
+
     int hit = -1;
     const auto act = M4ListTouchPolicy::resolveList(te, layout, hit);
     if (act == M4ListTouchPolicy::Action::PageDown || act == M4ListTouchPolicy::Action::PageUp) {
-      if (totalItems > 0) {
-        selectedIndex = static_cast<size_t>(M4ListTouchPolicy::applyPage(
-            static_cast<int>(selectedIndex), totalItems, pageItems,
-            act == M4ListTouchPolicy::Action::PageDown));
-        updateRequired = true;
-      }
+      selectedIndex = M4ListTouchPolicy::applyPage(
+          selectedIndex, totalItems, pageItems, act == M4ListTouchPolicy::Action::PageDown);
+      updateRequired = true;
       return;
     }
     if (act == M4ListTouchPolicy::Action::Select && hit >= 0) {
-      if (static_cast<int>(selectedIndex) != hit) {
-        selectedIndex = static_cast<size_t>(hit);
+      if (selectedIndex != hit) {
+        selectedIndex = hit;
         updateRequired = true;
       }
       return;
     }
     if (act == M4ListTouchPolicy::Action::Activate && hit >= 0) {
-      selectedIndex = static_cast<size_t>(hit);
+      selectedIndex = hit;
       goto activate_menu_item;
     }
   }
 
-  // Use local variables for items we need to check after potential deletion
   if (mappedInput.wasReleased(MappedInputManager::Button::Up) ||
       mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    selectedIndex = (selectedIndex + menuItems.size() - 1) % menuItems.size();
+    selectedIndex = (selectedIndex + static_cast<int>(items.size()) - 1) % static_cast<int>(items.size());
     updateRequired = true;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Down) ||
              mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    selectedIndex = (selectedIndex + 1) % menuItems.size();
+    selectedIndex = (selectedIndex + 1) % static_cast<int>(items.size());
     updateRequired = true;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
   activate_menu_item:
-    const auto selectedAction = menuItems[selectedIndex].action;
+    const auto selectedItem = items[static_cast<size_t>(selectedIndex)];
+
+    // “更多” is internal navigation, not a reader callback. Keeping it inside
+    // this Activity avoids destroying/recreating the reader just to expose the
+    // legacy settings list.
+    if (selectedItem.opensMore) {
+      menuLayer_ = MenuLayer::MORE;
+      selectedIndex = 0;
+      updateRequired = true;
+      return;
+    }
+
+    const auto selectedAction = selectedItem.action;
     if (selectedAction == MenuAction::ROTATE_SCREEN) {
       // Cycle orientation preview locally; actual rotation happens on menu exit.
       pendingOrientation = (pendingOrientation + 1) % orientationLabels.size();
@@ -134,7 +159,6 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::AUTO_PAGE_TURN) {
-      // Toggle auto page turn on/off and save to settings
       SETTINGS.autoPageTurnEnabled = SETTINGS.autoPageTurnEnabled ? 0 : 1;
       SETTINGS.saveToFile();
       updateRequired = true;
@@ -142,7 +166,6 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::TOGGLE_ANTI_ALIAS) {
-      // Toggle anti-aliasing on/off and save to settings
       SETTINGS.textAntiAliasing = SETTINGS.textAntiAliasing ? 0 : 1;
       SETTINGS.saveToFile();
       updateRequired = true;
@@ -150,7 +173,6 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::TOGGLE_DARK_MODE) {
-      // Toggle dark mode on/off and save to settings
       SETTINGS.epubDarkMode = SETTINGS.epubDarkMode ? 0 : 1;
       SETTINGS.saveToFile();
       updateRequired = true;
@@ -158,7 +180,6 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::TOGGLE_FONT) {
-      // 切换系统字体/外置字体
       if (SETTINGS.fontFamily == CrossPointSettings::SYSTEM_FONT) {
         SETTINGS.fontFamily = CrossPointSettings::FONT_CUSTOM;
       } else {
@@ -170,7 +191,6 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::SELECT_EXTERNAL_FONT) {
-      // 打开外置字体选择界面
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       enterNewActivity(new FontSelectionActivity(renderer, mappedInput, [this](bool loaded) {
         exitActivity();
@@ -186,7 +206,6 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::TOGGLE_GLOBAL_NEXT_PAGE) {
-      // Toggle global next page mode on/off and save to settings
       SETTINGS.globalNextPageModeEnabled = SETTINGS.globalNextPageModeEnabled ? 0 : 1;
       SETTINGS.saveToFile();
       updateRequired = true;
@@ -194,7 +213,6 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::PAGE_TURN_MODE) {
-      // Toggle page turn mode (full screen / rolling half) and save to settings
       SETTINGS.autoPageTurnMode = SETTINGS.autoPageTurnMode ? 0 : 1;
       SETTINGS.saveToFile();
       updateRequired = true;
@@ -202,19 +220,16 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::PAGE_TURN_INTERVAL) {
-      // Open interval selector subactivity
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       enterNewActivity(new AutoPageTurnIntervalActivity(
           renderer, mappedInput, SETTINGS.autoPageTurnInterval,
           [this](const int interval) {
-            // On select: save interval and return
             SETTINGS.autoPageTurnInterval = interval;
             SETTINGS.saveToFile();
             exitActivity();
             updateRequired = true;
           },
           [this]() {
-            // On cancel: just return
             exitActivity();
             updateRequired = true;
           }));
@@ -224,7 +239,6 @@ void EpubReaderMenuActivity::loop() {
 
 #ifdef CROSSPOINT_X3
     if (selectedAction == MenuAction::TILT_PAGE_TURN) {
-      // Toggle tilt page turn on/off and save to settings
       SETTINGS.tiltPageTurnEnabled = SETTINGS.tiltPageTurnEnabled ? 0 : 1;
       SETTINGS.saveToFile();
       updateRequired = true;
@@ -232,12 +246,10 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::TILT_PAGE_TURN_SETTINGS) {
-      // Open tilt page turn settings subactivity
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       enterNewActivity(new TiltPageTurnSettingsActivity(
           renderer, mappedInput,
           [this]() {
-            // On back: just return to menu
             exitActivity();
             updateRequired = true;
           }));
@@ -247,7 +259,6 @@ void EpubReaderMenuActivity::loop() {
 #endif  // CROSSPOINT_X3
 
     if (selectedAction == MenuAction::LONG_PRESS_CONFIRM_MAPPING) {
-      // 循环切换长按确认键功能映射
 #ifdef CROSSPOINT_X3
       constexpr uint8_t maxAction = 6;
 #else
@@ -260,12 +271,10 @@ void EpubReaderMenuActivity::loop() {
     }
 
     if (selectedAction == MenuAction::BLUETOOTH_SETTINGS) {
-      // Open Bluetooth settings subactivity (使用新的SimpleBluetoothActivity)
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       enterNewActivity(new SimpleBluetoothActivity(
           renderer, mappedInput,
           [this]() {
-            // On back: just return to menu
             exitActivity();
             updateRequired = true;
           }));
@@ -273,31 +282,26 @@ void EpubReaderMenuActivity::loop() {
       return;
     }
 
-    // 1. Capture the callback and action locally
+    // The callback can delete this menu (reader swaps subactivities), so capture
+    // it locally and return immediately after invoking it.
     auto actionCallback = onAction;
-
-    // 2. Execute the callback
     actionCallback(selectedAction);
-
-    // 3. CRITICAL: Return immediately. 'this' is likely deleted now.
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    // Return the pending orientation to the parent so it can apply on exit.
+    if (returnToQuickMenu()) return;
     onBack(pendingOrientation);
-    return;  // Also return here just in case
+    return;
   }
 }
 
 void EpubReaderMenuActivity::renderScreen() {
   renderer.clearScreen();
-  
-  // 关键修复：使用统一的主题组件，与“字距、边距、下划线设置”保持一致
+
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   const auto orientation = renderer.getOrientation();
-  auto metrics = UITheme::getInstance().getMetrics();
-  
-  // 横屏适配：计算内容区域
+  const auto metrics = UITheme::getInstance().getMetrics();
+
   const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
   const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
   const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
@@ -305,31 +309,45 @@ void EpubReaderMenuActivity::renderScreen() {
   const int contentX = isLandscapeCw ? hintGutterWidth : 0;
   const int contentWidth = pageWidth - hintGutterWidth;
   const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  
-  // 使用统一的Header组件
+
+  std::string headerTitle = title;
+  if (menuLayer_ == MenuLayer::MORE) headerTitle += " · 更多";
   const std::string truncTitle =
-      M4UiText::truncated(renderer, UI_12_FONT_ID, title.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
+      M4UiText::truncated(renderer, UI_12_FONT_ID, headerTitle.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
   GUI.drawHeader(renderer, Rect{contentX, hintGutterHeight, contentWidth, metrics.headerHeight}, truncTitle.c_str());
-  
-  // 菜单列表区域（直接放在Header下方）
-  const int listTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
+
+  int listTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
+
+  // The quick layer shows actual whole-book progress without opening another
+  // screen. Use the theme progress primitive so the bar follows current styling
+  // and costs only one small region in the framebuffer.
+  if (menuLayer_ == MenuLayer::QUICK) {
+    const int progress = std::max(0, std::min(bookProgressPercent, 100));
+    const int sidePadding = std::max(12, metrics.contentSidePadding);
+    const int progressWidth = std::max(1, contentWidth - sidePadding * 2);
+    GUI.drawProgressBar(renderer,
+                        Rect{contentX + sidePadding, listTop, progressWidth, metrics.bookProgressBarHeight},
+                        static_cast<size_t>(progress), static_cast<size_t>(100));
+    listTop += metrics.bookProgressBarHeight + metrics.verticalSpacing;
+  }
+
   const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const int totalItems = static_cast<int>(menuItems.size());
-  
-  // 关键修复：使用统一的GUI.drawList()组件
+  const auto& items = activeMenuItems();
+  const int totalItems = static_cast<int>(items.size());
+
   GUI.drawList(
-      renderer, Rect{contentX, listTop, contentWidth, listHeight},
-      totalItems, selectedIndex,
-      [this](int index) -> std::string {
-        // 左侧：菜单项名称
-        return menuItems[index].label;
-      },
-      nullptr,  // 不需要副标题
-      nullptr,  // 不需要图标
-      [this](int index) -> std::string {
-        // 右侧：当前值或子菜单指示符
-        const auto action = menuItems[index].action;
-        
+      renderer, Rect{contentX, listTop, contentWidth, listHeight}, totalItems, selectedIndex,
+      [&items](int index) -> std::string { return items[static_cast<size_t>(index)].label; },
+      nullptr,
+      nullptr,
+      [this, &items](int index) -> std::string {
+        const auto& item = items[static_cast<size_t>(index)];
+        if (item.opensMore) return ">";
+
+        const auto action = item.action;
+        if (action == MenuAction::GO_TO_PERCENT) {
+          return std::to_string(std::max(0, std::min(bookProgressPercent, 100))) + "%";
+        }
         if (action == MenuAction::ROTATE_SCREEN) {
           return std::string(orientationLabels[pendingOrientation]);
         }
@@ -347,7 +365,7 @@ void EpubReaderMenuActivity::renderScreen() {
         }
         if (action == MenuAction::SELECT_EXTERNAL_FONT) {
           const char* fontName = getExternalFontName();
-          return strlen(fontName) > 0 ? std::string(fontName) : ">";  // 没有字体名时显示子菜单指示符
+          return strlen(fontName) > 0 ? std::string(fontName) : ">";
         }
         if (action == MenuAction::TOGGLE_GLOBAL_NEXT_PAGE) {
           return std::string(globalNextPageLabels[SETTINGS.globalNextPageModeEnabled ? 1 : 0]);
@@ -365,7 +383,7 @@ void EpubReaderMenuActivity::renderScreen() {
         }
         if (action == MenuAction::LONG_PRESS_CONFIRM_MAPPING) {
           const uint8_t actionIdx = SETTINGS.longPressConfirmAction;
-          const char* value = (actionIdx < longPressConfirmLabels.size()) ? longPressConfirmLabels[actionIdx] : "";
+          const char* value = actionIdx < longPressConfirmLabels.size() ? longPressConfirmLabels[actionIdx] : "";
           return std::string(value);
         }
         if (action == MenuAction::BLUETOOTH_SETTINGS) {
@@ -376,12 +394,11 @@ void EpubReaderMenuActivity::renderScreen() {
             return "错误";
           }
         }
-        // 关键修复：没有值的菜单项显示">"表示有子菜单
         return ">";
       });
-  
-  // 按键提示
-  const auto labels = mappedInput.mapLabels("« 返回", "选择", "向上", "向下");
+
+  const char* backHint = menuLayer_ == MenuLayer::MORE ? "« 快捷" : "« 阅读";
+  const auto labels = mappedInput.mapLabels(backHint, "选择", "向上", "向下");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   if (firstPaint_) {
@@ -391,5 +408,3 @@ void EpubReaderMenuActivity::renderScreen() {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
 }
-
-// drawScrollBar已删除，GUI.drawList()自动处理滚动条
