@@ -79,6 +79,9 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     out += hasSync ? "true" : "false";
     out += ",\"overlay\":";
     out += menuLayer_ == MenuLayer::MORE ? "false" : "true";
+    if (menuLayer_ == MenuLayer::STYLE) {
+      out += ",\"quick_fonts\":" + std::to_string(quickFontFamilies_.size() + 1);
+    }
     out += ",\"subactivity\":\"";
     if (subActivity) out += subActivity->getName();
     out += "\"";
@@ -152,6 +155,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   bool readerStyleDirty_ = false;
   bool readerFontDirty_ = false;
   bool forceHalfRefresh_ = false;
+  std::vector<std::string> quickFontFamilies_;
   std::string pendingPopup_;
   bool firstPaint_ = true;
   TaskHandle_t displayTaskHandle = nullptr;
@@ -203,4 +207,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   std::string styleValueFor(InternalAction action) const;
   void notifyParentStyleChanged();
   void closeToReader();
+  void prepareQuickFontFamilies();
+  void applyQuickFontChoice(int slot);
 };
