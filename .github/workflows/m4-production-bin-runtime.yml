@@ -1,0 +1,149 @@
+name: Murphy production BIN runtime
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'firmware/**'
+      - 'simulator/qemu/**'
+      - 'simulator/tools/murphy_flash_image.py'
+      - 'scripts/bootstrap_deps.sh'
+      - '.github/workflows/m4-production-bin-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  production-boot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-pip python3-venv \
+            libglib2.0-dev libpixman-1-dev libgcrypt20-dev libslirp-dev libsdl2-dev \
+            flex bison dosfstools
+          python3 -m pip install --user platformio
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Build unchanged Murphy production profile
+        working-directory: firmware
+        run: |
+          pio run -e murphy_m4
+          test -f .pio/build/murphy_m4/firmware.bin
+          sha256sum .pio/build/murphy_m4/firmware.bin | tee "$RUNNER_TEMP/production-firmware.sha256"
+
+      - name: Compose production-profile 16 MiB flash
+        run: |
+          python3 simulator/tools/murphy_flash_image.py \
+            --build-dir firmware/.pio/build/murphy_m4 \
+            --slot auto \
+            -o "$RUNNER_TEMP/murphy-production-16m.bin"
+          test "$(stat -c %s "$RUNNER_TEMP/murphy-production-16m.bin")" = 16777216
+
+      - name: Create SD fixture
+        run: |
+          python3 simulator/qemu/make_sd_image.py "$RUNNER_TEMP/murphy-sd.img" --size-mb 64
+
+      - name: Build Murphy-patched Espressif QEMU (unified build.py → v3)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/runtime-artifacts"
+          # Same entry as local ./m4sim / simulator/qemu/build.py (series-v3).
+          python3 simulator/qemu/build.py \
+            --source-dir "$RUNNER_TEMP/espressif-qemu" \
+            --reconfigure -j 2 2>&1 | tee "$RUNNER_TEMP/runtime-artifacts/qemu-build.log"
+
+      - name: Boot unchanged production flash
+        id: boot
+        continue-on-error: true
+        shell: bash
+        env:
+          QEMU_XTENSA: ${{ runner.temp }}/espressif-qemu/build-murphy-v3/qemu-system-xtensa
+        run: |
+          set -o pipefail
+          if [[ ! -x "$QEMU_XTENSA" && -x "${QEMU_XTENSA}-unsigned" ]]; then
+            export QEMU_XTENSA="${QEMU_XTENSA}-unsigned"
+          fi
+          # Prefer unified m4sim for protocol-ready path when production image
+          # supports m4adb; fall back to production probe runner for boot-only.
+          python3 simulator/qemu/run_production_bin.py \
+            "$RUNNER_TEMP/murphy-production-16m.bin" \
+            --sd-image "$RUNNER_TEMP/murphy-sd.img" \
+            --serial-file "$RUNNER_TEMP/runtime-artifacts/production.serial.log" \
+            --log "$RUNNER_TEMP/runtime-artifacts/qemu-process.log" \
+            --seconds 45 \
+            --probe 2>&1 | tee "$RUNNER_TEMP/runtime-artifacts/runner.log"
+
+      - name: Classify production boot checkpoint
+        id: classify
+        shell: bash
+        run: |
+          set -o pipefail
+          SERIAL="$RUNNER_TEMP/runtime-artifacts/production.serial.log"
+          test -s "$SERIAL"
+          python3 simulator/qemu/probe_boot.py "$SERIAL" \
+            -o "$RUNNER_TEMP/runtime-artifacts/production.probe.json"
+          cat "$RUNNER_TEMP/runtime-artifacts/production.probe.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['RUNNER_TEMP'])/'runtime-artifacts/production.probe.json'
+          d = json.loads(p.read_text())
+          a = d.get('acceptance', {})
+          if not a.get('application_reached'):
+              raise SystemExit('production image did not reach application startup')
+          print('production application reached:', d.get('highest_firmware_checkpoint'))
+          PY
+
+      - name: Save production binary identity
+        if: always()
+        run: |
+          cp "$RUNNER_TEMP/production-firmware.sha256" "$RUNNER_TEMP/runtime-artifacts/" || true
+          sha256sum "$RUNNER_TEMP/murphy-production-16m.bin" > "$RUNNER_TEMP/runtime-artifacts/full-flash.sha256" || true
+          cp simulator/qemu/patches/upstream.json "$RUNNER_TEMP/runtime-artifacts/" || true
+          cp simulator/qemu/patches/series-v3 "$RUNNER_TEMP/runtime-artifacts/" || true
+
+      - name: Comment runtime failure on PR
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo '### Murphy production-BIN runtime failure'
+            echo
+            echo 'Run: `${{ github.run_id }}`'
+            echo
+            if [ -f "$RUNNER_TEMP/runtime-artifacts/production.probe.json" ]; then
+              echo '#### Probe'
+              echo '```json'
+              cat "$RUNNER_TEMP/runtime-artifacts/production.probe.json"
+              echo '```'
+            fi
+            echo '#### Serial tail'
+            echo '```text'
+            tail -n 100 "$RUNNER_TEMP/runtime-artifacts/production.serial.log" 2>/dev/null || true
+            echo '```'
+            echo '#### QEMU/build tail'
+            echo '```text'
+            tail -n 80 "$RUNNER_TEMP/runtime-artifacts/qemu-build.log" 2>/dev/null || true
+            echo '```'
+          } > "$RUNNER_TEMP/runtime-failure.md"
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/runtime-failure.md"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: murphy-production-runtime-${{ github.run_id }}
+          path: ${{ runner.temp }}/runtime-artifacts
+          if-no-files-found: ignore

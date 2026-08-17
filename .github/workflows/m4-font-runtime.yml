@@ -1,0 +1,138 @@
+name: Murphy runtime font regressions
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/lib/TtfReader/**'
+      - 'firmware/lib/EpdFont/TtfEpdFont.*'
+      - 'firmware/lib/EpdFontLoader/**'
+      - 'firmware/src/managers/FontManager.*'
+      - 'simulator/tests/ttf_reader_*.cpp'
+      - 'simulator/tests/cff_reader*.cpp'
+      - 'simulator/tests/chinese_font_web_matrix.cpp'
+      - 'simulator/tests/test_runtime_font_memory_contract.py'
+      - 'simulator/CMakeLists.txt'
+      - '.github/workflows/m4-font-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  M4_REAL_CJK_FONT: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+
+jobs:
+  host-font:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard runtime sfnt memory lifetime
+        run: python3 -m unittest -v simulator/tests/test_runtime_font_memory_contract.py
+
+      - name: Install real CID-CFF CJK fixture
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          test -f "$M4_REAL_CJK_FONT"
+
+      - name: Download representative Chinese fonts from upstream projects
+        shell: bash
+        run: |
+          set -euo pipefail
+          FONTDIR="$RUNNER_TEMP/web-cjk-fonts"
+          mkdir -p "$FONTDIR"
+          fetch_font() {
+            local name="$1"
+            local url="$2"
+            echo "downloading $name"
+            curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$url" -o "$FONTDIR/$name"
+            test "$(stat -c %s "$FONTDIR/$name")" -gt 1000000
+            sha256sum "$FONTDIR/$name"
+          }
+          fetch_font SourceHanSansSC-Regular.otf \
+            'https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf'
+          fetch_font SourceHanSerifSC-Regular.otf \
+            'https://raw.githubusercontent.com/adobe-fonts/source-han-serif/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf'
+          fetch_font SourceHanSans-Regular.ttc \
+            'https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/OTC/SourceHanSans-Regular.ttc'
+          # Real CFF2 variable CJK outlines. The runtime intentionally renders
+          # only their default instance; VariationStore metadata remains streamed.
+          fetch_font SourceHanSansSC-VF.otf \
+            'https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/Variable/OTF/SourceHanSansSC-VF.otf'
+          fetch_font SourceHanSans-VF.otf.ttc \
+            'https://raw.githubusercontent.com/adobe-fonts/source-han-sans/release/Variable/OTC/SourceHanSans-VF.otf.ttc'
+          fetch_font LXGWWenKai-Regular.ttf \
+            'https://raw.githubusercontent.com/lxgw/LxgwWenKai/main/fonts/TTF/LXGWWenKai-Regular.ttf'
+          fetch_font 'NotoSansSC[wght].ttf' \
+            'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf'
+          fetch_font ZCOOLXiaoWei-Regular.ttf \
+            'https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf'
+          ls -lh "$FONTDIR"
+
+      - name: Configure simulator host tests
+        run: cmake -S simulator -B "$RUNNER_TEMP/m4-sim" -DCMAKE_BUILD_TYPE=Debug -DM4SIM_BUILD_NATIVE_SMOKE=OFF -DM4SIM_REAL_CJK_FONT="$M4_REAL_CJK_FONT"
+
+      - name: Build production runtime font regressions
+        run: cmake --build "$RUNNER_TEMP/m4-sim" --target m4_ttf_reader_compound_tests m4_cff_reader_tests m4_cff_real_cjk_tests m4_web_chinese_font_tests -j 2
+
+      - name: Run runtime font regressions
+        run: ctest --test-dir "$RUNNER_TEMP/m4-sim" --output-on-failure -R '^m4_(ttf|cff)_reader_|^m4_cff_real_cjk_tests$'
+
+      - name: Run downloaded Chinese font compatibility matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/m4-sim/m4_web_chinese_font_tests"
+          FONTDIR="$RUNNER_TEMP/web-cjk-fonts"
+          "$BIN" "$FONTDIR/SourceHanSansSC-Regular.otf" 0
+          "$BIN" "$FONTDIR/SourceHanSerifSC-Regular.otf" 0
+          # Adobe's static OTC exercises zero-copy collection face offsets and
+          # shared CFF data. Run every regional face, not just the SC face.
+          for face in 0 1 2 3 4; do
+            "$BIN" "$FONTDIR/SourceHanSans-Regular.ttc" "$face"
+          done
+          "$BIN" "$FONTDIR/SourceHanSansSC-VF.otf" 0
+          # Do not assume how many regional faces Adobe packs into the variable
+          # OTC. Read the big-endian TTC face count and exercise every face.
+          VF_OTC="$FONTDIR/SourceHanSans-VF.otf.ttc"
+          VF_FACES="$(python3 - "$VF_OTC" <<'PY'
+          import struct, sys
+          with open(sys.argv[1], 'rb') as f:
+              header = f.read(12)
+          if len(header) != 12 or header[:4] != b'ttcf':
+              raise SystemExit('invalid variable OTC header')
+          print(struct.unpack('>I', header[8:12])[0])
+          PY
+          )"
+          test "$VF_FACES" -gt 0
+          for ((face=0; face<VF_FACES; ++face)); do
+            "$BIN" "$VF_OTC" "$face"
+          done
+          "$BIN" "$FONTDIR/LXGWWenKai-Regular.ttf" 0
+          "$BIN" "$FONTDIR/NotoSansSC[wght].ttf" 0
+          "$BIN" "$FONTDIR/ZCOOLXiaoWei-Regular.ttf" 0
+
+  host-font-sanitized:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard runtime sfnt memory lifetime
+        run: python3 -m unittest -v simulator/tests/test_runtime_font_memory_contract.py
+
+      - name: Install real CID-CFF CJK fixture
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          test -f "$M4_REAL_CJK_FONT"
+
+      - name: Configure ASan and UBSan
+        run: cmake -S simulator -B "$RUNNER_TEMP/m4-sim-san" -DCMAKE_BUILD_TYPE=Debug -DM4SIM_BUILD_NATIVE_SMOKE=OFF -DM4SIM_SANITIZE=ON -DM4SIM_REAL_CJK_FONT="$M4_REAL_CJK_FONT"
+
+      - name: Build and run sanitized font regressions
+        run: |
+          cmake --build "$RUNNER_TEMP/m4-sim-san" --target m4_ttf_reader_compound_tests m4_cff_reader_tests m4_cff_real_cjk_tests -j 2
+          ctest --test-dir "$RUNNER_TEMP/m4-sim-san" --output-on-failure -R '^m4_(ttf|cff)_reader_|^m4_cff_real_cjk_tests$'

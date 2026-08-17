@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/espressif/qemu.git",
+  "ref": "febae182e132e4055529be423a818225ebddaa3a",
+  "branch": "esp-develop",
+  "reason": "Pinned source baseline for Murphy production-bin QEMU patches. Do not retarget silently; rebase patches and rerun production acceptance before changing this SHA."
+}

@@ -1,0 +1,91 @@
+name: Murphy QEMU cumulative integration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'simulator/qemu/**'
+      - 'simulator/tests/test_qemu_*.py'
+      - '.github/workflows/m4-qemu-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev libgcrypt20-dev \
+            libslirp-dev libsdl2-dev flex bison
+
+      - name: Run emulator Python tests
+        run: |
+          python3 -m unittest \
+            simulator/tests/test_qemu_production_runner.py \
+            simulator/tests/test_qemu_patchset.py
+
+      - name: Apply and compile pinned Espressif QEMU
+        id: qemu
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/m4-qemu"
+          python3 simulator/qemu/build_patched_qemu.py \
+            --source-dir "$RUNNER_TEMP/espressif-qemu" \
+            --reconfigure -j 2 2>&1 | tee "$RUNNER_TEMP/m4-qemu/build.log"
+
+      - name: Smoke-check machine and binary
+        run: |
+          QEMU="$RUNNER_TEMP/espressif-qemu/build-murphy/qemu-system-xtensa"
+          "$QEMU" --version
+          "$QEMU" -machine help | grep -E '(^|[[:space:]])murphy-m4([[:space:]]|$)'
+
+      - name: Print failure tail
+        if: failure()
+        shell: bash
+        run: |
+          echo '===== QEMU BUILD FAILURE TAIL ====='
+          if [ -f "$RUNNER_TEMP/m4-qemu/build.log" ]; then
+            tail -n 180 "$RUNNER_TEMP/m4-qemu/build.log"
+          else
+            echo 'build.log was not created; failure happened before QEMU build'
+          fi
+
+      - name: Comment failure on pull request
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo '### Murphy QEMU integration failure'
+            echo
+            echo 'Run: `${{ github.run_id }}`'
+            echo
+            echo '```text'
+            if [ -f "$RUNNER_TEMP/m4-qemu/build.log" ]; then
+              tail -n 120 "$RUNNER_TEMP/m4-qemu/build.log"
+            else
+              echo 'Failure happened before build.log was created. Inspect Python-test / dependency steps.'
+            fi
+            echo '```'
+          } > "$RUNNER_TEMP/m4-qemu-failure.md"
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/m4-qemu-failure.md"
+
+      - name: Upload integration diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: murphy-qemu-integration-${{ github.run_id }}
+          path: ${{ runner.temp }}/m4-qemu
+          if-no-files-found: ignore

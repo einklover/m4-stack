@@ -107,6 +107,29 @@ bool MappedInputManager::injectSyntheticTap(int x, int y, bool& busy) {
   return true;
 }
 
+bool MappedInputManager::injectSyntheticSwipe(int sx, int sy, int ex, int ey, bool& busy) {
+  busy = false;
+  if (!renderer) return false;
+  const int w = renderer->getScreenWidth();
+  const int h = renderer->getScreenHeight();
+  if (sx < 0 || sy < 0 || ex < 0 || ey < 0 || sx >= w || ex >= w || sy >= h || ey >= h ||
+      (sx == ex && sy == ey)) return false;
+  const unsigned long now = millis();
+  const bool rateBusy = synthEverInjected_ && (now - synthLastInjectMs_) < kSynthMinIntervalMs;
+  if (synthKind_ != SynthKind::None || rateBusy) {
+    busy = true;
+    return false;
+  }
+  synthKind_ = SynthKind::Swipe;
+  synthSwipeSx_ = sx;
+  synthSwipeSy_ = sy;
+  synthSwipeEx_ = ex;
+  synthSwipeEy_ = ey;
+  synthLastInjectMs_ = now;
+  synthEverInjected_ = true;
+  return true;
+}
+
 bool MappedInputManager::injectSyntheticKey(Button button, bool& busy) {
   busy = false;
   const unsigned long now = millis();
@@ -244,7 +267,15 @@ int MappedInputManager::getPressedFrontButton() const {
   return -1;
 }
 
-bool MappedInputManager::hasTouch() const { return gpio.hasTouch() && renderer != nullptr; }
+bool MappedInputManager::hasTouch() const {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  // Plugin-debug QEMU skips FT6x36 I2C polling. Activities gate on hasTouch()
+  // before wasScreenTapped(); keep true so m4adb synthetic taps still reach UI.
+  return renderer != nullptr;
+#else
+  return gpio.hasTouch() && renderer != nullptr;
+#endif
+}
 
 bool MappedInputManager::wasScreenTapped(int& x, int& y) const {
   if (!tapCacheValid) {
@@ -371,11 +402,24 @@ bool MappedInputManager::decodeSwipe(int& sx, int& sy, int& ex, int& ey) const {
   if (!hasTouch()) return false;
   if (!swipeCacheValid) {
     swipeCacheValid = true;
-    float nxs = 0.0f, nys = 0.0f, nxe = 0.0f, nye = 0.0f;
-    swipeCacheHas = gpio.wasSwipe(nxs, nys, nxe, nye);
-    if (swipeCacheHas) {
-      renderer->tapToLogical(nxs, nys, swipeSx, swipeSy);
-      renderer->tapToLogical(nxe, nye, swipeEx, swipeEy);
+    bool synthetic = false;
+#if defined(CROSSPOINT_MURPHY_M4)
+    if (synthKind_ == SynthKind::Swipe) {
+      swipeSx = synthSwipeSx_;
+      swipeSy = synthSwipeSy_;
+      swipeEx = synthSwipeEx_;
+      swipeEy = synthSwipeEy_;
+      swipeCacheHas = true;
+      synthetic = true;
+    }
+#endif
+    if (!synthetic) {
+      float nxs = 0.0f, nys = 0.0f, nxe = 0.0f, nye = 0.0f;
+      swipeCacheHas = gpio.wasSwipe(nxs, nys, nxe, nye);
+      if (swipeCacheHas) {
+        renderer->tapToLogical(nxs, nys, swipeSx, swipeSy);
+        renderer->tapToLogical(nxe, nye, swipeEx, swipeEy);
+      }
     }
   }
   if (!swipeCacheHas) return false;

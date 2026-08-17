@@ -141,11 +141,42 @@ bool ensureParentDirs(const std::string& absPath) {
   while (p <= dir.size()) {
     const size_t next = dir.find('/', p);
     const std::string sub = dir.substr(0, next == std::string::npos ? dir.size() : next);
-    if (!sub.empty() && !SdMan.exists(sub.c_str())) SdMan.mkdir(sub.c_str(), true);
+    if (!sub.empty()) {
+      // A zero-byte regular file can block the path (seen as apps_data/<id>/provider
+      // on QEMU SD). exists() is true so mkdir was skipped, and later open of
+      // provider/shelf_rows.tsv fails with sd_open_failed — empty native home.
+      if (SdMan.exists(sub.c_str())) {
+        FsFile probe = SdMan.open(sub.c_str(), O_RDONLY);
+        const bool isDir = probe && probe.isDirectory();
+        if (probe) probe.close();
+        if (!isDir) {
+          // Directory open can fail transiently; if remove also fails, still try mkdir.
+          (void)SdMan.remove(sub.c_str());
+          if (!SdMan.ensureDirectoryExists(sub.c_str()) && !SdMan.mkdir(sub.c_str(), true)) {
+            // Re-probe: another task may have created the directory.
+            FsFile again = SdMan.open(sub.c_str(), O_RDONLY);
+            const bool ok = again && again.isDirectory();
+            if (again) again.close();
+            if (!ok) return false;
+          }
+        }
+      } else if (!SdMan.ensureDirectoryExists(sub.c_str()) && !SdMan.mkdir(sub.c_str(), true)) {
+        return false;
+      }
+    }
     if (next == std::string::npos) break;
     p = next + 1;
   }
-  return SdMan.exists(dir.c_str());
+  if (!SdMan.exists(dir.c_str())) return false;
+  FsFile finalProbe = SdMan.open(dir.c_str(), O_RDONLY);
+  if (finalProbe && finalProbe.isDirectory()) {
+    finalProbe.close();
+    return true;
+  }
+  if (finalProbe) finalProbe.close();
+  // Last resort: treat ensureDirectoryExists success as enough even if open/isDirectory
+  // is flaky on some FAT mounts (QEMU SD).
+  return SdMan.ensureDirectoryExists(dir.c_str());
 }
 
 bool cacheComplete(const std::string& absPath, size_t* sizeOut) {

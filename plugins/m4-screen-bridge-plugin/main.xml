@@ -1,8 +1,32 @@
 <?xml version="1.0"?>
 <m4ui version="1" start="home" theme="wap" fullscreen="true">
-  <screen id="home" title="屏幕桥" class="compact">
-    <text text="屏幕桥已启用" class="hero inset"/>
-    <text text="@page.status" class="meta inset"/>
-    <text text="手机端画面由系统屏幕桥活动接管，本页为占位界面。" class="compact inset"/>
+  <screen id="home" title="手机应用" class="compact">
+    <text text="@bridge.status" class="meta inset"/>
+    <list id="apps" source="bridge.apps" titleField="title" subtitleField="subtitle" onActivate="bridge.openApp" class="inset compact"/>
+    <buttons back="返回" primary="打开" right="刷新" onBack="system.close" onPrimary="bridge.openApp" onRight="bridge.refreshApps"/>
+  </screen>
+
+  <screen id="xhs" title="小红书 · 阅读清单" class="compact">
+    <text text="@bridge.status" class="meta inset"/>
+    <list id="notes" source="bridge.feed" titleField="title" subtitleField="subtitle" onActivate="bridge.openNote" class="inset compact"/>
+    <buttons back="应用" primary="阅读" right="更多" onBack="system.back" onPrimary="bridge.openNote" onRight="bridge.moreFeed"/>
+  </screen>
+
+  <screen id="note" title="@bridge.noteTitle" class="compact">
+    <text text="@bridge.noteMeta" class="meta inset"/>
+    <flowText id="body" text="@bridge.noteBody" height="650" class="inset"/>
+    <buttons back="清单" primary="评论" left="图片" right="翻页" onBack="system.back" onPrimary="bridge.showComments" onLeft="bridge.showImages" onRight="ui.flowNext"/>
+  </screen>
+
+  <screen id="images" title="笔记图片" class="compact">
+    <text text="@bridge.imageMeta" class="meta center"/>
+    <image id="noteImage" text="@bridge.imagePath" height="650" class="inset center"/>
+    <buttons back="正文" left="上一张" right="下一张" onBack="system.back" onLeft="bridge.imagePrev" onRight="bridge.imageNext"/>
+  </screen>
+
+  <screen id="comments" title="评论" class="compact">
+    <text text="@bridge.status" class="meta inset"/>
+    <flowText id="commentsBody" text="@bridge.commentsText" height="650" class="inset compact"/>
+    <buttons back="正文" primary="更多" left="上一页" right="下一页" onBack="system.back" onPrimary="bridge.moreComments" onLeft="ui.flowPrev" onRight="ui.flowNext"/>
   </screen>
 </m4ui>

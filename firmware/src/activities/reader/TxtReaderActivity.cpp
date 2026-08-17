@@ -767,10 +767,20 @@ bool TxtReaderActivity::tryProviderNextChapterAdvance() {
 }
 
 void TxtReaderActivity::pageTurnLocked(int delta) {
-  // Coherent page-turn + optional frontier index under one lock hold.
-  if (!lockState(portMAX_DELAY)) return;
-  const int step = delta >= 0 ? (delta == 0 ? 1 : delta) : -delta;
-  const int signedStep = delta >= 0 ? step : -step;
+  // Never block the owner loop on the display-task lock. TTF first-paint on
+  // QEMU can hold that lock for many seconds; waiting here starves m4adb poll
+  // and makes every tap look frozen.
+  if (!lockState(0)) {
+    pendingTurnDelta_.fetch_add(delta, std::memory_order_relaxed);
+    return;
+  }
+  const int totalDelta = delta + pendingTurnDelta_.exchange(0, std::memory_order_relaxed);
+  if (totalDelta == 0) {
+    unlockState();
+    return;
+  }
+  const int step = totalDelta >= 0 ? (totalDelta == 0 ? 1 : totalDelta) : -totalDelta;
+  const int signedStep = totalDelta >= 0 ? step : -step;
   auto fillView = [&](M4PluginReaderStatePolicy::IndexState& view) {
     // tryPageTurn only needs empty-ness of offsets, not the full vector.
     view.pageOffsets.clear();
@@ -821,32 +831,20 @@ void TxtReaderActivity::pageTurnLocked(int delta) {
   // Progressive index for plugin *and* library multi-chapter TXT (next-chapter
   // used to block on full buildPageIndex under this lock → multi-second stall).
   if (needIndex && !indexComplete_) {
-    // Quick skip: never block the input path on page indexing — the display
-    // task's progressive index + catch-up will land the target.
-    const uint32_t burstMs = millis();
-    const bool quickBurst =
-        (lastPageTurnMs_ != 0 && (burstMs - lastPageTurnMs_) < 400) || physicalEpdBusy_.load();
-    if (quickBurst) {
-      quickMode_ = true;
-      // Keep any queued updateRequired — a tap must not cancel a pending refresh.
-      unlockState();
-      return;
-    }
-    continuePageIndex(8, 128 * 1024);
-    totalPages = static_cast<int>(pageOffsets.size());
-    applyPendingRestoreIfReady();
-    // Retry one step after indexing.
-    fillView(view);
-    if (M4PluginReaderStatePolicy::tryPageTurn(view, signedStep, nullptr)) {
-      currentPage = view.currentPage;
-      userMovedPage_ = view.userMovedPage;
-      hasPendingRestore_ = view.hasPendingRestore;
-      dualRightPage = -1;
-      dualNextLeft = true;
-      updateRequired = true;
-      unlockState();
-      return;
-    }
+    // Let the target run ahead of the known index. Display-task catch-up
+    // indexes until the page exists. Never call continuePageIndex here: that
+    // rasterizes TTF on the owner loop and freezes m4adb tap/key.
+    currentPage += signedStep;
+    if (currentPage < 0) currentPage = 0;
+    userMovedPage_ = true;
+    hasPendingRestore_ = false;
+    dualRightPage = -1;
+    dualNextLeft = true;
+    quickMode_ = true;
+    updateRequired = true;
+    lastPageTurnMs_ = millis();
+    unlockState();
+    return;
   }
   // Provider-managed multi-chapter: last page next → seamless open or overlay wait.
   // Provider open is a hard content switch (network/cache) — keep immediate path.
@@ -868,7 +866,7 @@ void TxtReaderActivity::pageTurnLocked(int delta) {
     const bool quickTap2 = (lastPageTurnMs_ != 0 && (nowMs2 - lastPageTurnMs_ < 400)) ||
                            physicalEpdBusy_.load();
     lastPageTurnMs_ = nowMs2;
-    if (delta < 0 && currentPage <= 0 && chapternum > 0) {
+    if (totalDelta < 0 && currentPage <= 0 && chapternum > 0) {
       libraryPrefetchReset();  // drop in-flight next-chapter index work
       chapternum--;
       chapter_initialized = false;
@@ -893,7 +891,7 @@ void TxtReaderActivity::pageTurnLocked(int delta) {
       }
       Serial.printf("[%lu] [TRS] Switch to chapter %d (prev) target=%d quick=%d\n", millis(),
                     chapternum, currentPage, quickTap2 ? 1 : 0);
-    } else if (delta > 0 && indexComplete_ && currentPage >= totalPages - 1) {
+    } else if (totalDelta > 0 && indexComplete_ && currentPage >= totalPages - 1) {
       libraryPrefetchReset();  // drop in-flight next-chapter index work
       chapternum++;
       chapter_initialized = false;
@@ -1020,6 +1018,10 @@ void TxtReaderActivity::loop() {
       onGoBack();
     }
     return;  // Don't access 'this' after callback
+  }
+
+  if (pendingTurnDelta_.load(std::memory_order_relaxed) != 0) {
+    pageTurnLocked(0);
   }
 
   // Handle pending go home (deferred to avoid use-after-free)
@@ -1951,8 +1953,9 @@ void TxtReaderActivity::displayTaskLoop() {
           int guard = 0;
           while (currentPage >= static_cast<int>(pageOffsets.size()) && !indexComplete_ &&
                  guard++ < 128) {
-            const int added = continuePageIndex(16, 256 * 1024);
+            const int added = continuePageIndex(1, 16 * 1024);
             if (added <= 0) break;  // no progress — do not spin
+            if (guard >= 1) break;  // one page per lock hold; next tick continues
           }
           totalPages = static_cast<int>(pageOffsets.size());
           applyPendingRestoreIfReady();
@@ -2132,7 +2135,7 @@ void TxtReaderActivity::displayTaskLoop() {
         if (doIndex) {
           const bool wasComplete = indexComplete_;
           const bool hadPendingRestore = hasPendingRestore_;
-          const int added = continuePageIndex(8, 128 * 1024);
+          const int added = continuePageIndex(1, 16 * 1024);
           needSave = indexComplete_ && !tidxSaved_;
           const bool appliedRestore = hadPendingRestore && !hasPendingRestore_;
           // Progress/total metadata advances without changing visible glyphs.
@@ -3932,8 +3935,8 @@ void TxtReaderActivity::renderScreen() {
   if (currentPage >= static_cast<int>(pageOffsets.size()) && !indexComplete_) {
     const uint32_t tIdx = millis();
     int guard = 0;
-    while (currentPage >= static_cast<int>(pageOffsets.size()) && !indexComplete_ && guard++ < 128) {
-      const int added = continuePageIndex(16, 256 * 1024);
+    while (currentPage >= static_cast<int>(pageOffsets.size()) && !indexComplete_ && guard++ < 4) {
+      const int added = continuePageIndex(1, 16 * 1024);
       if (added <= 0) break;  // no progress (file issue?) — do not spin forever
     }
     totalPages = static_cast<int>(pageOffsets.size());

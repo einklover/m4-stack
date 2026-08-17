@@ -76,6 +76,7 @@ class MappedInputManager {
   // Physical input continues to work; synthetic events clear in beginFrame().
   // Returns false with busy=true when a prior event is still pending or rate-limited.
   bool injectSyntheticTap(int x, int y, bool& busy);
+  bool injectSyntheticSwipe(int sx, int sy, int ex, int ey, bool& busy);
   bool injectSyntheticKey(Button button, bool& busy);
   bool hasPendingSyntheticInput() const;
 #endif
@@ -102,10 +103,14 @@ class MappedInputManager {
   mutable unsigned long touchHeldOverrideAt = 0;
 
 #if defined(CROSSPOINT_MURPHY_M4)
-  enum class SynthKind : uint8_t { None, Tap, Key };
+  enum class SynthKind : uint8_t { None, Tap, Swipe, Key };
   mutable SynthKind synthKind_ = SynthKind::None;
   mutable int synthTapX_ = 0;
   mutable int synthTapY_ = 0;
+  mutable int synthSwipeSx_ = 0;
+  mutable int synthSwipeSy_ = 0;
+  mutable int synthSwipeEx_ = 0;
+  mutable int synthSwipeEy_ = 0;
   mutable Button synthKey_ = Button::Back;
   mutable unsigned long synthLastInjectMs_ = 0;
   mutable bool synthEverInjected_ = false;

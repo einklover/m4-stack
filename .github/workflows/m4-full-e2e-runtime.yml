@@ -1,0 +1,298 @@
+name: Murphy full-chain TTF TXT plugins E2E
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  full-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-pip python3-venv \
+            libglib2.0-dev libpixman-1-dev libgcrypt20-dev libslirp-dev libsdl2-dev \
+            flex bison dosfstools mtools fonts-wqy-zenhei git
+          python3 -m pip install --user platformio pyserial fonttools
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Prepare E2E SD fixture with runtime TTF and local TXT
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/e2e" "$RUNNER_TEMP/e2e-artifacts"
+          cat > "$RUNNER_TEMP/e2e/e2e.txt" <<'TXT'
+          Murphy M4 全链路模拟测试
+          第一章 本地 TXT 与运行时 TTF
+
+          这是从 QEMU SDMMC 虚拟 SD 卡读取的本地中文 TXT。
+          本页用于验证运行时 TTF 字体解析、glyf 读取、PSRAM glyph 缓存、文本分页和 SSD1677 显示链。
+          English 1234567890 ABC abc.
+
+          第二章 插件宿主
+          后续自动安装并启动番茄小说、晋江文学、微信读书三个插件，记录结构化 UI、串口日志和截图。
+          TXT
+          python3 - <<'PY'
+          from pathlib import Path
+          from fontTools.ttLib import TTCollection
+          from fontTools.subset import Options, Subsetter
+          src = Path('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc')
+          out = Path(__import__('os').environ['RUNNER_TEMP'])/'e2e/M4E2E.ttf'
+          text = (Path(__import__('os').environ['RUNNER_TEMP'])/'e2e/e2e.txt').read_text(encoding='utf-8')
+          # Include printable ASCII plus Chinese characters present in firmware sources so
+          # the same runtime face can render Home/plugin chrome during this test.
+          chars = set(chr(i) for i in range(32, 127)) | set(text)
+          for p in Path('firmware/src').rglob('*'):
+              if p.is_file() and p.suffix.lower() in {'.cpp','.h','.json','.xml'}:
+                  try:
+                      s = p.read_text(encoding='utf-8')
+                  except Exception:
+                      continue
+                  chars.update(ch for ch in s if ord(ch) >= 0x80)
+          col = TTCollection(str(src), lazy=False)
+          font = col.fonts[0]
+          opts = Options()
+          opts.hinting = False
+          sub = Subsetter(options=opts)
+          sub.populate(text=''.join(sorted(chars)))
+          sub.subset(font)
+          font.save(str(out))
+          print('TTF fixture', out, out.stat().st_size, 'chars', len(chars))
+          PY
+          python3 simulator/qemu/make_sd_image.py "$RUNNER_TEMP/e2e/murphy-sd.img" --size-mb 64
+          mmd -i "$RUNNER_TEMP/e2e/murphy-sd.img" ::/FONT ::/books || true
+          mcopy -o -i "$RUNNER_TEMP/e2e/murphy-sd.img" "$RUNNER_TEMP/e2e/M4E2E.ttf" ::/FONT/M4E2E.ttf
+          mcopy -o -i "$RUNNER_TEMP/e2e/murphy-sd.img" "$RUNNER_TEMP/e2e/e2e.txt" ::/books/e2e.txt
+          mdir -i "$RUNNER_TEMP/e2e/murphy-sd.img" ::/FONT
+          mdir -i "$RUNNER_TEMP/e2e/murphy-sd.img" ::/books
+          sha256sum "$RUNNER_TEMP/e2e/M4E2E.ttf" "$RUNNER_TEMP/e2e/e2e.txt" > "$RUNNER_TEMP/e2e-artifacts/fixture.sha256"
+
+      - name: Patch only the E2E control surface in the CI worktree
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('firmware/src/main.cpp')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('#include "activities/reader/ReaderActivity.h"',
+                        '#include "activities/reader/ReaderActivity.h"\n#include "activities/reader/TxtReaderActivity.h"\n#include "managers/FontManager.h"')
+          needle = '    SETTINGS.loadFromFile();\n#ifdef CROSSPOINT_MURPHY_M4\n'
+          repl = '''    SETTINGS.loadFromFile();
+#ifdef M4_QEMU_E2E
+    std::snprintf(SETTINGS.customFontFamily, sizeof(SETTINGS.customFontFamily), "%s", "M4E2E.ttf");
+    SETTINGS.fontSize = 28;
+    Serial.printf("[%lu] [E2E] selected runtime TTF family=%s size=%u\\n", millis(), SETTINGS.customFontFamily,
+                  static_cast<unsigned>(SETTINGS.fontSize));
+#endif
+#ifdef CROSSPOINT_MURPHY_M4
+'''
+          if needle not in s: raise SystemExit('settings anchor not found')
+          s = s.replace(needle, repl, 1)
+          auth = '      gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);'
+          if auth not in s: raise SystemExit('debug auth anchor not found')
+          s = s.replace(auth, '''#ifdef M4_QEMU_E2E
+      gM4DebugBridge.setAuthorized(true);
+#else
+      gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);
+#endif''', 1)
+          anchor = '    Serial.flush();\n\n#ifdef CROSSPOINT_MURPHY_M4\n    {\n      M4SerialDebug::HostHooks hooks;'
+          ttf_probe = '''    Serial.flush();
+#ifdef M4_QEMU_E2E
+    {
+      auto* fam = FontManager::getInstance().getCustomFontFamily("M4E2E.ttf", 28);
+      Serial.printf("[%lu] [E2E-TTF] load=%d family=M4E2E.ttf size=28 free_heap=%u free_psram=%u\\n", millis(),
+                    fam ? 1 : 0, static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()));
+    }
+#endif
+
+#ifdef CROSSPOINT_MURPHY_M4
+    {
+      M4SerialDebug::HostHooks hooks;'''
+          if anchor not in s: raise SystemExit('TTF probe anchor not found')
+          s = s.replace(anchor, ttf_probe, 1)
+          # After normal boot selection, open a real TxtReaderActivity using the SD file.
+          anchor2 = '''#ifndef CROSSPOINT_X3
+    // ========== X4: NTP时间同步已移至进入阅读器时执行 =========='''
+          e2e = '''#ifdef M4_QEMU_E2E
+    {
+      auto e2eTxt = std::make_unique<Txt>("/books/e2e.txt", "/.crosspoint");
+      const uint32_t t0 = millis();
+      const bool ok = e2eTxt->load();
+      uint8_t probe[512] = {};
+      size_t actual = 0;
+      const bool readOk = ok && e2eTxt->readContent(probe, 0, sizeof(probe), true, &actual);
+      uint32_t hash = 2166136261u;
+      for (size_t i = 0; i < actual; ++i) hash = (hash ^ probe[i]) * 16777619u;
+      Serial.printf("[%lu] [E2E-TXT] load=%d read=%d bytes=%u size=%u enc=%s hash=%08x\\n", millis(),
+                    ok ? 1 : 0, readOk ? 1 : 0, static_cast<unsigned>(actual),
+                    ok ? static_cast<unsigned>(e2eTxt->getFileSize()) : 0u,
+                    ok ? e2eTxt->getEncodingName() : "none", static_cast<unsigned>(hash));
+      if (ok && e2eTxt->isEncodingSupported()) {
+        exitActivity();
+        enterNewActivity(new TxtReaderActivity(renderer, mappedInputManager, std::move(e2eTxt),
+                                                []() { onGoHome(); }, []() { onGoHome(); }));
+        Serial.printf("[%lu] [E2E-TXT] activity=TxtReader opened\\n", millis());
+      }
+    }
+#endif
+
+#ifndef CROSSPOINT_X3
+    // ========== X4: NTP时间同步已移至进入阅读器时执行 =========='''
+          if anchor2 not in s: raise SystemExit('TXT autorun anchor not found')
+          s = s.replace(anchor2, e2e, 1)
+          p.write_text(s, encoding='utf-8')
+
+          # Keep real Octal/OPI profile, but route Arduino Serial to UART0 so the QEMU PTY can drive m4adb.
+          ini = Path('firmware/platformio.ini')
+          t = ini.read_text(encoding='utf-8')
+          marker = '[env:murphy_m4]\nextends = m4_base\nbuild_flags =\n  ${m4_base.build_flags}\n'
+          replacement = '[env:murphy_m4]\nextends = m4_base\nbuild_unflags =\n  ${m4_base.build_unflags}\n  -DARDUINO_USB_CDC_ON_BOOT=1\nbuild_flags =\n  ${m4_base.build_flags}\n  -DARDUINO_USB_CDC_ON_BOOT=0\n  -DM4_QEMU_E2E=1\n'
+          if marker not in t: raise SystemExit('murphy_m4 env anchor not found')
+          ini.write_text(t.replace(marker, replacement, 1), encoding='utf-8')
+          PY
+          git diff -- firmware/src/main.cpp firmware/platformio.ini | tee "$RUNNER_TEMP/e2e-artifacts/e2e-worktree.patch"
+
+      - name: Build E2E firmware BIN from Murphy production hardware profile
+        working-directory: firmware
+        run: |
+          pio run -e murphy_m4
+          test -f .pio/build/murphy_m4/firmware.bin
+          sha256sum .pio/build/murphy_m4/firmware.bin | tee "$RUNNER_TEMP/e2e-artifacts/e2e-firmware.sha256"
+
+      - name: Compose 16 MiB flash
+        run: |
+          python3 simulator/tools/murphy_flash_image.py \
+            --build-dir firmware/.pio/build/murphy_m4 --slot auto \
+            -o "$RUNNER_TEMP/e2e/murphy-e2e-16m.bin"
+          test "$(stat -c %s "$RUNNER_TEMP/e2e/murphy-e2e-16m.bin")" = 16777216
+
+      - name: Build cumulative Murphy QEMU (unified build.py → v3)
+        shell: bash
+        run: |
+          set -o pipefail
+          # Same entry as local ./m4sim / simulator/qemu/build.py
+          python3 simulator/qemu/build.py \
+            --source-dir "$RUNNER_TEMP/e2e/espressif-qemu" --reconfigure -j 2 \
+            2>&1 | tee "$RUNNER_TEMP/e2e-artifacts/qemu-build.log"
+
+      - name: Checkout plugin fixtures
+        run: |
+          git clone --depth 1 --branch agent/checkpoint-20260809-native-latest https://github.com/einklover/m4-fanqie-plugin.git "$RUNNER_TEMP/e2e/fanqie"
+          git clone --depth 1 --branch agent/checkpoint-20260809-native-latest https://github.com/einklover/m4-jjwxc-plugin.git "$RUNNER_TEMP/e2e/jjwxc"
+          git clone --depth 1 --branch agent/checkpoint-20260809-native-latest https://github.com/einklover/m4-weread-plugin.git "$RUNNER_TEMP/e2e/weread"
+
+      - name: Boot QEMU on PTY and drive TTF TXT plugins with m4adb
+        id: drive
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euxo pipefail
+          QEMU="$RUNNER_TEMP/e2e/espressif-qemu/build-murphy-v3/qemu-system-xtensa"
+          FLASH="$RUNNER_TEMP/e2e/murphy-e2e-16m.bin"
+          SD="$RUNNER_TEMP/e2e/murphy-sd.img"
+          FRAME="$RUNNER_TEMP/e2e-artifacts/ssd1677-frame.pbm"
+          QLOG="$RUNNER_TEMP/e2e-artifacts/qemu-runtime.log"
+          "$QEMU" -nographic -monitor none -machine murphy-m4 -m 8M \
+            -drive "file=$FLASH,if=mtd,format=raw" \
+            -drive "file=$SD,if=sd,format=raw" \
+            -global driver=esp32s3.gpio,property=strap_mode,value=0x04 \
+            -global driver=esp32s3.gpio,property=input-default,value=0x100000000007 \
+            -global driver=ssi_psram,property=is_octal,value=true \
+            -global "driver=murphy-ssd1677,property=frame-file,value=$FRAME" \
+            -global driver=murphy-ssd1677,property=busy-ms,value=20 \
+            -serial pty >"$QLOG" 2>&1 &
+          QPID=$!
+          echo "$QPID" > "$RUNNER_TEMP/e2e/qemu.pid"
+          trap 'kill $QPID 2>/dev/null || true' EXIT
+          PTY=""
+          for i in $(seq 1 120); do
+            PTY=$(grep -oE '/dev/pts/[0-9]+' "$QLOG" | tail -1 || true)
+            [ -n "$PTY" ] && break
+            kill -0 "$QPID" || { cat "$QLOG"; exit 2; }
+            sleep 1
+          done
+          test -n "$PTY"
+          echo "PTY=$PTY" | tee "$RUNNER_TEMP/e2e-artifacts/pty.txt"
+
+          M4ADB=(python3 firmware/scripts/m4adb.py --port "$PTY" --no-daemon --timeout 20)
+          # Wait through ROM/boot/SD/display/TTF/TXT reader entry.
+          READY=0
+          for i in $(seq 1 90); do
+            if "${M4ADB[@]}" ping > "$RUNNER_TEMP/e2e-artifacts/ping.json" 2> "$RUNNER_TEMP/e2e-artifacts/ping.err"; then READY=1; break; fi
+            sleep 1
+          done
+          test "$READY" = 1
+          "${M4ADB[@]}" status | tee "$RUNNER_TEMP/e2e-artifacts/status-txt.json"
+          "${M4ADB[@]}" ui | tee "$RUNNER_TEMP/e2e-artifacts/ui-txt.json"
+          "${M4ADB[@]}" screenshot "$RUNNER_TEMP/e2e-artifacts/txt-reader.pbm"
+
+          grep -a '\[E2E-TTF\] load=1' "$QLOG"
+          grep -a '\[E2E-TXT\] load=1 read=1' "$QLOG"
+          grep -a '\[E2E-TXT\] activity=TxtReader opened' "$QLOG"
+
+          : > "$RUNNER_TEMP/e2e-artifacts/plugin-results.tsv"
+          run_plugin() {
+            local name="$1" appid="$2" src="$3"
+            local ok_install=0 ok_launch=0
+            if "${M4ADB[@]}" install "$src" --transport usb --ready-timeout 20 --commit-timeout 120 --overall-timeout 180 \
+                > "$RUNNER_TEMP/e2e-artifacts/${name}-install.log" 2>&1; then ok_install=1; fi
+            if [ "$ok_install" = 1 ] && "${M4ADB[@]}" launch "$appid" \
+                > "$RUNNER_TEMP/e2e-artifacts/${name}-launch.json" 2>&1; then ok_launch=1; fi
+            sleep 4
+            "${M4ADB[@]}" status > "$RUNNER_TEMP/e2e-artifacts/${name}-status.json" 2>&1 || true
+            "${M4ADB[@]}" ui > "$RUNNER_TEMP/e2e-artifacts/${name}-ui.json" 2>&1 || true
+            "${M4ADB[@]}" screenshot "$RUNNER_TEMP/e2e-artifacts/${name}.pbm" > /dev/null 2>&1 || true
+            printf '%s\tinstall=%s\tlaunch=%s\n' "$name" "$ok_install" "$ok_launch" | tee -a "$RUNNER_TEMP/e2e-artifacts/plugin-results.tsv"
+            "${M4ADB[@]}" back > /dev/null 2>&1 || true
+            sleep 1
+          }
+          run_plugin fanqie com.fanqie.client "$RUNNER_TEMP/e2e/fanqie"
+          run_plugin jjwxc com.jjwxc.client "$RUNNER_TEMP/e2e/jjwxc"
+          run_plugin weread com.weread.client "$RUNNER_TEMP/e2e/weread"
+
+          "${M4ADB[@]}" status | tee "$RUNNER_TEMP/e2e-artifacts/status-final.json" || true
+          cp "$QLOG" "$RUNNER_TEMP/e2e-artifacts/qemu-runtime-final.log"
+          grep -q $'fanqie\tinstall=1\tlaunch=1' "$RUNNER_TEMP/e2e-artifacts/plugin-results.tsv"
+          grep -q $'jjwxc\tinstall=1\tlaunch=1' "$RUNNER_TEMP/e2e-artifacts/plugin-results.tsv"
+          grep -q $'weread\tinstall=1\tlaunch=1' "$RUNNER_TEMP/e2e-artifacts/plugin-results.tsv"
+
+      - name: Summarize E2E checkpoints
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# Murphy M4 full-chain E2E result'
+            echo
+            echo '## TTF / TXT serial checkpoints'
+            grep -aE '\[E2E-(TTF|TXT)\]|\[M4-(PSRAM|SD|RC1).*BOOT_SUMMARY' "$RUNNER_TEMP/e2e-artifacts/qemu-runtime.log" 2>/dev/null | tail -80 || true
+            echo
+            echo '## Plugins'
+            cat "$RUNNER_TEMP/e2e-artifacts/plugin-results.tsv" 2>/dev/null || true
+            echo
+            echo '## Final runtime tail'
+            tail -n 120 "$RUNNER_TEMP/e2e-artifacts/qemu-runtime.log" 2>/dev/null || true
+          } | tee "$RUNNER_TEMP/e2e-artifacts/RESULT.md"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: murphy-full-e2e-${{ github.run_id }}
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: error
+
+      - name: Enforce full-chain result
+        if: always()
+        run: |
+          test '${{ steps.drive.outcome }}' = success

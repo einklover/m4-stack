@@ -47,6 +47,7 @@ public class ScreenBridgeService extends AccessibilityService {
     private ExecutorService captureExecutor;
     private Thread prefetchThread;
     private HttpServer server;
+    private BridgeContentApi contentApi;
     private PageStore store;
     private int displayWidth = 1080;
     private int displayHeight = 2400;
@@ -63,7 +64,9 @@ public class ScreenBridgeService extends AccessibilityService {
         }
         store = new PageStore();
         captureExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
-        server = new HttpServer(store, this::wakeLoop, this::tapFromM4, this::cacheActive);
+        contentApi = new BridgeContentApi(this, main);
+        server = new HttpServer(store, this::wakeLoop, this::tapFromM4, this::cacheActive,
+                contentApi);
         server.start();
         enabled = true;
         prefetchThread = new Thread(this::captureLoop, "m4-prefetch");
@@ -78,6 +81,7 @@ public class ScreenBridgeService extends AccessibilityService {
         sessionGeneration++;
         enabled = false;
         if (server != null) server.stop();
+        if (contentApi != null) contentApi.shutdown();
         if (prefetchThread != null) prefetchThread.interrupt();
         if (captureExecutor != null) captureExecutor.shutdownNow();
         if (instance == this) instance = null;
@@ -90,7 +94,12 @@ public class ScreenBridgeService extends AccessibilityService {
         CharSequence pkg = event.getPackageName();
         CharSequence cls = event.getClassName();
         if (pkg != null) foregroundPackage = pkg.toString();
-        if (cls != null) foregroundClass = cls.toString();
+        // Content-change events report RecyclerView/TextView class names. Only
+        // window-state events identify the actual Activity/window we can use
+        // for navigation diagnostics.
+        if (cls != null && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            foregroundClass = cls.toString();
+        }
     }
 
     @Override
@@ -129,6 +138,51 @@ public class ScreenBridgeService extends AccessibilityService {
             s.wakeLoop();
             s.notifyStatus();
         }
+    }
+
+    String foregroundPackageSnapshot() { return foregroundPackage; }
+
+    String foregroundClassSnapshot() { return foregroundClass; }
+
+    boolean globalBack() { return performGlobalAction(GLOBAL_ACTION_BACK); }
+
+    boolean swipeScreen(float startX, float startY, float endX, float endY, long durationMs) {
+        Path p = new Path();
+        p.moveTo(startX, startY);
+        p.lineTo(endX, endY);
+        GestureDescription g = new GestureDescription.Builder()
+                .addStroke(new GestureDescription.StrokeDescription(p, 0,
+                        Math.max(120, durationMs)))
+                .build();
+        return dispatchGesture(g, null, null);
+    }
+
+    Bitmap captureScreenBitmap() {
+        final CountDownLatch done = new CountDownLatch(1);
+        final Bitmap[] result = new Bitmap[1];
+        main.post(() -> takeScreenshot(0, captureExecutor, new TakeScreenshotCallback() {
+            @Override public void onSuccess(ScreenshotResult r) {
+                HardwareBuffer hb = r.getHardwareBuffer();
+                Bitmap wrapped = null;
+                try {
+                    wrapped = Bitmap.wrapHardwareBuffer(hb, r.getColorSpace());
+                    if (wrapped != null) result[0] = wrapped.copy(Bitmap.Config.ARGB_8888, false);
+                } finally {
+                    if (wrapped != null) wrapped.recycle();
+                    hb.close();
+                    done.countDown();
+                }
+            }
+
+            @Override public void onFailure(int errorCode) { done.countDown(); }
+        }));
+        try {
+            if (!done.await(4, TimeUnit.SECONDS)) return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        return result[0];
     }
 
     private void beginSession(long delayMs) {
@@ -327,7 +381,7 @@ public class ScreenBridgeService extends AccessibilityService {
         return tapScreen(displayWidth * 0.85f, displayHeight * 0.50f);
     }
 
-    private boolean tapScreen(float x, float y) {
+    boolean tapScreen(float x, float y) {
         final CountDownLatch done = new CountDownLatch(1);
         final boolean[] ok = new boolean[1];
         Path p = new Path();
@@ -335,6 +389,9 @@ public class ScreenBridgeService extends AccessibilityService {
         final GestureDescription g = new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(p, 0, 80))
                 .build();
+        if (Looper.myLooper() == main.getLooper()) {
+            return dispatchGesture(g, null, null);
+        }
         main.post(() -> dispatchGesture(g, new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription gd) {

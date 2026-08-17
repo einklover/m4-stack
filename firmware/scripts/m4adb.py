@@ -31,6 +31,24 @@ DEFAULT_CACHE = ROOT / "build" / "m4adb" / "cache"
 DEFAULT_ARTIFACTS = ROOT / "build" / "m4adb" / "runs"
 
 
+def _resolve_ready_timeout(args: argparse.Namespace, ready_timeout: float | None = None) -> float:
+    """Host wait for bridge handshake.
+
+    Defaults stay generous (install/boot after USB reset). Explicit values are
+    honored without the old hard floor of 15s so smoke tests can fail fast::
+
+      m4adb --timeout 5 --ready-timeout 5 --no-daemon ping
+    """
+    if ready_timeout is not None:
+        return max(0.5, float(ready_timeout))
+    explicit = getattr(args, "ready_timeout", None)
+    if explicit is not None:
+        return max(0.5, float(explicit))
+    base = float(getattr(args, "timeout", 10))
+    # Implicit path only: keep a 15s floor for real-device reconnect/reset.
+    return max(15.0, base)
+
+
 def _open_direct_client(args: argparse.Namespace, ready_timeout: float | None = None) -> Client:
     if getattr(args, "mock", False):
         dev = MockDevice()
@@ -46,10 +64,7 @@ def _open_direct_client(args: argparse.Namespace, ready_timeout: float | None = 
     # until the firmware bridge is ready.
     # install/sync need a longer ready window: open may reset the chip and
     # Home/bridge can take 20–45s after e-ink refresh.
-    base = float(getattr(args, "timeout", 10))
-    ready = float(ready_timeout) if ready_timeout is not None else max(15.0, base)
-    if ready < 15.0:
-        ready = 15.0
+    ready = _resolve_ready_timeout(args, ready_timeout)
     print(f"[m4adb] 串口 {port}，等待就绪（最多 {ready:.0f}s）…", flush=True)
     t0 = time.time()
     client.wait_ready(timeout=ready)
@@ -66,9 +81,7 @@ def _open_client(args: argparse.Namespace, ready_timeout: float | None = None) -
         raise SystemExit("未找到串口设备。请用 --port 指定，或先运行 devices / doctor。")
     path = socket_path_for_port(port)
     base = float(getattr(args, "timeout", 10))
-    ready = float(ready_timeout) if ready_timeout is not None else max(15.0, base)
-    if ready < 15.0:
-        ready = 15.0
+    ready = _resolve_ready_timeout(args, ready_timeout)
 
     def connect_existing() -> Client | None:
         c: Client | None = None
@@ -258,7 +271,7 @@ def cmd_sd_probe(args: argparse.Namespace) -> int:
 
 def cmd_http_probe(args: argparse.Namespace) -> int:
     """Run one isolated M4HttpTransport / WeRead step (base debugger)."""
-    c = _open_client(args, ready_timeout=max(15.0, float(getattr(args, "timeout", 10))))
+    c = _open_client(args, ready_timeout=_resolve_ready_timeout(args))
     try:
         def on_prg(p: dict) -> None:
             phase = p.get("phase") or p.get("step") or ""
@@ -454,6 +467,18 @@ def cmd_tap(args: argparse.Namespace) -> int:
     c = _open_client(args)
     try:
         print(json.dumps(c.tap(args.x, args.y), ensure_ascii=False, indent=2))
+        return 0
+    except BridgeError as e:
+        print(f"错误 {e.key}: {e.message}", file=sys.stderr)
+        return 1
+    finally:
+        c.close()
+
+
+def cmd_swipe(args: argparse.Namespace) -> int:
+    c = _open_client(args)
+    try:
+        print(json.dumps(c.swipe(args.sx, args.sy, args.ex, args.ey), ensure_ascii=False, indent=2))
         return 0
     except BridgeError as e:
         print(f"错误 {e.key}: {e.message}", file=sys.stderr)
@@ -762,6 +787,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=10.0,
         help="通用请求超时（秒）。install/sync 就绪等待见 --ready-timeout",
     )
+    p.add_argument(
+        "--ready-timeout",
+        type=float,
+        default=None,
+        help="串口 bridge 就绪等待（秒）。默认 max(15, --timeout)；显式指定可小于 15 以便冒烟快速失败",
+    )
     p.add_argument("--mock", action="store_true", help="使用主机 mock 设备（无硬件）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -872,6 +903,11 @@ def build_parser() -> argparse.ArgumentParser:
     pt = sub.add_parser("tap", help="注入点击（逻辑坐标）")
     pt.add_argument("x", type=int)
     pt.add_argument("y", type=int)
+    psw = sub.add_parser("swipe", help="注入滑动（逻辑起止坐标）")
+    psw.add_argument("sx", type=int)
+    psw.add_argument("sy", type=int)
+    psw.add_argument("ex", type=int)
+    psw.add_argument("ey", type=int)
     pk = sub.add_parser("key", help="注入按键")
     pk.add_argument("name")
     sub.add_parser("back", help="注入 Back")
@@ -916,6 +952,7 @@ def main(argv: list[str] | None = None) -> int:
         "sync": cmd_sync,
         "launch": cmd_launch,
         "tap": cmd_tap,
+        "swipe": cmd_swipe,
         "key": cmd_key,
         "back": cmd_back,
         "screenshot": cmd_screenshot,

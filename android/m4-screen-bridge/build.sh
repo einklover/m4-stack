@@ -40,7 +40,7 @@ if [ "${1:-}" = "--test" ]; then
   echo "self-check (pure Java, no Android)"
   rm -rf "$OUT/testclasses"
   mkdir -p "$OUT/testclasses"
-  PURE="Framebuffer Rle Header Preprocess PageStore"
+  PURE="Framebuffer Rle Header Preprocess PageStore XhsFeedParser"
   SRCS=""
   for c in $PURE; do SRCS="$SRCS $SRC/$c.java"; done
   javac --release 11 -d "$OUT/testclasses" $SRCS "$TEST_SRC/TestMain.java"

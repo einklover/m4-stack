@@ -27,6 +27,7 @@
 #include "apps/M4xPaths.h"
 #include "apps/M4xRegistry.h"
 #include "apps/M4xWifiConnect.h"
+#include "qemu/M4QemuNet.h"
 
 namespace M4SerialDebug {
 namespace {
@@ -50,6 +51,10 @@ bool parseKeyName(const char* name, MappedInputManager::Button& out) {
       {"up", MappedInputManager::Button::Up},
       {"Down", MappedInputManager::Button::Down},
       {"down", MappedInputManager::Button::Down},
+      // Murphy M4 side body: KEY_LOCK / power (GPIO0). Short-press policy is
+      // SETTINGS.shortPwrBtn (full refresh / confirm / ignore / …).
+      {"Power", MappedInputManager::Button::Power},
+      {"power", MappedInputManager::Button::Power},
       {"PageBack", MappedInputManager::Button::PageBack},
       {"page_back", MappedInputManager::Button::PageBack},
       {"PageForward", MappedInputManager::Button::PageForward},
@@ -277,6 +282,14 @@ bool Bridge::recentHostActivity(unsigned long nowMs, unsigned long windowMs) con
 }
 
 void Bridge::poll() {
+  // TTF raster on the owner loop may re-enter via m4YieldToDebugBridge().
+  // Nested calls must not interleave Serial RX/TX bookkeeping.
+  if (inPoll_) return;
+  struct PollGuard {
+    bool& flag;
+    explicit PollGuard(bool& f) : flag(f) { flag = true; }
+    ~PollGuard() { flag = false; }
+  } guard(inPoll_);
   // Drain enough CDC RX per tick that a full @M4DBG control frame (~300–800 B)
   // is not stuck across many e-ink-blocked loops. Cap keeps the owner loop fair.
   constexpr int kRxBudget = 1024;
@@ -476,10 +489,22 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     activityCopy_[sizeof(activityCopy_) - 1] = 0;
     strncpy(appIdCopy_, st.activeAppId ? st.activeAppId : "", sizeof(appIdCopy_) - 1);
     appIdCopy_[sizeof(appIdCopy_) - 1] = 0;
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    const bool wifiConnected = m4QemuNetWifiCompatConnected() || WiFi.status() == WL_CONNECTED;
+    char qemuIp[16] = {};
+    if (m4QemuNetIsUp()) m4QemuNetLocalIp(qemuIp, sizeof(qemuIp));
+    const String wifiSsid = m4QemuNetWifiCompatConnected()
+                                ? String("qemu-openeth")
+                                : (wifiConnected ? WiFi.SSID() : String());
+    const String wifiIp = m4QemuNetIsUp() ? String(qemuIp)
+                                          : (wifiConnected ? WiFi.localIP().toString() : String());
+    const int wifiRssi = m4QemuNetWifiCompatConnected() ? 0 : (wifiConnected ? WiFi.RSSI() : -127);
+#else
     const bool wifiConnected = WiFi.status() == WL_CONNECTED;
     const String wifiSsid = wifiConnected ? WiFi.SSID() : String();
     const String wifiIp = wifiConnected ? WiFi.localIP().toString() : String();
     const int wifiRssi = wifiConnected ? WiFi.RSSI() : -127;
+#endif
     char wifiSsidSafe[96] = {};
     char wifiIpSafe[24] = {};
     copyJsonSafe(wifiSsid.c_str(), wifiSsidSafe, sizeof(wifiSsidSafe));
@@ -493,7 +518,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"wifi_connected\":%s,\"wifi_status\":%d,\"wifi_ssid\":\"%s\",\"wifi_ip\":\"%s\","
              "\"wifi_rssi\":%d,\"caps\":[\"install\",\"install_http\",\"wifi_status\",\"wifi_prepare\","
              "\"wifi_transfer\",\"sd_probe\",\"sd_read\",\"http_probe\",\"launch\",\"tap\",\"key\","
-             "\"screenshot\",\"logs\",\"ui\"]}",
+             "\"swipe\",\"screenshot\",\"logs\",\"ui\"]}",
              op, kProtocolVersion, st.firmwareVersion ? st.firmwareVersion : "", activityCopy_, appIdCopy_,
              static_cast<unsigned>(st.freeHeap), static_cast<unsigned>(st.minFreeHeap),
              static_cast<unsigned>(st.freePsram), static_cast<unsigned>(st.resetReason),
@@ -536,10 +561,21 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
   }
 
   auto wifiJson = [&](const char* opName, bool ready) {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    const bool connected = m4QemuNetWifiCompatConnected() || WiFi.status() == WL_CONNECTED;
+    char qemuIp[16] = {};
+    if (m4QemuNetIsUp()) m4QemuNetLocalIp(qemuIp, sizeof(qemuIp));
+    const String ssid = m4QemuNetWifiCompatConnected() ? String("qemu-openeth")
+                                                       : (connected ? WiFi.SSID() : String());
+    const String ip = m4QemuNetIsUp() ? String(qemuIp)
+                                     : (connected ? WiFi.localIP().toString() : String());
+    const int rssi = m4QemuNetWifiCompatConnected() ? 0 : (connected ? WiFi.RSSI() : -127);
+#else
     const bool connected = WiFi.status() == WL_CONNECTED;
     const String ssid = connected ? WiFi.SSID() : String();
     const String ip = connected ? WiFi.localIP().toString() : String();
     const int rssi = connected ? WiFi.RSSI() : -127;
+#endif
     char ssidSafe[96] = {};
     char ipSafe[24] = {};
     copyJsonSafe(ssid.c_str(), ssidSafe, sizeof(ssidSafe));
@@ -557,7 +593,12 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
   // Read-only status is useful before starting a transfer and never changes
   // credentials or radio mode.
   if (strcmp(op, "wifi_status") == 0) {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    const bool ready = m4QemuNetIsUp() ||
+                       (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0));
+#else
     const bool ready = WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
+#endif
     const auto out = wifiJson("wifi_status", ready);
     replyOk(reqId, out.c_str());
     return;
@@ -1045,6 +1086,28 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     return;
   }
 
+  if (strcmp(op, "swipe") == 0) {
+    if (!input_) {
+      replyErr(reqId, "no_input", "输入管理器不可用");
+      return;
+    }
+    const int sx = doc["sx"] | -1;
+    const int sy = doc["sy"] | -1;
+    const int ex = doc["ex"] | -1;
+    const int ey = doc["ey"] | -1;
+    bool busy = false;
+    if (!input_->injectSyntheticSwipe(sx, sy, ex, ey, busy)) {
+      replyErr(reqId, busy ? "busy" : "swipe_oob",
+               busy ? "输入忙，请稍后重试" : "滑动坐标越界或轨迹为空");
+      return;
+    }
+    char out[128];
+    snprintf(out, sizeof(out), "{\"op\":\"swipe\",\"sx\":%d,\"sy\":%d,\"ex\":%d,\"ey\":%d}",
+             sx, sy, ex, ey);
+    replyOk(reqId, out, true);
+    return;
+  }
+
   if (strcmp(op, "key") == 0) {
     if (!input_) {
       replyErr(reqId, "no_input", "输入管理器不可用");
@@ -1397,12 +1460,23 @@ void Bridge::finishUploadAndInstall(const char* reqId) {
 namespace {
 
 struct BridgeWifiRadio final : M4xWifiConnect::IRadio {
-  bool isConnected() const override { return WiFi.status() == WL_CONNECTED; }
+  bool isConnected() const override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return true;
+#endif
+    return WiFi.status() == WL_CONNECTED;
+  }
   std::string connectedSsid() const override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return "qemu-openeth";
+#endif
     if (WiFi.status() != WL_CONNECTED) return {};
     return std::string(WiFi.SSID().c_str());
   }
   M4xWifiConnect::RadioStatus status() const override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return M4xWifiConnect::RadioStatus::Connected;
+#endif
     const wl_status_t s = WiFi.status();
     if (s == WL_CONNECTED) return M4xWifiConnect::RadioStatus::Connected;
     if (s == WL_CONNECT_FAILED || s == WL_NO_SSID_AVAIL || s == WL_CONNECTION_LOST)
@@ -1411,17 +1485,36 @@ struct BridgeWifiRadio final : M4xWifiConnect::IRadio {
     return M4xWifiConnect::RadioStatus::Connecting;
   }
   void begin(const std::string& ssid, const std::string& password) override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) {
+      Serial.printf("[M4DBG] QEMU open_eth already up (ssid=%s ignored)\n", ssid.c_str());
+      return;
+    }
+#endif
     Serial.printf("[M4DBG] WiFi begin ssid=%s\n", ssid.c_str());
     if (password.empty())
       WiFi.begin(ssid.c_str());
     else
       WiFi.begin(ssid.c_str(), password.c_str());
   }
-  void disconnectKeepCreds() override { WiFi.disconnect(false); }
-  void setStaMode() override { WiFi.mode(WIFI_STA); }
+  void disconnectKeepCreds() override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return;
+#endif
+    WiFi.disconnect(false);
+  }
+  void setStaMode() override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return;
+#endif
+    WiFi.mode(WIFI_STA);
+  }
 };
 
 bool hasUsableStaAddress() {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  if (m4QemuNetIsUp()) return true;
+#endif
   return WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
 }
 
@@ -1438,7 +1531,13 @@ bool ensureStaConnected(uint32_t timeoutMs) {
   // first HTTP request disappearing into modem sleep.
   WiFi.setSleep(false);
   if (hasUsableStaAddress()) {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    char ip[16] = {};
+    m4QemuNetLocalIp(ip, sizeof(ip));
+    Serial.printf("[M4DBG] WiFi/eth already up ssid=%s ip=%s\n", m4QemuNetSsid(), ip);
+#else
     Serial.printf("[M4DBG] WiFi already up ssid=%s\n", WiFi.SSID().c_str());
+#endif
     return true;
   }
   WIFI_STORE.loadFromFile();

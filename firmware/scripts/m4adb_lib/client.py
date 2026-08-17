@@ -583,10 +583,15 @@ class Client:
     def launch(self, app_id: str) -> dict:        return self.request({"op": "launch", "app_id": app_id}, timeout=15)
 
     def tap(self, x: int, y: int) -> dict:
-        return self.request({"op": "tap", "x": int(x), "y": int(y)}, timeout=5)
+        # External TTF first-paint on QEMU commonly blocks poll() for ~5s+.
+        return self.request({"op": "tap", "x": int(x), "y": int(y)}, timeout=20)
+
+    def swipe(self, sx: int, sy: int, ex: int, ey: int) -> dict:
+        return self.request({"op": "swipe", "sx": int(sx), "sy": int(sy),
+                             "ex": int(ex), "ey": int(ey)}, timeout=20)
 
     def key(self, name: str) -> dict:
-        return self.request({"op": "key", "name": name}, timeout=5)
+        return self.request({"op": "key", "name": name}, timeout=20)
 
     def back(self) -> dict:
         return self.request({"op": "back"}, timeout=5)

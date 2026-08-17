@@ -1,6 +1,8 @@
 #include "apps/providers/M4NativeProviderCatalog.h"
 
 #include "apps/M4xJsonStream.h"
+#include "apps/providers/M4JjwxcEndpoint.h"
+#include "apps/providers/M4WereadEndpoint.h"
 #include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeProviderHttp.h"
@@ -380,7 +382,7 @@ CatalogSpec makeSpec(const Snapshot& job) {
   }
 
   if (job.providerId == "jjwxc") {
-    s.request.url = "https://app-cdn.jjwxc.net/androidapi/chapterList?novelId=" + job.bookId +
+    s.request.url = std::string(M4_JJWXC_APP_CDN) + "/androidapi/chapterList?novelId=" + job.bookId +
                     "&more=0&whole=1";
     s.request.headers = {{"User-Agent", kJjUa}, {"Referer", kJjRef}, {"Connection", "close"}};
     s.request.maxBytes = 4u * 1024u * 1024u;
@@ -401,7 +403,7 @@ CatalogSpec makeSpec(const Snapshot& job) {
       return s;
     }
     s.request.method = "POST";
-    s.request.url = "https://weread.qq.com/web/book/chapterInfos";
+    s.request.url = std::string(M4_WEREAD_ORIGIN) + "/web/book/chapterInfos";
     s.request.headers = {{"User-Agent", "Mozilla/5.0 Murphy-M4 NativeProvider/1"},
                          {"Referer", "https://weread.qq.com/"},
                          {"Content-Type", "application/json"}, {"Cookie", cookie}};

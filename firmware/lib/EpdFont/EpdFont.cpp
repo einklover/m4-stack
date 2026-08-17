@@ -47,6 +47,12 @@ void EpdFont::getTextDimensions(const char* string, int* w, int* h, const EpdFon
   *h = maxY - minY;
 }
 
+int EpdFont::glyphAdvanceX(const uint32_t cp, const EpdFontStyles::Style style) const {
+  const EpdGlyph* glyph = getGlyph(cp, style);
+  if (!glyph) glyph = getGlyph('?', style);
+  return glyph ? glyph->advanceX : 0;
+}
+
 int EpdFont::getTextAdvance(const char* string, const EpdFontStyles::Style style) const {
   if (string == nullptr || *string == '\0') {
     return 0;
@@ -55,13 +61,7 @@ int EpdFont::getTextAdvance(const char* string, const EpdFontStyles::Style style
   int advance = 0;
   uint32_t cp;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&string)))) {
-    const EpdGlyph* glyph = getGlyph(cp, style);
-    if (!glyph) {
-      glyph = getGlyph('?', style);
-    }
-    if (glyph) {
-      advance += glyph->advanceX;
-    }
+    advance += glyphAdvanceX(cp, style);
   }
   return advance;
 }

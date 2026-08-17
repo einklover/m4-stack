@@ -12,14 +12,12 @@
 
 enum class CalibreConnectState { WIFI_SELECTION, SERVER_STARTING, SERVER_RUNNING, ERROR };
 
-/**
- * CalibreConnectActivity starts the file transfer server in STA mode,
- * but renders Calibre-specific instructions instead of the web transfer UI.
- */
+/** Calibre transfer over STA Wi-Fi with Calibre-specific instructions. */
 class CalibreConnectActivity final : public ActivityWithSubactivity {
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   bool updateRequired = false;
+  bool pendingStartServer = false;
   CalibreConnectState state = CalibreConnectState::WIFI_SELECTION;
   const std::function<void()> onComplete;
 
@@ -36,6 +34,7 @@ class CalibreConnectActivity final : public ActivityWithSubactivity {
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
+  bool ensureDisplayTask();
   void render() const;
   void renderServerRunning() const;
 

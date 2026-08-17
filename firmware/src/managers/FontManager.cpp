@@ -16,10 +16,10 @@ namespace {
 constexpr const char* kLegacyEpdFontDir = "/fonts";
 constexpr const char* kRuntimeTtfDir = "/FONT";
 
-bool isTtfName(const String& name) {
+bool isRuntimeFontName(const String& name) {
   String n = name;
   n.toLowerCase();
-  return n.endsWith(".ttf");
+  return n.endsWith(".ttf") || n.endsWith(".ttc") || n.endsWith(".otf") || n.endsWith(".otc");
 }
 }  // namespace
 
@@ -141,14 +141,14 @@ void FontManager::scanFonts() {
             Serial.printf("[FM] Added font: %s\n", fontName.c_str());
           }
         }
-        } else if (isTtfName(name)) {
-        // Runtime TrueType: the family name is the full .ttf filename, so the
-        // settings/UI surfaces expose the real file the user dropped on SD.
+        } else if (isRuntimeFontName(name)) {
+        // Runtime sfnt/collection: preserve the full filename so the settings
+        // UI exposes the exact file the user dropped into /FONT.
         if (std::find(availableFamilies.begin(), availableFamilies.end(), name.c_str()) ==
             availableFamilies.end()) {
           availableFamilies.push_back(name.c_str());
           availableTtfFamilies.push_back(name.c_str());
-          Serial.printf("[FM] Added TTF font: %s\n", name.c_str());
+          Serial.printf("[FM] Added runtime font: %s\n", name.c_str());
         }
       }
       }
@@ -159,8 +159,8 @@ void FontManager::scanFonts() {
 
   // Legacy generated bitmap fonts stay in /fonts for internal compatibility.
   scanDir(kLegacyEpdFontDir, true);
-  // User-provided runtime TrueType files live in the device's documented
-  // uppercase FONT directory.
+  // User-provided runtime sfnt files/collections live in the device's
+  // documented uppercase FONT directory.
   scanDir(kRuntimeTtfDir, false);
 
   std::sort(availableFamilies.begin(), availableFamilies.end());
@@ -611,13 +611,13 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
     return loadedFonts[familyName][fontSize];
   }
 
-  const bool isTtf = isTtfName(String(familyName.c_str()));
+  const bool isRuntimeFont = isRuntimeFontName(String(familyName.c_str()));
 
-  if (isTtf) {
-    // Runtime TrueType: streamed glyf rasterizer, no flash caching. The TTF is
-    // per (family, size) so changing customFontSize re-instantiates the face.
+  if (isRuntimeFont) {
+    // Runtime sfnt/collection: streamed glyf rasterizer, no flash caching. The
+    // runtime face is per (family, size) so changing customFontSize recreates it.
     String fontPath = String(kRuntimeTtfDir) + "/" + String(familyName.c_str());
-    Serial.printf("[FontMgr] Loading TTF font: %s @%dpx\n", fontPath.c_str(), fontSize);
+    Serial.printf("[FontMgr] Loading runtime font: %s @%dpx\n", fontPath.c_str(), fontSize);
     char diag[256];
     snprintf(diag, sizeof(diag), "load_begin family=%s size=%d path=%s", familyName.c_str(), fontSize,
              fontPath.c_str());
@@ -632,7 +632,7 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
       return fontFamily;
     }
     const char* err = regular ? regular->lastError() : "alloc failed";
-    Serial.printf("[FontMgr] Failed to load TTF font: %s (%s)\n", fontPath.c_str(), err);
+    Serial.printf("[FontMgr] Failed to load runtime font: %s (%s)\n", fontPath.c_str(), err);
     snprintf(diag, sizeof(diag), "load_fail family=%s size=%d error=%s", familyName.c_str(), fontSize, err);
     appendFontDiagnostic(diag);
     delete regular;

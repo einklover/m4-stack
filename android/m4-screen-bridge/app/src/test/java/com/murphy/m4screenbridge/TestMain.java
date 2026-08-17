@@ -16,7 +16,25 @@ public final class TestMain {
         gapCompression();
         grayGapCompression();
         thresholdSanity();
+        xhsFeedCards();
         System.out.println("OK: all self-checks passed");
+    }
+
+    private static void xhsFeedCards() {
+        XhsFeedParser.Item note = XhsFeedParser.parse(
+                "笔记  2026上半年纯电动汽车销量TOP40 来自中汽数研 645赞");
+        assertTrue(note != null, "xhs text note accepted");
+        assertEquals("2026上半年纯电动汽车销量TOP40", note.title, "xhs title");
+        assertEquals("中汽数研", note.author, "xhs author");
+        assertEquals("645", note.likes, "xhs likes");
+        assertEquals(XhsFeedParser.stableToken(note.title, note.author),
+                XhsFeedParser.stableToken(note.title, note.author), "xhs token stable");
+        assertTrue(!XhsFeedParser.stableToken(note.title, note.author).equals(
+                XhsFeedParser.stableToken(note.title + "2", note.author)), "xhs token distinguishes title");
+        assertTrue(XhsFeedParser.parse("视频  麒麟四足机器人首发 来自抖科技 1763赞") == null,
+                "xhs video rejected");
+        assertTrue(XhsFeedParser.parse("直播  今晚八点开播 来自主理人 8赞") == null,
+                "xhs live rejected");
     }
 
     private static void rleRoundtrip() {

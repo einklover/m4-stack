@@ -21,10 +21,53 @@ tar -xzf "$TMP/m4-device.tar.gz" -C "$TMP/src" --strip-components=1
 DEVICE="$TMP/src"
 
 test -d "$DEVICE/open-m4-sdk" || { echo "missing open-m4-sdk in archive"; exit 2; }
+test -f "$DEVICE/src/network/updater_fw.bin" || { echo "missing updater_fw.bin in m4-device archive"; exit 2; }
 
 echo "==> install open-m4-sdk"
 rm -rf "$FW/open-m4-sdk"
 cp -a "$DEVICE/open-m4-sdk" "$FW/open-m4-sdk"
+
+# QEMU plugin-debug builds set M4_QEMU_PLUGIN_DEBUG=1. Without this skip, the
+# Arduino I2C-ng path hammers the QEMU I2C model every loop and starves m4adb
+# USB install chunking. Only active under that macro (production builds unchanged).
+IM="$FW/open-m4-sdk/libs/hardware/InputManager/src/InputManager.cpp"
+if [[ -f "$IM" ]] && ! grep -q 'M4_QEMU_PLUGIN_DEBUG' "$IM"; then
+  echo "==> patch InputManager: skip touch poll under M4_QEMU_PLUGIN_DEBUG"
+  python3 - "$IM" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = """uint8_t InputManager::serviceTouch() {
+#if FREEINK_CAP_TOUCH
+  if (!touchDataEnabled) {
+    return 0;
+  }
+"""
+new = """uint8_t InputManager::serviceTouch() {
+#if FREEINK_CAP_TOUCH
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  // QEMU I2C model + Arduino ng driver currently spam invalid opcodes and
+  // starve the main loop (breaks m4adb USB install chunking). Skip touch.
+  return 0;
+#endif
+  if (!touchDataEnabled) {
+    return 0;
+  }
+"""
+if old not in text:
+    raise SystemExit(f"InputManager serviceTouch anchor missing in {path}")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
+fi
+
+# platformio.ini embeds this helper image into every hardware build. It is an
+# unvendored production artifact from the same pinned m4-device snapshot, not a
+# generated placeholder; without restoring it a clean clone cannot build the
+# normal murphy_m4 profile.
+echo "==> install src/network/updater_fw.bin"
+mkdir -p "$FW/src/network"
+cp -a "$DEVICE/src/network/updater_fw.bin" "$FW/src/network/updater_fw.bin"
 
 for src in lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts; do
   test -d "$DEVICE/$src" || { echo "missing m4-device $src"; exit 2; }
@@ -44,6 +87,7 @@ cp -a "$DEVICE/lib/EpdFont/builtinFonts" "$FW/lib/EpdFont/builtinFonts"
 
 for p in \
   open-m4-sdk/libs/hardware/BatteryMonitor/library.json \
+  src/network/updater_fw.bin \
   lib/Epub/Epub.h \
   lib/Lua/src/lua.h \
   lib/expat/expat.h \
