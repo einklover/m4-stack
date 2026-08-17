@@ -31,6 +31,13 @@ constexpr LayoutPreset kCompactLayout{8, 8, 6, 6, 9};
 constexpr LayoutPreset kStandardLayout{10, 10, 10, 10, 10};
 constexpr LayoutPreset kRelaxedLayout{14, 14, 18, 18, 12};
 
+constexpr int kOverlayTopBarH = 58;
+constexpr int kOverlayBottomBarH = 88;
+constexpr int kStyleSheetH = 270;
+constexpr int kStyleSheetHeaderH = 38;
+constexpr int kTopBackHitW = 64;
+constexpr int kTopBookmarkHitW = 64;
+
 bool matchesLayout(const LayoutPreset& p) {
   return SETTINGS.screenMargin_Top == p.top && SETTINGS.screenMargin_Bottom == p.bottom &&
          SETTINGS.screenMargin_Left == p.left && SETTINGS.screenMargin_Right == p.right &&
@@ -64,6 +71,40 @@ int systemFontPx(uint8_t fontSize) {
       return 18;
   }
 }
+
+int quickIndexFromPoint(int x, int y, int width, int height) {
+  if (y < height - kOverlayBottomBarH || y >= height || x < 0 || x >= width) return -1;
+  const int cellW = std::max(1, width / 4);
+  return std::min(3, x / cellW);
+}
+
+int styleIndexFromPoint(const M4ReaderMenuLayout::StylePanelLayout& L, int x, int y) {
+  if (L.fontMinus.contains(x, y)) return 0;
+  if (L.fontPlus.contains(x, y)) return 1;
+  if (L.compact.contains(x, y)) return 2;
+  if (L.standard.contains(x, y)) return 3;
+  if (L.relaxed.contains(x, y)) return 4;
+  return -1;
+}
+
+void drawBackChevron(const GfxRenderer& renderer, int x, int cy) {
+  for (int i = 0; i <= 8; ++i) {
+    renderer.drawPixel(x + i, cy - i, true);
+    renderer.drawPixel(x + i, cy - i + 1, true);
+    renderer.drawPixel(x + i, cy + i, true);
+    renderer.drawPixel(x + i, cy + i + 1, true);
+  }
+  renderer.fillRect(x + 7, cy, 18, 2, true);
+}
+
+void drawBookmarkGlyph(const GfxRenderer& renderer, int x, int y) {
+  renderer.drawRect(x, y, 20, 27, true);
+  renderer.fillRect(x + 3, y + 3, 14, 2, true);
+  for (int i = 0; i < 7; ++i) {
+    renderer.drawPixel(x + 3 + i, y + 22 + i / 2, false);
+    renderer.drawPixel(x + 16 - i, y + 22 + i / 2, false);
+  }
+}
 }  // namespace
 
 void EpubReaderMenuActivity::onEnter() {
@@ -74,10 +115,8 @@ void EpubReaderMenuActivity::onEnter() {
   readerStyleDirty_ = false;
   readerFontDirty_ = false;
   firstPaint_ = true;
+  forceHalfRefresh_ = false;
 
-  // The concrete reader host is authoritative for optional capabilities. TXT
-  // deliberately has no remote-progress sync implementation, so those rows do
-  // not exist there instead of leading to a "not supported" dead end.
   if (auto* host = getParentActivity(); host && !host->readerMenuSyncSupported()) {
     moreMenuItems.erase(
         std::remove_if(moreMenuItems.begin(), moreMenuItems.end(), [](const MenuItem& item) {
@@ -130,6 +169,7 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
   if (action == InternalAction::OPEN_MORE) {
     menuLayer_ = MenuLayer::MORE;
     selectedIndex = 0;
+    forceHalfRefresh_ = true;
     updateRequired = true;
     return;
   }
@@ -236,8 +276,13 @@ void EpubReaderMenuActivity::notifyParentStyleChanged() {
     xSemaphoreGive(renderingMutex);
   }
 
-  // Style reflow is a semantic host operation, not a synthetic rotation event.
   if (auto* host = getParentActivity()) host->onReaderMenuStyleChanged();
+}
+
+void EpubReaderMenuActivity::closeToReader() {
+  // Reader callback snapshots the current position before a possible reflow.
+  onBack(pendingOrientation);
+  notifyParentStyleChanged();
 }
 
 void EpubReaderMenuActivity::loop() {
@@ -251,41 +296,38 @@ void EpubReaderMenuActivity::loop() {
 
   if (mappedInput.hasTouch()) {
     if (mappedInput.wasBackGesture()) {
-      if (returnToQuickMenu()) return;
-      // Let the reader's normal close callback capture its current state first;
-      // ActivityWithSubactivity defers child teardown until this frame returns.
-      onBack(pendingOrientation);
-      notifyParentStyleChanged();
+      closeToReader();
       return;
     }
 
-    const auto metrics = UITheme::getInstance().getMetrics();
     const int pageWidth = renderer.getScreenWidth();
     const int pageHeight = renderer.getScreenHeight();
-    const auto orientation = renderer.getOrientation();
-    const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
-    const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
-    const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-    const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
-    const int contentX = isLandscapeCw ? hintGutterWidth : 0;
-    const int contentWidth = pageWidth - hintGutterWidth;
-    const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-    const int contentTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
 
     if (menuLayer_ == MenuLayer::QUICK) {
-      const auto quickLayout = M4ReaderMenuLayout::makeQuickPanelLayout(contentX, contentWidth, contentTop);
       int tx = 0, ty = 0;
       if (mappedInput.wasScreenTapped(tx, ty)) {
-        const int hit = quickLayout.indexFromPoint(tx, ty);
+        if (ty < kOverlayTopBarH && tx < kTopBackHitW) {
+          closeToReader();
+          return;
+        }
+        if (ty < kOverlayTopBarH && tx >= pageWidth - kTopBookmarkHitW) {
+          auto actionCallback = onAction;
+          actionCallback(MenuAction::ADD_BOOKMARK);
+          return;
+        }
+        const int hit = quickIndexFromPoint(tx, ty, pageWidth, pageHeight);
         if (hit >= 0) {
           selectedIndex = hit;
           goto activate_menu_item;
         }
+        // Any tap on the exposed reading page hides the overlay.
+        closeToReader();
         return;
       }
+
       int dx = 0, dy = 0;
       if (mappedInput.wasScreenTouchDown(dx, dy)) {
-        const int hit = quickLayout.indexFromPoint(dx, dy);
+        const int hit = quickIndexFromPoint(dx, dy, pageWidth, pageHeight);
         if (hit >= 0 && selectedIndex != hit) {
           selectedIndex = hit;
           updateRequired = true;
@@ -293,10 +335,15 @@ void EpubReaderMenuActivity::loop() {
         return;
       }
     } else if (menuLayer_ == MenuLayer::STYLE) {
-      const auto styleLayout = M4ReaderMenuLayout::makeStylePanelLayout(contentX, contentWidth, contentTop);
+      const int panelTop = std::max(kOverlayTopBarH + 40, pageHeight - kStyleSheetH);
+      const auto styleLayout = M4ReaderMenuLayout::makeStylePanelLayout(0, pageWidth, panelTop + kStyleSheetHeaderH);
       int tx = 0, ty = 0;
       if (mappedInput.wasScreenTapped(tx, ty)) {
-        const int hit = styleLayout.indexFromPoint(tx, ty);
+        if (ty < panelTop) {
+          closeToReader();
+          return;
+        }
+        const int hit = styleIndexFromPoint(styleLayout, tx, ty);
         if (hit >= 0) {
           selectedIndex = hit;
           goto activate_menu_item;
@@ -305,7 +352,7 @@ void EpubReaderMenuActivity::loop() {
       }
       int dx = 0, dy = 0;
       if (mappedInput.wasScreenTouchDown(dx, dy)) {
-        const int hit = styleLayout.indexFromPoint(dx, dy);
+        const int hit = styleIndexFromPoint(styleLayout, dx, dy);
         if (hit >= 0 && selectedIndex != hit) {
           selectedIndex = hit;
           updateRequired = true;
@@ -313,6 +360,15 @@ void EpubReaderMenuActivity::loop() {
         return;
       }
     } else {
+      const auto metrics = UITheme::getInstance().getMetrics();
+      const auto orientation = renderer.getOrientation();
+      const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+      const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+      const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
+      const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
+      const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+      const int hintGutterHeight = isPortraitInverted ? 50 : 0;
+      const int contentTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
       const int listTop = contentTop;
       const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
       const int totalItems = static_cast<int>(items.size());
@@ -425,6 +481,7 @@ void EpubReaderMenuActivity::loop() {
           pendingPopup_ = L(Str::kFontLoadFailed);
           xSemaphoreGive(renderingMutex);
         }
+        forceHalfRefresh_ = true;
         updateRequired = true;
       }));
       xSemaphoreGive(renderingMutex);
@@ -453,10 +510,12 @@ void EpubReaderMenuActivity::loop() {
             SETTINGS.autoPageTurnInterval = interval;
             SETTINGS.saveToFile();
             exitActivity();
+            forceHalfRefresh_ = true;
             updateRequired = true;
           },
           [this]() {
             exitActivity();
+            forceHalfRefresh_ = true;
             updateRequired = true;
           }));
       xSemaphoreGive(renderingMutex);
@@ -475,6 +534,7 @@ void EpubReaderMenuActivity::loop() {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       enterNewActivity(new TiltPageTurnSettingsActivity(renderer, mappedInput, [this]() {
         exitActivity();
+        forceHalfRefresh_ = true;
         updateRequired = true;
       }));
       xSemaphoreGive(renderingMutex);
@@ -498,35 +558,148 @@ void EpubReaderMenuActivity::loop() {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       enterNewActivity(new SimpleBluetoothActivity(renderer, mappedInput, [this]() {
         exitActivity();
+        forceHalfRefresh_ = true;
         updateRequired = true;
       }));
       xSemaphoreGive(renderingMutex);
       return;
     }
 
-    // Parent callbacks take their current-page snapshots before style reflow.
-    // ADD_BOOKMARK intentionally stays in the menu, so keep style dirty until a
-    // later transition/back to avoid invalidating the reader behind the menu.
     auto actionCallback = onAction;
     actionCallback(selectedAction);
     if (selectedAction != MenuAction::ADD_BOOKMARK) notifyParentStyleChanged();
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    if (returnToQuickMenu()) return;
-    onBack(pendingOrientation);
-    notifyParentStyleChanged();
+    closeToReader();
     return;
   }
 }
 
 void EpubReaderMenuActivity::renderScreen() {
-  renderer.clearScreen();
-
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-  const auto orientation = renderer.getOrientation();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
   const auto metrics = UITheme::getInstance().getMetrics();
 
+  auto drawChip = [this](const TouchHitGeometry::Rect& r, const std::string& label,
+                         bool selected, bool active) {
+    renderer.fillRect(r.x, r.y, r.width, r.height, false);
+    renderer.drawRect(r.x, r.y, r.width, r.height, true);
+    if (selected) {
+      renderer.drawRect(r.x + 2, r.y + 2, std::max(1, r.width - 4), std::max(1, r.height - 4), true);
+    } else if (active && r.width > 6 && r.height > 6) {
+      renderer.fillRect(r.x + 6, r.y + 10, 3, std::max(8, r.height - 20), true);
+    }
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height,
+                                label.c_str(), true,
+                                (selected || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+  };
+
+  if (menuLayer_ == MenuLayer::QUICK) {
+    // Preserve the rendered page. Only two white control bands are overpainted.
+    renderer.fillRect(0, 0, pageWidth, kOverlayTopBarH, false);
+    renderer.fillRect(0, pageHeight - kOverlayBottomBarH, pageWidth, kOverlayBottomBarH, false);
+    renderer.drawLine(0, kOverlayTopBarH - 1, pageWidth - 1, kOverlayTopBarH - 1, true);
+    renderer.drawLine(0, pageHeight - kOverlayBottomBarH, pageWidth - 1,
+                      pageHeight - kOverlayBottomBarH, true);
+
+    const int topCy = kOverlayTopBarH / 2;
+    drawBackChevron(renderer, 16, topCy);
+
+    const int titleX = 56;
+    const int titleW = std::max(60, pageWidth - 56 - 126);
+    const std::string titleText = M4UiText::truncated(
+        renderer, UI_10_FONT_ID, title.c_str(), titleW, EpdFontFamily::BOLD);
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, titleX, 0, titleW, kOverlayTopBarH,
+                                titleText.c_str(), true, EpdFontFamily::BOLD, 8);
+
+    const std::string progressText = std::to_string(std::max(0, std::min(bookProgressPercent, 100))) + "%";
+    M4UiText::draw(renderer, UI_10_FONT_ID, pageWidth - 114, 20, progressText.c_str(), true,
+                   EpdFontFamily::REGULAR);
+    drawBookmarkGlyph(renderer, pageWidth - 38, 15);
+
+    const int barTop = pageHeight - kOverlayBottomBarH;
+    const int cellW = std::max(1, pageWidth / 4);
+    for (int i = 0; i < 4; ++i) {
+      const int x = i * cellW;
+      const int w = (i == 3) ? pageWidth - x : cellW;
+      const bool selected = selectedIndex == i;
+      const int cx = x + w / 2;
+      const int iconY = barTop + 22;
+
+      if (selected) {
+        renderer.fillRect(x + 12, barTop + 5, std::max(1, w - 24), 3, true);
+      }
+      if (i == 0) {
+        renderer.fillRect(cx - 13, iconY - 8, 26, 2, true);
+        renderer.fillRect(cx - 13, iconY, 21, 2, true);
+        renderer.fillRect(cx - 13, iconY + 8, 26, 2, true);
+      } else if (i == 1) {
+        renderer.drawRect(cx - 12, iconY - 9, 24, 18, true);
+        renderer.fillRect(cx - 2, iconY - 13, 4, 26, false);
+        renderer.fillRect(cx - 1, iconY - 6, 2, 12, true);
+      } else if (i == 2) {
+        M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, x, iconY - 16, w, 32, "A", true,
+                                    EpdFontFamily::BOLD, 8);
+      } else {
+        renderer.fillRect(cx - 14, iconY - 2, 4, 4, true);
+        renderer.fillRect(cx - 2, iconY - 2, 4, 4, true);
+        renderer.fillRect(cx + 10, iconY - 2, 4, 4, true);
+      }
+
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, barTop + 48, w, 34,
+                                  quickMenuItems[static_cast<size_t>(i)].label.c_str(), true,
+                                  selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+    }
+
+    firstPaint_ = false;
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return;
+  }
+
+  if (menuLayer_ == MenuLayer::STYLE) {
+    const int panelTop = std::max(kOverlayTopBarH + 40, pageHeight - kStyleSheetH);
+    const int panelH = pageHeight - panelTop;
+    renderer.fillRect(0, panelTop, pageWidth, panelH, false);
+    renderer.drawLine(0, panelTop, pageWidth - 1, panelTop, true);
+    renderer.fillRect(pageWidth / 2 - 18, panelTop + 8, 36, 2, true);
+    M4UiText::draw(renderer, UI_10_FONT_ID, 20, panelTop + 27, "字体", true, EpdFontFamily::BOLD);
+    M4UiText::draw(renderer, UI_10_FONT_ID, pageWidth - 34, panelTop + 27, "×", true, EpdFontFamily::REGULAR);
+
+    const auto L = M4ReaderMenuLayout::makeStylePanelLayout(0, pageWidth, panelTop + kStyleSheetHeaderH);
+    M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.fontLabelY, "字号", true, EpdFontFamily::BOLD);
+    M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.layoutLabelY, "行距", true, EpdFontFamily::BOLD);
+
+    const auto fontGroup = L.fontGroupRect();
+    renderer.fillRect(fontGroup.x, fontGroup.y, fontGroup.width, fontGroup.height, false);
+    renderer.drawRect(fontGroup.x, fontGroup.y, fontGroup.width, fontGroup.height, true);
+    renderer.fillRect(L.fontValue.x, fontGroup.y, 1, fontGroup.height, true);
+    renderer.fillRect(L.fontPlus.x, fontGroup.y, 1, fontGroup.height, true);
+    if (selectedIndex == 0) renderer.drawRect(L.fontMinus.x + 2, L.fontMinus.y + 2,
+                                              L.fontMinus.width - 4, L.fontMinus.height - 4, true);
+    if (selectedIndex == 1) renderer.drawRect(L.fontPlus.x + 2, L.fontPlus.y + 2,
+                                              L.fontPlus.width - 4, L.fontPlus.height - 4, true);
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontMinus.x, L.fontMinus.y,
+                                L.fontMinus.width, L.fontMinus.height, "A-", true,
+                                selectedIndex == 0 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontValue.x, L.fontValue.y,
+                                L.fontValue.width, L.fontValue.height, currentFontSizeLabel().c_str(), true,
+                                EpdFontFamily::BOLD, 8);
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontPlus.x, L.fontPlus.y,
+                                L.fontPlus.width, L.fontPlus.height, "A+", true,
+                                selectedIndex == 1 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+
+    drawChip(L.compact, "紧凑", selectedIndex == 2, matchesLayout(kCompactLayout));
+    drawChip(L.standard, "标准", selectedIndex == 3, matchesLayout(kStandardLayout));
+    drawChip(L.relaxed, "宽松", selectedIndex == 4, matchesLayout(kRelaxedLayout));
+
+    firstPaint_ = false;
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return;
+  }
+
+  // More remains a full secondary page. This is intentionally not an overlay.
+  renderer.clearScreen();
+  const auto orientation = renderer.getOrientation();
   const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
   const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
   const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
@@ -535,177 +708,64 @@ void EpubReaderMenuActivity::renderScreen() {
   const int contentWidth = pageWidth - hintGutterWidth;
   const int hintGutterHeight = isPortraitInverted ? 50 : 0;
 
-  std::string headerTitle = title;
-  if (menuLayer_ == MenuLayer::STYLE) headerTitle += " · 样式";
-  else if (menuLayer_ == MenuLayer::MORE) headerTitle += " · 更多";
+  const std::string headerTitle = title + " · 更多";
   const std::string truncTitle =
       M4UiText::truncated(renderer, UI_12_FONT_ID, headerTitle.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
   GUI.drawHeader(renderer, Rect{contentX, hintGutterHeight, contentWidth, metrics.headerHeight}, truncTitle.c_str());
 
   const int contentTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
+  const int listTop = contentTop;
+  const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const auto& items = activeMenuItems();
+  const int totalItems = static_cast<int>(items.size());
 
-  auto drawChip = [this](const TouchHitGeometry::Rect& r, const std::string& label,
-                         bool selected, bool active) {
-    if (selected) {
-      renderer.fillRect(r.x, r.y, r.width, r.height, true);
-    } else {
-      renderer.drawRect(r.x, r.y, r.width, r.height);
-      if (active && r.width > 6 && r.height > 6) {
-        renderer.drawRect(r.x + 2, r.y + 2, r.width - 4, r.height - 4);
-      }
-    }
-    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height,
-                                label.c_str(), !selected,
-                                (selected || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
-  };
-
-  auto drawQuickGlyph = [this](const TouchHitGeometry::Rect& r, int index) {
-    const int cx = r.x + r.width / 2;
-    const int top = r.y + 15;
-    auto bar = [this](int x, int y, int w, int h) { renderer.fillRect(x, y, w, h, true); };
-
-    switch (index) {
-      case 0:
-        bar(cx - 15, top, 30, 2);
-        bar(cx - 15, top + 8, 24, 2);
-        bar(cx - 15, top + 16, 30, 2);
-        break;
-      case 1:
-        bar(cx - 15, top + 4, 30, 2);
-        bar(cx - 15, top + 12, 30, 2);
-        bar(cx - 4, top, 2, 18);
-        break;
-      case 2:
-        M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, top - 4, r.width, 28,
-                                    "Aa", true, EpdFontFamily::BOLD, 8);
-        break;
-      case 3:
-      case 4: {
-        const int x = cx - 10;
-        bar(x, top, 2, 22);
-        bar(x + 18, top, 2, 22);
-        bar(x, top, 20, 2);
-        bar(x, top + 20, 7, 2);
-        bar(x + 13, top + 20, 7, 2);
-        if (index == 3) {
-          bar(cx + 14, top + 5, 12, 2);
-          bar(cx + 19, top, 2, 12);
+  GUI.drawList(
+      renderer, Rect{contentX, listTop, contentWidth, listHeight}, totalItems, selectedIndex,
+      [&items](int index) -> std::string { return items[static_cast<size_t>(index)].label; },
+      nullptr, nullptr,
+      [this, &items](int index) -> std::string {
+        const auto& item = items[static_cast<size_t>(index)];
+        if (item.internalAction != InternalAction::NONE) return styleValueFor(item.internalAction);
+        const auto action = item.action;
+        if (action == MenuAction::ROTATE_SCREEN) return std::string(orientationLabels[pendingOrientation]);
+        if (action == MenuAction::AUTO_PAGE_TURN) return std::string(autoPageTurnLabels[SETTINGS.autoPageTurnEnabled ? 1 : 0]);
+        if (action == MenuAction::TOGGLE_ANTI_ALIAS) return std::string(antiAliasLabels[SETTINGS.textAntiAliasing ? 1 : 0]);
+        if (action == MenuAction::TOGGLE_DARK_MODE) return std::string(darkModeLabels[SETTINGS.epubDarkMode ? 1 : 0]);
+        if (action == MenuAction::TOGGLE_FONT) return std::string(fontLabels[SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM ? 1 : 0]);
+        if (action == MenuAction::SELECT_EXTERNAL_FONT) {
+          const char* fontName = getExternalFontName();
+          return strlen(fontName) > 0 ? std::string(fontName) : ">";
         }
-        break;
-      }
-      case 5:
-        bar(cx - 13, top + 8, 4, 4);
-        bar(cx - 2, top + 8, 4, 4);
-        bar(cx + 9, top + 8, 4, 4);
-        break;
-      default:
-        break;
-    }
-  };
-
-  if (menuLayer_ == MenuLayer::QUICK) {
-    const auto L = M4ReaderMenuLayout::makeQuickPanelLayout(contentX, contentWidth, contentTop);
-    const int progress = std::max(0, std::min(bookProgressPercent, 100));
-    GUI.drawProgressBar(renderer,
-                        Rect{L.progressBar.x, L.progressBar.y, L.progressBar.width, L.progressBar.height},
-                        static_cast<size_t>(progress), static_cast<size_t>(100));
-    for (int i = 0; i < static_cast<int>(quickMenuItems.size()); ++i) {
-      const auto r = L.actionRect(i);
-      const bool selected = selectedIndex == i;
-      renderer.drawRect(r.x, r.y, r.width, r.height);
-      if (selected && r.width > 8 && r.height > 8) {
-        renderer.drawRect(r.x + 2, r.y + 2, r.width - 4, r.height - 4);
-        renderer.fillRect(r.x + 6, r.y + 12, 3, std::max(8, r.height - 24), true);
-      }
-      drawQuickGlyph(r, i);
-      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y + r.height - 34,
-                                  r.width, 28, quickMenuItems[static_cast<size_t>(i)].label.c_str(),
-                                  true, selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
-    }
-  } else if (menuLayer_ == MenuLayer::STYLE) {
-    const auto L = M4ReaderMenuLayout::makeStylePanelLayout(contentX, contentWidth, contentTop);
-    M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.fontLabelY, "字号", true, EpdFontFamily::BOLD);
-    M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.layoutLabelY, "样式", true, EpdFontFamily::BOLD);
-
-    const auto fontGroup = L.fontGroupRect();
-    if (selectedIndex == 0) renderer.fillRect(L.fontMinus.x, L.fontMinus.y, L.fontMinus.width, L.fontMinus.height, true);
-    if (selectedIndex == 1) renderer.fillRect(L.fontPlus.x, L.fontPlus.y, L.fontPlus.width, L.fontPlus.height, true);
-    renderer.drawRect(fontGroup.x, fontGroup.y, fontGroup.width, fontGroup.height);
-    renderer.fillRect(L.fontValue.x, fontGroup.y, 1, fontGroup.height, true);
-    renderer.fillRect(L.fontPlus.x, fontGroup.y, 1, fontGroup.height, true);
-    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontMinus.x, L.fontMinus.y,
-                                L.fontMinus.width, L.fontMinus.height, styleMenuItems[0].label.c_str(),
-                                selectedIndex != 0, selectedIndex == 0 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
-    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontValue.x, L.fontValue.y,
-                                L.fontValue.width, L.fontValue.height, currentFontSizeLabel().c_str(),
-                                true, EpdFontFamily::BOLD, 8);
-    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontPlus.x, L.fontPlus.y,
-                                L.fontPlus.width, L.fontPlus.height, styleMenuItems[1].label.c_str(),
-                                selectedIndex != 1, selectedIndex == 1 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
-
-    drawChip(L.compact, styleMenuItems[2].label, selectedIndex == 2, matchesLayout(kCompactLayout));
-    drawChip(L.standard, styleMenuItems[3].label, selectedIndex == 3, matchesLayout(kStandardLayout));
-    drawChip(L.relaxed, styleMenuItems[4].label, selectedIndex == 4, matchesLayout(kRelaxedLayout));
-    drawChip(L.fontPicker, styleMenuItems[5].label, selectedIndex == 5, false);
-    drawChip(L.details, styleMenuItems[6].label, selectedIndex == 6, false);
-  } else {
-    const int listTop = contentTop;
-    const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-    const auto& items = activeMenuItems();
-    const int totalItems = static_cast<int>(items.size());
-
-    GUI.drawList(
-        renderer, Rect{contentX, listTop, contentWidth, listHeight}, totalItems, selectedIndex,
-        [&items](int index) -> std::string { return items[static_cast<size_t>(index)].label; },
-        nullptr, nullptr,
-        [this, &items](int index) -> std::string {
-          const auto& item = items[static_cast<size_t>(index)];
-          if (item.internalAction != InternalAction::NONE) return styleValueFor(item.internalAction);
-
-          const auto action = item.action;
-          if (action == MenuAction::GO_TO_PERCENT) {
-            return std::to_string(std::max(0, std::min(bookProgressPercent, 100))) + "%";
-          }
-          if (action == MenuAction::ROTATE_SCREEN) return std::string(orientationLabels[pendingOrientation]);
-          if (action == MenuAction::AUTO_PAGE_TURN) return std::string(autoPageTurnLabels[SETTINGS.autoPageTurnEnabled ? 1 : 0]);
-          if (action == MenuAction::TOGGLE_ANTI_ALIAS) return std::string(antiAliasLabels[SETTINGS.textAntiAliasing ? 1 : 0]);
-          if (action == MenuAction::TOGGLE_DARK_MODE) return std::string(darkModeLabels[SETTINGS.epubDarkMode ? 1 : 0]);
-          if (action == MenuAction::TOGGLE_FONT) return std::string(fontLabels[SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM ? 1 : 0]);
-          if (action == MenuAction::SELECT_EXTERNAL_FONT) {
-            const char* fontName = getExternalFontName();
-            return strlen(fontName) > 0 ? std::string(fontName) : ">";
-          }
-          if (action == MenuAction::TOGGLE_GLOBAL_NEXT_PAGE) return std::string(globalNextPageLabels[SETTINGS.globalNextPageModeEnabled ? 1 : 0]);
+        if (action == MenuAction::TOGGLE_GLOBAL_NEXT_PAGE) return std::string(globalNextPageLabels[SETTINGS.globalNextPageModeEnabled ? 1 : 0]);
 #ifdef CROSSPOINT_X3
-          if (action == MenuAction::TILT_PAGE_TURN) return std::string(tiltPageTurnLabels[SETTINGS.tiltPageTurnEnabled ? 1 : 0]);
+        if (action == MenuAction::TILT_PAGE_TURN) return std::string(tiltPageTurnLabels[SETTINGS.tiltPageTurnEnabled ? 1 : 0]);
 #endif
-          if (action == MenuAction::PAGE_TURN_MODE) return std::string(pageTurnModeLabels[SETTINGS.autoPageTurnMode ? 1 : 0]);
-          if (action == MenuAction::PAGE_TURN_INTERVAL) return std::to_string(SETTINGS.autoPageTurnInterval) + "秒";
-          if (action == MenuAction::LONG_PRESS_CONFIRM_MAPPING) {
-            const uint8_t actionIdx = SETTINGS.longPressConfirmAction;
-            const char* value = actionIdx < longPressConfirmLabels.size() ? longPressConfirmLabels[actionIdx] : "";
-            return std::string(value);
+        if (action == MenuAction::PAGE_TURN_MODE) return std::string(pageTurnModeLabels[SETTINGS.autoPageTurnMode ? 1 : 0]);
+        if (action == MenuAction::PAGE_TURN_INTERVAL) return std::to_string(SETTINGS.autoPageTurnInterval) + "秒";
+        if (action == MenuAction::LONG_PRESS_CONFIRM_MAPPING) {
+          const uint8_t actionIdx = SETTINGS.longPressConfirmAction;
+          const char* value = actionIdx < longPressConfirmLabels.size() ? longPressConfirmLabels[actionIdx] : "";
+          return std::string(value);
+        }
+        if (action == MenuAction::BLUETOOTH_SETTINGS) {
+          try {
+            auto& btMgr = BluetoothHIDManager::getInstance();
+            return btMgr.isEnabled() ? "已开启" : "已关闭";
+          } catch (...) {
+            return "错误";
           }
-          if (action == MenuAction::BLUETOOTH_SETTINGS) {
-            try {
-              auto& btMgr = BluetoothHIDManager::getInstance();
-              return btMgr.isEnabled() ? "已开启" : "已关闭";
-            } catch (...) {
-              return "错误";
-            }
-          }
-          return ">";
-        });
-  }
+        }
+        return ">";
+      });
 
-  const char* backHint = menuLayer_ == MenuLayer::QUICK ? "« 阅读" : "« 快捷";
-  const auto labels = mappedInput.mapLabels(backHint, "选择", "向上", "向下");
+  const auto labels = mappedInput.mapLabels("« 阅读", "选择", "向上", "向下");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  if (firstPaint_) {
-    firstPaint_ = false;
+  if (forceHalfRefresh_) {
+    forceHalfRefresh_ = false;
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
+  firstPaint_ = false;
 }
