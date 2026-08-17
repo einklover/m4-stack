@@ -110,6 +110,18 @@ def _top_body(ui: dict[str, Any]) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+def _deepest_body(ui: dict[str, Any]) -> dict[str, Any]:
+    body: Any = _top_body(ui)
+    for _ in range(8):
+        if not isinstance(body, dict):
+            return {}
+        child = body.get("child")
+        if not isinstance(child, dict):
+            return body
+        body = child
+    return body if isinstance(body, dict) else {}
+
+
 def _qemu_tail(qlog: Path, chars: int = 3000) -> str:
     return qlog.read_text(encoding="utf-8", errors="replace")[-chars:] if qlog.is_file() else ""
 
@@ -296,7 +308,9 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _send_key(client, "back")
         _wait_path(client, proc, qlog, READER_PATH, seconds=20.0)
 
-        # Reader -> Quick -> Style -> A- -> Quick.
+        # Reader -> Quick -> Style -> A-. Then go directly from Quick to Progress.
+        # This is the regression for snapshot-before-reflow: the progress child
+        # must open even though the font change invalidates TXT pagination.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 390, 148)
@@ -308,16 +322,27 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _send_key(client, "back")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         quick_after_style = _capture(client, root, "11-quick-after-style")
+        _tap(client, 240, 148)
+        style_progress_ui = _wait_path(client, proc, qlog, PROGRESS_PATH, seconds=30.0)
+        style_progress = _capture(client, root, "12-progress-after-style")
+        _assert_changed(quick_after_style, style_progress, "style -> direct progress")
+        _send_key(client, "back")
+        _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
 
-        # Quick -> More -> Quick -> reader, committing deferred style reflow.
+        # Reopen Quick -> More. TXT must not expose unsupported sync actions.
+        _send_key(client, "confirm")
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 390, 248)
-        more = _capture(client, root, "12-more")
-        _assert_changed(quick_after_style, more, "quick -> more")
+        more_ui = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        more_body = _deepest_body(more_ui)
+        if more_body.get("layer") != "more" or more_body.get("has_sync") is not False:
+            raise m4sim.M4SimError(f"TXT More capability contract violated: {more_body!r}")
+        more = _capture(client, root, "13-more")
         _send_key(client, "back")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _send_key(client, "back")
         _wait_path(client, proc, qlog, READER_PATH, seconds=40.0)
-        reader_after = _capture(client, root, "13-reader-after-style")
+        reader_after = _capture(client, root, "14-reader-after-style")
 
         # Exercise the real bookmark storage + redesigned touch manager.
         # Quick index 3 adds a bookmark and remains in the menu; index 4 opens it.
@@ -325,24 +350,24 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 90, 248)
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
-        bookmark_added = _capture(client, root, "14-bookmark-added")
+        bookmark_added = _capture(client, root, "15-bookmark-added")
         _tap(client, 240, 248)
         bookmark_ui = _wait_path(client, proc, qlog, BOOKMARK_PATH, seconds=30.0)
-        bookmark_list = _capture(client, root, "15-bookmark-list")
+        bookmark_list = _capture(client, root, "16-bookmark-list")
 
         # Row 0 delete zone is a dedicated 56px cell on portrait's right edge.
         _tap(client, 444, 88)
-        bookmark_delete = _capture(client, root, "16-bookmark-delete-dialog")
+        bookmark_delete = _capture(client, root, "17-bookmark-delete-dialog")
         _assert_changed(bookmark_list, bookmark_delete, "bookmark delete dialog")
 
         # Cancel button in the centered confirmation dialog. This proves that a
         # generic left/right half-screen tap can no longer delete by accident.
         _tap(client, 315, 429)
-        bookmark_cancelled = _capture(client, root, "17-bookmark-delete-cancelled")
+        bookmark_cancelled = _capture(client, root, "18-bookmark-delete-cancelled")
         _assert_changed(bookmark_delete, bookmark_cancelled, "bookmark delete cancel")
         _send_key(client, "back")
         final_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
-        reader_final = _capture(client, root, "18-reader-final")
+        reader_final = _capture(client, root, "19-reader-final")
 
         _assert_changed(home, library, "home -> library")
         _assert_changed(library, reader, "library -> reader")
@@ -376,14 +401,16 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
                 "quick": _activity_path(quick_ui),
                 "chapter": _activity_path(chapter_ui),
                 "progress": _activity_path(progress_ui),
+                "progress_after_style": _activity_path(style_progress_ui),
                 "bookmark": _activity_path(bookmark_ui),
                 "final": _activity_path(final_ui),
             },
+            "txt_more": more_body,
             "screenshots": [
                 p.name for p in (
                     home, library, reader, quick, chapter, quick_after_catalog,
                     progress, progress_seek, style, style_adjusted, quick_after_style,
-                    more, reader_after, bookmark_added, bookmark_list,
+                    style_progress, more, reader_after, bookmark_added, bookmark_list,
                     bookmark_delete, bookmark_cancelled, reader_final
                 )
             ],
