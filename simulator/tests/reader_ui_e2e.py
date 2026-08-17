@@ -27,6 +27,7 @@ FIXTURE_NAME = "reader-ui-fixture.txt"
 READER_PATH = ("Reader", "TxtReader")
 MENU_PATH = ("Reader", "TxtReader", "EpubReaderMenu")
 PROGRESS_PATH = ("Reader", "TxtReader", "EpubReaderPercentSelection")
+BOOKMARK_PATH = ("Reader", "TxtReader", "BookmarkManager")
 
 
 def _set_session(root: Path) -> None:
@@ -209,7 +210,7 @@ def _seed_txt(sd: Path, root: Path) -> Path:
     lines = [
         "墨水屏阅读器 QEMU 触控界面回归测试",
         "这是一份仅用于模拟器的 UTF-8 本地 TXT。",
-        "目录、进度、排版、书签与更多菜单必须在同一真实阅读器路径中工作。",
+        "目录、进度、样式、书签与更多菜单必须在同一真实阅读器路径中工作。",
         "",
     ]
     for i in range(1, 241):
@@ -301,14 +302,41 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _send_key(client, "back")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _send_key(client, "back")
-        final_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=40.0)
+        _wait_path(client, proc, qlog, READER_PATH, seconds=40.0)
         reader_after = _capture(client, root, "11-reader-after-style")
+
+        # Exercise the real bookmark storage + redesigned touch manager.
+        # Quick index 3 adds a bookmark and remains in the menu; index 4 opens it.
+        _send_key(client, "confirm")
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        _tap(client, 90, 236)
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        bookmark_added = _capture(client, root, "12-bookmark-added")
+        _tap(client, 240, 236)
+        bookmark_ui = _wait_path(client, proc, qlog, BOOKMARK_PATH, seconds=30.0)
+        bookmark_list = _capture(client, root, "13-bookmark-list")
+
+        # Row 0 delete zone is a dedicated 56px cell on portrait's right edge.
+        _tap(client, 444, 88)
+        bookmark_delete = _capture(client, root, "14-bookmark-delete-dialog")
+        _assert_changed(bookmark_list, bookmark_delete, "bookmark delete dialog")
+
+        # Cancel button in the centered confirmation dialog. This proves that a
+        # generic left/right half-screen tap can no longer delete by accident.
+        _tap(client, 315, 429)
+        bookmark_cancelled = _capture(client, root, "15-bookmark-delete-cancelled")
+        _assert_changed(bookmark_delete, bookmark_cancelled, "bookmark delete cancel")
+        _send_key(client, "back")
+        final_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
+        reader_final = _capture(client, root, "16-reader-final")
 
         _assert_changed(home, library, "home -> library")
         _assert_changed(library, reader, "library -> reader")
         _assert_changed(reader, quick, "reader -> quick")
         _assert_changed(quick, progress, "quick -> progress")
         _assert_changed(more, reader_after, "more -> reader")
+        _assert_changed(bookmark_added, bookmark_list, "quick -> bookmark manager")
+        _assert_changed(bookmark_list, reader_final, "bookmark manager -> reader")
 
         final_ping = _call_busy_retry(client.ping)
         serial = "\n".join(client.serial_log)
@@ -316,6 +344,7 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
             "Entering activity: TxtReader",
             "Entering activity: EpubReaderMenu",
             "Entering activity: EpubReaderPercentSelection",
+            "Entering activity: BookmarkManager",
         )
         missing = [needle for needle in required_logs if needle not in serial]
         if missing:
@@ -331,19 +360,25 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
                 "reader": _activity_path(reader_ui),
                 "quick": _activity_path(quick_ui),
                 "progress": _activity_path(progress_ui),
+                "bookmark": _activity_path(bookmark_ui),
                 "final": _activity_path(final_ui),
             },
             "screenshots": [
                 p.name for p in (
                     home, library, reader, quick, progress, progress_seek, style,
-                    style_adjusted, quick_after_style, more, reader_after
+                    style_adjusted, quick_after_style, more, reader_after,
+                    bookmark_added, bookmark_list, bookmark_delete, bookmark_cancelled,
+                    reader_final
                 )
             ],
         }
         (root / "result.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
-        print("READER UI PASS: Home -> MyLibrary -> TxtReader -> Quick/Progress/Style/More -> TxtReader", flush=True)
+        print(
+            "READER UI PASS: Home -> MyLibrary -> TxtReader -> Quick/Progress/Style/More/Bookmarks -> TxtReader",
+            flush=True,
+        )
         print(f"artifacts: {root}", flush=True)
         return result
     except BridgeError as exc:
