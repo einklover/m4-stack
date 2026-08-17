@@ -62,6 +62,35 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   void onExit() override;
   void loop() override;
 
+  // Structured reader-menu state for QEMU/m4adb regression assertions. Keep
+  // nested-child metadata compatible with ActivityWithSubactivity::debugUiJson().
+  std::string debugUiJson() override {
+    const char* layer = menuLayer_ == MenuLayer::QUICK ? "quick" :
+                        (menuLayer_ == MenuLayer::STYLE ? "style" : "more");
+    bool hasSync = false;
+    for (const auto& item : moreMenuItems) {
+      if (item.action == MenuAction::SYNC || item.action == MenuAction::SYNCY) {
+        hasSync = true;
+        break;
+      }
+    }
+    std::string out = "{\"layer\":\"";
+    out += layer;
+    out += "\",\"items\":" + std::to_string(activeMenuItems().size());
+    out += ",\"has_sync\":";
+    out += hasSync ? "true" : "false";
+    out += ",\"subactivity\":\"";
+    if (subActivity) out += subActivity->getName();
+    out += "\"";
+    if (subActivity) {
+      std::string child = subActivity->debugUiJson();
+      if (child.empty()) child = "{}";
+      out += ",\"child\":" + child;
+    }
+    out += "}";
+    return out;
+  }
+
  private:
   enum class MenuLayer : uint8_t { QUICK = 0, STYLE = 1, MORE = 2 };
   enum class InternalAction : uint8_t {
