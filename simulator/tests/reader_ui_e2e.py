@@ -26,6 +26,7 @@ T = TypeVar("T")
 FIXTURE_NAME = "reader-ui-fixture.txt"
 READER_PATH = ("Reader", "TxtReader")
 MENU_PATH = ("Reader", "TxtReader", "EpubReaderMenu")
+CHAPTER_PATH = ("Reader", "TxtReader", "TxtReaderChapterSelection")
 PROGRESS_PATH = ("Reader", "TxtReader", "EpubReaderPercentSelection")
 BOOKMARK_PATH = ("Reader", "TxtReader", "BookmarkManager")
 
@@ -269,15 +270,28 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         reader_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=60.0)
         reader = _capture(client, root, "03-reader")
 
-        # Reader -> Quick -> Progress; tap track near 75% once (no drag loop).
+        # Reader -> Quick -> TXT catalog -> reader. This exercises the real
+        # chapter parser/picker instead of only validating the shared menu shell.
         _send_key(client, "confirm")
         quick_ui = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         quick = _capture(client, root, "04-quick")
-        _tap(client, 240, 136)
+        _tap(client, 90, 148)
+        chapter_ui = _wait_path(client, proc, qlog, CHAPTER_PATH, seconds=30.0)
+        time.sleep(1.5)
+        chapter = _capture(client, root, "05-txt-catalog")
+        _assert_changed(quick, chapter, "quick -> TXT catalog")
+        _send_key(client, "back")
+        _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
+
+        # Reader -> Quick -> Progress; tap track near 75% once (no drag loop).
+        _send_key(client, "confirm")
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        quick_after_catalog = _capture(client, root, "06-quick-after-catalog")
+        _tap(client, 240, 148)
         progress_ui = _wait_path(client, proc, qlog, PROGRESS_PATH, seconds=20.0)
-        progress = _capture(client, root, "05-progress")
+        progress = _capture(client, root, "07-progress")
         _tap(client, 347, 139)
-        progress_seek = _capture(client, root, "06-progress-seek")
+        progress_seek = _capture(client, root, "08-progress-seek")
         _assert_changed(progress, progress_seek, "progress seek")
         _send_key(client, "back")
         _wait_path(client, proc, qlog, READER_PATH, seconds=20.0)
@@ -285,55 +299,55 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         # Reader -> Quick -> Style -> A- -> Quick.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
-        _tap(client, 390, 136)
-        style = _capture(client, root, "07-style")
-        _assert_changed(quick, style, "quick -> style")
+        _tap(client, 390, 148)
+        style = _capture(client, root, "09-style")
+        _assert_changed(quick_after_catalog, style, "quick -> style")
         _tap(client, 93, 113)
-        style_adjusted = _capture(client, root, "08-style-font-minus")
+        style_adjusted = _capture(client, root, "10-style-font-minus")
         _assert_changed(style, style_adjusted, "font size decrease")
         _send_key(client, "back")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
-        quick_after_style = _capture(client, root, "09-quick-after-style")
+        quick_after_style = _capture(client, root, "11-quick-after-style")
 
         # Quick -> More -> Quick -> reader, committing deferred style reflow.
-        _tap(client, 390, 236)
-        more = _capture(client, root, "10-more")
+        _tap(client, 390, 248)
+        more = _capture(client, root, "12-more")
         _assert_changed(quick_after_style, more, "quick -> more")
         _send_key(client, "back")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _send_key(client, "back")
         _wait_path(client, proc, qlog, READER_PATH, seconds=40.0)
-        reader_after = _capture(client, root, "11-reader-after-style")
+        reader_after = _capture(client, root, "13-reader-after-style")
 
         # Exercise the real bookmark storage + redesigned touch manager.
         # Quick index 3 adds a bookmark and remains in the menu; index 4 opens it.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
-        _tap(client, 90, 236)
+        _tap(client, 90, 248)
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
-        bookmark_added = _capture(client, root, "12-bookmark-added")
-        _tap(client, 240, 236)
+        bookmark_added = _capture(client, root, "14-bookmark-added")
+        _tap(client, 240, 248)
         bookmark_ui = _wait_path(client, proc, qlog, BOOKMARK_PATH, seconds=30.0)
-        bookmark_list = _capture(client, root, "13-bookmark-list")
+        bookmark_list = _capture(client, root, "15-bookmark-list")
 
         # Row 0 delete zone is a dedicated 56px cell on portrait's right edge.
         _tap(client, 444, 88)
-        bookmark_delete = _capture(client, root, "14-bookmark-delete-dialog")
+        bookmark_delete = _capture(client, root, "16-bookmark-delete-dialog")
         _assert_changed(bookmark_list, bookmark_delete, "bookmark delete dialog")
 
         # Cancel button in the centered confirmation dialog. This proves that a
         # generic left/right half-screen tap can no longer delete by accident.
         _tap(client, 315, 429)
-        bookmark_cancelled = _capture(client, root, "15-bookmark-delete-cancelled")
+        bookmark_cancelled = _capture(client, root, "17-bookmark-delete-cancelled")
         _assert_changed(bookmark_delete, bookmark_cancelled, "bookmark delete cancel")
         _send_key(client, "back")
         final_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
-        reader_final = _capture(client, root, "16-reader-final")
+        reader_final = _capture(client, root, "18-reader-final")
 
         _assert_changed(home, library, "home -> library")
         _assert_changed(library, reader, "library -> reader")
         _assert_changed(reader, quick, "reader -> quick")
-        _assert_changed(quick, progress, "quick -> progress")
+        _assert_changed(quick_after_catalog, progress, "quick -> progress")
         _assert_changed(more, reader_after, "more -> reader")
         _assert_changed(bookmark_added, bookmark_list, "quick -> bookmark manager")
         _assert_changed(bookmark_list, reader_final, "bookmark manager -> reader")
@@ -343,6 +357,7 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         required_logs = (
             "Entering activity: TxtReader",
             "Entering activity: EpubReaderMenu",
+            "Entering activity: TxtReaderChapterSelection",
             "Entering activity: EpubReaderPercentSelection",
             "Entering activity: BookmarkManager",
         )
@@ -359,16 +374,17 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
             "paths": {
                 "reader": _activity_path(reader_ui),
                 "quick": _activity_path(quick_ui),
+                "chapter": _activity_path(chapter_ui),
                 "progress": _activity_path(progress_ui),
                 "bookmark": _activity_path(bookmark_ui),
                 "final": _activity_path(final_ui),
             },
             "screenshots": [
                 p.name for p in (
-                    home, library, reader, quick, progress, progress_seek, style,
-                    style_adjusted, quick_after_style, more, reader_after,
-                    bookmark_added, bookmark_list, bookmark_delete, bookmark_cancelled,
-                    reader_final
+                    home, library, reader, quick, chapter, quick_after_catalog,
+                    progress, progress_seek, style, style_adjusted, quick_after_style,
+                    more, reader_after, bookmark_added, bookmark_list,
+                    bookmark_delete, bookmark_cancelled, reader_final
                 )
             ],
         }
@@ -376,7 +392,7 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
             json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         print(
-            "READER UI PASS: Home -> MyLibrary -> TxtReader -> Quick/Progress/Style/More/Bookmarks -> TxtReader",
+            "READER UI PASS: Home -> MyLibrary -> TxtReader -> Quick/Catalog/Progress/Style/More/Bookmarks -> TxtReader",
             flush=True,
         )
         print(f"artifacts: {root}", flush=True)
