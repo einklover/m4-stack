@@ -35,3 +35,4 @@ release-*/
 simulator/build/
 simulator/qemu/sdkconfig
 simulator/qemu/build*/
+.qemu-debug/

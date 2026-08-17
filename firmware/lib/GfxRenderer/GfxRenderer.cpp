@@ -159,8 +159,8 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
     return 0;
   }
 
-  int w = 0, h = 0;
-  fontMap.at(fontId).getTextDimensions(text, &w, &h, style);
+  // Advance, not ink bbox. Runtime TTF wrapping/index must not rasterize.
+  const int w = fontMap.at(fontId).getTextAdvance(text, style);
   if (scale == 1.0f || scale <= 0.0f) return w;
   return static_cast<int>(w * scale + 0.5f);
 }
@@ -946,7 +946,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text) const {
   uint32_t cp;
   int width = 0;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
-    width += fontMap.at(fontId).getGlyph(cp, EpdFontFamily::REGULAR)->advanceX;
+    width += fontMap.at(fontId).glyphAdvanceX(cp, EpdFontFamily::REGULAR);
   }
   return width;
 }

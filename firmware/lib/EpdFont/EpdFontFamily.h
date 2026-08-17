@@ -23,6 +23,7 @@ class EpdFontFamily {
   bool hasPrintableChars(const char* string, Style style = EpdFontStyles::REGULAR) const;
   const EpdFontData* getData(Style style = EpdFontStyles::REGULAR) const;
   const EpdGlyph* getGlyph(uint32_t cp, Style style = EpdFontStyles::REGULAR) const;
+  int glyphAdvanceX(uint32_t cp, Style style = EpdFontStyles::REGULAR) const;
 
   const EpdFont* getFont(Style style = EpdFontStyles::REGULAR) const;
 

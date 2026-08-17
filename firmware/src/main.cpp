@@ -22,6 +22,10 @@
 
 #include "qemu/M4QemuNet.h"
 
+#if defined(CROSSPOINT_MURPHY_M4)
+static TaskHandle_t gM4MainTask = nullptr;
+#endif
+
 #if defined(M4_QEMU_BUILD) || (defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG)
 #include <hal/adc_hal_common.h>
 
@@ -109,6 +113,11 @@ Activity* currentActivity;
 #ifdef CROSSPOINT_MURPHY_M4
 static M4SerialDebug::Bridge gM4DebugBridge;
 static std::string gDebugActiveAppId;
+
+extern "C" void m4YieldToDebugBridge() {
+  if (!gM4MainTask || xTaskGetCurrentTaskHandle() != gM4MainTask) return;
+  gM4DebugBridge.poll();
+}
 
 namespace {
 
@@ -1024,6 +1033,7 @@ void setup() {
         return true;
       };
       gM4DebugBridge.begin(&renderer, &mappedInputManager, &display, std::move(hooks));
+      gM4MainTask = xTaskGetCurrentTaskHandle();
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
       // QEMU plugin-debug: auto-authorize m4adb over UART0 (no Developer Options UI).
       gM4DebugBridge.setAuthorized(true);

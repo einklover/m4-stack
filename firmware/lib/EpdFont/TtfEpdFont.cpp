@@ -7,6 +7,8 @@
 #include <new>
 
 extern void m4AppendFontDiagnostic(const char* line);
+extern "C" void m4YieldToDebugBridge() __attribute__((weak));
+extern "C" void m4YieldToDebugBridge() {}
 
 namespace {
 
@@ -285,6 +287,50 @@ int32_t TtfEpdFont::backendBBoxYMax() const {
 bool TtfEpdFont::backendFindGlyph(uint32_t cp, uint16_t& gid) const {
   return usesCffBackend() ? cffFont_.findGlyph(cp, gid) : font_.findGlyph(cp, gid);
 }
+bool TtfEpdFont::backendHMetrics(uint16_t gid, int32_t& advUnits, int32_t& lsbUnits) const {
+  return usesCffBackend() ? cffFont_.glyphHMetrics(gid, advUnits, lsbUnits)
+                          : font_.glyphHMetrics(gid, advUnits, lsbUnits);
+}
+
+int TtfEpdFont::lookupAdvancePx(uint32_t cp) const {
+  if (!valid_) return 0;
+  for (uint16_t i = 0; i < maxSlots_ && entries_; ++i) {
+    if (entries_[i].cp == cp) return entries_[i].glyph.advanceX;
+  }
+  const uint16_t slot = static_cast<uint16_t>(cp % kAdvanceCache);
+  if (advCp_[slot] == cp && advPx_[slot] != 0) return advPx_[slot];
+
+  uint16_t gid = 0;
+  if (!backendFindGlyph(cp, gid) || (gid == 0 && cp != static_cast<uint32_t>('?'))) {
+    if (cp == static_cast<uint32_t>('?')) return std::max(1, int(sizePx_) / 2);
+    return lookupAdvancePx(static_cast<uint32_t>('?'));
+  }
+  int32_t advUnits = 0, lsb = 0;
+  if (!backendHMetrics(gid, advUnits, lsb)) {
+    if (cp == static_cast<uint32_t>('?')) return std::max(1, int(sizePx_) / 2);
+    return lookupAdvancePx(static_cast<uint32_t>('?'));
+  }
+  const uint16_t upm = backendUnitsPerEm();
+  const int px = upm ? std::max(1, int(std::lround(float(advUnits) * float(sizePx_) / float(upm))))
+                     : std::max(1, int(sizePx_));
+  const int clamped = std::max(1, std::min(255, px));
+  advCp_[slot] = cp;
+  advPx_[slot] = static_cast<uint8_t>(clamped);
+  ++advClock_;
+  return clamped;
+}
+
+int TtfEpdFont::glyphAdvanceX(uint32_t cp, const EpdFontStyles::Style style) const {
+  (void)style;
+#if defined(ESP32)
+  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
+#endif
+  const int adv = lookupAdvancePx(cp);
+#if defined(ESP32)
+  if (mutex_) xSemaphoreGive(mutex_);
+#endif
+  return adv;
+}
 bool TtfEpdFont::backendRasterize(uint16_t gid, ttf::GlyphBitmap& out) const {
   return usesCffBackend() ? cffFont_.rasterize(gid, sizePx_, out)
                           : font_.rasterize(gid, sizePx_, out);
@@ -545,6 +591,10 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   if (!backendRasterize(gid, gb)) {
     if (gid == 0 || !backendRasterize(0, gb)) return -1;
   }
+  // Owner-loop TTF first-paint can take hundreds of ms per CJK glyph on QEMU.
+  // Yield so m4adb tap/key is ACKed instead of looking frozen until the page
+  // finishes. Weak no-op on host tests; firmware overrides on the main task.
+  m4YieldToDebugBridge();
 
   int slot = -1;
   uint32_t minAccess = 0xffffffffu;

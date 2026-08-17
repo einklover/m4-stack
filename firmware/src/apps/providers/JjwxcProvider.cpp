@@ -1,4 +1,5 @@
 #include "apps/providers/M4NativeProvider.h"
+#include "apps/providers/M4JjwxcEndpoint.h"
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderIo.h"
 
@@ -423,7 +424,7 @@ class JjwxcProvider final : public M4NativeProvider::Adapter {
     M4xJsonStream::ScalarStreamExtractor scalar({}, "content", file);
     M4NativeProviderHttp::ExtractorSink sink(scalar);
     M4NativeProviderHttp::Request http;
-    http.url = std::string("https://app-cdn.jjwxc.net/androidapi/chapterContent?novelId=") + req.book.bookId +
+    http.url = std::string(M4_JJWXC_APP_CDN) + "/androidapi/chapterContent?novelId=" + req.book.bookId +
                "&chapterId=" + req.chapter.uid;
     http.headers = {{"User-Agent", kAppUa}, {"Referer", kAppRef}};
     http.maxBytes = std::max<size_t>(4u * 1024u * 1024u, req.book.cachePolicy.maxChapterBytes);
@@ -481,7 +482,7 @@ class JjwxcProvider final : public M4NativeProvider::Adapter {
       return out;
     }
     M4NativeProviderHttp::Request http;
-    http.url = std::string("https://m.jjwxc.net/book2/") + req.book.bookId + "/" + req.chapter.uid;
+    http.url = std::string(M4_JJWXC_WAP_BASE) + "/book2/" + req.book.bookId + "/" + req.chapter.uid;
     http.headers = {{"User-Agent", kWapUa}, {"Cookie", cookie}};
     http.maxBytes = 2u * 1024u * 1024u;
     http.timeoutMs = 30000;

@@ -59,6 +59,13 @@ esp_err_t httpEvent(esp_http_client_event_t* evt) {
     return ESP_FAIL;
   }
   ctx->bytes += n;
+  // A bounded extractor may have enough records after this chunk. Check again
+  // after the sink consumed it so chunked/no-Content-Length peers cannot keep
+  // the request alive waiting for an EOF that never arrives.
+  if (ctx->cancel && ctx->cancel(ctx->cancelCtx)) {
+    ctx->cancelled = true;
+    return ESP_FAIL;
+  }
   if (ctx->progress) {
     const uint32_t now = millis();
     if (ctx->lastProgressBytes == 0 || ctx->bytes - ctx->lastProgressBytes >= kProgressBytes ||

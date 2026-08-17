@@ -1,5 +1,7 @@
 #include "apps/providers/M4NativeProviderBookDetail.h"
 
+#include "apps/providers/M4JjwxcEndpoint.h"
+#include "apps/providers/M4WereadEndpoint.h"
 #include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderIo.h"
@@ -177,7 +179,7 @@ Result fetchJjwxc(const Request& req, const CancelFn& cancelled) {
   out.detail = seed(req);
 
   M4NativeProviderHttp::Request http;
-  http.url = "https://app-cdn.jjwxc.net/androidapi/novelbasicinfo?novelId=" + req.bookId;
+  http.url = std::string(M4_JJWXC_APP_CDN) + "/androidapi/novelbasicinfo?novelId=" + req.bookId;
   http.headers = {{"User-Agent", kJjUa}, {"Referer", kJjRef}};
   http.maxBytes = std::max<size_t>(32u * 1024u, req.maxBytes);
   http.timeoutMs = 30000;
@@ -257,7 +259,7 @@ Result fetchWeread(const Request& req, const CancelFn& cancelled) {
   }
 
   M4NativeProviderHttp::Request http;
-  http.url = "https://weread.qq.com/web/book/info?bookId=" + req.bookId;
+  http.url = std::string(M4_WEREAD_ORIGIN) + "/web/book/info?bookId=" + req.bookId;
   http.headers = {{"User-Agent", "Mozilla/5.0 Murphy-M4 NativeProvider/1"},
                   {"Referer", "https://weread.qq.com/"}, {"Cookie", cookie}};
   http.maxBytes = std::max<size_t>(32u * 1024u, req.maxBytes);

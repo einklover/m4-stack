@@ -1,6 +1,8 @@
 #include "apps/providers/M4NativeProviderDiscovery.h"
 
 #include "apps/M4xJsonStream.h"
+#include "apps/providers/M4JjwxcEndpoint.h"
+#include "apps/providers/M4WereadEndpoint.h"
 #include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4NativeProviderExplore.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
@@ -27,11 +29,6 @@ namespace {
 constexpr const char* kFanqieUa =
     "Mozilla/5.0 (Linux; Android 10.0; wv) AppleWebKit/603.1.30 (KHTML, like Gecko) "
     "Version/4.0 Chrome/58.0.3029.110 Mobile Safari/537.36 T7/10.3 SearchCraft/2.6.2 (Baidu; P1 7.0)";
-constexpr const char* kJjUa =
-    "Mozilla/5.0 (Linux; Android 5.1; Lenovo) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Version/4.0 Chrome/39.0.0.0 Mobile Safari/537.36/JINJIANG-Android/206(Lenovo;android 5.1;Scale/2.0)";
-constexpr const char* kJjRef = "http://android.jjwxc.net?v=206";
-
 std::mutex gMu;
 Snapshot gSnapshot;
 std::atomic<bool> gBusy{false};
@@ -300,9 +297,12 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     }
     const std::string body = std::string("{\"") + channel +
                              "\":{\"offset\":\"0\",\"limit\":\"24\"}}";
-    s.request.url = "https://app-cdn.jjwxc.net/bookstore/getFullPage?versionCode=148&channelBody=" +
+    s.request.url = std::string(M4_JJWXC_APP_CDN) + "/bookstore/getFullPage?versionCode=148&channelBody=" +
                     urlEncode(body);
-    s.request.headers = {{"User-Agent", kJjUa}, {"Referer", kJjRef}, {"Connection", "close"}};
+    // M4HttpTransport owns the stable request headers. This CDN endpoint
+    // hangs under QEMU when the ESP client is given a second User-Agent or
+    // Referer header, so keep the request header set minimal.
+    s.request.headers.clear();
     s.request.maxBytes = 512u * 1024u;
     s.path = {channel};
     s.fields = {"novelId", "novelName", "authorName", "_m4_progress"};
@@ -338,13 +338,15 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
       s.error = "login_required";
       return s;
     }
-    s.request.url = "https://weread.qq.com/web/shelf/sync";
+    s.request.url = std::string(M4_WEREAD_ORIGIN) + "/web/shelf/sync";
     s.request.headers = {{"User-Agent", "Mozilla/5.0 Murphy-M4 NativeProvider/1"},
                          {"Referer", "https://weread.qq.com/"}, {"Cookie", cookie}};
     s.request.maxBytes = 2u * 1024u * 1024u;
     s.path = {"books"};
     s.fields = {"bookId", "title", "author", "progress"};
-    s.maxRows = 4096;
+    // First window only. Waiting for a 4096-row / no-Content-Length body
+    // wedges QEMU TLS the same way JJWXC did. More rows stay on Refresh.
+    s.maxRows = 64;
     return s;
   }
 
@@ -421,10 +423,22 @@ void taskMain(void*) {
       RecordExtractorSink jsonSink(rows);
       publish(Phase::Connecting);
       M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
+      bool sawBody = false;
+      writeDiscoveryDiag(job.appId, "http_started", false, 0, "-", 0, 0, false);
       const auto net = M4NativeProviderHttp::requestToSink(
           spec.request, jsonSink,
-          [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); });
-      const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0;
+          [&](size_t bytes) {
+            publish(Phase::Receiving, bytes, rows.recordCount());
+            if (!sawBody) {
+              sawBody = true;
+              writeDiscoveryDiag(job.appId, "http_progress", false, bytes, "-",
+                                 rows.recordCount(), 0, false);
+            }
+          },
+          [&]() { return rows.recordCount() >= spec.maxRows; });
+      const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
+      const bool parsed = rows.recordCount() > 0 &&
+                          ((net.ok && rows.finish()) || boundedWindow);
       const bool wereadLoginExpired =
           job.providerId == "weread" && M4WereadAuthPolicy::responseIndicatesLoginRequired(jsonSink.prefix());
       if (!parsed) {
@@ -443,17 +457,20 @@ void taskMain(void*) {
             writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, error, rows.recordCount(), 0, false);
             publish(Phase::AuthRequired, net.bytes, 0, error);
           } else {
-            writeDiscoveryDiag(job.appId, "error", net.ok, net.bytes, error, rows.recordCount(), 0, false);
+            writeDiscoveryDiag(job.appId, "error", net.ok || boundedWindow, net.bytes, error,
+                               rows.recordCount(), 0, false);
             publish(Phase::Error, net.bytes, rows.recordCount(), error);
           }
         }
       } else if (!file.commit()) {
         file.discard();
-        writeDiscoveryDiag(job.appId, "commit_fail", net.ok, net.bytes, "discovery_commit_failed",
+        writeDiscoveryDiag(job.appId, "commit_fail", net.ok || boundedWindow, net.bytes,
+                           "discovery_commit_failed",
                            rows.recordCount(), 0, false);
         publish(Phase::Error, net.bytes, rows.recordCount(), "discovery_commit_failed");
       } else {
-        writeDiscoveryDiag(job.appId, "ready", net.ok, net.bytes, "-", rows.recordCount(), 0, false);
+        writeDiscoveryDiag(job.appId, "ready", net.ok || boundedWindow, net.bytes, "-",
+                           rows.recordCount(), 0, false);
         publish(Phase::Ready, net.bytes, rows.recordCount());
       }
     }

@@ -300,7 +300,10 @@ int EpdFontLoader::getBestFontId(const char* familyName, int size) {
   // The active runtime face is the source of truth. Bookkeeping is rebuilt on
   // every SD/font refresh, but a successfully retained sfnt face and renderer
   // mapping must never silently degrade to the compact OMIT_FONTS fallback.
-  if (activeRuntimeTtfFamily == familyName && activeRuntimeTtfSize == size) return id;
+  if (activeRuntimeTtfFamily == familyName) {
+    if (activeRuntimeTtfSize == size) return id;
+    if (activeRuntimeTtfSize > 0) return hashFontId(activeRuntimeTtfFamily.c_str(), activeRuntimeTtfSize);
+  }
 #endif
   return -1;
 }

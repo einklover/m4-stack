@@ -1,6 +1,6 @@
 # HANDOFF — Murphy M4 session entry
 
-Last updated: **2026-08-13**
+Last updated: **2026-08-17**
 
 This file is intentionally thin. **Active goals, progress, measurements and acceptance evidence live in GitHub Issues, not here.**
 
@@ -32,10 +32,12 @@ Detailed progress, commit SHAs, measurements, failures, fixes and acceptance evi
 ## Current working branch
 
 ```text
-agent/m4-emulator-stage13-e2e-validation
+main
 ```
 
-Always inspect HEAD before editing; the branch advances independently of this document.
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, and native-provider first-window work was merged here. Start new work from `main`, not from the old validation branch.
+
+Always inspect HEAD before editing.
 
 ## Stable infrastructure checkpoint
 

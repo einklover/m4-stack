@@ -28,6 +28,7 @@ class TtfEpdFont : public EpdFont {
   ~TtfEpdFont() override;
 
   const EpdGlyph* getGlyph(uint32_t cp, const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override;
+  int glyphAdvanceX(uint32_t cp, const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override;
   const uint8_t* loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffer,
                                  const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override;
   const EpdFontData* getData(const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override { return &data_; }
@@ -57,6 +58,8 @@ class TtfEpdFont : public EpdFont {
   bool allocateEntries();
   bool finishInit(const char* sourceLabel);
   bool backendFindGlyph(uint32_t cp, uint16_t& gid) const;
+  bool backendHMetrics(uint16_t gid, int32_t& advUnits, int32_t& lsbUnits) const;
+  int lookupAdvancePx(uint32_t cp) const;
   bool backendRasterize(uint16_t gid, ttf::GlyphBitmap& out) const;
   bool backendPixelBox(uint16_t gid, int& x0, int& y0, int& x1, int& y1) const;
   uint16_t backendUnitsPerEm() const;
@@ -85,6 +88,11 @@ class TtfEpdFont : public EpdFont {
   mutable Entry* entries_ = nullptr;
   mutable uint32_t accessCounter_ = 0;
   mutable size_t cacheBytes_ = 0;
+  // Advance-only cache: wrapping/index hit this and never touch glyf/CFF.
+  static constexpr uint16_t kAdvanceCache = 256;
+  mutable uint32_t advCp_[kAdvanceCache]{};
+  mutable uint8_t advPx_[kAdvanceCache]{};
+  mutable uint16_t advClock_ = 0;
 #if defined(ESP32)
   mutable SemaphoreHandle_t mutex_ = nullptr;
 #endif

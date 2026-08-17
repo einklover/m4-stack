@@ -282,6 +282,14 @@ bool Bridge::recentHostActivity(unsigned long nowMs, unsigned long windowMs) con
 }
 
 void Bridge::poll() {
+  // TTF raster on the owner loop may re-enter via m4YieldToDebugBridge().
+  // Nested calls must not interleave Serial RX/TX bookkeeping.
+  if (inPoll_) return;
+  struct PollGuard {
+    bool& flag;
+    explicit PollGuard(bool& f) : flag(f) { flag = true; }
+    ~PollGuard() { flag = false; }
+  } guard(inPoll_);
   // Drain enough CDC RX per tick that a full @M4DBG control frame (~300–800 B)
   // is not stuck across many e-ink-blocked loops. Cap keeps the owner loop fair.
   constexpr int kRxBudget = 1024;

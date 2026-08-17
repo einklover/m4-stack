@@ -45,7 +45,7 @@ inline bool selectedRuntimeTtf() {
   std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
-  return ext == ".ttf";
+  return ext == ".ttf" || ext == ".ttc" || ext == ".otf" || ext == ".otc";
 }
 
 inline bool startsWithNoCase(const std::string& s, size_t pos, const char* literal) {
@@ -101,16 +101,30 @@ inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
   if (selectedRuntimeTtf()) {
     auto& mutableRenderer = const_cast<GfxRenderer&>(renderer);
     if (M4FixedRuntimeUiFonts::ensure(mutableRenderer, SETTINGS.customFontFamily)) {
+      const bool readerSized = layoutFontId == NOTOSANS_12_FONT_ID ||
+                               layoutFontId == NOTOSANS_14_FONT_ID ||
+                               layoutFontId == NOTOSANS_16_FONT_ID ||
+                               layoutFontId == NOTOSANS_18_FONT_ID;
+      if (readerSized) {
+        const int readerFontId = SETTINGS.getReaderFontId();
+        if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
+          f.fontId = readerFontId;
+          return f;
+        }
+      }
       return f;
     }
 
-    // Defensive fallback if a fixed UI face cannot be opened. EpdFontLoader's
-    // lightweight scaled mappings remain available so the screen can still be
-    // rendered instead of failing hard.
-    if (!renderer.hasFont(f.layoutFontId)) {
-      const int readerFontId = SETTINGS.getReaderFontId();
-      if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
-        f.fontId = readerFontId;
+    // Defensive fallback if a fixed UI face cannot be opened. Reader-sized
+    // IDs still use the runtime TTF so CJK body text does not become '?'.
+    const int readerFontId = SETTINGS.getReaderFontId();
+    if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
+      f.fontId = readerFontId;
+      if (layoutFontId != readerFontId &&
+          (layoutFontId == NOTOSANS_12_FONT_ID || layoutFontId == NOTOSANS_14_FONT_ID ||
+           layoutFontId == NOTOSANS_16_FONT_ID || layoutFontId == NOTOSANS_18_FONT_ID ||
+           layoutFontId == SMALL_FONT_ID || layoutFontId == UI_10_FONT_ID ||
+           layoutFontId == UI_12_FONT_ID)) {
         f.scale = renderer.scaleFontToMatch(readerFontId, f.layoutFontId);
       }
     }
@@ -131,7 +145,7 @@ inline Face resolveForText(const GfxRenderer& renderer, int layoutFontId, const 
   }
 
   if (selectedRuntimeTtf()) {
-    // The fixed runtime TTF chrome faces have full selected-font coverage.
+    // Fixed runtime TTF chrome faces have full selected-font coverage.
     return f;
   }
 
