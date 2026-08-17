@@ -18,11 +18,30 @@
 class EpubReaderMenuActivity final : public ActivityWithSubactivity {
  public:
   // Menu actions available from the reader menu.
-  enum class MenuAction { SELECT_CHAPTER, ADD_BOOKMARK, BOOKMARK_MANAGER, GO_TO_PERCENT, ROTATE_SCREEN, AUTO_PAGE_TURN, PAGE_TURN_MODE, PAGE_TURN_INTERVAL, GO_HOME, SYNC,
-     SYNCY, DELETE_CACHE, READER_SETTINGS, TOGGLE_ANTI_ALIAS, TOGGLE_FONT, SELECT_EXTERNAL_FONT, TOGGLE_GLOBAL_NEXT_PAGE, TOGGLE_DARK_MODE,
-     BLUETOOTH_SETTINGS, LONG_PRESS_CONFIRM_MAPPING,
+  enum class MenuAction {
+    SELECT_CHAPTER,
+    ADD_BOOKMARK,
+    BOOKMARK_MANAGER,
+    GO_TO_PERCENT,
+    ROTATE_SCREEN,
+    AUTO_PAGE_TURN,
+    PAGE_TURN_MODE,
+    PAGE_TURN_INTERVAL,
+    GO_HOME,
+    SYNC,
+    SYNCY,
+    DELETE_CACHE,
+    READER_SETTINGS,
+    TOGGLE_ANTI_ALIAS,
+    TOGGLE_FONT,
+    SELECT_EXTERNAL_FONT,
+    TOGGLE_GLOBAL_NEXT_PAGE,
+    TOGGLE_DARK_MODE,
+    BLUETOOTH_SETTINGS,
+    LONG_PRESS_CONFIRM_MAPPING,
 #ifdef CROSSPOINT_X3
-     TILT_PAGE_TURN, TILT_PAGE_TURN_SETTINGS,
+    TILT_PAGE_TURN,
+    TILT_PAGE_TURN_SETTINGS,
 #endif
   };
 
@@ -39,19 +58,35 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
         onBack(onBack),
         onAction(onAction) {}
 
-
   void onEnter() override;
   void onExit() override;
   void loop() override;
 
  private:
+  enum class MenuLayer : uint8_t { QUICK = 0, MORE = 1 };
+
   struct MenuItem {
     MenuAction action;
     std::string label;
+    // Internal navigation entry. The action is never forwarded while this is true.
+    bool opensMore = false;
   };
 
-  // Fixed menu layout (order matters for up/down navigation).
-  const std::vector<MenuItem> menuItems = {
+  // Touch-first entry layer: keep the whole set on one Murphy M4 landscape screen.
+  // The progress bar above the list mirrors bookProgressPercent, while the progress
+  // row remains tappable and opens the existing percentage jump selector.
+  const std::vector<MenuItem> quickMenuItems = {
+      {MenuAction::SELECT_CHAPTER, "目录"},
+      {MenuAction::GO_TO_PERCENT, "阅读进度"},
+      {MenuAction::READER_SETTINGS, "阅读样式"},
+      {MenuAction::ADD_BOOKMARK, "添加书签"},
+      {MenuAction::BOOKMARK_MANAGER, "书签"},
+      {MenuAction::GO_HOME, "更多", true},
+  };
+
+  // Full legacy menu remains reachable from “更多”; order and behavior are kept
+  // intentionally stable so existing button navigation and settings stay intact.
+  const std::vector<MenuItem> moreMenuItems = {
       {MenuAction::SELECT_CHAPTER, "章节选择"},
       {MenuAction::AUTO_PAGE_TURN, "自动翻页"},
       {MenuAction::READER_SETTINGS, "阅读样式设置"},
@@ -61,10 +96,10 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::GO_TO_PERCENT, "进度跳转"},
       {MenuAction::TOGGLE_FONT, "字体"},
       {MenuAction::SELECT_EXTERNAL_FONT, "外置字体"},
-      #ifdef CROSSPOINT_X3
+#ifdef CROSSPOINT_X3
       {MenuAction::TILT_PAGE_TURN, "晃动翻页"},
       {MenuAction::TILT_PAGE_TURN_SETTINGS, "晃动翻页设置"},
-      #endif
+#endif
       {MenuAction::PAGE_TURN_INTERVAL, "自动翻页间隔"},
       {MenuAction::PAGE_TURN_MODE, "自动翻页方式"},
       {MenuAction::ROTATE_SCREEN, "阅读方向"},
@@ -74,11 +109,11 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::SYNCY, "进度同步(开源阅读)"},
       {MenuAction::DELETE_CACHE, "清理缓存"},
       {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "长按确认键功能"},
-      {MenuAction::BLUETOOTH_SETTINGS, "蓝牙设置"}
+      {MenuAction::BLUETOOTH_SETTINGS, "蓝牙设置"},
   };
 
+  MenuLayer menuLayer_ = MenuLayer::QUICK;
   int selectedIndex = 0;
-  // scrollOffset 和 itemsPerPage 不再需要，GUI.drawList()自动处理滚动
   bool updateRequired = false;
   std::string pendingPopup_;
   bool firstPaint_ = true;  // HALF after reader to clear AA residual
@@ -86,7 +121,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   SemaphoreHandle_t renderingMutex = nullptr;
   std::string title = "Reader Menu";
   uint8_t pendingOrientation = 0;
-  const std::vector<const char*> orientationLabels = {getChineseName("Portrait"), getChineseName("Landscape CW"), "按钮在上面", getChineseName("Landscape CCW")};
+  const std::vector<const char*> orientationLabels = {getChineseName("Portrait"), getChineseName("Landscape CW"),
+                                                       "按钮在上面", getChineseName("Landscape CCW")};
   const std::vector<const char*> autoPageTurnLabels = {"关闭", "开启"};
   const std::vector<const char*> antiAliasLabels = {"关闭", "开启"};
   const std::vector<const char*> darkModeLabels = {"关闭", "开启"};
@@ -106,7 +142,19 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   int currentPage = 0;
   int totalPages = 0;
   int bookProgressPercent = 0;
-  
+
+  const std::vector<MenuItem>& activeMenuItems() const {
+    return menuLayer_ == MenuLayer::QUICK ? quickMenuItems : moreMenuItems;
+  }
+
+  bool returnToQuickMenu() {
+    if (menuLayer_ != MenuLayer::MORE) return false;
+    menuLayer_ = MenuLayer::QUICK;
+    selectedIndex = static_cast<int>(quickMenuItems.size()) - 1;
+    updateRequired = true;
+    return true;
+  }
+
   // 外置字体名称显示
   const char* getExternalFontName() const {
     if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM && strlen(SETTINGS.customFontFamily) > 0) {
@@ -121,5 +169,4 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
   void renderScreen();
-  // drawScrollBar 不再需要，GUI.drawList()自动绘制滚动条
 };
