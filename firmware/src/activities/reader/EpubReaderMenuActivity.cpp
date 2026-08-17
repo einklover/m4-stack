@@ -74,8 +74,19 @@ void EpubReaderMenuActivity::onEnter() {
   readerStyleDirty_ = false;
   readerFontDirty_ = false;
   firstPaint_ = true;
-  updateRequired = true;
 
+  // The concrete reader host is authoritative for optional capabilities. TXT
+  // deliberately has no remote-progress sync implementation, so those rows do
+  // not exist there instead of leading to a "not supported" dead end.
+  if (auto* host = getParentActivity(); host && !host->readerMenuSyncSupported()) {
+    moreMenuItems.erase(
+        std::remove_if(moreMenuItems.begin(), moreMenuItems.end(), [](const MenuItem& item) {
+          return item.action == MenuAction::SYNC || item.action == MenuAction::SYNCY;
+        }),
+        moreMenuItems.end());
+  }
+
+  updateRequired = true;
   xTaskCreate(&EpubReaderMenuActivity::taskTrampoline, "EpubMenuTask", 4096, this, 1, &displayTaskHandle);
 }
 
@@ -225,9 +236,10 @@ void EpubReaderMenuActivity::notifyParentStyleChanged() {
     xSemaphoreGive(renderingMutex);
   }
 
-  // Callback may schedule this menu for teardown. Do not touch member state after it.
-  auto actionCallback = onAction;
-  actionCallback(MenuAction::ROTATE_SCREEN);
+  // Semantic host hook: style reflow is not screen rotation. Concrete reader
+  // hosts must not tear down this menu from this callback; external navigation
+  // (chapter/progress/bookmark/etc.) is dispatched immediately afterward.
+  if (auto* host = getParentActivity()) host->onReaderMenuStyleChanged();
 }
 
 void EpubReaderMenuActivity::loop() {
@@ -492,6 +504,9 @@ void EpubReaderMenuActivity::loop() {
       return;
     }
 
+    // A style change must be committed before handing control to a parent-owned
+    // screen. This covers Style -> Quick -> Chapter/Progress/Bookmarks directly.
+    notifyParentStyleChanged();
     auto actionCallback = onAction;
     actionCallback(selectedAction);
     return;
