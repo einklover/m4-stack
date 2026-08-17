@@ -1,5 +1,6 @@
 #include "BookmarkManagerActivity.h"
 
+#include <EpdFontLoader.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 
@@ -62,6 +63,10 @@ void BookmarkManagerActivity::taskTrampoline(void* param) {
 
 void BookmarkManagerActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
+  // Bookmark titles come from arbitrary book/chapter/body text. Keep fixed UI
+  // chrome on the compact UI face, but make sure the full reader CJK face is
+  // available before rendering user content so uncommon characters never '?'.
+  EpdFontLoader::ensureFontsFromSd(renderer);
   renderingMutex = xSemaphoreCreateMutex();
   selectorIndex = 0;
   firstPaint_ = true;
@@ -312,9 +317,12 @@ void BookmarkManagerActivity::renderScreen() {
       const int titleX = contentX + kRowSide + 10;
       const int titleWidth = std::max(30, percentX - titleX - 8);
       const auto weight = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-      const std::string title = M4UiText::truncated(renderer, UI_10_FONT_ID,
+      // User/book content is not UI chrome: use the full reader CJK face. This
+      // preserves uncommon Han characters while percent/delete controls remain
+      // on the small fixed UI face for crisp touch chrome.
+      const std::string title = M4UiText::truncated(renderer, NOTOSANS_12_FONT_ID,
                                                     bookmarks[idx].title.c_str(), titleWidth, weight);
-      M4UiText::draw(renderer, UI_10_FONT_ID, titleX, rowY + 18, title.c_str(), true, weight);
+      M4UiText::draw(renderer, NOTOSANS_12_FONT_ID, titleX, rowY + 16, title.c_str(), true, weight);
 
       const int percentage = std::max(0, std::min(100,
           static_cast<int>(bookmarks[idx].percentage * 100.0f + 0.5f)));
@@ -324,8 +332,6 @@ void BookmarkManagerActivity::renderScreen() {
                                   percentWidth, lineHeight - 8, percentageText, true,
                                   selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 6);
 
-      // A divider + concise action word is less visually noisy than a button in
-      // every row, while keeping a dedicated 56px-wide touch target.
       renderer.fillRect(deleteX, rowY + 10, 1, std::max(8, lineHeight - 20), true);
       M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, deleteX, rowY + 4,
                                   kDeleteZoneWidth, lineHeight - 8, "删", true,
