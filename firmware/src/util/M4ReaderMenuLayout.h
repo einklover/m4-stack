@@ -14,7 +14,7 @@ constexpr int kQuickProgressBarHeight = 8;
 // compact bar, then a clean gap before the 3x2 action grid. The progress readout
 // is useful information; it should look like a distinct info band, not part of
 // the Progress action tile.
-constexpr int kQuickProgressBlockHeight = 44;
+constexpr int kQuickProgressBlockHeight = 52;
 constexpr int kQuickActionCount = 6;
 constexpr int kStyleActionCount = 7;
 constexpr int kProgressStepCount = 4;
