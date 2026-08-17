@@ -397,12 +397,26 @@ void EpubReaderMenuActivity::loop() {
         return;
       }
     } else if (menuLayer_ == MenuLayer::STYLE) {
-      const int panelTop = std::max(kOverlayTopBarH + 40, pageHeight - kStyleSheetH);
+      const int toolbarTop = pageHeight - kOverlayBottomBarH;
+      const int panelTop = std::max(kOverlayTopBarH + 40, toolbarTop - kStyleSheetH);
       const auto styleLayout = M4ReaderMenuLayout::makeStylePanelLayout(0, pageWidth, panelTop + kStyleSheetHeaderH);
       const int fontRowY = styleLayout.fontPicker.y + 24;
       const int fontChoiceCount = 1 + static_cast<int>(quickFontFamilies_.size());
       int tx = 0, ty = 0;
       if (mappedInput.wasScreenTapped(tx, ty)) {
+        const int toolbarHit = quickIndexFromPoint(tx, ty, pageWidth, pageHeight);
+        if (toolbarHit >= 0) {
+          if (toolbarHit == 2) return;
+          if (toolbarHit == 3) {
+            applyInternalAction(InternalAction::OPEN_MORE);
+            return;
+          }
+          const auto action = quickMenuItems[static_cast<size_t>(toolbarHit)].action;
+          auto actionCallback = onAction;
+          actionCallback(action);
+          notifyParentStyleChanged();
+          return;
+        }
         if (ty < panelTop) {
           closeToReader();
           return;
@@ -725,8 +739,9 @@ void EpubReaderMenuActivity::renderScreen() {
   }
 
   if (menuLayer_ == MenuLayer::STYLE) {
-    const int panelTop = std::max(kOverlayTopBarH + 40, pageHeight - kStyleSheetH);
-    const int panelH = pageHeight - panelTop;
+    const int toolbarTop = pageHeight - kOverlayBottomBarH;
+    const int panelTop = std::max(kOverlayTopBarH + 40, toolbarTop - kStyleSheetH);
+    const int panelH = std::max(0, toolbarTop - panelTop);
     renderer.fillRect(0, panelTop, pageWidth, panelH, false);
     renderer.drawLine(0, panelTop, pageWidth - 1, panelTop, true);
     renderer.fillRect(pageWidth / 2 - 18, panelTop + 8, 36, 2, true);
@@ -775,6 +790,39 @@ void EpubReaderMenuActivity::renderScreen() {
                                     std::string(SETTINGS.customFontFamily) ==
                                         quickFontFamilies_[static_cast<size_t>(slot - 1)];
       drawChip(r, label, false, active);
+    }
+
+    renderer.fillRect(0, toolbarTop, pageWidth, kOverlayBottomBarH, false);
+    renderer.drawLine(0, toolbarTop, pageWidth - 1, toolbarTop, true);
+    const int cellW = std::max(1, pageWidth / 4);
+    for (int i = 0; i < 4; ++i) {
+      const int x = i * cellW;
+      const int w = (i == 3) ? pageWidth - x : cellW;
+      const int cx = x + w / 2;
+      const int iconY = toolbarTop + 22;
+      const bool active = i == 2;
+
+      if (active) renderer.fillRect(x + 12, toolbarTop + 5, std::max(1, w - 24), 3, true);
+      if (i == 0) {
+        renderer.fillRect(cx - 13, iconY - 8, 26, 2, true);
+        renderer.fillRect(cx - 13, iconY, 21, 2, true);
+        renderer.fillRect(cx - 13, iconY + 8, 26, 2, true);
+      } else if (i == 1) {
+        renderer.drawRect(cx - 12, iconY - 9, 24, 18, true);
+        renderer.fillRect(cx - 2, iconY - 13, 4, 26, false);
+        renderer.fillRect(cx - 1, iconY - 6, 2, 12, true);
+      } else if (i == 2) {
+        M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, x, iconY - 16, w, 32, "A", true,
+                                    EpdFontFamily::BOLD, 8);
+      } else {
+        renderer.fillRect(cx - 14, iconY - 2, 4, 4, true);
+        renderer.fillRect(cx - 2, iconY - 2, 4, 4, true);
+        renderer.fillRect(cx + 10, iconY - 2, 4, 4, true);
+      }
+
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, toolbarTop + 48, w, 34,
+                                  quickMenuItems[static_cast<size_t>(i)].label.c_str(), true,
+                                  active ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     }
 
     firstPaint_ = false;
