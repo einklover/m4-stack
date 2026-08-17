@@ -31,6 +31,11 @@ class ActivityWithSubactivity : public Activity {
   void loop() override;
   void onExit() override;
 
+  // Reader-menu host contract. Most parents need no special behavior; concrete
+  // reader bodies override only the capabilities/reflow they actually support.
+  virtual bool readerMenuSyncSupported() const { return true; }
+  virtual void onReaderMenuStyleChanged() {}
+
   // m4adb automation seam: expose the actual nested Activity stack instead of
   // forcing E2E tests to infer it from screenshots or timing. This is read-only
   // debug metadata and does not affect production navigation/lifecycle.
