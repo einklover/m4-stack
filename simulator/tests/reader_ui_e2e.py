@@ -306,21 +306,21 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _tap(client, 24, 28)
         reader_after_catalog = _settle_reader(client, proc, qlog, root, "07-reader-after-catalog")
 
-        # Progress is a bottom sheet. Target changes stay inside the sheet;
-        # tapping exposed text cancels back to the reader.
+        # Progress is a bottom sheet above the persistent reader toolbar. Target
+        # changes stay inside the sheet; tapping exposed text cancels to Reader.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 180, 756)
         progress_ui = _wait_path(client, proc, qlog, PROGRESS_PATH, seconds=20.0)
         progress = _capture(client, root, "08-progress-sheet")
-        _tap(client, 347, 625)
+        _tap(client, 347, 541)
         progress_seek = _capture(client, root, "09-progress-sheet-seek")
         _assert_changed(progress, progress_seek, "progress target change")
         _tap(client, 240, 300)
         reader_after_progress = _settle_reader(client, proc, qlog, root, "10-reader-after-progress")
 
-        # Font is a bottom sheet. A- updates only the sheet; exposed text closes
-        # it and then the reader applies deferred pagination/reflow.
+        # Font is a bottom sheet above the same persistent toolbar. A- updates
+        # only the sheet; exposed text closes it and Reader applies deferred reflow.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 300, 756)
@@ -329,7 +329,7 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         if style_body.get("layer") != "style" or style_body.get("overlay") is not True:
             raise m4sim.M4SimError(f"font overlay contract violated: {style_body!r}")
         style = _capture(client, root, "11-font-sheet")
-        _tap(client, 90, 620)
+        _tap(client, 90, 463)
         style_adjusted = _capture(client, root, "12-font-sheet-minus")
         _assert_changed(style, style_adjusted, "font size decrease")
         _tap(client, 240, 300)
