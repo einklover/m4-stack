@@ -17,6 +17,15 @@
 #include <BluetoothHIDManager.h>
 #include <algorithm>
 
+namespace {
+// BaseTheme::drawProgressBar needs >4px height for a visible fill and also
+// draws percentage text below the bar. Reserve a fixed 32px block so that text
+// never overlaps the first 52px touch row while six quick actions still fit in
+// Murphy M4 landscape mode.
+constexpr int kQuickProgressBarHeight = 8;
+constexpr int kQuickProgressBlockHeight = 32;
+}  // namespace
+
 void EpubReaderMenuActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex = xSemaphoreCreateMutex();
@@ -84,7 +93,7 @@ void EpubReaderMenuActivity::loop() {
     const int hintGutterHeight = isPortraitInverted ? 50 : 0;
     int listTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
     if (menuLayer_ == MenuLayer::QUICK) {
-      listTop += metrics.bookProgressBarHeight + metrics.verticalSpacing;
+      listTop += kQuickProgressBlockHeight;
     }
     const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
     const int totalItems = static_cast<int>(items.size());
@@ -319,16 +328,16 @@ void EpubReaderMenuActivity::renderScreen() {
   int listTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
 
   // The quick layer shows actual whole-book progress without opening another
-  // screen. Use the theme progress primitive so the bar follows current styling
-  // and costs only one small region in the framebuffer.
+  // screen. drawProgressBar also renders the percentage text below the bar, so
+  // the whole block is reserved before list hit-testing begins.
   if (menuLayer_ == MenuLayer::QUICK) {
     const int progress = std::max(0, std::min(bookProgressPercent, 100));
     const int sidePadding = std::max(12, metrics.contentSidePadding);
     const int progressWidth = std::max(1, contentWidth - sidePadding * 2);
     GUI.drawProgressBar(renderer,
-                        Rect{contentX + sidePadding, listTop, progressWidth, metrics.bookProgressBarHeight},
+                        Rect{contentX + sidePadding, listTop, progressWidth, kQuickProgressBarHeight},
                         static_cast<size_t>(progress), static_cast<size_t>(100));
-    listTop += metrics.bookProgressBarHeight + metrics.verticalSpacing;
+    listTop += kQuickProgressBlockHeight;
   }
 
   const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
