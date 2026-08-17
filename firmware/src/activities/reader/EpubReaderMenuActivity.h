@@ -4,6 +4,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <cstring>
 #include <functional>
 #include <string>
 #include <vector>
