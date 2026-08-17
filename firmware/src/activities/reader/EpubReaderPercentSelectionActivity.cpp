@@ -157,8 +157,9 @@ void EpubReaderPercentSelectionActivity::renderScreen() {
                               layout.value.width, layout.value.height, percentText.c_str(),
                               true, EpdFontFamily::BOLD, 8);
 
-  // Stable high-contrast track. Tap anywhere in the enlarged invisible hit area
-  // to seek once; the visible bar itself stays compact for an e-ink aesthetic.
+  // Reading progress should read as one calm continuum, not as an instrument
+  // scale. The large percentage carries the precise value; the bar only shows
+  // position and remains a generous one-shot touch target through trackHit.
   renderer.drawRect(layout.track.x, layout.track.y, layout.track.width, layout.track.height, true);
   const int innerWidth = std::max(0, layout.track.width - 4);
   const int fillWidth = innerWidth * percent / 100;
@@ -167,16 +168,8 @@ void EpubReaderPercentSelectionActivity::renderScreen() {
                       std::max(1, layout.track.height - 4), true);
   }
 
-  // Five sparse ticks communicate scale without the visual noise of a phone slider.
-  for (int marker = 0; marker <= 4; ++marker) {
-    const int x = layout.track.x + (layout.track.width - 1) * marker / 4;
-    renderer.fillRect(x, layout.track.y - 4, 1, layout.track.height + 8, true);
-  }
-
   const int labelY = layout.track.y + layout.track.height + 8;
   M4UiText::draw(renderer, UI_10_FONT_ID, layout.track.x, labelY, "0%", true, EpdFontFamily::REGULAR);
-  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, layout.track.x, labelY - 4,
-                              layout.track.width, 28, "50%", true, EpdFontFamily::REGULAR, 4);
   const char* endLabel = "100%";
   const int endWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, endLabel);
   M4UiText::draw(renderer, UI_10_FONT_ID, layout.track.x + layout.track.width - endWidth,
