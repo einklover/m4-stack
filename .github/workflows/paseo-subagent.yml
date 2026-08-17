@@ -1,0 +1,149 @@
+name: Paseo remote subagent
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number that contains the task comment
+        required: true
+        type: string
+      comment_id:
+        description: Optional existing comment id to replay
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: paseo-subagent-m4-stack
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: >
+      (
+        github.event_name == 'workflow_dispatch' &&
+        contains(
+          format(',{0},', vars.PASEO_DISPATCH_ALLOWLIST || 'einklover'),
+          format(',{0},', github.actor)
+        )
+      )
+      ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request == null &&
+        startsWith(github.event.comment.body, '[PASEO_TASK v1]') &&
+        contains(
+          format(',{0},', vars.PASEO_DISPATCH_ALLOWLIST || 'einklover'),
+          format(',{0},', github.event.comment.user.login)
+        )
+      )
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
+      - paseo
+    timeout-minutes: 150
+    env:
+      PASEO_ALLOWLIST: ${{ vars.PASEO_DISPATCH_ALLOWLIST || 'einklover' }}
+    steps:
+      - name: Authorize issuer
+        env:
+          ACTOR: ${{ github.event_name == 'workflow_dispatch' && github.actor || github.event.comment.user.login }}
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          actor = os.environ.get("ACTOR", "")
+          allow = {
+              item.strip()
+              for item in os.environ.get("PASEO_ALLOWLIST", "einklover").split(",")
+              if item.strip()
+          }
+          if actor not in allow:
+              print(f"unauthorized issuer: {actor!r}; allow={sorted(allow)}")
+              raise SystemExit(1)
+          print(f"authorized issuer: {actor}")
+          PY
+
+      - name: Checkout dispatcher sources
+        if: success()
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Persist task body without shell interpolation
+        if: success()
+        env:
+          TASK_BODY: ${{ github.event.comment.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          COMMENT_ID: ${{ github.event.comment.id || inputs.comment_id }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          dest = Path(os.environ["RUNNER_TEMP"]) / "paseo-task.txt"
+          event = os.environ.get("EVENT_NAME", "")
+          body = os.environ.get("TASK_BODY", "")
+          comment_id = os.environ.get("COMMENT_ID", "")
+          issue = os.environ.get("ISSUE_NUMBER", "")
+          if event == "workflow_dispatch" and comment_id:
+              repo = os.environ["GITHUB_REPOSITORY"]
+              raw = subprocess.check_output(
+                  ["gh", "api", f"repos/{repo}/issues/comments/{comment_id}"],
+                  text=True,
+              )
+              body = json.loads(raw).get("body") or ""
+          if not body.startswith("[PASEO_TASK v1]"):
+              print("task marker missing after persist")
+              sys.exit(1)
+          dest.write_text(body, encoding="utf-8")
+          print(f"wrote {dest} bytes={dest.stat().st_size} issue={issue} comment_id={comment_id}")
+          PY
+
+      - name: Dispatch to local Paseo
+        if: success()
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          COMMENT_ID: ${{ github.event.comment.id || inputs.comment_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$HOME/.grok/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 - <<'PY'
+          import os, shutil, subprocess, sys
+          from pathlib import Path
+          candidates = []
+          found = shutil.which("paseo-agent-runner")
+          if found:
+              candidates.append([found])
+          repo_script = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts/paseo_agent/paseo_agent_runner.py"
+          if repo_script.exists():
+              candidates.append([sys.executable, str(repo_script)])
+          if not candidates:
+              print("paseo-agent-runner not found")
+              sys.exit(1)
+          task = Path(os.environ["RUNNER_TEMP"]) / "paseo-task.txt"
+          issue = os.environ.get("ISSUE_NUMBER") or ""
+          comment_id = os.environ.get("COMMENT_ID") or ""
+          run_url = f"{os.environ.get('GITHUB_SERVER_URL')}/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}"
+          argv = candidates[0][:]
+          if argv[0].endswith(".py") or argv[0] == sys.executable:
+              argv = [sys.executable, str(repo_script)]
+          argv += [
+              "--task", str(task),
+              "--source", "github-actions",
+              "--run-url", run_url,
+          ]
+          if issue:
+              argv += ["--issue", issue]
+          if comment_id:
+              argv += ["--comment-id", str(comment_id)]
+          print("exec:", " ".join(argv[:-0] if False else argv))
+          os.execvp(argv[0], argv)
+          PY

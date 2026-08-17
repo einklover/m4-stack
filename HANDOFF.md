@@ -46,6 +46,8 @@ Always inspect HEAD before editing.
 - m4sim: frozen for ordinary firmware work
 - daily fast CI: `.github/workflows/m4-fast.yml`
 - checkpoint/full simulator gate: `.github/workflows/m4sim-smoke.yml`
+- Paseo remote subagent dispatcher: `.github/workflows/paseo-subagent.yml` (must live on `main`)
+- Dispatcher contract: `docs/PASEO_SUBAGENT_DISPATCHER.md`
 - verified warm fast-loop run `31704315361`: PASS in **2m09s**
 - warm QEMU rebuild: skipped via cache
 - warm plugin-debug firmware build: ~28s

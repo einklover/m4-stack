@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="${HOME}/.local/bin:${HOME}/.grok/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+if [[ -n "${PASEO_AGENT_RUNNER_SRC:-}" && -f "${PASEO_AGENT_RUNNER_SRC}" ]]; then
+  src="${PASEO_AGENT_RUNNER_SRC}"
+elif [[ -f "${HOME}/.local/lib/paseo-agent/paseo_agent_runner.py" ]]; then
+  src="${HOME}/.local/lib/paseo-agent/paseo_agent_runner.py"
+else
+  src="$(cd "$(dirname "$0")" && pwd)/paseo_agent_runner.py"
+fi
+exec python3 "${src}" "$@"
