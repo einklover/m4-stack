@@ -16,12 +16,17 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-/** Simple UI: accessibility shortcut, session control, tunables, live status. */
+import com.murphy.m4screenbridge.browser.VirtualBrowserSession;
+
+/** Simple UI: accessibility shortcut, session control, tunables, and browser M0 validation. */
 public class MainActivity extends Activity {
     private TextView statusView;
+    private TextView browserStatusView;
+    private EditText browserUrlEt;
     private EditText thresholdEt;
     private EditText gapEt;
     private EditText delayEt;
@@ -29,6 +34,7 @@ public class MainActivity extends Activity {
     private CheckBox cacheCb;
     private RadioButton fitRb;
     private RadioButton coverRb;
+    private VirtualBrowserSession browserSession;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Runnable tick = new Runnable() {
@@ -42,6 +48,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        browserSession = new VirtualBrowserSession(this);
         setContentView(buildView());
         load();
         ui.post(tick);
@@ -67,14 +74,19 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         ui.removeCallbacks(tick);
         ScreenBridgeService.statusListener = null;
+        if (browserSession != null) browserSession.stop();
         super.onDestroy();
     }
 
-    private LinearLayout buildView() {
+    private View buildView() {
+        ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
         root.setPadding(pad, pad, pad, pad);
+        scroll.addView(root, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(this);
         title.setText(R.string.app_name);
@@ -86,6 +98,49 @@ public class MainActivity extends Activity {
         statusView.setTextSize(14);
         root.addView(statusView);
 
+        root.addView(label("虚拟浏览器 M0（不依赖实体屏截图）"));
+        browserStatusView = new TextView(this);
+        browserStatusView.setText("虚拟浏览器 M0：未启动");
+        browserStatusView.setTextSize(13);
+        root.addView(browserStatusView);
+
+        browserUrlEt = new EditText(this);
+        browserUrlEt.setSingleLine(true);
+        browserUrlEt.setHint("https://example.com/");
+        browserUrlEt.setText("https://example.com/");
+        root.addView(browserUrlEt);
+
+        root.addView(button("启动 480×800 虚拟浏览器", new Runnable() {
+            @Override
+            public void run() {
+                browserSession.start(browserUrlEt.getText().toString());
+                refresh();
+                toast(browserSession.isActive()
+                        ? "虚拟浏览器已启动；观察 frame/image/sig 是否变化"
+                        : "虚拟浏览器启动失败，请查看状态");
+            }
+        }));
+
+        root.addView(button("启动 JavaScript 持续帧自测", new Runnable() {
+            @Override
+            public void run() {
+                browserSession.startJavaScriptSelfTest();
+                refresh();
+                toast(browserSession.isActive()
+                        ? "自测页每秒改数字；可熄灭实体屏观察帧是否继续增加"
+                        : "虚拟浏览器启动失败，请查看状态");
+            }
+        }));
+
+        root.addView(button("停止虚拟浏览器", new Runnable() {
+            @Override
+            public void run() {
+                browserSession.stop();
+                refresh();
+            }
+        }));
+
+        root.addView(label("原有无障碍屏幕桥"));
         root.addView(button("打开无障碍设置", new Runnable() {
             @Override
             public void run() {
@@ -161,7 +216,7 @@ public class MainActivity extends Activity {
         help.setTextSize(13);
         root.addView(help);
 
-        return root;
+        return scroll;
     }
 
     private boolean isServiceEnabled() {
@@ -206,6 +261,9 @@ public class MainActivity extends Activity {
         sb.append("无障碍服务：").append(isServiceEnabled() ? "已启用" : "未启用").append('\n');
         sb.append(ScreenBridgeService.snapshot());
         statusView.setText(sb.toString());
+        if (browserStatusView != null && browserSession != null) {
+            browserStatusView.setText(browserSession.snapshot());
+        }
     }
 
     private Button button(String text, final Runnable onClick) {
