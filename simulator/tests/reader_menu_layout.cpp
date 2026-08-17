@@ -51,6 +51,31 @@ void checkCase(const char* name, int contentX, int contentWidth, int top, int bo
     assert(!overlaps(style.fontValue, style.actionRect(i)));
   }
 
+  const auto progress = M4ReaderMenuLayout::makeProgressPanelLayout(contentX, contentWidth, top);
+  assert(progress.value.x >= contentX);
+  assert(progress.value.x + progress.value.width <= contentX + contentWidth);
+  assert(progress.track.x >= contentX);
+  assert(progress.track.x + progress.track.width <= contentX + contentWidth);
+  assert(progress.percentFromPoint(progress.track.x,
+                                   progress.track.y + progress.track.height / 2) == 0);
+  assert(progress.percentFromPoint(progress.track.x + progress.track.width - 1,
+                                   progress.track.y + progress.track.height / 2) == 100);
+  const int middle = progress.percentFromPoint(progress.track.x + progress.track.width / 2,
+                                                progress.track.y + progress.track.height / 2);
+  assert(middle >= 49 && middle <= 51);
+  assert(progress.percentFromPoint(progress.track.x - 1, progress.track.y) == -1);
+
+  for (int i = 0; i < M4ReaderMenuLayout::kProgressStepCount; ++i) {
+    const auto r = progress.stepRect(i);
+    assertInside(r, contentX, contentWidth, bottomLimit);
+    assert(progress.stepFromPoint(r.x + r.width / 2, r.y + r.height / 2) == i);
+    for (int j = i + 1; j < M4ReaderMenuLayout::kProgressStepCount; ++j) {
+      assert(!overlaps(r, progress.stepRect(j)));
+    }
+  }
+  assert(progress.stepFromPoint(progress.track.x + progress.track.width / 2,
+                                progress.track.y + progress.track.height / 2) == -1);
+
   std::cout << "reader-menu layout ok: " << name << "\n";
 }
 
