@@ -236,9 +236,7 @@ void EpubReaderMenuActivity::notifyParentStyleChanged() {
     xSemaphoreGive(renderingMutex);
   }
 
-  // Semantic host hook: style reflow is not screen rotation. Concrete reader
-  // hosts must not tear down this menu from this callback; external navigation
-  // (chapter/progress/bookmark/etc.) is dispatched immediately afterward.
+  // Style reflow is a semantic host operation, not a synthetic rotation event.
   if (auto* host = getParentActivity()) host->onReaderMenuStyleChanged();
 }
 
@@ -254,8 +252,10 @@ void EpubReaderMenuActivity::loop() {
   if (mappedInput.hasTouch()) {
     if (mappedInput.wasBackGesture()) {
       if (returnToQuickMenu()) return;
-      notifyParentStyleChanged();
+      // Let the reader's normal close callback capture its current state first;
+      // ActivityWithSubactivity defers child teardown until this frame returns.
       onBack(pendingOrientation);
+      notifyParentStyleChanged();
       return;
     }
 
@@ -504,16 +504,17 @@ void EpubReaderMenuActivity::loop() {
       return;
     }
 
-    // A style change must be committed before handing control to a parent-owned
-    // screen. This covers Style -> Quick -> Chapter/Progress/Bookmarks directly.
-    notifyParentStyleChanged();
+    // Parent callbacks take their current-page snapshots before style reflow.
+    // ADD_BOOKMARK intentionally stays in the menu, so keep style dirty until a
+    // later transition/back to avoid invalidating the reader behind the menu.
     auto actionCallback = onAction;
     actionCallback(selectedAction);
+    if (selectedAction != MenuAction::ADD_BOOKMARK) notifyParentStyleChanged();
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (returnToQuickMenu()) return;
-    notifyParentStyleChanged();
     onBack(pendingOrientation);
+    notifyParentStyleChanged();
     return;
   }
 }
