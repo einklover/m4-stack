@@ -11,6 +11,7 @@
 #include "activities/settings/SimpleBluetoothActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "managers/FontManager.h"
 #include "util/M4ListTouchPolicy.h"
 #include "util/M4ReaderMenuLayout.h"
 #include "util/M4UiText.h"
@@ -33,10 +34,14 @@ constexpr LayoutPreset kRelaxedLayout{14, 14, 18, 18, 12};
 
 constexpr int kOverlayTopBarH = 58;
 constexpr int kOverlayBottomBarH = 88;
-constexpr int kStyleSheetH = 270;
+constexpr int kStyleSheetH = 340;
 constexpr int kStyleSheetHeaderH = 38;
 constexpr int kTopBackHitW = 64;
 constexpr int kTopBookmarkHitW = 64;
+constexpr int kQuickFontMaxExternal = 3;
+constexpr int kQuickFontGap = 8;
+constexpr int kQuickFontSide = 20;
+constexpr int kQuickFontH = 50;
 
 bool matchesLayout(const LayoutPreset& p) {
   return SETTINGS.screenMargin_Top == p.top && SETTINGS.screenMargin_Bottom == p.bottom &&
@@ -84,6 +89,22 @@ int styleIndexFromPoint(const M4ReaderMenuLayout::StylePanelLayout& L, int x, in
   if (L.compact.contains(x, y)) return 2;
   if (L.standard.contains(x, y)) return 3;
   if (L.relaxed.contains(x, y)) return 4;
+  return -1;
+}
+
+TouchHitGeometry::Rect quickFontRect(int pageWidth, int rowY, int count, int slot) {
+  if (count <= 0 || slot < 0 || slot >= count) return {};
+  const int innerW = std::max(80, pageWidth - kQuickFontSide * 2);
+  const int cellW = std::max(48, (innerW - kQuickFontGap * (count - 1)) / count);
+  const int usedW = cellW * count + kQuickFontGap * (count - 1);
+  const int startX = kQuickFontSide + std::max(0, (innerW - usedW) / 2);
+  return {startX + slot * (cellW + kQuickFontGap), rowY, cellW, kQuickFontH};
+}
+
+int quickFontSlotFromPoint(int pageWidth, int rowY, int count, int x, int y) {
+  for (int i = 0; i < count; ++i) {
+    if (quickFontRect(pageWidth, rowY, count, i).contains(x, y)) return i;
+  }
   return -1;
 }
 
@@ -159,8 +180,51 @@ void EpubReaderMenuActivity::displayTaskLoop() {
   }
 }
 
+void EpubReaderMenuActivity::prepareQuickFontFamilies() {
+  quickFontFamilies_.clear();
+  const auto& available = FontManager::getInstance().getAvailableTtfFamilies();
+  const std::string current = SETTINGS.customFontFamily;
+
+  if (!current.empty() && std::find(available.begin(), available.end(), current) != available.end()) {
+    quickFontFamilies_.push_back(current);
+  }
+  for (const auto& family : available) {
+    if (family == current) continue;
+    quickFontFamilies_.push_back(family);
+    if (static_cast<int>(quickFontFamilies_.size()) >= kQuickFontMaxExternal) break;
+  }
+}
+
+void EpubReaderMenuActivity::applyQuickFontChoice(int slot) {
+  bool changed = false;
+  if (slot == 0) {
+    if (SETTINGS.fontFamily != CrossPointSettings::SYSTEM_FONT) {
+      SETTINGS.fontFamily = CrossPointSettings::SYSTEM_FONT;
+      changed = true;
+    }
+  } else {
+    const int index = slot - 1;
+    if (index < 0 || index >= static_cast<int>(quickFontFamilies_.size())) return;
+    const std::string& family = quickFontFamilies_[static_cast<size_t>(index)];
+    if (SETTINGS.fontFamily != CrossPointSettings::FONT_CUSTOM ||
+        std::string(SETTINGS.customFontFamily) != family) {
+      strncpy(SETTINGS.customFontFamily, family.c_str(), sizeof(SETTINGS.customFontFamily) - 1);
+      SETTINGS.customFontFamily[sizeof(SETTINGS.customFontFamily) - 1] = '\0';
+      SETTINGS.fontFamily = CrossPointSettings::FONT_CUSTOM;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+
+  SETTINGS.saveToFile();
+  readerStyleDirty_ = true;
+  readerFontDirty_ = true;
+  updateRequired = true;
+}
+
 void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
   if (action == InternalAction::OPEN_STYLE) {
+    prepareQuickFontFamilies();
     menuLayer_ = MenuLayer::STYLE;
     selectedIndex = 0;
     updateRequired = true;
@@ -280,7 +344,6 @@ void EpubReaderMenuActivity::notifyParentStyleChanged() {
 }
 
 void EpubReaderMenuActivity::closeToReader() {
-  // Reader callback snapshots the current position before a possible reflow.
   onBack(pendingOrientation);
   notifyParentStyleChanged();
 }
@@ -320,7 +383,6 @@ void EpubReaderMenuActivity::loop() {
           selectedIndex = hit;
           goto activate_menu_item;
         }
-        // Any tap on the exposed reading page hides the overlay.
         closeToReader();
         return;
       }
@@ -337,10 +399,17 @@ void EpubReaderMenuActivity::loop() {
     } else if (menuLayer_ == MenuLayer::STYLE) {
       const int panelTop = std::max(kOverlayTopBarH + 40, pageHeight - kStyleSheetH);
       const auto styleLayout = M4ReaderMenuLayout::makeStylePanelLayout(0, pageWidth, panelTop + kStyleSheetHeaderH);
+      const int fontRowY = styleLayout.fontPicker.y + 24;
+      const int fontChoiceCount = 1 + static_cast<int>(quickFontFamilies_.size());
       int tx = 0, ty = 0;
       if (mappedInput.wasScreenTapped(tx, ty)) {
         if (ty < panelTop) {
           closeToReader();
+          return;
+        }
+        const int fontSlot = quickFontSlotFromPoint(pageWidth, fontRowY, fontChoiceCount, tx, ty);
+        if (fontSlot >= 0) {
+          applyQuickFontChoice(fontSlot);
           return;
         }
         const int hit = styleIndexFromPoint(styleLayout, tx, ty);
@@ -595,7 +664,6 @@ void EpubReaderMenuActivity::renderScreen() {
   };
 
   if (menuLayer_ == MenuLayer::QUICK) {
-    // Preserve the rendered page. Only two white control bands are overpainted.
     renderer.fillRect(0, 0, pageWidth, kOverlayTopBarH, false);
     renderer.fillRect(0, pageHeight - kOverlayBottomBarH, pageWidth, kOverlayBottomBarH, false);
     renderer.drawLine(0, kOverlayTopBarH - 1, pageWidth - 1, kOverlayTopBarH - 1, true);
@@ -692,12 +760,28 @@ void EpubReaderMenuActivity::renderScreen() {
     drawChip(L.standard, "标准", selectedIndex == 3, matchesLayout(kStandardLayout));
     drawChip(L.relaxed, "宽松", selectedIndex == 4, matchesLayout(kRelaxedLayout));
 
+    const int fontLabelY = L.fontPicker.y;
+    const int fontRowY = fontLabelY + 24;
+    M4UiText::draw(renderer, UI_10_FONT_ID, kQuickFontSide, fontLabelY, "字体", true, EpdFontFamily::BOLD);
+    const int fontChoiceCount = 1 + static_cast<int>(quickFontFamilies_.size());
+    for (int slot = 0; slot < fontChoiceCount; ++slot) {
+      const auto r = quickFontRect(pageWidth, fontRowY, fontChoiceCount, slot);
+      std::string label = slot == 0 ? "系统" : quickFontFamilies_[static_cast<size_t>(slot - 1)];
+      label = M4UiText::truncated(renderer, UI_10_FONT_ID, label.c_str(), std::max(30, r.width - 16),
+                                  EpdFontFamily::REGULAR);
+      const bool active = slot == 0
+                              ? SETTINGS.fontFamily == CrossPointSettings::SYSTEM_FONT
+                              : SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM &&
+                                    std::string(SETTINGS.customFontFamily) ==
+                                        quickFontFamilies_[static_cast<size_t>(slot - 1)];
+      drawChip(r, label, false, active);
+    }
+
     firstPaint_ = false;
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     return;
   }
 
-  // More remains a full secondary page. This is intentionally not an overlay.
   renderer.clearScreen();
   const auto orientation = renderer.getOrientation();
   const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
