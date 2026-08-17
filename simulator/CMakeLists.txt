@@ -35,6 +35,11 @@ add_test(NAME m4_peripheral_policies COMMAND m4_peripheral_policies)
 add_executable(m4_sd_image_tests tests/sd_image.cpp)
 target_link_libraries(m4_sd_image_tests PRIVATE m4_board_model)
 add_test(NAME m4_sd_image_tests COMMAND m4_sd_image_tests)
+# Reader-menu layout is pure policy shared by drawing and touch hit-testing.
+# Exercise all Murphy M4 orientations on the host before device/QEMU validation.
+add_executable(m4_reader_menu_layout_tests tests/reader_menu_layout.cpp)
+target_include_directories(m4_reader_menu_layout_tests PRIVATE ../firmware/src)
+add_test(NAME m4_reader_menu_layout_tests COMMAND m4_reader_menu_layout_tests)
 # Runtime font parsers are deliberately Arduino-free. Compile the production
 # sources into host regression targets so compatibility changes are exercised
 # without QEMU, an SD fixture, or distro-specific font files.
