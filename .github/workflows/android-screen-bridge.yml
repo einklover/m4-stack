@@ -32,3 +32,9 @@ jobs:
       - name: Build debug APK
         working-directory: android/m4-screen-bridge
         run: ./build.sh
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-screen-bridge-debug
+          path: android/m4-screen-bridge/m4-screen-bridge-debug.apk
+          retention-days: 7
