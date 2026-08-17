@@ -83,9 +83,9 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
 
   const std::vector<MenuItem> quickMenuItems = {
       {MenuAction::SELECT_CHAPTER, "目录"},
-      {MenuAction::GO_TO_PERCENT, "阅读进度"},
-      {MenuAction::READER_SETTINGS, "阅读样式", InternalAction::OPEN_STYLE},
-      {MenuAction::ADD_BOOKMARK, "添加书签"},
+      {MenuAction::GO_TO_PERCENT, "进度"},
+      {MenuAction::READER_SETTINGS, "排版", InternalAction::OPEN_STYLE},
+      {MenuAction::ADD_BOOKMARK, "加书签"},
       {MenuAction::BOOKMARK_MANAGER, "书签"},
       {MenuAction::GO_HOME, "更多", InternalAction::OPEN_MORE},
   };
@@ -99,32 +99,27 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::READER_SETTINGS, "标准", InternalAction::LAYOUT_STANDARD},
       {MenuAction::READER_SETTINGS, "宽松", InternalAction::LAYOUT_RELAXED},
       {MenuAction::SELECT_EXTERNAL_FONT, "字体"},
-      {MenuAction::READER_SETTINGS, "详细设置"},
+      {MenuAction::READER_SETTINGS, "高级设置"},
   };
 
-  // Secondary reader-only controls. High-frequency navigation/bookmark/style
-  // actions live in QUICK/STYLE and are intentionally not duplicated here.
-  // Device-level Bluetooth already lives in System Settings. Long-press Confirm
-  // remains here until it gets an equivalent Controls entry, so no capability is lost.
+  // One secondary level only: category prefixes make low-frequency options easy
+  // to scan without introducing yet another submenu.
   const std::vector<MenuItem> moreMenuItems = {
-      // Reading behaviour
-      {MenuAction::AUTO_PAGE_TURN, "自动翻页"},
-      {MenuAction::PAGE_TURN_INTERVAL, "自动翻页间隔"},
-      {MenuAction::PAGE_TURN_MODE, "自动翻页方式"},
-      {MenuAction::ROTATE_SCREEN, "阅读方向"},
+      {MenuAction::AUTO_PAGE_TURN, "翻页 · 自动翻页"},
+      {MenuAction::PAGE_TURN_INTERVAL, "翻页 · 自动间隔"},
+      {MenuAction::PAGE_TURN_MODE, "翻页 · 自动方式"},
+      {MenuAction::ROTATE_SCREEN, "翻页 · 阅读方向"},
 #ifdef CROSSPOINT_X3
-      {MenuAction::TILT_PAGE_TURN, "晃动翻页"},
-      {MenuAction::TILT_PAGE_TURN_SETTINGS, "晃动翻页设置"},
+      {MenuAction::TILT_PAGE_TURN, "翻页 · 晃动翻页"},
+      {MenuAction::TILT_PAGE_TURN_SETTINGS, "翻页 · 晃动设置"},
 #endif
-      // Rendering / interaction
-      {MenuAction::TOGGLE_ANTI_ALIAS, "抗锯齿"},
-      {MenuAction::TOGGLE_DARK_MODE, "暗黑模式"},
-      {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "全局下一页"},
-      // Progress / maintenance
-      {MenuAction::SYNC, "进度同步(koreader)"},
-      {MenuAction::SYNCY, "进度同步(开源阅读)"},
-      {MenuAction::DELETE_CACHE, "清理缓存"},
-      {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "长按确认键功能"},
+      {MenuAction::TOGGLE_ANTI_ALIAS, "显示 · 抗锯齿"},
+      {MenuAction::TOGGLE_DARK_MODE, "显示 · 暗黑模式"},
+      {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "控制 · 全局下一页"},
+      {MenuAction::SYNC, "同步 · KOReader"},
+      {MenuAction::SYNCY, "同步 · 开源阅读"},
+      {MenuAction::DELETE_CACHE, "维护 · 清理缓存"},
+      {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "控制 · 长按确认键"},
   };
 
   MenuLayer menuLayer_ = MenuLayer::QUICK;
