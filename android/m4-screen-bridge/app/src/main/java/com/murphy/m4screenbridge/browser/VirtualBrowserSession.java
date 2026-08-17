@@ -1,6 +1,6 @@
 package com.murphy.m4screenbridge.browser;
 
-import android.app.Activity;
+import android.content.Context;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -13,19 +13,26 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.Display;
 
+import com.murphy.m4screenbridge.browser.patch.FrameDiffer;
+import com.murphy.m4screenbridge.browser.patch.FramePatch;
+import com.murphy.m4screenbridge.browser.patch.LogicalMonoFrame;
+import com.murphy.m4screenbridge.browser.patch.PatchApplier;
+
 import java.nio.ByteBuffer;
 import java.util.Locale;
 
 /**
- * M0 validation session: render a WebView into an app-owned 480x800 VirtualDisplay
- * and consume its RGBA output through ImageReader. No M4 transport is involved yet.
+ * App-owned 480x800 WebView VirtualDisplay session. In M1 it is owned by
+ * BrowserBridgeService rather than MainActivity, and every RGBA frame is also fed through
+ * the pure-Java dirty-tile patch core.
  */
 public final class VirtualBrowserSession {
     public static final int WIDTH = 480;
     public static final int HEIGHT = 800;
     public static final int DENSITY_DPI = 160;
+    private static final int MONO_THRESHOLD = 128;
 
-    private final Activity host;
+    private final Context host;
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private HandlerThread frameThread;
@@ -45,8 +52,20 @@ public final class VirtualBrowserSession {
     private volatile String currentUrl = "";
     private volatile String error = "";
 
-    public VirtualBrowserSession(Activity host) {
-        this.host = host;
+    private byte[] logicalFrame;
+    private long logicalFrameId = -1;
+    private volatile long keyframeCount;
+    private volatile long patchCount;
+    private volatile long unchangedFrameCount;
+    private volatile long patchPayloadBytes;
+    private volatile int lastChangedTiles;
+    private volatile int lastRectCount;
+    private volatile int lastPatchBytes;
+    private volatile double lastDirtyRatio;
+
+    public VirtualBrowserSession(Context host) {
+        if (host == null) throw new IllegalArgumentException("host is null");
+        this.host = host.getApplicationContext();
     }
 
     public void start(String rawUrl) {
@@ -62,6 +81,16 @@ public final class VirtualBrowserSession {
         pixelStride = 0;
         lastFrameElapsedMs = 0;
         lastSignature = 0;
+        logicalFrame = null;
+        logicalFrameId = -1;
+        keyframeCount = 0;
+        patchCount = 0;
+        unchangedFrameCount = 0;
+        patchPayloadBytes = 0;
+        lastChangedTiles = 0;
+        lastRectCount = 0;
+        lastPatchBytes = 0;
+        lastDirtyRatio = 0;
 
         try {
             frameThread = new HandlerThread("m4-browser-frames");
@@ -71,7 +100,7 @@ public final class VirtualBrowserSession {
             reader = ImageReader.newInstance(WIDTH, HEIGHT, PixelFormat.RGBA_8888, 3);
             reader.setOnImageAvailableListener(this::onImageAvailable, frameHandler);
 
-            DisplayManager dm = (DisplayManager) host.getSystemService(Activity.DISPLAY_SERVICE);
+            DisplayManager dm = (DisplayManager) host.getSystemService(Context.DISPLAY_SERVICE);
             if (dm == null) throw new IllegalStateException("DisplayManager unavailable");
 
             int flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
@@ -118,11 +147,12 @@ public final class VirtualBrowserSession {
 
     public String snapshot() {
         if (!active) {
-            return error.isEmpty() ? "虚拟浏览器 M0：未启动" : "虚拟浏览器 M0：启动失败 | " + error;
+            return error.isEmpty() ? "虚拟浏览器 M1：未启动" : "虚拟浏览器 M1：启动失败 | " + error;
         }
-        long age = lastFrameElapsedMs == 0 ? -1 : Math.max(0, SystemClock.elapsedRealtime() - lastFrameElapsedMs);
+        long age = lastFrameElapsedMs == 0 ? -1
+                : Math.max(0, SystemClock.elapsedRealtime() - lastFrameElapsedMs);
         StringBuilder sb = new StringBuilder();
-        sb.append("虚拟浏览器 M0：运行中 | display ")
+        sb.append("虚拟浏览器 M1：运行中 | display ")
                 .append(WIDTH).append('x').append(HEIGHT)
                 .append('@').append(DENSITY_DPI).append("dpi")
                 .append(" | frames ").append(frameCount);
@@ -132,6 +162,15 @@ public final class VirtualBrowserSession {
                     .append(" | sig ").append(Long.toHexString(lastSignature));
             if (age >= 0) sb.append(" | age ").append(age).append("ms");
         }
+        sb.append("\npatch frame ").append(logicalFrameId)
+                .append(" | key ").append(keyframeCount)
+                .append(" | delta ").append(patchCount)
+                .append(" | same ").append(unchangedFrameCount)
+                .append(" | last tiles ").append(lastChangedTiles).append('/').append(FrameDiffer.TOTAL_TILES)
+                .append(" rects ").append(lastRectCount)
+                .append(" bytes ").append(lastPatchBytes)
+                .append(String.format(Locale.ROOT, " dirty %.2f%%", lastDirtyRatio * 100.0))
+                .append(" | total bytes ").append(patchPayloadBytes);
         if (!currentUrl.isEmpty()) sb.append("\nURL: ").append(currentUrl);
         if (!error.isEmpty()) sb.append("\n错误: ").append(error);
         return sb.toString();
@@ -150,8 +189,13 @@ public final class VirtualBrowserSession {
             imageHeight = image.getHeight();
             rowStride = plane.getRowStride();
             pixelStride = plane.getPixelStride();
-            lastSignature = sampledSignature(plane.getBuffer(), imageWidth, imageHeight,
-                    rowStride, pixelStride);
+            ByteBuffer pixels = plane.getBuffer();
+            lastSignature = sampledSignature(pixels, imageWidth, imageHeight, rowStride, pixelStride);
+
+            byte[] target = LogicalMonoFrame.fromRgba(pixels, imageWidth, imageHeight,
+                    rowStride, pixelStride, MONO_THRESHOLD);
+            processLogicalFrame(target);
+
             lastFrameElapsedMs = SystemClock.elapsedRealtime();
             frameCount++;
         } catch (Throwable t) {
@@ -161,7 +205,41 @@ public final class VirtualBrowserSession {
         }
     }
 
-    /** Lightweight content signature used only to prove that distinct browser frames are arriving. */
+    private void processLogicalFrame(byte[] target) {
+        if (logicalFrame == null) {
+            FramePatch patch = FrameDiffer.diff(null, -1, target, 0);
+            logicalFrame = PatchApplier.apply(null, -1, patch);
+            logicalFrameId = patch.frameId;
+            keyframeCount++;
+            recordPatch(patch);
+            return;
+        }
+
+        FramePatch patch = FrameDiffer.diff(logicalFrame, logicalFrameId, target, logicalFrameId + 1);
+        if (!patch.hasChanges()) {
+            unchangedFrameCount++;
+            lastChangedTiles = 0;
+            lastRectCount = 0;
+            lastPatchBytes = 0;
+            lastDirtyRatio = 0;
+            return;
+        }
+        logicalFrame = PatchApplier.apply(logicalFrame, logicalFrameId, patch);
+        logicalFrameId = patch.frameId;
+        if (patch.keyframe) keyframeCount++;
+        else patchCount++;
+        recordPatch(patch);
+    }
+
+    private void recordPatch(FramePatch patch) {
+        lastChangedTiles = patch.changedTiles;
+        lastRectCount = patch.rects.size();
+        lastPatchBytes = patch.payloadBytes();
+        lastDirtyRatio = patch.dirtyRatio();
+        patchPayloadBytes += patch.payloadBytes();
+    }
+
+    /** Lightweight content signature retained for M0/M1 real-device compositor diagnostics. */
     static long sampledSignature(ByteBuffer source, int width, int height, int rowStride, int pixelStride) {
         ByteBuffer b = source.duplicate();
         long hash = 0xcbf29ce484222325L;
@@ -212,6 +290,8 @@ public final class VirtualBrowserSession {
             frameThread = null;
             frameHandler = null;
         }
+        logicalFrame = null;
+        logicalFrameId = -1;
         if (clearError) error = "";
     }
 
