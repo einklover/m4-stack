@@ -520,7 +520,7 @@ void EpubReaderMenuActivity::renderScreen() {
   const int hintGutterHeight = isPortraitInverted ? 50 : 0;
 
   std::string headerTitle = title;
-  if (menuLayer_ == MenuLayer::STYLE) headerTitle += " · 排版";
+  if (menuLayer_ == MenuLayer::STYLE) headerTitle += " · 样式";
   else if (menuLayer_ == MenuLayer::MORE) headerTitle += " · 更多";
   const std::string truncTitle =
       M4UiText::truncated(renderer, UI_12_FONT_ID, headerTitle.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
@@ -543,29 +543,28 @@ void EpubReaderMenuActivity::renderScreen() {
                                 (selected || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
   };
 
-  auto drawQuickGlyph = [this](const TouchHitGeometry::Rect& r, int index, bool selected) {
-    const bool ink = !selected;
+  auto drawQuickGlyph = [this](const TouchHitGeometry::Rect& r, int index) {
     const int cx = r.x + r.width / 2;
     const int top = r.y + 15;
-    auto bar = [this, ink](int x, int y, int w, int h) { renderer.fillRect(x, y, w, h, ink); };
+    auto bar = [this](int x, int y, int w, int h) { renderer.fillRect(x, y, w, h, true); };
 
     switch (index) {
-      case 0:  // catalog
+      case 0:
         bar(cx - 15, top, 30, 2);
         bar(cx - 15, top + 8, 24, 2);
         bar(cx - 15, top + 16, 30, 2);
         break;
-      case 1:  // progress
+      case 1:
         bar(cx - 15, top + 4, 30, 2);
         bar(cx - 15, top + 12, 30, 2);
         bar(cx - 4, top, 2, 18);
         break;
-      case 2:  // typography
+      case 2:
         M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, top - 4, r.width, 28,
-                                    "Aa", ink, EpdFontFamily::BOLD, 8);
+                                    "Aa", true, EpdFontFamily::BOLD, 8);
         break;
-      case 3:  // add bookmark
-      case 4: { // bookmarks
+      case 3:
+      case 4: {
         const int x = cx - 10;
         bar(x, top, 2, 22);
         bar(x + 18, top, 2, 22);
@@ -578,7 +577,7 @@ void EpubReaderMenuActivity::renderScreen() {
         }
         break;
       }
-      case 5:  // more
+      case 5:
         bar(cx - 13, top + 8, 4, 4);
         bar(cx - 2, top + 8, 4, 4);
         bar(cx + 9, top + 8, 4, 4);
@@ -597,20 +596,21 @@ void EpubReaderMenuActivity::renderScreen() {
     for (int i = 0; i < static_cast<int>(quickMenuItems.size()); ++i) {
       const auto r = L.actionRect(i);
       const bool selected = selectedIndex == i;
-      if (selected) renderer.fillRect(r.x, r.y, r.width, r.height, true);
-      else renderer.drawRect(r.x, r.y, r.width, r.height);
-      drawQuickGlyph(r, i, selected);
+      renderer.drawRect(r.x, r.y, r.width, r.height);
+      if (selected && r.width > 8 && r.height > 8) {
+        renderer.drawRect(r.x + 2, r.y + 2, r.width - 4, r.height - 4);
+        renderer.fillRect(r.x + 6, r.y + 12, 3, std::max(8, r.height - 24), true);
+      }
+      drawQuickGlyph(r, i);
       M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y + r.height - 34,
                                   r.width, 28, quickMenuItems[static_cast<size_t>(i)].label.c_str(),
-                                  !selected, selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+                                  true, selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     }
   } else if (menuLayer_ == MenuLayer::STYLE) {
     const auto L = M4ReaderMenuLayout::makeStylePanelLayout(contentX, contentWidth, contentTop);
     M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.fontLabelY, "字号", true, EpdFontFamily::BOLD);
-    M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.layoutLabelY, "排版", true, EpdFontFamily::BOLD);
+    M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.layoutLabelY, "样式", true, EpdFontFamily::BOLD);
 
-    // Segmented typography control: A- | current size | A+. The center cell is
-    // informational only, matching touch-reader affordances and avoiding false taps.
     const auto fontGroup = L.fontGroupRect();
     if (selectedIndex == 0) renderer.fillRect(L.fontMinus.x, L.fontMinus.y, L.fontMinus.width, L.fontMinus.height, true);
     if (selectedIndex == 1) renderer.fillRect(L.fontPlus.x, L.fontPlus.y, L.fontPlus.width, L.fontPlus.height, true);
