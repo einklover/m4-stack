@@ -34,6 +34,8 @@ Override with repository Actions variable `PASEO_DISPATCH_ALLOWLIST`
 (comma-separated logins).
 
 The workflow file must exist on the repository **default branch** (`main`).
+The job does not download `actions/checkout`; it calls the Mac mini
+install of `paseo-agent-runner` so GitHub 429s cannot block dispatch.
 `issue_comment` workflows do not run from feature branches.
 
 ## Task shape

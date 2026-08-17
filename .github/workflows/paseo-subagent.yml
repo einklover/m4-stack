@@ -70,11 +70,14 @@ jobs:
           print(f"authorized issuer: {actor}")
           PY
 
-      - name: Checkout dispatcher sources
-        if: success()
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+      - name: Require local orchestrator
+        run: |
+          export PATH="$HOME/.local/bin:$HOME/.grok/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v python3
+          command -v paseo-agent-runner
+          command -v paseo
+          command -v grok
+          paseo-agent-runner status
 
       - name: Persist task body without shell interpolation
         if: success()
@@ -116,26 +119,22 @@ jobs:
           set -euo pipefail
           export PATH="$HOME/.local/bin:$HOME/.grok/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           python3 - <<'PY'
-          import os, shutil, subprocess, sys
+          import os, shutil, sys
           from pathlib import Path
-          candidates = []
-          found = shutil.which("paseo-agent-runner")
-          if found:
-              candidates.append([found])
-          repo_script = Path(os.environ["GITHUB_WORKSPACE"]) / "scripts/paseo_agent/paseo_agent_runner.py"
-          if repo_script.exists():
-              candidates.append([sys.executable, str(repo_script)])
-          if not candidates:
-              print("paseo-agent-runner not found")
+          runner = shutil.which("paseo-agent-runner")
+          if not runner:
+              print("paseo-agent-runner not found on PATH")
               sys.exit(1)
           task = Path(os.environ["RUNNER_TEMP"]) / "paseo-task.txt"
           issue = os.environ.get("ISSUE_NUMBER") or ""
           comment_id = os.environ.get("COMMENT_ID") or ""
-          run_url = f"{os.environ.get('GITHUB_SERVER_URL')}/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}"
-          argv = candidates[0][:]
-          if argv[0].endswith(".py") or argv[0] == sys.executable:
-              argv = [sys.executable, str(repo_script)]
-          argv += [
+          run_url = (
+              f"{os.environ.get('GITHUB_SERVER_URL')}/"
+              f"{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/"
+              f"{os.environ.get('GITHUB_RUN_ID')}"
+          )
+          argv = [
+              runner,
               "--task", str(task),
               "--source", "github-actions",
               "--run-url", run_url,
@@ -144,6 +143,6 @@ jobs:
               argv += ["--issue", issue]
           if comment_id:
               argv += ["--comment-id", str(comment_id)]
-          print("exec:", " ".join(argv[:-0] if False else argv))
+          print("exec:", " ".join(argv))
           os.execvp(argv[0], argv)
           PY
