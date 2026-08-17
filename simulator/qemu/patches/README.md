@@ -95,6 +95,28 @@ The remaining investigation must therefore distinguish:
 - differences between the older installed QEMU 9.2.2 build and this pinned
   `esp-develop` source baseline.
 
+## Patch 0010 — AES + GDMA (TLS)
+
+mbedtls hardware AES hangs because GDMA could bind the wrong channel
+(`peri_sel || START`), could not DMA to IRAM/PSRAM, and because QEMU modeled
+I-bus SRAM and D-bus DRAM as two different RAM objects. Silicon uses one SRAM
+window; GDMA reconstructs only a 20-bit DRAM address.
+
+This patch matches channels by `peri_sel` only, points GDMA at system memory,
+and aliases `esp32s3.iram` onto `esp32s3.dram`. After it, production-style
+HTTPS (WeRead/JJWXC) should complete a handshake without firmware URL shims.
+
+## Patch 0011 — GDMA full address + AES always DONE
+
+ESP-IDF writes the full virtual descriptor address into the 32-bit LINK
+register. Reconstructing only the 20-bit DRAM window mis-translates PSRAM
+buffers used by larger TLS records (WeRead shelf). Combined with AES leaving
+STATE unset on GDMA failure, mbedtls busy-waits and the guest looks frozen
+after login.
+
+Use the software high bits when present, and always retire AES DMA with
+STATE=DONE so a failed descriptor cannot wedge UART/input.
+
 ## Rules for future patches
 
 - Prefer an existing upstream QEMU device before adding a replacement. Stage 3

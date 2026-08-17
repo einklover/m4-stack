@@ -9,3 +9,5 @@
 0007-esp32s3-gpspi2.py
 0008-murphy-ssd1677.py
 0009-esp32s3-spi0-alias.py
+0010-esp32s3-aes-gdma.py
+0011-esp32s3-gdma-full-addr-aes-done.py
