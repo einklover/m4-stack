@@ -12,15 +12,13 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/M4ListTouchPolicy.h"
+#include "util/M4ReaderMenuLayout.h"
 #include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
 #include <BluetoothHIDManager.h>
 #include <algorithm>
 
 namespace {
-constexpr int kQuickProgressBarHeight = 8;
-constexpr int kQuickProgressBlockHeight = 32;
-
 struct LayoutPreset {
   uint8_t top;
   uint8_t bottom;
@@ -65,75 +63,6 @@ int systemFontPx(uint8_t fontSize) {
     default:
       return 18;
   }
-}
-
-struct StylePanelLayout {
-  int labelX = 0;
-  int fontLabelY = 0;
-  int layoutLabelY = 0;
-  TouchHitGeometry::Rect fontMinus{};
-  TouchHitGeometry::Rect fontValue{};
-  TouchHitGeometry::Rect fontPlus{};
-  TouchHitGeometry::Rect compact{};
-  TouchHitGeometry::Rect standard{};
-  TouchHitGeometry::Rect relaxed{};
-  TouchHitGeometry::Rect fontPicker{};
-  TouchHitGeometry::Rect details{};
-
-  TouchHitGeometry::Rect actionRect(int index) const {
-    switch (index) {
-      case 0: return fontMinus;
-      case 1: return fontPlus;
-      case 2: return compact;
-      case 3: return standard;
-      case 4: return relaxed;
-      case 5: return fontPicker;
-      case 6: return details;
-      default: return {};
-    }
-  }
-
-  int indexFromPoint(int x, int y) const {
-    for (int i = 0; i < 7; ++i) {
-      if (actionRect(i).contains(x, y)) return i;
-    }
-    return -1;
-  }
-};
-
-StylePanelLayout makeStylePanelLayout(int contentX, int contentWidth, int top) {
-  StylePanelLayout L;
-  constexpr int side = 20;
-  constexpr int gap = 12;
-  constexpr int labelH = 24;
-  constexpr int chipH = 54;
-  constexpr int sectionGap = 12;
-  constexpr int bottomGap = 18;
-
-  const int innerX = contentX + side;
-  const int innerW = std::max(120, contentWidth - side * 2);
-  const int chipW = std::max(36, (innerW - gap * 2) / 3);
-  const int thirdUsed = chipW * 3 + gap * 2;
-  const int rowX = innerX + std::max(0, (innerW - thirdUsed) / 2);
-
-  L.labelX = innerX;
-  L.fontLabelY = top;
-  const int fontY = top + labelH;
-  L.fontMinus = {rowX, fontY, chipW, chipH};
-  L.fontValue = {rowX + chipW + gap, fontY, chipW, chipH};
-  L.fontPlus = {rowX + (chipW + gap) * 2, fontY, chipW, chipH};
-
-  L.layoutLabelY = fontY + chipH + sectionGap;
-  const int layoutY = L.layoutLabelY + labelH;
-  L.compact = {rowX, layoutY, chipW, chipH};
-  L.standard = {rowX + chipW + gap, layoutY, chipW, chipH};
-  L.relaxed = {rowX + (chipW + gap) * 2, layoutY, chipW, chipH};
-
-  const int bottomY = layoutY + chipH + bottomGap;
-  const int bottomW = std::max(50, (innerW - gap) / 2);
-  L.fontPicker = {innerX, bottomY, bottomW, chipH};
-  L.details = {innerX + bottomW + gap, bottomY, bottomW, chipH};
-  return L;
 }
 }  // namespace
 
@@ -326,10 +255,30 @@ void EpubReaderMenuActivity::loop() {
     const int contentX = isLandscapeCw ? hintGutterWidth : 0;
     const int contentWidth = pageWidth - hintGutterWidth;
     const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-    int contentTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
 
-    if (menuLayer_ == MenuLayer::STYLE) {
-      const auto styleLayout = makeStylePanelLayout(contentX, contentWidth, contentTop);
+    if (menuLayer_ == MenuLayer::QUICK) {
+      const auto quickLayout = M4ReaderMenuLayout::makeQuickPanelLayout(contentX, contentWidth, contentTop);
+      int tx = 0, ty = 0;
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        const int hit = quickLayout.indexFromPoint(tx, ty);
+        if (hit >= 0) {
+          selectedIndex = hit;
+          goto activate_menu_item;
+        }
+        return;
+      }
+      int dx = 0, dy = 0;
+      if (mappedInput.wasScreenTouchDown(dx, dy)) {
+        const int hit = quickLayout.indexFromPoint(dx, dy);
+        if (hit >= 0 && selectedIndex != hit) {
+          selectedIndex = hit;
+          updateRequired = true;
+        }
+        return;
+      }
+    } else if (menuLayer_ == MenuLayer::STYLE) {
+      const auto styleLayout = M4ReaderMenuLayout::makeStylePanelLayout(contentX, contentWidth, contentTop);
       int tx = 0, ty = 0;
       if (mappedInput.wasScreenTapped(tx, ty)) {
         const int hit = styleLayout.indexFromPoint(tx, ty);
@@ -349,8 +298,7 @@ void EpubReaderMenuActivity::loop() {
         return;
       }
     } else {
-      int listTop = contentTop;
-      if (menuLayer_ == MenuLayer::QUICK) listTop += kQuickProgressBlockHeight;
+      const int listTop = contentTop;
       const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
       const int totalItems = static_cast<int>(items.size());
       const int pageItems = std::max(1, listHeight / metrics.listRowHeight);
@@ -575,30 +523,42 @@ void EpubReaderMenuActivity::renderScreen() {
       M4UiText::truncated(renderer, UI_12_FONT_ID, headerTitle.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
   GUI.drawHeader(renderer, Rect{contentX, hintGutterHeight, contentWidth, metrics.headerHeight}, truncTitle.c_str());
 
-  int contentTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentTop = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
 
-  if (menuLayer_ == MenuLayer::STYLE) {
-    const auto L = makeStylePanelLayout(contentX, contentWidth, contentTop);
+  auto drawChip = [this](const TouchHitGeometry::Rect& r, const std::string& label,
+                         bool selected, bool active) {
+    if (selected) {
+      renderer.fillRect(r.x, r.y, r.width, r.height, true);
+    } else {
+      renderer.drawRect(r.x, r.y, r.width, r.height);
+      if (active && r.width > 6 && r.height > 6) {
+        renderer.drawRect(r.x + 2, r.y + 2, r.width - 4, r.height - 4);
+      }
+    }
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height,
+                                label.c_str(), !selected,
+                                (selected || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+  };
+
+  if (menuLayer_ == MenuLayer::QUICK) {
+    const auto L = M4ReaderMenuLayout::makeQuickPanelLayout(contentX, contentWidth, contentTop);
+    const int progress = std::max(0, std::min(bookProgressPercent, 100));
+    GUI.drawProgressBar(renderer,
+                        Rect{L.progressBar.x, L.progressBar.y, L.progressBar.width, L.progressBar.height},
+                        static_cast<size_t>(progress), static_cast<size_t>(100));
+    for (int i = 0; i < static_cast<int>(quickMenuItems.size()); ++i) {
+      drawChip(L.actionRect(i), quickMenuItems[static_cast<size_t>(i)].label, selectedIndex == i, false);
+    }
+  } else if (menuLayer_ == MenuLayer::STYLE) {
+    const auto L = M4ReaderMenuLayout::makeStylePanelLayout(contentX, contentWidth, contentTop);
     M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.fontLabelY, "字号", true, EpdFontFamily::BOLD);
     M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.layoutLabelY, "排版", true, EpdFontFamily::BOLD);
 
-    auto drawChip = [this](const TouchHitGeometry::Rect& r, const std::string& label,
-                           bool selected, bool active) {
-      if (selected) {
-        renderer.fillRect(r.x, r.y, r.width, r.height, true);
-      } else {
-        renderer.drawRect(r.x, r.y, r.width, r.height);
-        if (active && r.width > 6 && r.height > 6) {
-          renderer.drawRect(r.x + 2, r.y + 2, r.width - 4, r.height - 4);
-        }
-      }
-      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height,
-                                  label.c_str(), !selected,
-                                  (selected || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
-    };
-
     drawChip(L.fontMinus, styleMenuItems[0].label, selectedIndex == 0, false);
-    drawChip(L.fontValue, currentFontSizeLabel(), false, true);
+    // Current size is information, not a control: no border avoids a false tap affordance.
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontValue.x, L.fontValue.y,
+                                L.fontValue.width, L.fontValue.height, currentFontSizeLabel().c_str(),
+                                true, EpdFontFamily::BOLD, 8);
     drawChip(L.fontPlus, styleMenuItems[1].label, selectedIndex == 1, false);
     drawChip(L.compact, styleMenuItems[2].label, selectedIndex == 2, matchesLayout(kCompactLayout));
     drawChip(L.standard, styleMenuItems[3].label, selectedIndex == 3, matchesLayout(kStandardLayout));
@@ -606,17 +566,7 @@ void EpubReaderMenuActivity::renderScreen() {
     drawChip(L.fontPicker, styleMenuItems[5].label, selectedIndex == 5, false);
     drawChip(L.details, styleMenuItems[6].label, selectedIndex == 6, false);
   } else {
-    int listTop = contentTop;
-    if (menuLayer_ == MenuLayer::QUICK) {
-      const int progress = std::max(0, std::min(bookProgressPercent, 100));
-      const int sidePadding = std::max(12, metrics.contentSidePadding);
-      const int progressWidth = std::max(1, contentWidth - sidePadding * 2);
-      GUI.drawProgressBar(renderer,
-                          Rect{contentX + sidePadding, listTop, progressWidth, kQuickProgressBarHeight},
-                          static_cast<size_t>(progress), static_cast<size_t>(100));
-      listTop += kQuickProgressBlockHeight;
-    }
-
+    const int listTop = contentTop;
     const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
     const auto& items = activeMenuItems();
     const int totalItems = static_cast<int>(items.size());
