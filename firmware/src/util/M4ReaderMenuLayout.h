@@ -79,6 +79,11 @@ struct StylePanelLayout {
     }
   }
 
+  TouchHitGeometry::Rect fontGroupRect() const {
+    return {fontMinus.x, fontMinus.y,
+            fontPlus.x + fontPlus.width - fontMinus.x, fontMinus.height};
+  }
+
   int indexFromPoint(int x, int y) const {
     for (int i = 0; i < kStyleActionCount; ++i) {
       if (actionRect(i).contains(x, y)) return i;
@@ -92,25 +97,30 @@ inline StylePanelLayout makeStylePanelLayout(int contentX, int contentWidth, int
   constexpr int side = 20;
   constexpr int gap = 12;
   constexpr int labelH = 24;
+  constexpr int fontGroupH = 58;
   constexpr int chipH = 54;
-  constexpr int sectionGap = 12;
+  constexpr int sectionGap = 14;
   constexpr int bottomGap = 18;
 
   const int innerX = contentX + side;
   const int innerW = std::max(120, contentWidth - side * 2);
-  const int chipW = std::max(36, (innerW - gap * 2) / 3);
-  const int thirdUsed = chipW * 3 + gap * 2;
-  const int rowX = innerX + std::max(0, (innerW - thirdUsed) / 2);
 
   L.labelX = innerX;
   L.fontLabelY = top;
   const int fontY = top + labelH;
-  L.fontMinus = {rowX, fontY, chipW, chipH};
-  L.fontValue = {rowX + chipW + gap, fontY, chipW, chipH};
-  L.fontPlus = {rowX + (chipW + gap) * 2, fontY, chipW, chipH};
+  // One connected three-cell group mirrors touch-reader typography controls:
+  // A- | current size | A+. The center cell is intentionally display-only.
+  const int fontCellW = std::max(36, innerW / 3);
+  const int fontRemainder = innerW - fontCellW * 2;
+  L.fontMinus = {innerX, fontY, fontCellW, fontGroupH};
+  L.fontValue = {innerX + fontCellW, fontY, fontRemainder, fontGroupH};
+  L.fontPlus = {innerX + fontCellW + fontRemainder, fontY, fontCellW, fontGroupH};
 
-  L.layoutLabelY = fontY + chipH + sectionGap;
+  L.layoutLabelY = fontY + fontGroupH + sectionGap;
   const int layoutY = L.layoutLabelY + labelH;
+  const int chipW = std::max(36, (innerW - gap * 2) / 3);
+  const int thirdUsed = chipW * 3 + gap * 2;
+  const int rowX = innerX + std::max(0, (innerW - thirdUsed) / 2);
   L.compact = {rowX, layoutY, chipW, chipH};
   L.standard = {rowX + chipW + gap, layoutY, chipW, chipH};
   L.relaxed = {rowX + (chipW + gap) * 2, layoutY, chipW, chipH};
