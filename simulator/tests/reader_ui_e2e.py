@@ -208,6 +208,12 @@ def _capture(client: Client, root: Path, name: str) -> Path:
     return out
 
 
+def _settle_reader(client: Client, proc: Any, qlog: Path, root: Path, name: str, *, seconds: float = 40.0) -> Path:
+    """Wait for Reader and serialize behind any in-flight EPD work with a screenshot."""
+    _wait_path(client, proc, qlog, READER_PATH, seconds=seconds)
+    return _capture(client, root, name)
+
+
 def _assert_changed(a: Path, b: Path, label: str) -> None:
     if a.read_bytes() == b.read_bytes():
         raise m4sim.M4SimError(f"framebuffer did not change for {label}: {a.name} == {b.name}")
@@ -287,11 +293,10 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
             raise m4sim.M4SimError(f"quick overlay contract violated: {quick_body!r}")
         quick = _capture(client, root, "04-overlay-bars")
         _tap(client, 240, 320)
-        _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
-        reader_after_dismiss = _capture(client, root, "05-reader-after-overlay-dismiss")
+        reader_after_dismiss = _settle_reader(client, proc, qlog, root, "05-reader-after-overlay-dismiss")
         _assert_changed(quick, reader_after_dismiss, "tap reading text dismisses overlay")
 
-        # Catalog remains a dedicated page. Use the visible top-left Back hitbox.
+        # Catalog remains a dedicated page. Its top-left Back target returns to Reader.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 60, 756)
@@ -299,22 +304,23 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         time.sleep(1.5)
         chapter = _capture(client, root, "06-txt-catalog")
         _tap(client, 24, 28)
-        _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
+        reader_after_catalog = _settle_reader(client, proc, qlog, root, "07-reader-after-catalog")
 
-        # Progress is a bottom sheet; changing the target does not leave reading.
+        # Progress is a bottom sheet. Target changes stay inside the sheet;
+        # tapping exposed text cancels back to the reader.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 180, 756)
         progress_ui = _wait_path(client, proc, qlog, PROGRESS_PATH, seconds=20.0)
-        progress = _capture(client, root, "07-progress-sheet")
+        progress = _capture(client, root, "08-progress-sheet")
         _tap(client, 347, 625)
-        progress_seek = _capture(client, root, "08-progress-sheet-seek")
+        progress_seek = _capture(client, root, "09-progress-sheet-seek")
         _assert_changed(progress, progress_seek, "progress target change")
         _tap(client, 240, 300)
-        _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
+        reader_after_progress = _settle_reader(client, proc, qlog, root, "10-reader-after-progress")
 
-        # Font is a bottom sheet. A- updates only the sheet; exposed text closes it
-        # and lets the reader apply the deferred reflow.
+        # Font is a bottom sheet. A- updates only the sheet; exposed text closes
+        # it and then the reader applies deferred pagination/reflow.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 300, 756)
@@ -322,13 +328,12 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         style_body = _deepest_body(style_ui)
         if style_body.get("layer") != "style" or style_body.get("overlay") is not True:
             raise m4sim.M4SimError(f"font overlay contract violated: {style_body!r}")
-        style = _capture(client, root, "09-font-sheet")
+        style = _capture(client, root, "11-font-sheet")
         _tap(client, 90, 620)
-        style_adjusted = _capture(client, root, "10-font-sheet-minus")
+        style_adjusted = _capture(client, root, "12-font-sheet-minus")
         _assert_changed(style, style_adjusted, "font size decrease")
         _tap(client, 240, 300)
-        _wait_path(client, proc, qlog, READER_PATH, seconds=40.0)
-        reader_after_style = _capture(client, root, "11-reader-after-font")
+        reader_after_style = _settle_reader(client, proc, qlog, root, "13-reader-after-font")
 
         # More remains the existing full secondary list and TXT hides sync rows.
         _send_key(client, "confirm")
@@ -338,33 +343,36 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         more_body = _deepest_body(more_ui)
         if more_body.get("layer") != "more" or more_body.get("overlay") is not False or more_body.get("has_sync") is not False:
             raise m4sim.M4SimError(f"TXT More capability contract violated: {more_body!r}")
-        more = _capture(client, root, "12-more-full-page")
+        more = _capture(client, root, "14-more-full-page")
         _send_key(client, "back")
-        _wait_path(client, proc, qlog, READER_PATH, seconds=40.0)
+        reader_after_more = _settle_reader(client, proc, qlog, root, "15-reader-after-more")
 
-        # Bookmark stays accessible without cluttering the bottom toolbar:
+        # Bookmark stays accessible without adding a fifth bottom-bar action:
         # top-right adds one; More -> bookmark manager opens the existing page.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _tap(client, 450, 28)
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
-        bookmark_added = _capture(client, root, "13-bookmark-added-from-topbar")
+        bookmark_added = _capture(client, root, "16-bookmark-added-from-topbar")
         _tap(client, 420, 756)
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         for _ in range(8):
             _send_key(client, "down")
         _send_key(client, "confirm")
         bookmark_ui = _wait_path(client, proc, qlog, BOOKMARK_PATH, seconds=30.0)
-        bookmark_list = _capture(client, root, "14-bookmark-manager")
+        bookmark_list = _capture(client, root, "17-bookmark-manager")
         _send_key(client, "back")
         final_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=30.0)
-        reader_final = _capture(client, root, "15-reader-final")
+        reader_final = _capture(client, root, "18-reader-final")
 
         _assert_changed(home, library, "home -> library")
         _assert_changed(library, reader, "library -> reader")
         _assert_changed(reader, quick, "reader -> overlay")
         _assert_changed(quick, chapter, "overlay -> catalog")
-        _assert_changed(more, reader_after_style, "More is distinct from reader")
+        _assert_changed(chapter, reader_after_catalog, "catalog -> reader")
+        _assert_changed(progress, reader_after_progress, "progress sheet -> reader")
+        _assert_changed(style, reader_after_style, "font sheet -> reader")
+        _assert_changed(more, reader_after_more, "More -> reader")
         _assert_changed(bookmark_added, bookmark_list, "More -> bookmark manager")
         _assert_changed(bookmark_list, reader_final, "bookmark manager -> reader")
 
@@ -402,8 +410,9 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
             "screenshots": [
                 p.name for p in (
                     home, library, reader, quick, reader_after_dismiss, chapter,
-                    progress, progress_seek, style, style_adjusted, reader_after_style,
-                    more, bookmark_added, bookmark_list, reader_final
+                    reader_after_catalog, progress, progress_seek, reader_after_progress,
+                    style, style_adjusted, reader_after_style, more, reader_after_more,
+                    bookmark_added, bookmark_list, reader_final,
                 )
             ],
         }
