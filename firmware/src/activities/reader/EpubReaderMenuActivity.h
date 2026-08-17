@@ -62,7 +62,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   void onExit() override;
   void loop() override;
 
-  // Structured reader-menu state for QEMU/m4adb regression assertions.
   std::string debugUiJson() override {
     const char* layer = menuLayer_ == MenuLayer::QUICK ? "quick" :
                         (menuLayer_ == MenuLayer::STYLE ? "style" : "more");
@@ -111,8 +110,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     InternalAction internalAction = InternalAction::NONE;
   };
 
-  // The reading surface exposes only four high-frequency actions. Chapter and
-  // More remain full pages; Progress and Font are lightweight overlays.
   const std::vector<MenuItem> quickMenuItems = {
       {MenuAction::SELECT_CHAPTER, "目录"},
       {MenuAction::GO_TO_PERCENT, "进度"},
@@ -120,8 +117,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::GO_HOME, "更多", InternalAction::OPEN_MORE},
   };
 
-  // Overlay font panel: only settings that benefit from seeing the page behind
-  // them. Font-file selection and detailed typography live in More.
   const std::vector<MenuItem> styleMenuItems = {
       {MenuAction::READER_SETTINGS, "A-", InternalAction::FONT_DECREASE},
       {MenuAction::READER_SETTINGS, "A+", InternalAction::FONT_INCREASE},
@@ -130,8 +125,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::READER_SETTINGS, "宽松", InternalAction::LAYOUT_RELAXED},
   };
 
-  // Full secondary page. onEnter() removes actions unsupported by the concrete
-  // reader host (for example TXT progress sync).
   std::vector<MenuItem> moreMenuItems = {
       {MenuAction::AUTO_PAGE_TURN, "翻页 · 自动翻页"},
       {MenuAction::PAGE_TURN_INTERVAL, "翻页 · 自动间隔"},
@@ -145,6 +138,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::TOGGLE_DARK_MODE, "显示 · 暗黑模式"},
       {MenuAction::SELECT_EXTERNAL_FONT, "显示 · 字体选择"},
       {MenuAction::READER_SETTINGS, "显示 · 高级排版"},
+      {MenuAction::BOOKMARK_MANAGER, "书签 · 管理书签"},
       {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "控制 · 全局下一页"},
       {MenuAction::SYNC, "同步 · KOReader"},
       {MenuAction::SYNCY, "同步 · 开源阅读"},
