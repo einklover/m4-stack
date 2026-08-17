@@ -26,16 +26,25 @@ Current execution issues:
 
 - **#18 — Real-device runtime OTF/OTC soak validation**
 - **#19 — JJWXC live long-catalog progressive-stream E2E**
+- **#26 — M0 Android virtual-display browser capture validation**
 
 Detailed progress, commit SHAs, measurements, failures, fixes and acceptance evidence belong in those Issues. Update the relevant Issue during work instead of growing this file.
 
 ## Current working branch
 
+Firmware / production-readiness work stays on:
+
 ```text
 main
 ```
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, and native-provider first-window work was merged here. Start new work from `main`, not from the old validation branch.
+E-ink Browser Bridge M0 is on a parallel branch:
+
+```text
+agent/eink-browser-bridge
+```
+
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, and native-provider first-window work was merged to `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge` only for the virtual-browser path (#26).
 
 Always inspect HEAD before editing.
 
