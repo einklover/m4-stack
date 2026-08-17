@@ -48,8 +48,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentOrientation,
-                                  const std::function<void(uint8_t, bool)>& onBack,
+                                  const uint8_t currentOrientation, const std::function<void(uint8_t)>& onBack,
                                   const std::function<void(MenuAction)>& onAction)
       : ActivityWithSubactivity("EpubReaderMenu", renderer, mappedInput),
         title(title),
@@ -191,7 +190,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     return "";
   }
 
-  const std::function<void(uint8_t, bool)> onBack;
+  const std::function<void(uint8_t)> onBack;
   const std::function<void(MenuAction)> onAction;
 
   static void taskTrampoline(void* param);
@@ -200,4 +199,5 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   void applyInternalAction(InternalAction action);
   std::string currentFontSizeLabel() const;
   std::string styleValueFor(InternalAction action) const;
+  void notifyParentStyleChanged();
 };
