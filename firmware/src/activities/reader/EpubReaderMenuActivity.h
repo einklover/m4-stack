@@ -18,7 +18,6 @@
 
 class EpubReaderMenuActivity final : public ActivityWithSubactivity {
  public:
-  // Menu actions available from the reader menu.
   enum class MenuAction {
     SELECT_CHAPTER,
     ADD_BOOKMARK,
@@ -79,14 +78,9 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   struct MenuItem {
     MenuAction action;
     std::string label;
-    // Internal navigation / direct typography action. When non-NONE the action
-    // is handled inside this Activity and is never forwarded to the reader.
     InternalAction internalAction = InternalAction::NONE;
   };
 
-  // Touch-first entry layer: keep the whole set on one Murphy M4 landscape screen.
-  // The progress bar above the list mirrors bookProgressPercent, while the progress
-  // row remains tappable and opens the existing percentage jump selector.
   const std::vector<MenuItem> quickMenuItems = {
       {MenuAction::SELECT_CHAPTER, "目录"},
       {MenuAction::GO_TO_PERCENT, "阅读进度"},
@@ -96,20 +90,18 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::GO_HOME, "更多", InternalAction::OPEN_MORE},
   };
 
-  // High-frequency typography controls. Changes are staged in SETTINGS while
-  // the menu stays open; the parent reader performs the expensive pagination/
-  // runtime-font rebuild once when the menu is dismissed.
+  // Indices are also the physical-button focus order used by the custom touch panel:
+  // 0 A-, 1 A+, 2 compact, 3 standard, 4 relaxed, 5 font, 6 detailed settings.
   const std::vector<MenuItem> styleMenuItems = {
-      {MenuAction::READER_SETTINGS, "A−  字号减小", InternalAction::FONT_DECREASE},
-      {MenuAction::READER_SETTINGS, "A+  字号增大", InternalAction::FONT_INCREASE},
-      {MenuAction::READER_SETTINGS, "紧凑排版", InternalAction::LAYOUT_COMPACT},
-      {MenuAction::READER_SETTINGS, "标准排版", InternalAction::LAYOUT_STANDARD},
-      {MenuAction::READER_SETTINGS, "宽松排版", InternalAction::LAYOUT_RELAXED},
+      {MenuAction::READER_SETTINGS, "A-", InternalAction::FONT_DECREASE},
+      {MenuAction::READER_SETTINGS, "A+", InternalAction::FONT_INCREASE},
+      {MenuAction::READER_SETTINGS, "紧凑", InternalAction::LAYOUT_COMPACT},
+      {MenuAction::READER_SETTINGS, "标准", InternalAction::LAYOUT_STANDARD},
+      {MenuAction::READER_SETTINGS, "宽松", InternalAction::LAYOUT_RELAXED},
+      {MenuAction::SELECT_EXTERNAL_FONT, "字体"},
       {MenuAction::READER_SETTINGS, "详细设置"},
   };
 
-  // Full legacy menu remains reachable from “更多”; order and behavior are kept
-  // intentionally stable so existing button navigation and settings stay intact.
   const std::vector<MenuItem> moreMenuItems = {
       {MenuAction::SELECT_CHAPTER, "章节选择"},
       {MenuAction::AUTO_PAGE_TURN, "自动翻页"},
@@ -142,7 +134,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   bool readerStyleDirty_ = false;
   bool readerFontDirty_ = false;
   std::string pendingPopup_;
-  bool firstPaint_ = true;  // HALF after reader to clear AA residual
+  bool firstPaint_ = true;
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   std::string title = "Reader Menu";
@@ -183,7 +175,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     return true;
   }
 
-  // 外置字体名称显示
   const char* getExternalFontName() const {
     if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM && strlen(SETTINGS.customFontFamily) > 0) {
       return SETTINGS.customFontFamily;
