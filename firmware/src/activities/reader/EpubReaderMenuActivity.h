@@ -4,6 +4,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <cstring>
 #include <functional>
 #include <string>
 #include <vector>
@@ -17,12 +18,30 @@
 
 class EpubReaderMenuActivity final : public ActivityWithSubactivity {
  public:
-  // Menu actions available from the reader menu.
-  enum class MenuAction { SELECT_CHAPTER, ADD_BOOKMARK, BOOKMARK_MANAGER, GO_TO_PERCENT, ROTATE_SCREEN, AUTO_PAGE_TURN, PAGE_TURN_MODE, PAGE_TURN_INTERVAL, GO_HOME, SYNC,
-     SYNCY, DELETE_CACHE, READER_SETTINGS, TOGGLE_ANTI_ALIAS, TOGGLE_FONT, SELECT_EXTERNAL_FONT, TOGGLE_GLOBAL_NEXT_PAGE, TOGGLE_DARK_MODE,
-     BLUETOOTH_SETTINGS, LONG_PRESS_CONFIRM_MAPPING,
+  enum class MenuAction {
+    SELECT_CHAPTER,
+    ADD_BOOKMARK,
+    BOOKMARK_MANAGER,
+    GO_TO_PERCENT,
+    ROTATE_SCREEN,
+    AUTO_PAGE_TURN,
+    PAGE_TURN_MODE,
+    PAGE_TURN_INTERVAL,
+    GO_HOME,
+    SYNC,
+    SYNCY,
+    DELETE_CACHE,
+    READER_SETTINGS,
+    TOGGLE_ANTI_ALIAS,
+    TOGGLE_FONT,
+    SELECT_EXTERNAL_FONT,
+    TOGGLE_GLOBAL_NEXT_PAGE,
+    TOGGLE_DARK_MODE,
+    BLUETOOTH_SETTINGS,
+    LONG_PRESS_CONFIRM_MAPPING,
 #ifdef CROSSPOINT_X3
-     TILT_PAGE_TURN, TILT_PAGE_TURN_SETTINGS,
+    TILT_PAGE_TURN,
+    TILT_PAGE_TURN_SETTINGS,
 #endif
   };
 
@@ -39,54 +58,113 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
         onBack(onBack),
         onAction(onAction) {}
 
-
   void onEnter() override;
   void onExit() override;
   void loop() override;
 
+  // Structured reader-menu state for QEMU/m4adb regression assertions. Keep
+  // nested-child metadata compatible with ActivityWithSubactivity::debugUiJson().
+  std::string debugUiJson() override {
+    const char* layer = menuLayer_ == MenuLayer::QUICK ? "quick" :
+                        (menuLayer_ == MenuLayer::STYLE ? "style" : "more");
+    bool hasSync = false;
+    for (const auto& item : moreMenuItems) {
+      if (item.action == MenuAction::SYNC || item.action == MenuAction::SYNCY) {
+        hasSync = true;
+        break;
+      }
+    }
+    std::string out = "{\"layer\":\"";
+    out += layer;
+    out += "\",\"items\":" + std::to_string(activeMenuItems().size());
+    out += ",\"has_sync\":";
+    out += hasSync ? "true" : "false";
+    out += ",\"subactivity\":\"";
+    if (subActivity) out += subActivity->getName();
+    out += "\"";
+    if (subActivity) {
+      std::string child = subActivity->debugUiJson();
+      if (child.empty()) child = "{}";
+      out += ",\"child\":" + child;
+    }
+    out += "}";
+    return out;
+  }
+
  private:
+  enum class MenuLayer : uint8_t { QUICK = 0, STYLE = 1, MORE = 2 };
+  enum class InternalAction : uint8_t {
+    NONE = 0,
+    OPEN_STYLE,
+    OPEN_MORE,
+    FONT_DECREASE,
+    FONT_INCREASE,
+    LAYOUT_COMPACT,
+    LAYOUT_STANDARD,
+    LAYOUT_RELAXED,
+  };
+
   struct MenuItem {
     MenuAction action;
     std::string label;
+    InternalAction internalAction = InternalAction::NONE;
   };
 
-  // Fixed menu layout (order matters for up/down navigation).
-  const std::vector<MenuItem> menuItems = {
-      {MenuAction::SELECT_CHAPTER, "章节选择"},
-      {MenuAction::AUTO_PAGE_TURN, "自动翻页"},
-      {MenuAction::READER_SETTINGS, "阅读样式设置"},
-      {MenuAction::ADD_BOOKMARK, "添加书签"},
-      {MenuAction::BOOKMARK_MANAGER, "书签管理"},
-      {MenuAction::TOGGLE_ANTI_ALIAS, "抗锯齿"},
-      {MenuAction::GO_TO_PERCENT, "进度跳转"},
-      {MenuAction::TOGGLE_FONT, "字体"},
-      {MenuAction::SELECT_EXTERNAL_FONT, "外置字体"},
-      #ifdef CROSSPOINT_X3
-      {MenuAction::TILT_PAGE_TURN, "晃动翻页"},
-      {MenuAction::TILT_PAGE_TURN_SETTINGS, "晃动翻页设置"},
-      #endif
-      {MenuAction::PAGE_TURN_INTERVAL, "自动翻页间隔"},
-      {MenuAction::PAGE_TURN_MODE, "自动翻页方式"},
-      {MenuAction::ROTATE_SCREEN, "阅读方向"},
-      {MenuAction::TOGGLE_DARK_MODE, "暗黑模式"},
-      {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "全局下一页"},
-      {MenuAction::SYNC, "进度同步(koreader)"},
-      {MenuAction::SYNCY, "进度同步(开源阅读)"},
-      {MenuAction::DELETE_CACHE, "清理缓存"},
-      {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "长按确认键功能"},
-      {MenuAction::BLUETOOTH_SETTINGS, "蓝牙设置"}
+  const std::vector<MenuItem> quickMenuItems = {
+      {MenuAction::SELECT_CHAPTER, "目录"},
+      {MenuAction::GO_TO_PERCENT, "进度"},
+      {MenuAction::READER_SETTINGS, "样式", InternalAction::OPEN_STYLE},
+      {MenuAction::ADD_BOOKMARK, "加书签"},
+      {MenuAction::BOOKMARK_MANAGER, "书签"},
+      {MenuAction::GO_HOME, "更多", InternalAction::OPEN_MORE},
   };
 
+  // Indices are also the physical-button focus order used by the custom touch panel:
+  // 0 A-, 1 A+, 2 compact, 3 standard, 4 relaxed, 5 font, 6 detailed settings.
+  const std::vector<MenuItem> styleMenuItems = {
+      {MenuAction::READER_SETTINGS, "A-", InternalAction::FONT_DECREASE},
+      {MenuAction::READER_SETTINGS, "A+", InternalAction::FONT_INCREASE},
+      {MenuAction::READER_SETTINGS, "紧凑", InternalAction::LAYOUT_COMPACT},
+      {MenuAction::READER_SETTINGS, "标准", InternalAction::LAYOUT_STANDARD},
+      {MenuAction::READER_SETTINGS, "宽松", InternalAction::LAYOUT_RELAXED},
+      {MenuAction::SELECT_EXTERNAL_FONT, "字体"},
+      {MenuAction::READER_SETTINGS, "高级设置"},
+  };
+
+  // One secondary level only: category prefixes make low-frequency options easy
+  // to scan without introducing yet another submenu. onEnter() removes actions
+  // unsupported by the concrete reader host (for example TXT progress sync).
+  std::vector<MenuItem> moreMenuItems = {
+      {MenuAction::AUTO_PAGE_TURN, "翻页 · 自动翻页"},
+      {MenuAction::PAGE_TURN_INTERVAL, "翻页 · 自动间隔"},
+      {MenuAction::PAGE_TURN_MODE, "翻页 · 自动方式"},
+      {MenuAction::ROTATE_SCREEN, "翻页 · 阅读方向"},
+#ifdef CROSSPOINT_X3
+      {MenuAction::TILT_PAGE_TURN, "翻页 · 晃动翻页"},
+      {MenuAction::TILT_PAGE_TURN_SETTINGS, "翻页 · 晃动设置"},
+#endif
+      {MenuAction::TOGGLE_ANTI_ALIAS, "显示 · 抗锯齿"},
+      {MenuAction::TOGGLE_DARK_MODE, "显示 · 暗黑模式"},
+      {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "控制 · 全局下一页"},
+      {MenuAction::SYNC, "同步 · KOReader"},
+      {MenuAction::SYNCY, "同步 · 开源阅读"},
+      {MenuAction::DELETE_CACHE, "清理 · 缓存"},
+      {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "控制 · 长按确认键"},
+  };
+
+  MenuLayer menuLayer_ = MenuLayer::QUICK;
   int selectedIndex = 0;
-  // scrollOffset 和 itemsPerPage 不再需要，GUI.drawList()自动处理滚动
   bool updateRequired = false;
+  bool readerStyleDirty_ = false;
+  bool readerFontDirty_ = false;
   std::string pendingPopup_;
-  bool firstPaint_ = true;  // HALF after reader to clear AA residual
+  bool firstPaint_ = true;
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   std::string title = "Reader Menu";
   uint8_t pendingOrientation = 0;
-  const std::vector<const char*> orientationLabels = {getChineseName("Portrait"), getChineseName("Landscape CW"), "按钮在上面", getChineseName("Landscape CCW")};
+  const std::vector<const char*> orientationLabels = {getChineseName("Portrait"), getChineseName("Landscape CW"),
+                                                       "按钮在上面", getChineseName("Landscape CCW")};
   const std::vector<const char*> autoPageTurnLabels = {"关闭", "开启"};
   const std::vector<const char*> antiAliasLabels = {"关闭", "开启"};
   const std::vector<const char*> darkModeLabels = {"关闭", "开启"};
@@ -106,8 +184,21 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   int currentPage = 0;
   int totalPages = 0;
   int bookProgressPercent = 0;
-  
-  // 外置字体名称显示
+
+  const std::vector<MenuItem>& activeMenuItems() const {
+    if (menuLayer_ == MenuLayer::STYLE) return styleMenuItems;
+    return menuLayer_ == MenuLayer::QUICK ? quickMenuItems : moreMenuItems;
+  }
+
+  bool returnToQuickMenu() {
+    if (menuLayer_ == MenuLayer::QUICK) return false;
+    const MenuLayer oldLayer = menuLayer_;
+    menuLayer_ = MenuLayer::QUICK;
+    selectedIndex = oldLayer == MenuLayer::STYLE ? 2 : static_cast<int>(quickMenuItems.size()) - 1;
+    updateRequired = true;
+    return true;
+  }
+
   const char* getExternalFontName() const {
     if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM && strlen(SETTINGS.customFontFamily) > 0) {
       return SETTINGS.customFontFamily;
@@ -121,5 +212,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
   void renderScreen();
-  // drawScrollBar 不再需要，GUI.drawList()自动绘制滚动条
+  void applyInternalAction(InternalAction action);
+  std::string currentFontSizeLabel() const;
+  std::string styleValueFor(InternalAction action) const;
+  void notifyParentStyleChanged();
 };

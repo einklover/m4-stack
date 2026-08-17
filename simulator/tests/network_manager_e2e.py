@@ -217,7 +217,13 @@ def _enter_real_mode_selection(client: Client, proc: Any, qlog: Path) -> None:
     # My Library, Recents, File transfer, Apps, Settings.
     _wait_activity(client, proc, qlog, "Home", seconds=30.0)
     _send_key(client, "down")
+    # Do not immediately inject a second physical key after the first key ACK.
+    # The ACK can precede the e-ink render/input loop finishing. A successful
+    # status read proves the bridge is processing requests again without
+    # risking a duplicate navigation key if an ACK were ever lost.
+    _wait_activity(client, proc, qlog, "Home", seconds=12.0)
     _send_key(client, "down")
+    _wait_activity(client, proc, qlog, "Home", seconds=12.0)
     _send_key(client, "confirm")
     # The picker is a nested child; top-level status intentionally remains the
     # CrossPointWebServer parent. Structured UI state is the truthful signal.
@@ -249,6 +255,9 @@ def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
 
         for _ in range(down_count):
             _send_key(client, "down")
+            # Same stabilization for mode-list navigation: wait until the
+            # bridge is observable before issuing the next synthetic key.
+            _wait_activity(client, proc, qlog, EXPECTED_PARENT, seconds=12.0)
         _send_key(client, "confirm")
 
         # Prove the picker consumed Confirm and reached the expected production

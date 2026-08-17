@@ -14,6 +14,53 @@
 #include "components/UITheme.h"
 #include "util/TouchHitGeometry.h"
 
+namespace {
+struct FontGridLayout {
+  int columns = 2;
+  int rows = 1;
+  int itemsPerPage = 2;
+  int startX = 0;
+  int startY = 0;
+  int cellWidth = 0;
+  int cellHeight = 48;
+  int gap = 8;
+  int areaHeight = 0;
+
+  TouchHitGeometry::Rect cellRect(int slot) const {
+    if (slot < 0 || slot >= itemsPerPage) return {};
+    const int row = slot / columns;
+    const int col = slot % columns;
+    return {startX + col * (cellWidth + gap), startY + row * (cellHeight + gap), cellWidth, cellHeight};
+  }
+
+  int slotFromPoint(int x, int y) const {
+    for (int slot = 0; slot < itemsPerPage; ++slot) {
+      if (cellRect(slot).contains(x, y)) return slot;
+    }
+    return -1;
+  }
+};
+
+FontGridLayout makeFontGridLayout(int screenWidth, int screenHeight, int headerHeight, int buttonHintsHeight) {
+  FontGridLayout L;
+  constexpr int side = 20;
+  constexpr int topGap = 14;
+  constexpr int bottomGap = 12;
+
+  // M4 landscape has enough width for three generous touch targets. Portrait
+  // keeps two columns so family names remain readable and taps stay forgiving.
+  L.columns = screenWidth >= 640 ? 3 : 2;
+  L.startX = side;
+  L.startY = headerHeight + topGap;
+  const int usableWidth = std::max(120, screenWidth - side * 2);
+  L.cellWidth = std::max(70, (usableWidth - L.gap * (L.columns - 1)) / L.columns);
+  L.areaHeight = std::max(L.cellHeight, screenHeight - L.startY - buttonHintsHeight - bottomGap);
+  L.rows = std::max(1, (L.areaHeight + L.gap) / (L.cellHeight + L.gap));
+  L.itemsPerPage = std::max(1, L.columns * L.rows);
+  return L;
+}
+}  // namespace
+
 FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& inputManager,
                                              std::function<void(bool)> onClose)
     : Activity("Font Selection", renderer, inputManager), onClose(onClose) {}
@@ -28,15 +75,11 @@ void FontSelectionActivity::onEnter() {
   Serial.printf("[FSA] Got %d families\n", fontFamilies.size());
 
   std::string current = SETTINGS.customFontFamily;
+  selectedIndex = 0;
+  scrollOffset = 0;
   for (size_t i = 0; i < fontFamilies.size(); i++) {
     if (fontFamilies[i] == current) {
       selectedIndex = static_cast<int>(i);
-      if (selectedIndex >= itemsPerPage) {
-        scrollOffset = selectedIndex - itemsPerPage / 2;
-        if (scrollOffset > (int)fontFamilies.size() - itemsPerPage) {
-          scrollOffset = std::max(0, (int)fontFamilies.size() - itemsPerPage);
-        }
-      }
       break;
     }
   }
@@ -51,61 +94,77 @@ void FontSelectionActivity::loop() {
     return;
   }
 
-  // Touch: list select/activate + swipe scroll (same geometry as render()).
-  if (mappedInput.hasTouch()) {
-    const auto metrics = UITheme::getInstance().getMetrics();
-    const int listStartY = 50;
-    const int rowHeight = metrics.listRowHeight;
-    const int buttonHintsHeight = metrics.buttonHintsHeight;
-    const int screenH = renderer.getScreenHeight();
-    const int availableHeight = screenH - listStartY - buttonHintsHeight;
-    itemsPerPage = std::max(1, availableHeight / rowHeight);
+  const auto metrics = UITheme::getInstance().getMetrics();
+  const auto grid = makeFontGridLayout(renderer.getScreenWidth(), renderer.getScreenHeight(),
+                                       metrics.headerHeight, metrics.buttonHintsHeight);
+  itemsPerPage = grid.itemsPerPage;
 
+  // Touch: stable paged grid. A touch-down only focuses; the tap activates.
+  // This avoids loading a TTF while the finger is still exploring the grid.
+  if (mappedInput.hasTouch() && !fontFamilies.empty()) {
     const auto swipe = mappedInput.wasSwipe();
-    if (swipe == MappedInputManager::SwipeDir::Up && !fontFamilies.empty()) {
-      selectedIndex = std::min((int)fontFamilies.size() - 1, selectedIndex + itemsPerPage);
-      update = true;
-    } else if (swipe == MappedInputManager::SwipeDir::Down && !fontFamilies.empty()) {
-      selectedIndex = std::max(0, selectedIndex - itemsPerPage);
-      update = true;
+    if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+      const int pageStart = (selectedIndex / itemsPerPage) * itemsPerPage;
+      const int slot = selectedIndex - pageStart;
+      int targetPage = pageStart;
+      if (swipe == MappedInputManager::SwipeDir::Up) {
+        if (pageStart + itemsPerPage < static_cast<int>(fontFamilies.size())) {
+          targetPage = pageStart + itemsPerPage;
+        }
+      } else if (pageStart > 0) {
+        targetPage = std::max(0, pageStart - itemsPerPage);
+      }
+      const int target = std::min(static_cast<int>(fontFamilies.size()) - 1, targetPage + slot);
+      if (target != selectedIndex) {
+        selectedIndex = target;
+        update = true;
+      }
     } else {
       int tx = 0, ty = 0;
-      if (mappedInput.wasScreenTouchDown(tx, ty) && !fontFamilies.empty()) {
-        int hit = -1;
-        // Page-relative list: pageStart = scrollOffset
-        if (ty >= listStartY && ty < listStartY + availableHeight) {
-          const int row = (ty - listStartY) / rowHeight;
-          hit = scrollOffset + row;
-          if (hit >= 0 && hit < (int)fontFamilies.size()) {
-            if (selectedIndex != hit) {
-              selectedIndex = hit;
-              update = true;
-            }
-          }
+      if (mappedInput.wasScreenTouchDown(tx, ty)) {
+        const int slot = grid.slotFromPoint(tx, ty);
+        const int hit = slot < 0 ? -1 : scrollOffset + slot;
+        if (hit >= 0 && hit < static_cast<int>(fontFamilies.size()) && selectedIndex != hit) {
+          selectedIndex = hit;
+          update = true;
         }
       }
-      if (mappedInput.wasScreenTapped(tx, ty) && !fontFamilies.empty()) {
-        if (ty >= listStartY && ty < listStartY + availableHeight) {
-          const int row = (ty - listStartY) / rowHeight;
-          const int hit = scrollOffset + row;
-          if (hit >= 0 && hit < (int)fontFamilies.size()) {
-            selectedIndex = hit;
-            saveAndExit();
-            return;
-          }
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        const int slot = grid.slotFromPoint(tx, ty);
+        const int hit = slot < 0 ? -1 : scrollOffset + slot;
+        if (hit >= 0 && hit < static_cast<int>(fontFamilies.size())) {
+          selectedIndex = hit;
+          saveAndExit();
+          return;
         }
       }
     }
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Up) ||
-      mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    selectedIndex = (selectedIndex > 0) ? (selectedIndex - 1) : ((int)fontFamilies.size() - 1);
-    update = true;
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Down) ||
-             mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    selectedIndex = (selectedIndex < (int)fontFamilies.size() - 1) ? (selectedIndex + 1) : 0;
-    update = true;
+  if (!fontFamilies.empty()) {
+    const int count = static_cast<int>(fontFamilies.size());
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : count - 1;
+      update = true;
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      selectedIndex = selectedIndex + 1 < count ? selectedIndex + 1 : 0;
+      update = true;
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      int target = selectedIndex - grid.columns;
+      if (target < 0) {
+        const int col = selectedIndex % grid.columns;
+        const int lastRowStart = ((count - 1) / grid.columns) * grid.columns;
+        target = std::min(count - 1, lastRowStart + col);
+      }
+      selectedIndex = target;
+      update = true;
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      int target = selectedIndex + grid.columns;
+      if (target >= count) target = selectedIndex % grid.columns;
+      if (target >= count) target = count - 1;
+      selectedIndex = target;
+      update = true;
+    }
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -114,11 +173,7 @@ void FontSelectionActivity::loop() {
   }
 
   if (update) {
-    if (selectedIndex < scrollOffset) {
-      scrollOffset = selectedIndex;
-    } else if (selectedIndex >= scrollOffset + itemsPerPage) {
-      scrollOffset = selectedIndex - itemsPerPage + 1;
-    }
+    scrollOffset = (selectedIndex / itemsPerPage) * itemsPerPage;
     render();
   }
 }
@@ -169,7 +224,7 @@ void FontSelectionActivity::drawScrollBar(int totalItems, int startY, int areaHe
 
   auto metrics = UITheme::getInstance().getMetrics();
   const int scrollBarX = renderer.getScreenWidth() - metrics.scrollBarRightOffset;
-  const int scrollBarHeight = (areaHeight * itemsPerPage) / totalItems;
+  const int scrollBarHeight = std::max(12, (areaHeight * itemsPerPage) / totalItems);
   const int totalPages = (totalItems + itemsPerPage - 1) / itemsPerPage;
   const int currentPage = scrollOffset / itemsPerPage;
   const int scrollBarY = startY + ((areaHeight - scrollBarHeight) * currentPage) / std::max(1, totalPages - 1);
@@ -181,22 +236,22 @@ void FontSelectionActivity::drawScrollBar(int totalItems, int startY, int areaHe
 void FontSelectionActivity::render() const {
   renderer.clearScreen();
 
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 15, L(Str::kSelectFont), true, EpdFontFamily::BOLD);
-
   const auto metrics = UITheme::getInstance().getMetrics();
-  const int listStartY = 50;
-  const int rowHeight = metrics.listRowHeight;
-  const int buttonHintsHeight = metrics.buttonHintsHeight;
+  const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
-  const int availableHeight = screenH - listStartY - buttonHintsHeight;
-  const int rowFont = mappedInput.hasTouch() ? UI_12_FONT_ID : UI_10_FONT_ID;
+  const auto grid = makeFontGridLayout(screenW, screenH, metrics.headerHeight, metrics.buttonHintsHeight);
 
-  const_cast<FontSelectionActivity*>(this)->itemsPerPage = std::max(1, availableHeight / rowHeight);
+  auto* self = const_cast<FontSelectionActivity*>(this);
+  self->itemsPerPage = grid.itemsPerPage;
+  if (!fontFamilies.empty()) {
+    self->scrollOffset = (selectedIndex / grid.itemsPerPage) * grid.itemsPerPage;
+  } else {
+    self->scrollOffset = 0;
+  }
 
-  int y = listStartY;
+  GUI.drawHeader(renderer, Rect{0, 0, screenW, metrics.headerHeight}, L(Str::kSelectFont));
 
   if (fontFamilies.empty()) {
-    const int screenW = renderer.getScreenWidth();
     const int boxPadding = 20;
     const int boxW = screenW - 2 * boxPadding;
     const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
@@ -209,23 +264,42 @@ void FontSelectionActivity::render() const {
     renderer.drawRect(boxX, boxY, boxW, boxH, true);
     for (int i = 0; i < lineCount; i++) {
       const int tw = M4UiText::textWidth(renderer, UI_10_FONT_ID, lines[i]);
-      M4UiText::draw(renderer, UI_10_FONT_ID, boxX + (boxW - tw) / 2, boxY + 12 + i * (lineH + lineSpacing), lines[i]);
+      M4UiText::draw(renderer, UI_10_FONT_ID, boxX + (boxW - tw) / 2,
+                     boxY + 12 + i * (lineH + lineSpacing), lines[i]);
     }
   } else {
-    for (int i = 0; i < itemsPerPage; i++) {
-      int index = scrollOffset + i;
-      if (index >= (int)fontFamilies.size()) break;
-      bool selected = (index == selectedIndex);
-      if (selected) {
-        renderer.fillRect(10, y - 2, renderer.getScreenWidth() - 20, rowHeight, true);
+    const std::string current = SETTINGS.customFontFamily;
+    for (int slot = 0; slot < grid.itemsPerPage; ++slot) {
+      const int index = scrollOffset + slot;
+      if (index >= static_cast<int>(fontFamilies.size())) break;
+
+      const auto r = grid.cellRect(slot);
+      const bool focused = index == selectedIndex;
+      const bool active = SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM && fontFamilies[index] == current;
+
+      // Reference apps use a colored outline. On E-Ink we translate that to a
+      // double-line focus frame, while the loaded font gets a small stable ink
+      // marker. Navigating therefore changes very few pixels and ghosts less.
+      renderer.drawRect(r.x, r.y, r.width, r.height, true);
+      if (focused && r.width > 6 && r.height > 6) {
+        renderer.drawRect(r.x + 2, r.y + 2, r.width - 4, r.height - 4, true);
       }
-      renderer.drawText(rowFont, 20, y + (rowHeight / 2) - 6, fontFamilies[index].c_str(), !selected);
-      y += rowHeight;
+      if (active && r.height > 16) {
+        renderer.fillRect(r.x + 7, r.y + 8, 3, r.height - 16, true);
+      }
+
+      const std::string label = M4UiText::truncated(renderer, UI_10_FONT_ID,
+                                                    fontFamilies[index].c_str(), r.width - 24,
+                                                    (focused || active) ? EpdFontFamily::BOLD
+                                                                        : EpdFontFamily::REGULAR);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x + 8, r.y, r.width - 8, r.height,
+                                  label.c_str(), true,
+                                  (focused || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     }
-    drawScrollBar((int)fontFamilies.size(), listStartY, availableHeight);
+    drawScrollBar(static_cast<int>(fontFamilies.size()), grid.startY, grid.areaHeight);
   }
 
   const auto labels = mappedInput.mapLabels(L(Str::kBackShort), L(Str::kSelect), L(Str::kUp), L(Str::kDown));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

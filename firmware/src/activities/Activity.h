@@ -12,12 +12,18 @@
 
 class MappedInputManager;
 class GfxRenderer;
+class ActivityWithSubactivity;
 
 class Activity {
  protected:
   std::string name;
   GfxRenderer& renderer;
   MappedInputManager& mappedInput;
+
+ private:
+  ActivityWithSubactivity* parentActivity_ = nullptr;
+  friend class ActivityWithSubactivity;
+  void setParentActivity(ActivityWithSubactivity* parent) { parentActivity_ = parent; }
 
  public:
   explicit Activity(std::string name, GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -68,4 +74,5 @@ class Activity {
   // Used for automation without OCR/screenshot text recognition.
   virtual std::string debugUiJson() { return "{}"; }
   const std::string& getName() const { return name; }
+  ActivityWithSubactivity* getParentActivity() const { return parentActivity_; }
 };

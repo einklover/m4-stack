@@ -80,6 +80,8 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   void loop() override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
+  bool readerMenuSyncSupported() const override { return false; }
+  void onReaderMenuStyleChanged() override { onSettingsChanged(); }
 
   // Parent observes after child loop returns (do not delete from onGoBack).
   bool pluginCloseRequested() const { return pluginCloseRequested_; }

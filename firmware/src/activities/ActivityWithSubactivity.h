@@ -31,6 +31,28 @@ class ActivityWithSubactivity : public Activity {
   void loop() override;
   void onExit() override;
 
+  // Reader-menu host contract. Most parents need no special behavior; concrete
+  // reader bodies override only the capabilities/reflow they actually support.
+  virtual bool readerMenuSyncSupported() const { return true; }
+  virtual void onReaderMenuStyleChanged() {}
+
+  // m4adb automation seam: expose the actual nested Activity stack instead of
+  // forcing E2E tests to infer it from screenshots or timing. This is read-only
+  // debug metadata and does not affect production navigation/lifecycle.
+  std::string debugUiJson() override {
+    std::string out = "{\"subactivity\":\"";
+    if (subActivity) out += subActivity->getName();
+    out += "\"";
+    if (subActivity) {
+      std::string child = subActivity->debugUiJson();
+      if (child.empty()) child = "{}";
+      out += ",\"child\":";
+      out += child;
+    }
+    out += "}";
+    return out;
+  }
+
   // Host-testable seam: process one parent frame (child loop + deferred
   // exit/replacement). Returns true if a deferred transition was applied.
   bool pumpSubActivityFrame();

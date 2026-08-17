@@ -34,6 +34,8 @@ void ActivityWithSubactivity::exitActivity() {
 }
 
 void ActivityWithSubactivity::enterNewActivity(Activity* activity) {
+  if (activity) activity->setParentActivity(this);
+
   if (pumpingSubActivity_) {
     // Replace only after the currently executing child frame returns. Ownership
     // is transferred immediately so callers do not need a separate pending

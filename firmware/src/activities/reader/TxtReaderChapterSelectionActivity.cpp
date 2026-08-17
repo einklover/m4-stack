@@ -560,39 +560,68 @@ void TxtReaderChapterSelectionActivity::drawScreen(const std::vector<std::string
   const int footerReserve = touch ? M4TouchListMetrics::chapterFooterReserve(true)
                                   : metrics.buttonHintsHeight + metrics.verticalSpacing;
   const int listHeight = std::max(1, pageHeight - listTop - footerReserve);
-  const int themePageItems = std::max(1, listHeight / std::max(1, metrics.listRowHeight));
-  const int listPageBegin = (selectorIndex / themePageItems) * themePageItems;
-  int drawCount = chapterCount();
-  if (!useExternal_) {
-    // Library TXT discovers its end lazily. Draw only rows materialized for
-    // this page instead of passing the GUI theme a fake 100000-item count.
-    drawCount = pagebegin;
-    for (int row = 0; row < pageItems && row < static_cast<int>(pagePresent.size()); ++row) {
-      if (pagePresent[static_cast<size_t>(row)]) drawCount = pagebegin + row + 1;
-    }
-  }
 
-  // Use the production theme components for the chrome and selected-row
-  // treatment. This removes the old hand-drawn chip/box layout and keeps the
-  // picker visually aligned with library, settings, and reader menus.
-  const int themeSelected = (selectorIndex >= 0 && selectorIndex < drawCount) ? selectorIndex : -1;
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, header);
-  GUI.drawList(
-      renderer, Rect{0, listTop, pageWidth, listHeight}, drawCount, themeSelected,
-      [&](int index) {
-        const int row = index - listPageBegin;
-        if (row < 0 || row >= pageItems || row >= static_cast<int>(pageTitles.size()) ||
-            row >= static_cast<int>(pagePresent.size()) || !pagePresent[static_cast<size_t>(row)]) {
-          char fallback[32];
-          snprintf(fallback, sizeof(fallback), "第%d章", index + 1);
-          return std::string(fallback);
-        }
-        if (!pageTitles[static_cast<size_t>(row)].empty()) return pageTitles[static_cast<size_t>(row)];
-        char fallback[32];
-        snprintf(fallback, sizeof(fallback), "第%d章", index + 1);
-        return std::string(fallback);
-      },
-      nullptr, nullptr, nullptr);
+
+  auto titleForRow = [&](int row, int index) {
+    if (row < 0 || row >= pageItems || row >= static_cast<int>(pageTitles.size()) ||
+        row >= static_cast<int>(pagePresent.size()) || !pagePresent[static_cast<size_t>(row)]) {
+      char fallback[32];
+      snprintf(fallback, sizeof(fallback), "第%d章", index + 1);
+      return std::string(fallback);
+    }
+    if (!pageTitles[static_cast<size_t>(row)].empty()) return pageTitles[static_cast<size_t>(row)];
+    char fallback[32];
+    snprintf(fallback, sizeof(fallback), "第%d章", index + 1);
+    return std::string(fallback);
+  };
+
+  if (touch) {
+    // Touch drawing uses the exact same 52px row geometry as hit testing. The
+    // old theme list painted denser rows, so a finger could visually target one
+    // chapter while the hit policy resolved another. Keep all content black on
+    // white; focus is an outline + slim ink marker to minimize e-ink churn.
+    const int rowHeight = M4TouchListMetrics::chapterLineHeight(true);
+    constexpr int side = 8;
+    constexpr int markerWidth = 3;
+    constexpr int textX = 24;
+    for (int row = 0; row < pageItems; ++row) {
+      if (row >= static_cast<int>(pagePresent.size()) || !pagePresent[static_cast<size_t>(row)]) continue;
+      const int index = pagebegin + row;
+      if (useExternal_ && index >= chapterCount()) break;
+      const int rowY = listTop + row * rowHeight;
+      if (rowY + rowHeight > listTop + listHeight) break;
+      const bool selected = index == selectorIndex;
+      if (selected) {
+        renderer.drawRect(side, rowY + 2, std::max(1, pageWidth - side * 2), std::max(1, rowHeight - 4), true);
+        renderer.fillRect(side + 6, rowY + 12, markerWidth, std::max(8, rowHeight - 24), true);
+      }
+      const auto weight = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+      const std::string raw = titleForRow(row, index);
+      const std::string title = M4UiText::truncated(
+          renderer, NOTOSANS_12_FONT_ID, raw.c_str(), std::max(40, pageWidth - textX - 24), weight);
+      M4UiText::draw(renderer, NOTOSANS_12_FONT_ID, textX, rowY + 14, title.c_str(), true, weight);
+    }
+  } else {
+    // Physical-button layouts retain the denser system-theme list behavior.
+    const int themePageItems = std::max(1, listHeight / std::max(1, metrics.listRowHeight));
+    const int listPageBegin = (selectorIndex / themePageItems) * themePageItems;
+    int drawCount = chapterCount();
+    if (!useExternal_) {
+      drawCount = pagebegin;
+      for (int row = 0; row < pageItems && row < static_cast<int>(pagePresent.size()); ++row) {
+        if (pagePresent[static_cast<size_t>(row)]) drawCount = pagebegin + row + 1;
+      }
+    }
+    const int themeSelected = (selectorIndex >= 0 && selectorIndex < drawCount) ? selectorIndex : -1;
+    GUI.drawList(
+        renderer, Rect{0, listTop, pageWidth, listHeight}, drawCount, themeSelected,
+        [&](int index) {
+          const int row = index - listPageBegin;
+          return titleForRow(row, index);
+        },
+        nullptr, nullptr, nullptr);
+  }
 
   char pageLabel[64];
   if (useExternal_) {
@@ -610,10 +639,15 @@ void TxtReaderChapterSelectionActivity::drawScreen(const std::vector<std::string
     const bool canPrev = page > 1;
     const bool canNext = page < maxPage();
     const auto drawPagerButton = [&](int x, const char* label, bool enabled) {
-      renderer.fillRoundedRect(x, pagerTop, pagerWidth, pagerHeight, 8,
-                               enabled ? Color::LightGray : Color::White);
-      renderer.drawRoundedRect(x, pagerTop, pagerWidth, pagerHeight, 1, 8, true);
-      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, pagerTop, pagerWidth, pagerHeight, label, true);
+      renderer.drawRect(x, pagerTop, pagerWidth, pagerHeight, true);
+      // Pure B/W hierarchy: enabled controls get a second inset outline;
+      // disabled controls remain a single outline. No gray fill or rounded UI.
+      if (enabled && pagerWidth > 6 && pagerHeight > 6) {
+        renderer.drawRect(x + 2, pagerTop + 2, pagerWidth - 4, pagerHeight - 4, true);
+      }
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, pagerTop, pagerWidth, pagerHeight,
+                                  label, true,
+                                  enabled ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     };
     drawPagerButton(leftX, "‹ 上一页", canPrev);
     drawPagerButton(rightX, "下一页 ›", canNext);

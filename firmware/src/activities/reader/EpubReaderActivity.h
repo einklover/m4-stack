@@ -103,4 +103,10 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   void loop() override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
+  void onReaderMenuStyleChanged() override {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    section.reset();
+    updateRequired = true;
+    xSemaphoreGive(renderingMutex);
+  }
 };

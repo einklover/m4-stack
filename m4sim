@@ -10,5 +10,9 @@ if [[ "${1:-}" == "test" && "${2:-}" == "network-manager" ]]; then
   shift 2
   exec python3 "$ROOT/simulator/tests/network_manager_e2e.py" "$@"
 fi
+if [[ "${1:-}" == "test" && "${2:-}" == "reader-ui" ]]; then
+  shift 2
+  exec python3 "$ROOT/simulator/tests/reader_ui_e2e.py" "$@"
+fi
 
 exec python3 "$ROOT/simulator/m4sim.py" "$@"
