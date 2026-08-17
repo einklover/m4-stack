@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""Real local-TXT reader UI journey through production Home/MyLibrary.
-
-This is intentionally a full application journey, not a menu unit test:
-Home -> MyLibrary -> Reader -> TxtReader -> Quick -> Progress -> Style -> More
--> TxtReader. It drives production key/touch input through m4adb and captures
-real SSD1677 framebuffer screenshots from patched QEMU.
-
-The SD fixture is injected into the raw FAT32 image with mtools before boot, so
-no debug-only firmware file-open shortcut is involved.
-"""
+"""Real local-TXT reader UI journey through production Home/MyLibrary/QEMU."""
 from __future__ import annotations
 
 import argparse
@@ -32,6 +23,7 @@ from m4adb_lib.transport import SerialTransport  # noqa: E402
 from m4adb_observing_client import ObservingClient as Client  # noqa: E402
 
 T = TypeVar("T")
+FIXTURE_NAME = "reader-ui-fixture.txt"
 READER_PATH = ("Reader", "TxtReader")
 MENU_PATH = ("Reader", "TxtReader", "EpubReaderMenu")
 PROGRESS_PATH = ("Reader", "TxtReader", "EpubReaderPercentSelection")
@@ -93,11 +85,8 @@ def _activity_path(ui: dict[str, Any]) -> tuple[str, ...]:
     top = ui.get("activity")
     if isinstance(top, str) and top:
         path.append(top)
-
     outer = ui.get("ui")
     body: Any = outer.get("body") if isinstance(outer, dict) else None
-    # ActivityWithSubactivity::debugUiJson() recursively exposes
-    # {subactivity, child}. Stop defensively on malformed/truncated dumps.
     for _ in range(8):
         if not isinstance(body, dict):
             break
@@ -109,6 +98,14 @@ def _activity_path(ui: dict[str, Any]) -> tuple[str, ...]:
             break
         body = child
     return tuple(path)
+
+
+def _top_body(ui: dict[str, Any]) -> dict[str, Any]:
+    outer = ui.get("ui")
+    if not isinstance(outer, dict):
+        return {}
+    body = outer.get("body")
+    return body if isinstance(body, dict) else {}
 
 
 def _qemu_tail(qlog: Path, chars: int = 3000) -> str:
@@ -143,11 +140,55 @@ def _wait_top(client: Client, proc: Any, qlog: Path, expected: str, *, seconds: 
     return _wait_path(client, proc, qlog, (expected,), seconds=seconds)
 
 
+def _wait_library_state(client: Client, proc: Any, qlog: Path, *, seconds: float = 12.0) -> dict[str, Any]:
+    deadline = time.monotonic() + seconds
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise m4sim.M4SimError(f"QEMU exited in MyLibrary\n{_qemu_tail(qlog)}")
+        try:
+            last = _ui(client)
+        except m4sim.M4SimError:
+            time.sleep(0.15)
+            continue
+        if _activity_path(last)[:1] == ("MyLibrary",):
+            body = _top_body(last)
+            if isinstance(body.get("selected_index"), int) and isinstance(body.get("count"), int):
+                return last
+        time.sleep(0.15)
+    raise m4sim.M4SimError(f"MyLibrary selection state unavailable: {last!r}")
+
+
+def _select_library_entry(client: Client, proc: Any, qlog: Path, target: str) -> dict[str, Any]:
+    """Find target through the real library selection, without assuming root order."""
+    state = _wait_library_state(client, proc, qlog)
+    for _ in range(64):
+        body = _top_body(state)
+        if body.get("selected") == target:
+            return state
+        count = body.get("count")
+        index = body.get("selected_index")
+        if not isinstance(count, int) or count <= 0 or not isinstance(index, int):
+            raise m4sim.M4SimError(f"invalid MyLibrary state: {body!r}")
+        before = (index, str(body.get("selected", "")))
+        _send_key(client, "down")
+
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            state = _wait_library_state(client, proc, qlog, seconds=max(0.5, deadline - time.monotonic()))
+            after_body = _top_body(state)
+            after = (after_body.get("selected_index"), str(after_body.get("selected", "")))
+            if after != before:
+                break
+            time.sleep(0.1)
+        else:
+            raise m4sim.M4SimError(f"MyLibrary selection did not move from {before!r}")
+    raise m4sim.M4SimError(f"MyLibrary did not contain {target!r}; last={_top_body(state)!r}")
+
+
 def _capture(client: Client, root: Path, name: str) -> Path:
     out = root / "artifacts" / f"{name}.pbm"
     out.parent.mkdir(parents=True, exist_ok=True)
-    # Allow the display task to submit the requested e-ink refresh before the
-    # bridge snapshots the framebuffer. This is synchronization, not UI logic.
     time.sleep(0.35)
     _call_busy_retry(lambda: client.screenshot(out), seconds=12.0)
     if not out.is_file() or out.stat().st_size <= 32:
@@ -164,8 +205,8 @@ def _seed_txt(sd: Path, root: Path) -> Path:
     mcopy = shutil.which("mcopy")
     if not mcopy:
         raise m4sim.M4SimError("mcopy not found; install mtools for reader-ui SD fixture injection")
-    fixture = root / "reader-ui-fixture.txt"
-    lines: list[str] = [
+    fixture = root / FIXTURE_NAME
+    lines = [
         "墨水屏阅读器 QEMU 触控界面回归测试",
         "这是一份仅用于模拟器的 UTF-8 本地 TXT。",
         "目录、进度、排版、书签与更多菜单必须在同一真实阅读器路径中工作。",
@@ -178,7 +219,7 @@ def _seed_txt(sd: Path, root: Path) -> Path:
         )
     fixture.write_text("\n".join(lines) + "\n", encoding="utf-8")
     cp = subprocess.run(
-        [mcopy, "-o", "-i", str(sd), str(fixture), "::/reader-ui-fixture.txt"],
+        [mcopy, "-o", "-i", str(sd), str(fixture), f"::/{FIXTURE_NAME}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -203,7 +244,6 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
     _set_session(root)
     root.mkdir(parents=True, exist_ok=True)
 
-    # QEMU MTD is writable. Keep this journey isolated from smoke/network NVS.
     journey_flash = root / "flash-16m.bin"
     shutil.copy2(flash, journey_flash)
     sd = m4sim.ensure_sd(fresh=True, size_mb=64)
@@ -217,70 +257,53 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         client = Client(SerialTransport(pty), default_timeout=10.0)
         client.wait_ready(timeout=min(20.0, max(5.0, ready_seconds)))
 
-        # 1. Real production Home -> MyLibrary -> direct TXT reader.
+        # Home -> MyLibrary -> exact fixture -> direct native TXT reader.
         _wait_top(client, proc, qlog, "Home", seconds=30.0)
         home = _capture(client, root, "01-home")
         _send_key(client, "confirm")
         _wait_top(client, proc, qlog, "MyLibrary", seconds=20.0)
-        library = _capture(client, root, "02-library")
+        _select_library_entry(client, proc, qlog, FIXTURE_NAME)
+        library = _capture(client, root, "02-library-fixture-selected")
         _send_key(client, "confirm")
         reader_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=60.0)
         reader = _capture(client, root, "03-reader")
 
-        # 2. Open Quick with the real reader Confirm action.
+        # Reader -> Quick -> Progress; tap track near 75% once (no drag loop).
         _send_key(client, "confirm")
         quick_ui = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         quick = _capture(client, root, "04-quick")
-
-        # Portrait quick geometry: action #1 (Progress) center ~= (240,136).
         _tap(client, 240, 136)
         progress_ui = _wait_path(client, proc, qlog, PROGRESS_PATH, seconds=20.0)
         progress = _capture(client, root, "05-progress")
-
-        # Progress track is x=24..455, y=134..143 in portrait. One tap near 75%
-        # validates the enlarged one-shot touch target without drag/repaint churn.
         _tap(client, 347, 139)
         progress_seek = _capture(client, root, "06-progress-seek")
         _assert_changed(progress, progress_seek, "progress seek")
         _send_key(client, "back")
         _wait_path(client, proc, qlog, READER_PATH, seconds=20.0)
 
-        # 3. Re-open Quick and enter Style using the Quick tile itself.
+        # Reader -> Quick -> Style -> A- -> Quick.
         _send_key(client, "confirm")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
-        _tap(client, 390, 136)  # action #2: typography/style
-        # Style is a layer of EpubReaderMenu, so path is unchanged; framebuffer
-        # change proves the layer transition while the same Activity remains.
-        time.sleep(0.2)
+        _tap(client, 390, 136)
         style = _capture(client, root, "07-style")
         _assert_changed(quick, style, "quick -> style")
-
-        # Connected A- segment center ~= (93,113). Default system font is 18px;
-        # decreasing it exercises style dirty/reflow notification deterministically.
         _tap(client, 93, 113)
         style_adjusted = _capture(client, root, "08-style-font-minus")
         _assert_changed(style, style_adjusted, "font size decrease")
-
-        # Back from Style returns to Quick, not to the book.
         _send_key(client, "back")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         quick_after_style = _capture(client, root, "09-quick-after-style")
 
-        # Quick action #5 More is bottom-right center ~= (390,236).
+        # Quick -> More -> Quick -> reader, committing deferred style reflow.
         _tap(client, 390, 236)
-        time.sleep(0.2)
         more = _capture(client, root, "10-more")
         _assert_changed(quick_after_style, more, "quick -> more")
-
-        # Back: More -> Quick; Back again: menu -> reader and applies changed style.
         _send_key(client, "back")
         _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         _send_key(client, "back")
         final_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=40.0)
         reader_after = _capture(client, root, "11-reader-after-style")
 
-        # Distinct major surfaces are a useful framebuffer sanity check, but
-        # activity-path assertions above remain the primary correctness signal.
         _assert_changed(home, library, "home -> library")
         _assert_changed(library, reader, "library -> reader")
         _assert_changed(reader, quick, "reader -> quick")
@@ -294,9 +317,9 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
             "Entering activity: EpubReaderMenu",
             "Entering activity: EpubReaderPercentSelection",
         )
-        missing_logs = [needle for needle in required_logs if needle not in serial]
-        if missing_logs:
-            raise m4sim.M4SimError(f"reader lifecycle evidence missing: {missing_logs}")
+        missing = [needle for needle in required_logs if needle not in serial]
+        if missing:
+            raise m4sim.M4SimError(f"reader lifecycle evidence missing: {missing}")
 
         result = {
             "ok": True,
