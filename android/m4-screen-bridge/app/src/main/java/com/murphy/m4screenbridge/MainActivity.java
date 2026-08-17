@@ -20,9 +20,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.murphy.m4screenbridge.browser.VirtualBrowserSession;
+import com.murphy.m4screenbridge.browser.BrowserBridgeService;
 
-/** Simple UI: accessibility shortcut, session control, tunables, and browser M0 validation. */
+/** Control/status UI for both the M1 virtual browser FGS and the legacy accessibility bridge. */
 public class MainActivity extends Activity {
     private TextView statusView;
     private TextView browserStatusView;
@@ -34,7 +34,6 @@ public class MainActivity extends Activity {
     private CheckBox cacheCb;
     private RadioButton fitRb;
     private RadioButton coverRb;
-    private VirtualBrowserSession browserSession;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Runnable tick = new Runnable() {
@@ -48,7 +47,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        browserSession = new VirtualBrowserSession(this);
         setContentView(buildView());
         load();
         ui.post(tick);
@@ -74,7 +72,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         ui.removeCallbacks(tick);
         ScreenBridgeService.statusListener = null;
-        if (browserSession != null) browserSession.stop();
+        // BrowserBridgeService intentionally outlives this Activity.
         super.onDestroy();
     }
 
@@ -98,9 +96,9 @@ public class MainActivity extends Activity {
         statusView.setTextSize(14);
         root.addView(statusView);
 
-        root.addView(label("虚拟浏览器 M0（不依赖实体屏截图）"));
+        root.addView(label("虚拟浏览器 M1（独立前台服务 + dirty patch）"));
         browserStatusView = new TextView(this);
-        browserStatusView.setText("虚拟浏览器 M0：未启动");
+        browserStatusView.setText("虚拟浏览器 M1：前台服务未启动");
         browserStatusView.setTextSize(13);
         root.addView(browserStatusView);
 
@@ -113,30 +111,26 @@ public class MainActivity extends Activity {
         root.addView(button("启动 480×800 虚拟浏览器", new Runnable() {
             @Override
             public void run() {
-                browserSession.start(browserUrlEt.getText().toString());
-                refresh();
-                toast(browserSession.isActive()
-                        ? "虚拟浏览器已启动；观察 frame/image/sig 是否变化"
-                        : "虚拟浏览器启动失败，请查看状态");
+                BrowserBridgeService.startUrl(MainActivity.this, browserUrlEt.getText().toString());
+                toast("已请求前台服务启动虚拟浏览器");
+                ui.postDelayed(() -> refresh(), 300);
             }
         }));
 
         root.addView(button("启动 JavaScript 持续帧自测", new Runnable() {
             @Override
             public void run() {
-                browserSession.startJavaScriptSelfTest();
-                refresh();
-                toast(browserSession.isActive()
-                        ? "自测页每秒改数字；可熄灭实体屏观察帧是否继续增加"
-                        : "虚拟浏览器启动失败，请查看状态");
+                BrowserBridgeService.startJavaScriptSelfTest(MainActivity.this);
+                toast("自测页每秒改数字；关闭本界面或熄屏后服务应继续运行");
+                ui.postDelayed(() -> refresh(), 300);
             }
         }));
 
-        root.addView(button("停止虚拟浏览器", new Runnable() {
+        root.addView(button("停止虚拟浏览器前台服务", new Runnable() {
             @Override
             public void run() {
-                browserSession.stop();
-                refresh();
+                BrowserBridgeService.stop(MainActivity.this);
+                ui.postDelayed(() -> refresh(), 300);
             }
         }));
 
@@ -261,9 +255,7 @@ public class MainActivity extends Activity {
         sb.append("无障碍服务：").append(isServiceEnabled() ? "已启用" : "未启用").append('\n');
         sb.append(ScreenBridgeService.snapshot());
         statusView.setText(sb.toString());
-        if (browserStatusView != null && browserSession != null) {
-            browserStatusView.setText(browserSession.snapshot());
-        }
+        if (browserStatusView != null) browserStatusView.setText(BrowserBridgeService.snapshot());
     }
 
     private Button button(String text, final Runnable onClick) {
