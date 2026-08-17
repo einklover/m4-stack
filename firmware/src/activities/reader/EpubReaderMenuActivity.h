@@ -84,7 +84,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   const std::vector<MenuItem> quickMenuItems = {
       {MenuAction::SELECT_CHAPTER, "目录"},
       {MenuAction::GO_TO_PERCENT, "进度"},
-      {MenuAction::READER_SETTINGS, "排版", InternalAction::OPEN_STYLE},
+      {MenuAction::READER_SETTINGS, "样式", InternalAction::OPEN_STYLE},
       {MenuAction::ADD_BOOKMARK, "加书签"},
       {MenuAction::BOOKMARK_MANAGER, "书签"},
       {MenuAction::GO_HOME, "更多", InternalAction::OPEN_MORE},
@@ -118,7 +118,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "控制 · 全局下一页"},
       {MenuAction::SYNC, "同步 · KOReader"},
       {MenuAction::SYNCY, "同步 · 开源阅读"},
-      {MenuAction::DELETE_CACHE, "维护 · 清理缓存"},
+      {MenuAction::DELETE_CACHE, "清理 · 缓存"},
       {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "控制 · 长按确认键"},
   };
 
