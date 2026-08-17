@@ -221,6 +221,20 @@ std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
   }
 }
 
+void EpubReaderMenuActivity::notifyParentStyleChanged() {
+  if (!readerStyleDirty_) return;
+
+  // Keep the long-standing one-argument onBack ABI so both EPUB and TXT callers
+  // remain source-compatible. TXT already treats ROTATE_SCREEN reaching its
+  // parent callback as a pure "settings changed / rebuild pagination" signal;
+  // the menu itself owns orientation mutation, so this does not rotate anything.
+  // EPUB ignores this action and performs its normal font reload + section reset
+  // in onBack. This gives TXT the same one-shot reflow after quick typography
+  // changes without rebuilding on every A+/preset tap.
+  auto actionCallback = onAction;
+  actionCallback(MenuAction::ROTATE_SCREEN);
+}
+
 void EpubReaderMenuActivity::loop() {
   if (subActivity) {
     subActivity->loop();
@@ -236,7 +250,8 @@ void EpubReaderMenuActivity::loop() {
   if (mappedInput.hasTouch()) {
     if (mappedInput.wasBackGesture()) {
       if (returnToQuickMenu()) return;
-      onBack(pendingOrientation, readerStyleDirty_);
+      notifyParentStyleChanged();
+      onBack(pendingOrientation);
       return;
     }
 
@@ -447,7 +462,8 @@ void EpubReaderMenuActivity::loop() {
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (returnToQuickMenu()) return;
-    onBack(pendingOrientation, readerStyleDirty_);
+    notifyParentStyleChanged();
+    onBack(pendingOrientation);
     return;
   }
 }
