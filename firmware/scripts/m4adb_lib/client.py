@@ -178,6 +178,10 @@ class Client:
         """Read Wi-Fi/IP state without changing the radio or credentials."""
         return self.request({"op": "wifi_status"}, timeout=5)
 
+    def m4b3_status(self) -> dict:
+        """Read the production M4B3 TCP receiver snapshot (no radio change)."""
+        return self.request({"op": "m4b3_status"}, timeout=5)
+
     def wifi_prepare(self, timeout: float = 45.0) -> dict:
         """Use the persistent USB bridge to bring up saved STA Wi-Fi.
 

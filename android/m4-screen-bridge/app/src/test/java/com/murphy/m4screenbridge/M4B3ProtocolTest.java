@@ -6,6 +6,7 @@ import com.murphy.m4screenbridge.browser.patch.LogicalMonoFrame;
 import com.murphy.m4screenbridge.browser.stream.M4B3;
 import com.murphy.m4screenbridge.browser.stream.M4B3Codec;
 import com.murphy.m4screenbridge.browser.stream.M4B3Exception;
+import com.murphy.m4screenbridge.browser.stream.M4B3Framer;
 import com.murphy.m4screenbridge.browser.stream.M4B3Message;
 import com.murphy.m4screenbridge.browser.stream.M4B3ReferenceReceiver;
 import com.murphy.m4screenbridge.browser.stream.M4B3Sender;
@@ -40,6 +41,8 @@ public final class M4B3ProtocolTest {
         oneFrameInFlight();
         delayedAckLatestWins();
         pingPong();
+        tcpFramerFragmentsAndCoalesce();
+        debugInjectWrongBaseAndCrc();
         randomizedLongRun();
         System.out.println("OK: M4B3 protocol self-checks passed");
     }
@@ -394,6 +397,65 @@ public final class M4B3ProtocolTest {
         List<byte[]> replies = recv.handle(ping);
         assertEquals(M4B3.TYPE_PONG, M4B3Codec.parse(replies.get(0)).type, "receiver PONG");
         assertEquals(0xAABBCCDDL, M4B3Codec.parse(replies.get(0)).nonce, "receiver PONG nonce");
+    }
+
+    private static void tcpFramerFragmentsAndCoalesce() {
+        byte[] hello = M4B3Codec.encodeV1Hello(1, M4B3.HELLO_OK);
+        byte[] ping = M4B3Codec.encodePing(7, 2);
+        byte[] both = new byte[hello.length + ping.length];
+        System.arraycopy(hello, 0, both, 0, hello.length);
+        System.arraycopy(ping, 0, both, hello.length, ping.length);
+
+        M4B3Framer one = new M4B3Framer();
+        List<byte[]> got = new ArrayList<>();
+        for (int i = 0; i < both.length; i++) {
+            got.addAll(one.feed(new byte[] { both[i] }));
+        }
+        assertEquals(2, got.size(), "byte-at-a-time yields two messages");
+        assertEquals(M4B3.TYPE_HELLO, M4B3Codec.parse(got.get(0)).type, "first HELLO");
+        assertEquals(M4B3.TYPE_PING, M4B3Codec.parse(got.get(1)).type, "second PING");
+
+        M4B3Framer two = new M4B3Framer();
+        List<byte[]> coalesced = two.feed(both);
+        assertEquals(2, coalesced.size(), "coalesced socket read");
+        assertArray(hello, coalesced.get(0), "coalesced HELLO bytes");
+        assertArray(ping, coalesced.get(1), "coalesced PING bytes");
+
+        M4B3Framer mid = new M4B3Framer();
+        List<byte[]> first = mid.feed(hello, 0, 10);
+        assertEquals(0, first.size(), "partial header stays buffered");
+        List<byte[]> rest = mid.feed(hello, 10, hello.length - 10);
+        assertEquals(1, rest.size(), "completes after remainder");
+        assertArray(hello, rest.get(0), "reassembled HELLO");
+    }
+
+    private static void debugInjectWrongBaseAndCrc() {
+        Link link = new Link();
+        link.connectAndHandshake();
+        byte[] base = LogicalMonoFrame.white();
+        link.sender.offerFrame(base);
+        link.pump();
+        long accepted = link.recv.acceptedFrameId();
+        int crc = link.recv.acceptedCrc();
+        assertTrue(link.sender.debugInjectWrongBase(), "inject wrong base");
+        link.deliverSenderToReceiver();
+        assertEquals(M4B3.NACK_BASE, link.recv.lastNackResult(), "receiver NACK_BASE");
+        assertEquals(accepted, link.recv.acceptedFrameId(), "accepted id unchanged after NACK");
+        assertEquals(crc, link.recv.acceptedCrc(), "accepted CRC unchanged after NACK");
+        link.pump();
+        assertTrue(countTypes(link.sent, M4B3.TYPE_FRAME_KEY) >= 2, "sender keyframe-resync");
+        assertEquals(M4B3.framebufferCrc32(link.sender.copyAckedFramebuffer()),
+                link.recv.acceptedCrc(), "resync CRC");
+
+        accepted = link.recv.acceptedFrameId();
+        crc = link.recv.acceptedCrc();
+        assertTrue(link.sender.debugInjectCorruptCrc(), "inject CRC");
+        link.deliverSenderToReceiver();
+        assertEquals(M4B3.NACK_CRC, link.recv.lastNackResult(), "receiver NACK_CRC");
+        assertEquals(accepted, link.recv.acceptedFrameId(), "CRC reject keeps id");
+        assertEquals(crc, link.recv.acceptedCrc(), "CRC reject keeps CRC");
+        link.pump();
+        assertTrue(countTypes(link.sent, M4B3.TYPE_FRAME_KEY) >= 3, "CRC NACK forces keyframe");
     }
 
     private static void randomizedLongRun() {

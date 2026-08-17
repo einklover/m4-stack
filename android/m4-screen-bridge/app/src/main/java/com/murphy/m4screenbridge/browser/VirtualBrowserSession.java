@@ -21,9 +21,12 @@ import com.murphy.m4screenbridge.browser.patch.ExtraDimCompensation;
 import com.murphy.m4screenbridge.browser.patch.FrameDiffer;
 import com.murphy.m4screenbridge.browser.patch.LogicalMonoFrame;
 import com.murphy.m4screenbridge.browser.patch.RgbaFrameProbe;
+import com.murphy.m4screenbridge.Prefs;
+import com.murphy.m4screenbridge.ScreenBridgeService;
 import com.murphy.m4screenbridge.browser.stream.M4B3;
 import com.murphy.m4screenbridge.browser.stream.M4B3ReferenceReceiver;
 import com.murphy.m4screenbridge.browser.stream.M4B3Sender;
+import com.murphy.m4screenbridge.browser.stream.M4B3TcpTransport;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -54,6 +57,13 @@ public final class VirtualBrowserSession {
     private BrowserPresentation presentation;
     private M4B3Sender sender;
     private M4B3ReferenceReceiver localReceiver;
+    private M4B3TcpTransport tcpTransport;
+    private String transportMode = "loopback";
+    private String transportEndpoint = "loopback";
+    private volatile boolean transportConnected;
+    private volatile long transportReconnects;
+    private volatile String transportError = "";
+    private boolean helloStarted;
 
     private volatile boolean active;
     private volatile long frameCount;
@@ -129,17 +139,16 @@ public final class VirtualBrowserSession {
         protocolPending = false;
         nackRecoveries = 0;
         lastAckedCrc = 0;
+        transportConnected = false;
+        transportReconnects = 0;
+        transportError = "";
+        helloStarted = false;
 
         try {
             protocolThread = new HandlerThread("m4-browser-m4b3");
             protocolThread.start();
             protocolHandler = new Handler(protocolThread.getLooper());
-            localReceiver = new M4B3ReferenceReceiver();
-            sender = new M4B3Sender(packet -> {
-                Handler h = protocolHandler;
-                if (h != null) h.post(() -> deliverLoopback(packet));
-            });
-            sender.connect();
+            startTransport();
 
             frameThread = new HandlerThread("m4-browser-frames");
             frameThread.start();
@@ -255,11 +264,14 @@ public final class VirtualBrowserSession {
                 .append(String.format(Locale.ROOT, " dirty %.2f%%", lastDirtyRatio * 100.0))
                 .append(" | total bytes ").append(patchPayloadBytes)
                 .append(" | applyErr ").append(applyErrors)
-                .append("\nM4B3 loopback ")
-                .append(protocolInFlight ? "in-flight" : "idle")
+                .append("\nM4B3 ").append(transportMode).append(' ').append(transportEndpoint)
+                .append(transportConnected ? " connected" : " disconnected")
+                .append(protocolInFlight ? " in-flight" : " idle")
                 .append(protocolPending ? " pending" : "")
                 .append(" nack ").append(nackRecoveries)
+                .append(" recon ").append(transportReconnects)
                 .append(" crc ").append(M4B3.crcHex(lastAckedCrc));
+        if (!transportError.isEmpty()) sb.append("\nM4B3 err ").append(transportError);
         if (!currentUrl.isEmpty()) sb.append("\nURL: ").append(currentUrl);
         if (!error.isEmpty()) sb.append("\n错误: ").append(error);
         return sb.toString();
@@ -323,6 +335,99 @@ public final class VirtualBrowserSession {
         if (s == null) throw new IllegalStateException("M4B3 sender not started");
         s.offerFrame(target);
         refreshProtocolStats();
+    }
+
+    public boolean debugInjectWrongBase() {
+        M4B3Sender s = sender;
+        return s != null && s.debugInjectWrongBase();
+    }
+
+    public boolean debugInjectCorruptCrc() {
+        M4B3Sender s = sender;
+        return s != null && s.debugInjectCorruptCrc();
+    }
+
+    public void applyHostOverride(String host, int port) {
+        android.content.SharedPreferences sp =
+                hostCtx().getSharedPreferences(ScreenBridgeService.PREFS, android.content.Context.MODE_PRIVATE);
+        android.content.SharedPreferences.Editor e = sp.edit();
+        if (host != null) e.putString(Prefs.KEY_M4B3_HOST, host.trim());
+        if (port > 0) e.putInt(Prefs.KEY_M4B3_PORT, port);
+        e.apply();
+    }
+
+    private android.content.Context hostCtx() {
+        return host;
+    }
+
+    private void startTransport() {
+        android.content.SharedPreferences sp =
+                host.getSharedPreferences(ScreenBridgeService.PREFS, android.content.Context.MODE_PRIVATE);
+        String hostName = Prefs.m4b3Host(sp);
+        int port = Prefs.m4b3Port(sp);
+        if (hostName.isEmpty()) {
+            transportMode = "loopback";
+            transportEndpoint = "loopback";
+            transportConnected = true;
+            localReceiver = new M4B3ReferenceReceiver();
+            sender = new M4B3Sender(packet -> {
+                Handler h = protocolHandler;
+                if (h != null) h.post(() -> deliverLoopback(packet));
+            });
+            sender.connect();
+            helloStarted = true;
+            return;
+        }
+        transportMode = "tcp";
+        transportEndpoint = hostName + ":" + port;
+        tcpTransport = new M4B3TcpTransport(protocolHandler, new M4B3TcpTransport.Listener() {
+            @Override
+            public void onConnected(String endpoint) {
+                transportEndpoint = endpoint;
+                transportConnected = true;
+                transportReconnects = tcpTransport == null ? transportReconnects : tcpTransport.reconnects();
+                transportError = "";
+                M4B3Sender s = sender;
+                if (s == null) return;
+                if (!helloStarted) {
+                    s.connect();
+                    helloStarted = true;
+                } else {
+                    s.reconnect();
+                }
+                refreshProtocolStats();
+            }
+
+            @Override
+            public void onDisconnected(String reason) {
+                transportConnected = false;
+                if (!reason.isEmpty()) transportError = reason;
+                M4B3Sender s = sender;
+                if (s != null) s.noteTransportLost();
+                refreshProtocolStats();
+            }
+
+            @Override
+            public void onReply(byte[] packet) {
+                M4B3Sender s = sender;
+                if (s == null) return;
+                try {
+                    s.receive(packet);
+                    refreshProtocolStats();
+                } catch (Throwable t) {
+                    applyErrors++;
+                    error = t.getClass().getSimpleName() + ": " + safeMessage(t);
+                    Log.e(TAG, "M4B3 tcp reply failed: " + error, t);
+                }
+            }
+
+            @Override
+            public void onError(String message) {
+                transportError = message == null ? "" : message;
+            }
+        });
+        sender = new M4B3Sender(tcpTransport);
+        tcpTransport.start(hostName, port);
     }
 
     private void deliverLoopback(byte[] packet) {
@@ -408,11 +513,17 @@ public final class VirtualBrowserSession {
             protocolThread = null;
             protocolHandler = null;
         }
+        if (tcpTransport != null) {
+            tcpTransport.stop();
+            tcpTransport = null;
+        }
         if (sender != null) {
             sender.disconnect();
             sender = null;
         }
         localReceiver = null;
+        helloStarted = false;
+        transportConnected = false;
         logicalFrameId = -1;
         if (clearError) error = "";
     }

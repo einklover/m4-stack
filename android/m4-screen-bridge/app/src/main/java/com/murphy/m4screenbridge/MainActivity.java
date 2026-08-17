@@ -27,6 +27,8 @@ public class MainActivity extends Activity {
     private TextView statusView;
     private TextView browserStatusView;
     private EditText browserUrlEt;
+    private EditText m4HostEt;
+    private EditText m4PortEt;
     private EditText thresholdEt;
     private EditText gapEt;
     private EditText delayEt;
@@ -50,6 +52,29 @@ public class MainActivity extends Activity {
         setContentView(buildView());
         load();
         ui.post(tick);
+        handleLabIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleLabIntent(intent);
+    }
+
+    private void handleLabIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        if ("com.murphy.m4screenbridge.browser.SELF_TEST".equals(action)) {
+            if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)) {
+                m4HostEt.setText(intent.getStringExtra(BrowserBridgeService.EXTRA_HOST));
+            }
+            if (intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
+                m4PortEt.setText(String.valueOf(intent.getIntExtra(BrowserBridgeService.EXTRA_PORT, Prefs.DEF_M4B3_PORT)));
+            }
+            saveM4Host();
+            BrowserBridgeService.startJavaScriptSelfTest(this);
+        }
     }
 
     @Override
@@ -108,9 +133,20 @@ public class MainActivity extends Activity {
         browserUrlEt.setText("https://example.com/");
         root.addView(browserUrlEt);
 
+        root.addView(label("M4 主机（空=loopback；实验室填阅读器 STA IP）"));
+        m4HostEt = new EditText(this);
+        m4HostEt.setSingleLine(true);
+        m4HostEt.setHint("192.168.1.20 或 loopback");
+        root.addView(m4HostEt);
+        m4PortEt = new EditText(this);
+        m4PortEt.setSingleLine(true);
+        m4PortEt.setHint("48624");
+        root.addView(m4PortEt);
+
         root.addView(button("启动 480×800 虚拟浏览器", new Runnable() {
             @Override
             public void run() {
+                saveM4Host();
                 BrowserBridgeService.startUrl(MainActivity.this, browserUrlEt.getText().toString());
                 toast("已请求前台服务启动虚拟浏览器");
                 ui.postDelayed(() -> refresh(), 300);
@@ -120,9 +156,34 @@ public class MainActivity extends Activity {
         root.addView(button("启动 JavaScript 持续帧自测", new Runnable() {
             @Override
             public void run() {
+                saveM4Host();
                 BrowserBridgeService.startJavaScriptSelfTest(MainActivity.this);
                 toast("自测页每秒翻转 40% 黑白区；关闭本界面或熄屏后服务应继续运行");
                 ui.postDelayed(() -> refresh(), 300);
+            }
+        }));
+
+        root.addView(button("保存 M4 地址", new Runnable() {
+            @Override
+            public void run() {
+                saveM4Host();
+                toast("已保存 M4 主机；下次启动虚拟浏览器生效");
+            }
+        }));
+
+        root.addView(button("注入 wrong-base NACK", new Runnable() {
+            @Override
+            public void run() {
+                BrowserBridgeService.injectWrongBase(MainActivity.this);
+                toast("已请求 wrong-base 注入");
+            }
+        }));
+
+        root.addView(button("注入 CRC NACK", new Runnable() {
+            @Override
+            public void run() {
+                BrowserBridgeService.injectCorruptCrc(MainActivity.this);
+                toast("已请求 CRC 注入");
             }
         }));
 
@@ -235,7 +296,17 @@ public class MainActivity extends Activity {
         e.putString(Prefs.KEY_CROP, coverRb.isChecked() ? "cover" : "fit");
         e.putBoolean(Prefs.KEY_CACHE_ENABLED, cacheCb.isChecked());
         e.apply();
+        saveM4Host();
         ScreenBridgeService.preferencesChanged();
+    }
+
+    private void saveM4Host() {
+        SharedPreferences sp = getSharedPreferences(ScreenBridgeService.PREFS, Context.MODE_PRIVATE);
+        SharedPreferences.Editor e = sp.edit();
+        String host = m4HostEt.getText().toString().trim();
+        e.putString(Prefs.KEY_M4B3_HOST, host);
+        e.putInt(Prefs.KEY_M4B3_PORT, intOf(m4PortEt, Prefs.DEF_M4B3_PORT));
+        e.apply();
     }
 
     private void load() {
@@ -248,6 +319,8 @@ public class MainActivity extends Activity {
         boolean cover = "cover".equals(sp.getString(Prefs.KEY_CROP, "fit"));
         coverRb.setChecked(cover);
         fitRb.setChecked(!cover);
+        m4HostEt.setText(sp.getString(Prefs.KEY_M4B3_HOST, ""));
+        m4PortEt.setText(String.valueOf(sp.getInt(Prefs.KEY_M4B3_PORT, Prefs.DEF_M4B3_PORT)));
     }
 
     private void refresh() {

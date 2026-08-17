@@ -3,8 +3,10 @@ package com.murphy.m4screenbridge.browser.stream;
 import com.murphy.m4screenbridge.browser.patch.FrameDiffer;
 import com.murphy.m4screenbridge.browser.patch.FramePatch;
 import com.murphy.m4screenbridge.browser.patch.LogicalMonoFrame;
+import com.murphy.m4screenbridge.browser.patch.PatchRect;
 
 import java.util.Arrays;
+import java.util.Collections;
 
 /**
  * ACK-based one-frame-in-flight sender. The last ACKed framebuffer is the only
@@ -48,18 +50,18 @@ public final class M4B3Sender {
     }
 
     public synchronized void connect() {
-        resetSession(true);
-        emit(M4B3Codec.encodeV1Hello(nextSeq++, M4B3.HELLO_OK));
-        hellosSent++;
+        beginSession(true);
     }
 
     public synchronized void reconnect() {
-        byte[] snapshot = pendingNewest != null ? pendingNewest : lastOffered;
-        resetSession(true);
-        pendingNewest = snapshot;
-        lastOffered = snapshot;
-        emit(M4B3Codec.encodeV1Hello(nextSeq++, M4B3.HELLO_OK));
-        hellosSent++;
+        beginSession(true);
+    }
+
+    /** Drop HELLO confidence without forgetting the newest snapshot. */
+    public synchronized void noteTransportLost() {
+        helloOk = false;
+        forceKeyframe = true;
+        clearInFlight();
     }
 
     public synchronized void disconnect() {
@@ -129,6 +131,40 @@ public final class M4B3Sender {
 
     public synchronized boolean isHelloOk() {
         return helloOk;
+    }
+
+    /**
+     * Lab hook: emit an in-flight FRAME_PATCH with a wrong base id so the
+     * real receiver can NACK_BASE and the sender keyframe-resyncs.
+     */
+    public synchronized boolean debugInjectWrongBase() {
+        if (!helloOk || inFlight || ackedFrame == null) return false;
+        byte[] target = pendingNewest != null ? pendingNewest : ackedFrame;
+        PatchRect rect = new PatchRect(0, 0, 16, 16, Arrays.copyOf(target, 32));
+        FramePatch rogue = new FramePatch(nextFrameId, ackedFrameId + 97, false, 1,
+                FrameDiffer.TOTAL_TILES, Collections.singletonList(rect));
+        emit(M4B3Codec.encodePatch(rogue, target, nextSeq++));
+        recordSend(rogue, target, false);
+        return true;
+    }
+
+    /**
+     * Lab hook: emit a geometrically valid patch with a corrupted CRC so the
+     * receiver NACK_CRC path can be proven on the real link.
+     */
+    public synchronized boolean debugInjectCorruptCrc() {
+        if (!helloOk || inFlight || ackedFrame == null) return false;
+        byte[] target = Arrays.copyOf(ackedFrame, ackedFrame.length);
+        LogicalMonoFrame.setBlack(target, 0, 0, !LogicalMonoFrame.isBlack(target, 0, 0));
+        FramePatch patch = FrameDiffer.diff(ackedFrame, ackedFrameId, target, nextFrameId);
+        if (!patch.hasChanges() || patch.keyframe) return false;
+        byte[] wire = M4B3Codec.encodePatch(patch, target, nextSeq++);
+        // CRC is the last 4 bytes of the 14-byte patch header.
+        int crcOff = M4B3.ENVELOPE_SIZE + M4B3.PATCH_HEADER_SIZE - 1;
+        wire[crcOff] = (byte) (wire[crcOff] ^ 0xFF);
+        emit(wire);
+        recordSend(patch, target, false);
+        return true;
     }
 
     private void onHello(M4B3Message.Hello hello) {
@@ -224,6 +260,15 @@ public final class M4B3Sender {
         inFlightFrame = null;
         inFlightFrameId = -1;
         inFlightCrc = 0;
+    }
+
+    private void beginSession(boolean keepForceKeyframe) {
+        byte[] snapshot = pendingNewest != null ? pendingNewest : lastOffered;
+        resetSession(keepForceKeyframe);
+        pendingNewest = snapshot;
+        lastOffered = snapshot;
+        emit(M4B3Codec.encodeV1Hello(nextSeq++, M4B3.HELLO_OK));
+        hellosSent++;
     }
 
     private void resetSession(boolean keepForceKeyframe) {

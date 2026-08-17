@@ -91,6 +91,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "activities/apps/AppRuntimeActivity.h"
 #include "activities/apps/NativeAppActivity.h"
+#include "network/M4B3TcpReceiver.h"
 #endif
 
 #ifdef CROSSPOINT_X3
@@ -1042,6 +1043,7 @@ void setup() {
       // Apply persisted setting (default off). No serial path can enable this.
       gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);
 #endif
+      M4B3Tcp::begin();
     }
 #endif
 
