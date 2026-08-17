@@ -35,7 +35,7 @@ inline QuickPanelLayout makeQuickPanelLayout(int contentX, int contentWidth, int
   constexpr int side = 20;
   constexpr int colGap = 12;
   constexpr int rowGap = 12;
-  constexpr int chipH = 72;
+  constexpr int chipH = 88;
 
   const int innerX = contentX + side;
   const int innerW = std::max(120, contentWidth - side * 2);

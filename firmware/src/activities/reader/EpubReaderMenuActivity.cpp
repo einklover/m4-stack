@@ -213,18 +213,21 @@ std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
 }
 
 void EpubReaderMenuActivity::notifyParentStyleChanged() {
-  if (!readerStyleDirty_) return;
+  const bool styleDirty = readerStyleDirty_;
+  const bool fontDirty = readerFontDirty_;
+  readerStyleDirty_ = false;
+  readerFontDirty_ = false;
+  if (!styleDirty) return;
 
-  if (readerFontDirty_) {
+  if (fontDirty) {
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     EpdFontLoader::loadFontsFromSd(renderer);
     xSemaphoreGive(renderingMutex);
   }
 
+  // Callback may schedule this menu for teardown. Do not touch member state after it.
   auto actionCallback = onAction;
   actionCallback(MenuAction::ROTATE_SCREEN);
-  readerStyleDirty_ = false;
-  readerFontDirty_ = false;
 }
 
 void EpubReaderMenuActivity::loop() {
@@ -540,6 +543,51 @@ void EpubReaderMenuActivity::renderScreen() {
                                 (selected || active) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
   };
 
+  auto drawQuickGlyph = [this](const TouchHitGeometry::Rect& r, int index, bool selected) {
+    const bool ink = !selected;
+    const int cx = r.x + r.width / 2;
+    const int top = r.y + 15;
+    auto bar = [this, ink](int x, int y, int w, int h) { renderer.fillRect(x, y, w, h, ink); };
+
+    switch (index) {
+      case 0:  // catalog
+        bar(cx - 15, top, 30, 2);
+        bar(cx - 15, top + 8, 24, 2);
+        bar(cx - 15, top + 16, 30, 2);
+        break;
+      case 1:  // progress
+        bar(cx - 15, top + 4, 30, 2);
+        bar(cx - 15, top + 12, 30, 2);
+        bar(cx - 4, top, 2, 18);
+        break;
+      case 2:  // typography
+        M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, top - 4, r.width, 28,
+                                    "Aa", ink, EpdFontFamily::BOLD, 8);
+        break;
+      case 3:  // add bookmark
+      case 4: { // bookmarks
+        const int x = cx - 10;
+        bar(x, top, 2, 22);
+        bar(x + 18, top, 2, 22);
+        bar(x, top, 20, 2);
+        bar(x, top + 20, 7, 2);
+        bar(x + 13, top + 20, 7, 2);
+        if (index == 3) {
+          bar(cx + 14, top + 5, 12, 2);
+          bar(cx + 19, top, 2, 12);
+        }
+        break;
+      }
+      case 5:  // more
+        bar(cx - 13, top + 8, 4, 4);
+        bar(cx - 2, top + 8, 4, 4);
+        bar(cx + 9, top + 8, 4, 4);
+        break;
+      default:
+        break;
+    }
+  };
+
   if (menuLayer_ == MenuLayer::QUICK) {
     const auto L = M4ReaderMenuLayout::makeQuickPanelLayout(contentX, contentWidth, contentTop);
     const int progress = std::max(0, std::min(bookProgressPercent, 100));
@@ -547,19 +595,38 @@ void EpubReaderMenuActivity::renderScreen() {
                         Rect{L.progressBar.x, L.progressBar.y, L.progressBar.width, L.progressBar.height},
                         static_cast<size_t>(progress), static_cast<size_t>(100));
     for (int i = 0; i < static_cast<int>(quickMenuItems.size()); ++i) {
-      drawChip(L.actionRect(i), quickMenuItems[static_cast<size_t>(i)].label, selectedIndex == i, false);
+      const auto r = L.actionRect(i);
+      const bool selected = selectedIndex == i;
+      if (selected) renderer.fillRect(r.x, r.y, r.width, r.height, true);
+      else renderer.drawRect(r.x, r.y, r.width, r.height);
+      drawQuickGlyph(r, i, selected);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y + r.height - 34,
+                                  r.width, 28, quickMenuItems[static_cast<size_t>(i)].label.c_str(),
+                                  !selected, selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     }
   } else if (menuLayer_ == MenuLayer::STYLE) {
     const auto L = M4ReaderMenuLayout::makeStylePanelLayout(contentX, contentWidth, contentTop);
     M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.fontLabelY, "字号", true, EpdFontFamily::BOLD);
     M4UiText::draw(renderer, UI_10_FONT_ID, L.labelX, L.layoutLabelY, "排版", true, EpdFontFamily::BOLD);
 
-    drawChip(L.fontMinus, styleMenuItems[0].label, selectedIndex == 0, false);
-    // Current size is information, not a control: no border avoids a false tap affordance.
+    // Segmented typography control: A- | current size | A+. The center cell is
+    // informational only, matching touch-reader affordances and avoiding false taps.
+    const auto fontGroup = L.fontGroupRect();
+    if (selectedIndex == 0) renderer.fillRect(L.fontMinus.x, L.fontMinus.y, L.fontMinus.width, L.fontMinus.height, true);
+    if (selectedIndex == 1) renderer.fillRect(L.fontPlus.x, L.fontPlus.y, L.fontPlus.width, L.fontPlus.height, true);
+    renderer.drawRect(fontGroup.x, fontGroup.y, fontGroup.width, fontGroup.height);
+    renderer.fillRect(L.fontValue.x, fontGroup.y, 1, fontGroup.height, true);
+    renderer.fillRect(L.fontPlus.x, fontGroup.y, 1, fontGroup.height, true);
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontMinus.x, L.fontMinus.y,
+                                L.fontMinus.width, L.fontMinus.height, styleMenuItems[0].label.c_str(),
+                                selectedIndex != 0, selectedIndex == 0 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontValue.x, L.fontValue.y,
                                 L.fontValue.width, L.fontValue.height, currentFontSizeLabel().c_str(),
                                 true, EpdFontFamily::BOLD, 8);
-    drawChip(L.fontPlus, styleMenuItems[1].label, selectedIndex == 1, false);
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.fontPlus.x, L.fontPlus.y,
+                                L.fontPlus.width, L.fontPlus.height, styleMenuItems[1].label.c_str(),
+                                selectedIndex != 1, selectedIndex == 1 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+
     drawChip(L.compact, styleMenuItems[2].label, selectedIndex == 2, matchesLayout(kCompactLayout));
     drawChip(L.standard, styleMenuItems[3].label, selectedIndex == 3, matchesLayout(kStandardLayout));
     drawChip(L.relaxed, styleMenuItems[4].label, selectedIndex == 4, matchesLayout(kRelaxedLayout));
