@@ -48,7 +48,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentOrientation, const std::function<void(uint8_t)>& onBack,
+                                  const uint8_t currentOrientation,
+                                  const std::function<void(uint8_t, bool)>& onBack,
                                   const std::function<void(MenuAction)>& onAction)
       : ActivityWithSubactivity("EpubReaderMenu", renderer, mappedInput),
         title(title),
@@ -64,13 +65,24 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   void loop() override;
 
  private:
-  enum class MenuLayer : uint8_t { QUICK = 0, MORE = 1 };
+  enum class MenuLayer : uint8_t { QUICK = 0, STYLE = 1, MORE = 2 };
+  enum class InternalAction : uint8_t {
+    NONE = 0,
+    OPEN_STYLE,
+    OPEN_MORE,
+    FONT_DECREASE,
+    FONT_INCREASE,
+    LAYOUT_COMPACT,
+    LAYOUT_STANDARD,
+    LAYOUT_RELAXED,
+  };
 
   struct MenuItem {
     MenuAction action;
     std::string label;
-    // Internal navigation entry. The action is never forwarded while this is true.
-    bool opensMore = false;
+    // Internal navigation / direct typography action. When non-NONE the action
+    // is handled inside this Activity and is never forwarded to the reader.
+    InternalAction internalAction = InternalAction::NONE;
   };
 
   // Touch-first entry layer: keep the whole set on one Murphy M4 landscape screen.
@@ -79,10 +91,22 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   const std::vector<MenuItem> quickMenuItems = {
       {MenuAction::SELECT_CHAPTER, "目录"},
       {MenuAction::GO_TO_PERCENT, "阅读进度"},
-      {MenuAction::READER_SETTINGS, "阅读样式"},
+      {MenuAction::READER_SETTINGS, "阅读样式", InternalAction::OPEN_STYLE},
       {MenuAction::ADD_BOOKMARK, "添加书签"},
       {MenuAction::BOOKMARK_MANAGER, "书签"},
-      {MenuAction::GO_HOME, "更多", true},
+      {MenuAction::GO_HOME, "更多", InternalAction::OPEN_MORE},
+  };
+
+  // High-frequency typography controls. Changes are staged in SETTINGS while
+  // the menu stays open; the parent reader performs the expensive pagination/
+  // runtime-font rebuild once when the menu is dismissed.
+  const std::vector<MenuItem> styleMenuItems = {
+      {MenuAction::READER_SETTINGS, "A−  字号减小", InternalAction::FONT_DECREASE},
+      {MenuAction::READER_SETTINGS, "A+  字号增大", InternalAction::FONT_INCREASE},
+      {MenuAction::READER_SETTINGS, "紧凑排版", InternalAction::LAYOUT_COMPACT},
+      {MenuAction::READER_SETTINGS, "标准排版", InternalAction::LAYOUT_STANDARD},
+      {MenuAction::READER_SETTINGS, "宽松排版", InternalAction::LAYOUT_RELAXED},
+      {MenuAction::READER_SETTINGS, "详细设置"},
   };
 
   // Full legacy menu remains reachable from “更多”; order and behavior are kept
@@ -116,6 +140,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   MenuLayer menuLayer_ = MenuLayer::QUICK;
   int selectedIndex = 0;
   bool updateRequired = false;
+  bool readerStyleDirty_ = false;
   std::string pendingPopup_;
   bool firstPaint_ = true;  // HALF after reader to clear AA residual
   TaskHandle_t displayTaskHandle = nullptr;
@@ -145,13 +170,15 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   int bookProgressPercent = 0;
 
   const std::vector<MenuItem>& activeMenuItems() const {
+    if (menuLayer_ == MenuLayer::STYLE) return styleMenuItems;
     return menuLayer_ == MenuLayer::QUICK ? quickMenuItems : moreMenuItems;
   }
 
   bool returnToQuickMenu() {
-    if (menuLayer_ != MenuLayer::MORE) return false;
+    if (menuLayer_ == MenuLayer::QUICK) return false;
+    const MenuLayer oldLayer = menuLayer_;
     menuLayer_ = MenuLayer::QUICK;
-    selectedIndex = static_cast<int>(quickMenuItems.size()) - 1;
+    selectedIndex = oldLayer == MenuLayer::STYLE ? 2 : static_cast<int>(quickMenuItems.size()) - 1;
     updateRequired = true;
     return true;
   }
@@ -164,10 +191,13 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     return "";
   }
 
-  const std::function<void(uint8_t)> onBack;
+  const std::function<void(uint8_t, bool)> onBack;
   const std::function<void(MenuAction)> onAction;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
   void renderScreen();
+  void applyInternalAction(InternalAction action);
+  std::string currentFontSizeLabel() const;
+  std::string styleValueFor(InternalAction action) const;
 };
