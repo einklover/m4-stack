@@ -12,6 +12,8 @@ from paseo_agent_runner import (
     ParseError,
     extract_agent_id,
     format_result,
+    interpret_outcome,
+    last_json_object,
 )
 
 
@@ -69,6 +71,13 @@ acceptance:
         text = format_result({"task_id": "t1", "status": "PASS"})
         self.assertTrue(text.startswith("[PASEO_RESULT v1]"))
         self.assertIn("status: PASS", text)
+
+    def test_completed_json_is_pass_even_if_exit_1(self) -> None:
+        text = 'Tip: ignore\n{"agentId":"4d59d1a3-2e6d-42e6-9aed-2a99fdf8c7d4","status":"completed"}\n'
+        self.assertEqual(last_json_object(text)["status"], "completed")
+        status, err = interpret_outcome(1, text, "- **status:** PASS")
+        self.assertEqual(status, "PASS")
+        self.assertEqual(err, "")
 
     def test_comment_is_not_executed(self) -> None:
         # Parser must keep shell-looking text as data only.

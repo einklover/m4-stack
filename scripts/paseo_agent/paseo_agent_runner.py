@@ -589,11 +589,26 @@ def maybe_push(task: ParsedTask, worktree: Path, log: Logger) -> tuple[bool, str
     return True, f"pushed {count} commit(s) to origin/{task.branch}"
 
 
+def last_json_object(text: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    found: dict[str, Any] | None = None
+    idx = 0
+    while True:
+        start = text.find("{", idx)
+        if start < 0:
+            return found
+        try:
+            obj, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            idx = start + 1
+            continue
+        if isinstance(obj, dict):
+            found = obj
+        idx = start + end
+
+
 def extract_agent_id(text: str) -> str | None:
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        data = None
+    data = last_json_object(text)
     if isinstance(data, dict):
         for key in ("Id", "id", "agentId", "agent_id"):
             value = data.get(key)
@@ -605,6 +620,20 @@ def extract_agent_id(text: str) -> str | None:
         re.I,
     )
     return match.group(0) if match else None
+
+
+def interpret_outcome(exit_code: int, log_text: str, result_md: str) -> tuple[str, str]:
+    payload = last_json_object(log_text) or {}
+    agent_status = str(payload.get("status") or "").lower()
+    result_fail = bool(re.search(r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?status(?:\*\*)?:\s*FAIL\b", result_md))
+    result_pass = bool(re.search(r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?status(?:\*\*)?:\s*PASS\b", result_md))
+    if result_fail:
+        return "FAIL", "agent result file reported FAIL"
+    if agent_status in {"completed", "idle", "success", "ok"} or result_pass:
+        return "PASS", ""
+    if exit_code == 0:
+        return "PASS", ""
+    return "FAIL", f"paseo run exited {exit_code} status={agent_status or 'unknown'}"
 
 
 def run_paseo(
@@ -642,6 +671,7 @@ def run_paseo(
     log.log("PASEO", "starting paseo run", provider=task.provider, cwd=str(worktree))
     with log_path.open("a", encoding="utf-8") as fh:
         fh.write(f"\n# PASEO argv (prompt omitted): {shlex.join(argv[:-1])} <PROMPT>\n")
+        fh.flush()
         proc = subprocess.Popen(
             argv,
             cwd=str(worktree),
@@ -871,10 +901,12 @@ def dispatch(args: argparse.Namespace) -> int:
         result_md = read_result_file(worktree)
         agent_tail = collect_agent_logs(str(agent_id) if agent_id else None)
         paseo_exit = int(paseo_info.get("exit_code") or 1)
-        status = "PASS" if paseo_exit == 0 else "FAIL"
-        if paseo_exit != 0:
+        paseo_log_text = (state_dir / "logs" / f"{task.task_id}.paseo.log").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        status, error_summary = interpret_outcome(paseo_exit, paseo_log_text, result_md)
+        if status != "PASS":
             failure_stage = "PASEO"
-            error_summary = f"paseo run exited {paseo_exit}"
         sink.post(
             format_result(
                 {
