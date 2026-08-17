@@ -1,25 +1,57 @@
 #include "BookmarkManagerActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <string>
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/M4UiText.h"
 #include "util/M4ListTouchPolicy.h"
+#include "util/M4UiText.h"
+#include "util/TouchHitGeometry.h"
 
 namespace {
 constexpr int LONG_PRESS_MS = 700;
+constexpr int kTouchRowHeight = 56;
+constexpr int kDeleteZoneWidth = 56;
+constexpr int kRowSide = 8;
+
+struct DeleteDialogLayout {
+  TouchHitGeometry::Rect box{};
+  TouchHitGeometry::Rect yes{};
+  TouchHitGeometry::Rect no{};
+};
+
+DeleteDialogLayout makeDeleteDialogLayout(int screenWidth, int screenHeight) {
+  DeleteDialogLayout L;
+  const int boxW = std::min(320, std::max(240, screenWidth - 48));
+  constexpr int boxH = 142;
+  constexpr int pad = 16;
+  constexpr int gap = 12;
+  constexpr int buttonH = 52;
+  const int boxX = (screenWidth - boxW) / 2;
+  const int boxY = (screenHeight - boxH) / 2;
+  const int buttonW = (boxW - pad * 2 - gap) / 2;
+  L.box = {boxX, boxY, boxW, boxH};
+  L.yes = {boxX + pad, boxY + boxH - pad - buttonH, buttonW, buttonH};
+  L.no = {boxX + pad + buttonW + gap, boxY + boxH - pad - buttonH, buttonW, buttonH};
+  return L;
 }
+}  // namespace
 
 int BookmarkManagerActivity::getPageItems() const {
-  constexpr int lineHeight = 30;
+  const auto metrics = UITheme::getInstance().getMetrics();
+  const int lineHeight = mappedInput.hasTouch() ? kTouchRowHeight : 30;
   const int screenHeight = renderer.getScreenHeight();
   const auto orientation = renderer.getOrientation();
   const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
   const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int startY = 60 + hintGutterHeight;
-  const int availableHeight = screenHeight - startY - lineHeight;
+  const int startY = hintGutterHeight + metrics.headerHeight + metrics.verticalSpacing;
+  const int availableHeight = screenHeight - startY - metrics.buttonHintsHeight - metrics.verticalSpacing;
   return std::max(1, availableHeight / lineHeight);
 }
 
@@ -32,6 +64,7 @@ void BookmarkManagerActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex = xSemaphoreCreateMutex();
   selectorIndex = 0;
+  firstPaint_ = true;
   updateRequired = true;
   xTaskCreate(&BookmarkManagerActivity::taskTrampoline, "BookmarkMgrTask", 4096, this, 1, &displayTaskHandle);
 }
@@ -65,10 +98,18 @@ void BookmarkManagerActivity::loop() {
     return;
   }
 
-  const int totalItems = static_cast<int>(bookmarks.size());
+  auto deleteSelectedBookmark = [this]() {
+    const int total = static_cast<int>(bookmarks.size());
+    if (selectorIndex < 0 || selectorIndex >= total) return;
+    onDeleteBookmark(selectorIndex);
+    bookmarks.erase(bookmarks.begin() + selectorIndex);
+    if (selectorIndex >= static_cast<int>(bookmarks.size()) && !bookmarks.empty()) {
+      selectorIndex = static_cast<int>(bookmarks.size()) - 1;
+    }
+    if (bookmarks.empty()) selectorIndex = 0;
+  };
 
   if (deleteConfirmMode) {
-    // Touch: Yes/No dialog (geometry matches typical centered two buttons)
     if (mappedInput.hasTouch()) {
       if (mappedInput.wasBackGesture()) {
         deleteConfirmMode = false;
@@ -76,52 +117,32 @@ void BookmarkManagerActivity::loop() {
         updateRequired = true;
         return;
       }
-      int tx = 0, ty = 0;
+      int tx = 0;
+      int ty = 0;
       if (mappedInput.wasScreenTapped(tx, ty)) {
-        // Split screen halves as Yes / No
-        const int mid = renderer.getScreenWidth() / 2;
-        deleteConfirmSelected = (tx < mid);
-        if (deleteConfirmSelected) {
-          onDeleteBookmark(selectorIndex);
-          if (selectorIndex >= 0 && selectorIndex < totalItems) {
-            bookmarks.erase(bookmarks.begin() + selectorIndex);
-          }
-          if (selectorIndex >= static_cast<int>(bookmarks.size()) && !bookmarks.empty()) {
-            selectorIndex = static_cast<int>(bookmarks.size()) - 1;
-          }
-          if (bookmarks.empty()) selectorIndex = 0;
+        const auto dialog = makeDeleteDialogLayout(renderer.getScreenWidth(), renderer.getScreenHeight());
+        if (dialog.yes.contains(tx, ty)) {
+          deleteSelectedBookmark();
+          deleteConfirmMode = false;
+          deleteConfirmSelected = false;
+          updateRequired = true;
+        } else if (dialog.no.contains(tx, ty)) {
+          deleteConfirmMode = false;
+          deleteConfirmSelected = false;
+          updateRequired = true;
         }
-        deleteConfirmMode = false;
-        deleteConfirmSelected = false;
-        updateRequired = true;
         return;
       }
     }
-    // In delete confirmation mode
+
     if (mappedInput.wasReleased(MappedInputManager::Button::Left) ||
-        mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-      deleteConfirmSelected = !deleteConfirmSelected;
-      updateRequired = true;
-    } else if (mappedInput.wasReleased(MappedInputManager::Button::Right) ||
-               mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+        mappedInput.wasReleased(MappedInputManager::Button::Up) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Right) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Down)) {
       deleteConfirmSelected = !deleteConfirmSelected;
       updateRequired = true;
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      if (deleteConfirmSelected) {
-        // Delete confirmed
-        onDeleteBookmark(selectorIndex);
-        // Remove from local list
-        if (selectorIndex >= 0 && selectorIndex < totalItems) {
-          bookmarks.erase(bookmarks.begin() + selectorIndex);
-        }
-        // Adjust selector
-        if (selectorIndex >= static_cast<int>(bookmarks.size()) && !bookmarks.empty()) {
-          selectorIndex = static_cast<int>(bookmarks.size()) - 1;
-        }
-        if (bookmarks.empty()) {
-          selectorIndex = 0;
-        }
-      }
+      if (deleteConfirmSelected) deleteSelectedBookmark();
       deleteConfirmMode = false;
       deleteConfirmSelected = false;
       updateRequired = true;
@@ -133,36 +154,62 @@ void BookmarkManagerActivity::loop() {
     return;
   }
 
-  // Normal navigation mode — touch list (startY=60+contentY, lineH=30)
+  const int totalItems = static_cast<int>(bookmarks.size());
+
   if (mappedInput.hasTouch()) {
     if (mappedInput.wasBackGesture() || mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       onGoBack();
       return;
     }
+
     if (totalItems > 0) {
+      const auto metrics = UITheme::getInstance().getMetrics();
       const auto orientation = renderer.getOrientation();
+      const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+      const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
       const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
+      const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
+      const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+      const int contentWidth = renderer.getScreenWidth() - hintGutterWidth;
       const int contentY = isPortraitInverted ? 50 : 0;
-      constexpr int lineHeight = 30;
-      const int startY = 60 + contentY;
-      const int pageHeight = renderer.getScreenHeight();
-      constexpr int buttonHintsHeight = 40;
-      const int availableHeight = pageHeight - startY - buttonHintsHeight;
-      const int itemsPerPage = std::max(1, availableHeight / lineHeight);
-      M4ListTouchPolicy::Event te{};
-      te.backGesture = false;
-      const auto sw = mappedInput.wasSwipe();
-      if (sw == MappedInputManager::SwipeDir::Up) te.swipe = M4ListTouchPolicy::Swipe::Up;
-      else if (sw == MappedInputManager::SwipeDir::Down) te.swipe = M4ListTouchPolicy::Swipe::Down;
+      const int startY = contentY + metrics.headerHeight + metrics.verticalSpacing;
+      const int itemsPerPage = getPageItems();
+      const int pageStart = (selectorIndex / itemsPerPage) * itemsPerPage;
+      const int listHeight = itemsPerPage * kTouchRowHeight;
+      const int deleteX = contentX + contentWidth - kRowSide - kDeleteZoneWidth;
+
+      const auto swipe = mappedInput.wasSwipe();
       int dx = 0, dy = 0, tx = 0, ty = 0;
-      te = M4ListTouchPolicy::mergeFrame(false, te.swipe, mappedInput.wasScreenTouchDown(dx, dy), dx, dy,
-                                         mappedInput.wasScreenTapped(tx, ty), tx, ty);
+      const bool touchDown = mappedInput.wasScreenTouchDown(dx, dy);
+      const bool tapped = mappedInput.wasScreenTapped(tx, ty);
+
+      // Explicit delete affordance: only the right-side delete cell opens the
+      // confirmation dialog. A broad screen-half tap can never delete a bookmark.
+      if (tapped && ty >= startY && ty < startY + listHeight && tx >= deleteX) {
+        const int row = (ty - startY) / kTouchRowHeight;
+        const int hit = pageStart + row;
+        if (hit >= 0 && hit < totalItems) {
+          selectorIndex = hit;
+          deleteConfirmMode = true;
+          deleteConfirmSelected = false;
+          updateRequired = true;
+        }
+        return;
+      }
+
+      M4ListTouchPolicy::Event te{};
+      if (swipe == MappedInputManager::SwipeDir::Up) te.swipe = M4ListTouchPolicy::Swipe::Up;
+      else if (swipe == MappedInputManager::SwipeDir::Down) te.swipe = M4ListTouchPolicy::Swipe::Down;
+      te = M4ListTouchPolicy::mergeFrame(false, te.swipe, touchDown, dx, dy, tapped, tx, ty);
+
       M4ListTouchPolicy::ListLayout layout;
       layout.listTop = startY;
-      layout.listHeight = itemsPerPage * lineHeight;
-      layout.rowStep = lineHeight;
+      layout.listHeight = listHeight;
+      layout.rowStep = kTouchRowHeight;
       layout.itemCount = totalItems;
       layout.selectedIndex = selectorIndex;
+      layout.maxVisible = itemsPerPage;
+
       int hit = -1;
       const auto act = M4ListTouchPolicy::resolveList(te, layout, hit);
       if (act == M4ListTouchPolicy::Action::PageDown || act == M4ListTouchPolicy::Action::PageUp) {
@@ -190,15 +237,11 @@ void BookmarkManagerActivity::loop() {
     onGoBack();
     return;
   }
+  if (totalItems == 0) return;
 
-  if (totalItems == 0) {
-    return;
-  }
-
-  // Long press confirm = delete
   if (mappedInput.isPressed(MappedInputManager::Button::Confirm) && mappedInput.getHeldTime() >= LONG_PRESS_MS) {
     deleteConfirmMode = true;
-    deleteConfirmSelected = true;  // Default to "是"
+    deleteConfirmSelected = false;
     updateRequired = true;
     return;
   }
@@ -214,7 +257,6 @@ void BookmarkManagerActivity::loop() {
                             mappedInput.wasReleased(MappedInputManager::Button::Left);
   const bool nextReleased = mappedInput.wasReleased(MappedInputManager::Button::Down) ||
                             mappedInput.wasReleased(MappedInputManager::Button::Right);
-
   if (prevReleased) {
     selectorIndex = (selectorIndex + totalItems - 1) % totalItems;
     updateRequired = true;
@@ -226,7 +268,10 @@ void BookmarkManagerActivity::loop() {
 
 void BookmarkManagerActivity::renderScreen() {
   renderer.clearScreen();
-  const auto pageWidth = renderer.getScreenWidth();
+
+  const auto metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
   const auto orientation = renderer.getOrientation();
   const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
   const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
@@ -234,82 +279,100 @@ void BookmarkManagerActivity::renderScreen() {
   const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
   const int contentX = isLandscapeCw ? hintGutterWidth : 0;
   const int contentWidth = pageWidth - hintGutterWidth;
-  const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int contentY = hintGutterHeight;
+  const int contentY = isPortraitInverted ? 50 : 0;
 
-  // Title
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 15 + contentY, "书签管理", EpdFontFamily::BOLD);
+  GUI.drawHeader(renderer, Rect{contentX, contentY, contentWidth, metrics.headerHeight}, "书签");
 
   const int totalItems = static_cast<int>(bookmarks.size());
-  const int startY = 60 + contentY;
-  constexpr int lineHeight = 30;
-  const int pageHeight = renderer.getScreenHeight();
-  constexpr int buttonHintsHeight = 40;
-  const int availableHeight = pageHeight - startY - buttonHintsHeight;
-  const int itemsPerPage = std::max(1, availableHeight / lineHeight);
+  const int lineHeight = mappedInput.hasTouch() ? kTouchRowHeight : 30;
+  const int startY = contentY + metrics.headerHeight + metrics.verticalSpacing;
+  const int itemsPerPage = getPageItems();
+  const int availableHeight = itemsPerPage * lineHeight;
 
   if (totalItems == 0) {
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, startY + 30, "暂无书签");
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, contentX, startY + 24,
+                                contentWidth, 48, "暂无书签", true, EpdFontFamily::REGULAR, 8);
   } else {
-    // Calculate scroll offset
-    int scrollOffset = 0;
-    if (selectorIndex >= itemsPerPage) {
-      scrollOffset = selectorIndex - itemsPerPage + 1;
-    }
-    if (scrollOffset > totalItems - itemsPerPage) {
-      scrollOffset = std::max(0, totalItems - itemsPerPage);
-    }
+    const int pageStart = (selectorIndex / itemsPerPage) * itemsPerPage;
+    const int visibleEnd = std::min(pageStart + itemsPerPage, totalItems);
+    const int deleteX = contentX + contentWidth - kRowSide - kDeleteZoneWidth;
+    const int percentWidth = 52;
+    const int percentX = deleteX - percentWidth - 6;
 
-    const int visibleEnd = std::min(scrollOffset + itemsPerPage, totalItems);
+    for (int idx = pageStart; idx < visibleEnd; ++idx) {
+      const int row = idx - pageStart;
+      const int rowY = startY + row * lineHeight;
+      const bool selected = idx == selectorIndex;
 
-    for (int idx = scrollOffset; idx < visibleEnd; ++idx) {
-      const int displayY = startY + (idx - scrollOffset) * lineHeight;
-      const bool isSelected = (idx == selectorIndex);
-
-      if (isSelected && !deleteConfirmMode) {
-        renderer.fillRect(contentX, displayY, contentWidth - 1, lineHeight, true);
+      if (selected) {
+        renderer.drawRect(contentX + kRowSide, rowY + 2,
+                          std::max(1, contentWidth - kRowSide * 2), std::max(1, lineHeight - 4), true);
       }
 
-      if (deleteConfirmMode && idx == selectorIndex) {
-        // Draw delete confirmation inline
-        const char* prompt = "删除?";
-        M4UiText::draw(renderer, UI_10_FONT_ID, contentX + 10, displayY, prompt, true);
+      const int titleX = contentX + kRowSide + 10;
+      const int titleWidth = std::max(30, percentX - titleX - 8);
+      const auto weight = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+      const std::string title = M4UiText::truncated(renderer, UI_10_FONT_ID,
+                                                    bookmarks[idx].title.c_str(), titleWidth, weight);
+      M4UiText::draw(renderer, UI_10_FONT_ID, titleX, rowY + 18, title.c_str(), true, weight);
 
-        const int btnY = displayY;
-        const int yesX = contentX + 80;
-        const int cancelX = contentX + 150;
+      const int percentage = std::max(0, std::min(100,
+          static_cast<int>(bookmarks[idx].percentage * 100.0f + 0.5f)));
+      char percentageText[12];
+      snprintf(percentageText, sizeof(percentageText), "%d%%", percentage);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, percentX, rowY + 4,
+                                  percentWidth, lineHeight - 8, percentageText, true,
+                                  selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 6);
 
-        if (deleteConfirmSelected) {
-          renderer.fillRect(yesX - 4, btnY, 40, lineHeight, true);
-          M4UiText::draw(renderer, UI_10_FONT_ID, yesX, btnY, "[是]", false);
-          M4UiText::draw(renderer, UI_10_FONT_ID, cancelX, btnY, "[取消]", true);
-        } else {
-          M4UiText::draw(renderer, UI_10_FONT_ID, yesX, btnY, "[是]", true);
-          renderer.fillRect(cancelX - 4, btnY, 56, lineHeight, true);
-          M4UiText::draw(renderer, UI_10_FONT_ID, cancelX, btnY, "[取消]", false);
-        }
-      } else {
-        // Truncate title to fit
-        const std::string truncTitle =
-            M4UiText::truncated(renderer, UI_10_FONT_ID, bookmarks[idx].title.c_str(), contentWidth - 40);
-        M4UiText::draw(renderer, UI_10_FONT_ID, contentX + 10, displayY, truncTitle.c_str(), !isSelected);
-      }
+      // A divider + concise action word is less visually noisy than a button in
+      // every row, while keeping a dedicated 56px-wide touch target.
+      renderer.fillRect(deleteX, rowY + 10, 1, std::max(8, lineHeight - 20), true);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, deleteX, rowY + 4,
+                                  kDeleteZoneWidth, lineHeight - 8, "删", true,
+                                  EpdFontFamily::REGULAR, 6);
     }
 
-    // Scrollbar
     if (totalItems > itemsPerPage) {
-      auto metrics = UITheme::getInstance().getMetrics();
-      const int scrollBarX = pageWidth - metrics.scrollBarRightOffset;
+      const int scrollBarX = contentX + contentWidth - metrics.scrollBarRightOffset;
       const int scrollBarHeight = std::max(20, (availableHeight * itemsPerPage) / totalItems);
-      const int scrollBarY =
-          startY + ((availableHeight - scrollBarHeight) * scrollOffset) / std::max(1, totalItems - itemsPerPage);
+      const int maxPageStart = std::max(1, ((totalItems - 1) / itemsPerPage) * itemsPerPage);
+      const int scrollBarY = startY +
+          ((availableHeight - scrollBarHeight) * pageStart) / maxPageStart;
       renderer.drawLine(scrollBarX, startY, scrollBarX, startY + availableHeight, true);
-      renderer.fillRect(scrollBarX - metrics.scrollBarWidth, scrollBarY, metrics.scrollBarWidth, scrollBarHeight, true);
+      renderer.fillRect(scrollBarX - metrics.scrollBarWidth, scrollBarY,
+                        metrics.scrollBarWidth, scrollBarHeight, true);
     }
+  }
+
+  if (deleteConfirmMode && !bookmarks.empty()) {
+    const auto dialog = makeDeleteDialogLayout(pageWidth, pageHeight);
+    renderer.fillRect(dialog.box.x, dialog.box.y, dialog.box.width, dialog.box.height, false);
+    renderer.drawRect(dialog.box.x, dialog.box.y, dialog.box.width, dialog.box.height, true);
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, dialog.box.x, dialog.box.y + 12,
+                                dialog.box.width, 36, "删除这个书签?", true,
+                                EpdFontFamily::BOLD, 8);
+
+    const auto drawDialogButton = [this](const TouchHitGeometry::Rect& r, const char* label, bool selected) {
+      if (selected) {
+        renderer.fillRect(r.x, r.y, r.width, r.height, true);
+      } else {
+        renderer.drawRect(r.x, r.y, r.width, r.height, true);
+      }
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height,
+                                  label, !selected,
+                                  selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+    };
+    drawDialogButton(dialog.yes, "删除", deleteConfirmSelected);
+    drawDialogButton(dialog.no, "取消", !deleteConfirmSelected);
   }
 
   const auto labels = mappedInput.mapLabels("« 返回", "选择/长按删除", "向上", "向下");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  renderer.displayBuffer();
+  if (firstPaint_) {
+    firstPaint_ = false;
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  } else {
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
 }
