@@ -19,18 +19,20 @@ import android.util.Log;
 
 import com.murphy.m4screenbridge.browser.patch.ExtraDimCompensation;
 import com.murphy.m4screenbridge.browser.patch.FrameDiffer;
-import com.murphy.m4screenbridge.browser.patch.FramePatch;
 import com.murphy.m4screenbridge.browser.patch.LogicalMonoFrame;
-import com.murphy.m4screenbridge.browser.patch.PatchApplier;
 import com.murphy.m4screenbridge.browser.patch.RgbaFrameProbe;
+import com.murphy.m4screenbridge.browser.stream.M4B3;
+import com.murphy.m4screenbridge.browser.stream.M4B3ReferenceReceiver;
+import com.murphy.m4screenbridge.browser.stream.M4B3Sender;
 
 import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.Locale;
 
 /**
- * App-owned 480x800 WebView VirtualDisplay session. In M1 it is owned by
- * BrowserBridgeService rather than MainActivity, and every RGBA frame is also fed through
- * the pure-Java dirty-tile patch core.
+ * App-owned 480x800 WebView VirtualDisplay session. Owned by BrowserBridgeService.
+ * ImageReader produces logical MONO1 frames; the M4B3 sender owns ACK/diff state
+ * and never performs socket I/O on the capture callback.
  */
 public final class VirtualBrowserSession {
     public static final int WIDTH = 480;
@@ -45,9 +47,13 @@ public final class VirtualBrowserSession {
 
     private HandlerThread frameThread;
     private Handler frameHandler;
+    private HandlerThread protocolThread;
+    private Handler protocolHandler;
     private ImageReader reader;
     private VirtualDisplay virtualDisplay;
     private BrowserPresentation presentation;
+    private M4B3Sender sender;
+    private M4B3ReferenceReceiver localReceiver;
 
     private volatile boolean active;
     private volatile long frameCount;
@@ -69,8 +75,7 @@ public final class VirtualBrowserSession {
     private volatile String currentUrl = "";
     private volatile String error = "";
 
-    private byte[] logicalFrame;
-    private long logicalFrameId = -1;
+    private volatile long logicalFrameId = -1;
     private volatile long keyframeCount;
     private volatile long patchCount;
     private volatile long unchangedFrameCount;
@@ -79,6 +84,10 @@ public final class VirtualBrowserSession {
     private volatile int lastRectCount;
     private volatile int lastPatchBytes;
     private volatile double lastDirtyRatio;
+    private volatile boolean protocolInFlight;
+    private volatile boolean protocolPending;
+    private volatile long nackRecoveries;
+    private volatile int lastAckedCrc;
 
     public VirtualBrowserSession(Context host) {
         if (host == null) throw new IllegalArgumentException("host is null");
@@ -107,7 +116,6 @@ public final class VirtualBrowserSession {
         lastProbePixels = "";
         lastRgbGain256 = ExtraDimCompensation.UNITY_GAIN;
         applyErrors = 0;
-        logicalFrame = null;
         logicalFrameId = -1;
         keyframeCount = 0;
         patchCount = 0;
@@ -117,8 +125,22 @@ public final class VirtualBrowserSession {
         lastRectCount = 0;
         lastPatchBytes = 0;
         lastDirtyRatio = 0;
+        protocolInFlight = false;
+        protocolPending = false;
+        nackRecoveries = 0;
+        lastAckedCrc = 0;
 
         try {
+            protocolThread = new HandlerThread("m4-browser-m4b3");
+            protocolThread.start();
+            protocolHandler = new Handler(protocolThread.getLooper());
+            localReceiver = new M4B3ReferenceReceiver();
+            sender = new M4B3Sender(packet -> {
+                Handler h = protocolHandler;
+                if (h != null) h.post(() -> deliverLoopback(packet));
+            });
+            sender.connect();
+
             frameThread = new HandlerThread("m4-browser-frames");
             frameThread.start();
             frameHandler = new Handler(frameThread.getLooper());
@@ -232,7 +254,12 @@ public final class VirtualBrowserSession {
                 .append(" bytes ").append(lastPatchBytes)
                 .append(String.format(Locale.ROOT, " dirty %.2f%%", lastDirtyRatio * 100.0))
                 .append(" | total bytes ").append(patchPayloadBytes)
-                .append(" | applyErr ").append(applyErrors);
+                .append(" | applyErr ").append(applyErrors)
+                .append("\nM4B3 loopback ")
+                .append(protocolInFlight ? "in-flight" : "idle")
+                .append(protocolPending ? " pending" : "")
+                .append(" nack ").append(nackRecoveries)
+                .append(" crc ").append(M4B3.crcHex(lastAckedCrc));
         if (!currentUrl.isEmpty()) sb.append("\nURL: ").append(currentUrl);
         if (!error.isEmpty()) sb.append("\n错误: ").append(error);
         return sb.toString();
@@ -292,37 +319,44 @@ public final class VirtualBrowserSession {
     }
 
     private void processLogicalFrame(byte[] target) {
-        if (logicalFrame == null) {
-            FramePatch patch = FrameDiffer.diff(null, -1, target, 0);
-            logicalFrame = PatchApplier.apply(null, -1, patch);
-            logicalFrameId = patch.frameId;
-            keyframeCount++;
-            recordPatch(patch);
-            return;
-        }
-
-        FramePatch patch = FrameDiffer.diff(logicalFrame, logicalFrameId, target, logicalFrameId + 1);
-        if (!patch.hasChanges()) {
-            unchangedFrameCount++;
-            lastChangedTiles = 0;
-            lastRectCount = 0;
-            lastPatchBytes = 0;
-            lastDirtyRatio = 0;
-            return;
-        }
-        logicalFrame = PatchApplier.apply(logicalFrame, logicalFrameId, patch);
-        logicalFrameId = patch.frameId;
-        if (patch.keyframe) keyframeCount++;
-        else patchCount++;
-        recordPatch(patch);
+        M4B3Sender s = sender;
+        if (s == null) throw new IllegalStateException("M4B3 sender not started");
+        s.offerFrame(target);
+        refreshProtocolStats();
     }
 
-    private void recordPatch(FramePatch patch) {
-        lastChangedTiles = patch.changedTiles;
-        lastRectCount = patch.rects.size();
-        lastPatchBytes = patch.payloadBytes();
-        lastDirtyRatio = patch.dirtyRatio();
-        patchPayloadBytes += patch.payloadBytes();
+    private void deliverLoopback(byte[] packet) {
+        M4B3Sender s = sender;
+        M4B3ReferenceReceiver r = localReceiver;
+        if (s == null || r == null) return;
+        try {
+            List<byte[]> replies = r.handle(packet);
+            for (byte[] reply : replies) s.receive(reply);
+            refreshProtocolStats();
+        } catch (Throwable t) {
+            applyErrors++;
+            error = t.getClass().getSimpleName() + ": " + safeMessage(t);
+            Log.e(TAG, "M4B3 loopback failed: " + error, t);
+        }
+    }
+
+    private void refreshProtocolStats() {
+        M4B3Sender s = sender;
+        if (s == null) return;
+        M4B3Sender.Stats st = s.stats();
+        logicalFrameId = st.inFlight ? st.inFlightFrameId : st.ackedFrameId;
+        keyframeCount = st.keyframesSent;
+        patchCount = st.patchesSent;
+        unchangedFrameCount = st.unchangedSuppressed;
+        lastChangedTiles = st.lastChangedTiles;
+        lastRectCount = st.lastRectCount;
+        lastPatchBytes = st.lastPatchBytes;
+        lastDirtyRatio = st.lastDirtyRatio;
+        protocolInFlight = st.inFlight;
+        protocolPending = st.hasPending;
+        nackRecoveries = st.nackRecoveries;
+        lastAckedCrc = st.ackedCrc;
+        patchPayloadBytes = st.payloadBytesSent;
     }
 
     private void logFrame() {
@@ -369,7 +403,16 @@ public final class VirtualBrowserSession {
             frameThread = null;
             frameHandler = null;
         }
-        logicalFrame = null;
+        if (protocolThread != null) {
+            protocolThread.quitSafely();
+            protocolThread = null;
+            protocolHandler = null;
+        }
+        if (sender != null) {
+            sender.disconnect();
+            sender = null;
+        }
+        localReceiver = null;
         logicalFrameId = -1;
         if (clearError) error = "";
     }

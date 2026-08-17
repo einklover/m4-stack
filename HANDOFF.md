@@ -1,6 +1,6 @@
 # HANDOFF — Murphy M4 session entry
 
-Last updated: **2026-08-17**
+Last updated: **2026-08-18**
 
 This file is intentionally thin. **Active goals, progress, measurements and acceptance evidence live in GitHub Issues, not here.**
 
@@ -26,11 +26,12 @@ Current execution issues:
 
 - **#18 — Real-device runtime OTF/OTC soak validation**
 - **#19 — JJWXC live long-catalog progressive-stream E2E**
-- **#27 — M1 Browser Bridge FGS + dirty-tile patch core**
+- **#30 — M2 Browser Bridge M4B3 TCP keyframe/patch/ACK**
 
-Completed Browser Bridge milestone:
+Completed Browser Bridge milestones:
 
 - **#26 — M0 Android virtual-display browser capture validation** — completed with real-device 480×800, HTTPS, JavaScript, and ~90s screen-off Doze evidence.
+- **#27 — M1 Browser Bridge FGS + dirty-tile patch core** — completed on `agent/eink-browser-bridge`.
 
 Detailed progress, commit SHAs, measurements, failures, fixes and acceptance evidence belong in those Issues. Update the relevant Issue during work instead of growing this file.
 
@@ -42,13 +43,13 @@ Firmware / production-readiness work stays on:
 main
 ```
 
-E-ink Browser Bridge M1 is on a parallel branch:
+E-ink Browser Bridge M2 is on a parallel branch:
 
 ```text
-agent/eink-browser-bridge
+agent/eink-browser-bridge-m2
 ```
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, and native-provider first-window work was merged to `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge` only for the virtual-browser path (#27).
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, and native-provider first-window work was merged to `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m2` for the M4B3 protocol path (#30). The completed M1 work remains on `agent/eink-browser-bridge`.
 
 Always inspect HEAD before editing.
 
