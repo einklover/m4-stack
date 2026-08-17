@@ -13,6 +13,7 @@ constexpr int kQuickProgressBarHeight = 8;
 constexpr int kQuickProgressBlockHeight = 32;
 constexpr int kQuickActionCount = 6;
 constexpr int kStyleActionCount = 7;
+constexpr int kProgressStepCount = 4;
 
 struct QuickPanelLayout {
   TouchHitGeometry::Rect progressBar{};
@@ -129,6 +130,62 @@ inline StylePanelLayout makeStylePanelLayout(int contentX, int contentWidth, int
   const int bottomW = std::max(50, (innerW - gap) / 2);
   L.fontPicker = {innerX, bottomY, bottomW, chipH};
   L.details = {innerX + bottomW + gap, bottomY, bottomW, chipH};
+  return L;
+}
+
+// E-ink progress selector. The track is tappable but deliberately not draggable:
+// one gesture -> one state change -> one refresh. Four discrete step chips cover
+// coarse/fine navigation without requiring a precision slider.
+struct ProgressPanelLayout {
+  TouchHitGeometry::Rect value{};
+  TouchHitGeometry::Rect track{};
+  TouchHitGeometry::Rect trackHit{};
+  TouchHitGeometry::Rect steps[kProgressStepCount]{};
+
+  TouchHitGeometry::Rect stepRect(int index) const {
+    return (index >= 0 && index < kProgressStepCount) ? steps[index] : TouchHitGeometry::Rect{};
+  }
+
+  int stepFromPoint(int x, int y) const {
+    for (int i = 0; i < kProgressStepCount; ++i) {
+      if (steps[i].contains(x, y)) return i;
+    }
+    return -1;
+  }
+
+  int percentFromPoint(int x, int y) const {
+    if (!trackHit.contains(x, y) || track.width <= 1) return -1;
+    const int clampedX = std::max(track.x, std::min(track.x + track.width - 1, x));
+    return ((clampedX - track.x) * 100 + (track.width - 1) / 2) / (track.width - 1);
+  }
+};
+
+inline ProgressPanelLayout makeProgressPanelLayout(int contentX, int contentWidth, int top) {
+  ProgressPanelLayout L;
+  constexpr int side = 24;
+  constexpr int valueH = 58;
+  constexpr int trackGap = 16;
+  constexpr int trackH = 10;
+  constexpr int trackTouchPad = 16;
+  constexpr int stepGapY = 34;
+  constexpr int stepGapX = 10;
+  constexpr int stepH = 56;
+
+  const int innerX = contentX + side;
+  const int innerW = std::max(160, contentWidth - side * 2);
+  L.value = {innerX, top, innerW, valueH};
+
+  const int trackY = top + valueH + trackGap;
+  L.track = {innerX, trackY, innerW, trackH};
+  L.trackHit = {innerX, trackY - trackTouchPad, innerW, trackH + trackTouchPad * 2};
+
+  const int stepY = trackY + trackH + stepGapY;
+  const int stepW = std::max(48, (innerW - stepGapX * (kProgressStepCount - 1)) / kProgressStepCount);
+  const int usedW = stepW * kProgressStepCount + stepGapX * (kProgressStepCount - 1);
+  const int startX = innerX + std::max(0, (innerW - usedW) / 2);
+  for (int i = 0; i < kProgressStepCount; ++i) {
+    L.steps[i] = {startX + i * (stepW + stepGapX), stepY, stepW, stepH};
+  }
   return L;
 }
 
