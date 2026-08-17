@@ -140,6 +140,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   int selectedIndex = 0;
   bool updateRequired = false;
   bool readerStyleDirty_ = false;
+  bool readerFontDirty_ = false;
   std::string pendingPopup_;
   bool firstPaint_ = true;  // HALF after reader to clear AA residual
   TaskHandle_t displayTaskHandle = nullptr;
