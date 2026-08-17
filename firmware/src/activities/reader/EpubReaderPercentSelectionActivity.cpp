@@ -15,9 +15,11 @@ namespace {
 constexpr int kSmallStep = 1;
 constexpr int kLargeStep = 10;
 constexpr int kPanelHeight = 270;
+constexpr int kToolbarHeight = 88;
 constexpr int kStepCount = 4;
 constexpr int kStepDeltas[kStepCount] = {-10, -1, 1, 10};
 constexpr const char* kStepLabels[kStepCount] = {"-10%", "-1%", "+1%", "+10%"};
+constexpr const char* kToolbarLabels[4] = {"目录", "进度", "字体", "更多"};
 
 struct ProgressSheetLayout {
   TouchHitGeometry::Rect panel{};
@@ -31,8 +33,9 @@ struct ProgressSheetLayout {
 
 ProgressSheetLayout makeProgressSheet(int width, int height) {
   ProgressSheetLayout L;
-  const int top = std::max(72, height - kPanelHeight);
-  L.panel = {0, top, width, height - top};
+  const int toolbarTop = std::max(0, height - kToolbarHeight);
+  const int top = std::max(72, toolbarTop - kPanelHeight);
+  L.panel = {0, top, width, std::max(0, toolbarTop - top)};
   L.close = {width - 64, top, 64, 52};
   L.value = {24, top + 38, std::max(80, width - 48), 48};
   L.track = {24, top + 94, std::max(80, width - 48), 10};
@@ -64,6 +67,49 @@ int percentFromPoint(const ProgressSheetLayout& L, int x, int y) {
   if (!L.trackHit.contains(x, y) || L.track.width <= 1) return -1;
   const int clampedX = std::max(L.track.x, std::min(L.track.x + L.track.width - 1, x));
   return ((clampedX - L.track.x) * 100 + (L.track.width - 1) / 2) / (L.track.width - 1);
+}
+
+int toolbarIndexFromPoint(int x, int y, int width, int height) {
+  if (y < height - kToolbarHeight || y >= height || x < 0 || x >= width) return -1;
+  const int cellW = std::max(1, width / 4);
+  return std::min(3, x / cellW);
+}
+
+void drawToolbar(GfxRenderer& renderer, int width, int height) {
+  const int barTop = height - kToolbarHeight;
+  const int cellW = std::max(1, width / 4);
+  renderer.fillRect(0, barTop, width, kToolbarHeight, false);
+  renderer.drawLine(0, barTop, width - 1, barTop, true);
+
+  for (int i = 0; i < 4; ++i) {
+    const int x = i * cellW;
+    const int w = (i == 3) ? width - x : cellW;
+    const int cx = x + w / 2;
+    const int iconY = barTop + 22;
+    const bool active = i == 1;
+
+    if (active) renderer.fillRect(x + 12, barTop + 5, std::max(1, w - 24), 3, true);
+    if (i == 0) {
+      renderer.fillRect(cx - 13, iconY - 8, 26, 2, true);
+      renderer.fillRect(cx - 13, iconY, 21, 2, true);
+      renderer.fillRect(cx - 13, iconY + 8, 26, 2, true);
+    } else if (i == 1) {
+      renderer.drawRect(cx - 12, iconY - 9, 24, 18, true);
+      renderer.fillRect(cx - 2, iconY - 13, 4, 26, false);
+      renderer.fillRect(cx - 1, iconY - 6, 2, 12, true);
+    } else if (i == 2) {
+      M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, x, iconY - 16, w, 32, "A", true,
+                                  EpdFontFamily::BOLD, 8);
+    } else {
+      renderer.fillRect(cx - 14, iconY - 2, 4, 4, true);
+      renderer.fillRect(cx - 2, iconY - 2, 4, 4, true);
+      renderer.fillRect(cx + 10, iconY - 2, 4, 4, true);
+    }
+
+    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, barTop + 48, w, 34,
+                                kToolbarLabels[i], true,
+                                active ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+  }
 }
 }  // namespace
 
@@ -126,9 +172,15 @@ void EpubReaderPercentSelectionActivity::loop() {
     int tx = 0;
     int ty = 0;
     if (mappedInput.wasScreenTapped(tx, ty)) {
-      const auto L = makeProgressSheet(renderer.getScreenWidth(), renderer.getScreenHeight());
+      const int toolbarHit = toolbarIndexFromPoint(tx, ty, renderer.getScreenWidth(), renderer.getScreenHeight());
+      if (toolbarHit >= 0) {
+        // The persistent reader toolbar remains visible while the progress sheet
+        // is open. Keep it isolated from the progress controls; the active
+        // Progress tab is intentionally stable in this activity.
+        return;
+      }
 
-      // Exposed text remains a real dismissal target; no hidden full-screen page.
+      const auto L = makeProgressSheet(renderer.getScreenWidth(), renderer.getScreenHeight());
       if (!L.panel.contains(tx, ty) || L.close.contains(tx, ty)) {
         onCancel();
         return;
@@ -177,7 +229,6 @@ void EpubReaderPercentSelectionActivity::loop() {
 }
 
 void EpubReaderPercentSelectionActivity::renderScreen() {
-  // Preserve the reader framebuffer and replace only the bottom sheet region.
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   const auto L = makeProgressSheet(pageWidth, pageHeight);
@@ -215,6 +266,8 @@ void EpubReaderPercentSelectionActivity::renderScreen() {
   const std::string jumpLabel = "跳转到 " + percentText;
   M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, L.jump.x, L.jump.y, L.jump.width, L.jump.height,
                               jumpLabel.c_str(), true, EpdFontFamily::BOLD, 8);
+
+  drawToolbar(renderer, pageWidth, pageHeight);
 
   firstPaint = false;
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
