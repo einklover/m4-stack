@@ -1,8 +1,10 @@
 #include "EpubReaderPercentSelectionActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 
 #include <algorithm>
+#include <string>
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
