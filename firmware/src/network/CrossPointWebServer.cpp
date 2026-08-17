@@ -12,6 +12,7 @@
 #include "CrossPointSettings.h"
 #include "../src/SettingsLists.h"
 #include "apps/providers/M4LanVisitorStore.h"
+#include "qemu/M4QemuNet.h"
 
 #include "html/FilesPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
@@ -29,10 +30,10 @@ constexpr uint16_t LOCAL_UDP_PORT = 8134;
 // Remember phones/PCs that hit the transfer server on this STA SSID so
 // Legado (and similar) can auto-probe their web service ports later.
 void noteTransferVisitor(WebServer* server) {
-  if (!server || WiFi.status() != WL_CONNECTED) return;
+  if (!server || !M4QemuNet::staConnected()) return;
   const IPAddress ip = server->client().remoteIP();
   if (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0) return;
-  const String ssid = WiFi.SSID();
+  const String ssid = M4QemuNet::ssidString();
   if (ssid.isEmpty()) return;
   char ipBuf[16];
   std::snprintf(ipBuf, sizeof(ipBuf), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
@@ -40,9 +41,9 @@ void noteTransferVisitor(WebServer* server) {
 }
 
 void noteTransferVisitorIp(const IPAddress& ip) {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (!M4QemuNet::staConnected()) return;
   if (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0) return;
-  const String ssid = WiFi.SSID();
+  const String ssid = M4QemuNet::ssidString();
   if (ssid.isEmpty()) return;
   char ipBuf[16];
   std::snprintf(ipBuf, sizeof(ipBuf), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
@@ -118,28 +119,32 @@ void CrossPointWebServer::begin() {
     return;
   }
 
-  // Check if we have a valid network connection (either STA connected or AP mode)
+  // Check if we have a valid network connection (either STA connected or AP mode).
+  // QEMU plugin-debug has no ESP Wi-Fi radio: open_eth is treated as STA.
   const wifi_mode_t wifiMode = WiFi.getMode();
-  const bool isStaConnected = (wifiMode & WIFI_MODE_STA) && (WiFi.status() == WL_CONNECTED);
+  const bool isStaConnected = M4QemuNet::staConnected() ||
+                              ((wifiMode & WIFI_MODE_STA) && (WiFi.status() == WL_CONNECTED));
   const bool isInApMode = (wifiMode & WIFI_MODE_AP) && (WiFi.softAPgetStationNum() >= 0);  // AP is running
 
   if (!isStaConnected && !isInApMode) {
-    Serial.printf("[%lu] [WEB] Cannot start webserver - no valid network (mode=%d, status=%d)\n", millis(), wifiMode,
-                  WiFi.status());
+    Serial.printf("[%lu] [WEB] Cannot start webserver - no valid network (mode=%d, status=%d, qemu_eth=%d)\n",
+                  millis(), wifiMode, WiFi.status(), m4QemuNetIsUp() ? 1 : 0);
     return;
   }
 
   // Store AP mode flag for later use (e.g., in handleStatus)
-  apMode = isInApMode;
+  apMode = isInApMode && !m4QemuNetWifiCompatConnected();
 
   Serial.printf("[%lu] [WEB] [MEM] Free heap before begin: %d bytes\n", millis(), ESP.getFreeHeap());
-  Serial.printf("[%lu] [WEB] Network mode: %s\n", millis(), apMode ? "AP" : "STA");
+  Serial.printf("[%lu] [WEB] Network mode: %s%s\n", millis(), apMode ? "AP" : "STA",
+                m4QemuNetWifiCompatConnected() ? " (qemu-openeth)" : "");
 
   Serial.printf("[%lu] [WEB] Creating web server on port %d...\n", millis(), port);
   server.reset(new WebServer(port));
 
   // Disable WiFi sleep to improve responsiveness and prevent 'unreachable' errors.
   // This is critical for reliable web server operation on ESP32.
+  // Harmless no-op when only open_eth is up under QEMU.
   WiFi.setSleep(false);
 
   // Note: WebServer class doesn't have setNoDelay() in the standard ESP32 library.
@@ -200,10 +205,16 @@ void CrossPointWebServer::begin() {
   running = true;
 
   Serial.printf("[%lu] [WEB] Web server started on port %d\n", millis(), port);
-  // Show the correct IP based on network mode
-  const String ipAddr = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  // Show the correct IP based on network mode (QEMU eth via M4QemuNet helpers).
+  const String ipAddr = apMode ? WiFi.softAPIP().toString() : M4QemuNet::localIpString();
   Serial.printf("[%lu] [WEB] Access at http://%s/\n", millis(), ipAddr.c_str());
   Serial.printf("[%lu] [WEB] WebSocket at ws://%s:%d/\n", millis(), ipAddr.c_str(), wsPort);
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  if (m4QemuNetWifiCompatConnected()) {
+    Serial.printf("[%lu] [WEB] QEMU hostfwd tip: http://127.0.0.1:18080/  (guest %s:80)\n", millis(),
+                  ipAddr.c_str());
+  }
+#endif
   Serial.printf("[%lu] [WEB] [MEM] Free heap after server.begin(): %d bytes\n", millis(), ESP.getFreeHeap());
 }
 
@@ -361,14 +372,15 @@ void CrossPointWebServer::handleNotFound() const {
 
 void CrossPointWebServer::handleStatus() const {
   noteTransferVisitor(server.get());
-  // Get correct IP based on AP vs STA mode
-  const String ipAddr = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  // Get correct IP based on AP vs STA mode (QEMU eth via M4QemuNet helpers).
+  const String ipAddr = apMode ? WiFi.softAPIP().toString() : M4QemuNet::localIpString();
 
   JsonDocument doc;
   doc["version"] = CROSSPOINT_VERSION;
   doc["ip"] = ipAddr;
   doc["mode"] = apMode ? "AP" : "STA";
-  doc["rssi"] = apMode ? 0 : WiFi.RSSI();
+  doc["ssid"] = apMode ? String() : M4QemuNet::ssidString();
+  doc["rssi"] = apMode ? 0 : M4QemuNet::rssiOrZero();
   doc["freeHeap"] = ESP.getFreeHeap();
   doc["uptime"] = millis() / 1000;
 

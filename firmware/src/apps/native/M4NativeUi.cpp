@@ -219,12 +219,13 @@ StyleFlags parseStyleFlags(const std::string& classes) {
 }
 
 bool isComponentName(const std::string& n) {
-  return n == "text" || n == "flowText" || n == "list" || n == "tiles" || n == "tabs" ||
+  return n == "text" || n == "flowText" || n == "image" || n == "list" || n == "tiles" || n == "tabs" ||
          n == "progress" || n == "spacer" || n == "divider" || n == "buttons";
 }
 
 NodeType nodeTypeFor(const std::string& n) {
   if (n == "flowText") return NodeType::FlowText;
+  if (n == "image") return NodeType::Image;
   if (n == "list") return NodeType::List;
   if (n == "tiles") return NodeType::Tiles;
   if (n == "tabs") return NodeType::Tabs;

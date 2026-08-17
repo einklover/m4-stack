@@ -23,6 +23,7 @@ public final class HttpServer {
     private final Runnable onConsume;
     private final BiFunction<Integer, Integer, Boolean> onTap;
     private final BooleanSupplier cacheEnabled;
+    private final BridgeContentApi contentApi;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Object lock = new Object();
     private ServerSocket socket;
@@ -32,11 +33,12 @@ public final class HttpServer {
 
     public HttpServer(PageStore store, Runnable onConsume,
                       BiFunction<Integer, Integer, Boolean> onTap,
-                      BooleanSupplier cacheEnabled) {
+                      BooleanSupplier cacheEnabled, BridgeContentApi contentApi) {
         this.store = store;
         this.onConsume = onConsume;
         this.onTap = onTap;
         this.cacheEnabled = cacheEnabled;
+        this.contentApi = contentApi;
     }
 
     public boolean connected() {
@@ -124,6 +126,18 @@ public final class HttpServer {
                     sendJson(out, statusJson());
                 } else if ("/v1/page".equals(route)) {
                     servePage(out, query);
+                } else if ("/v2/apps".equals(route)) {
+                    sendJson(out, contentApi.appsJson());
+                } else if ("/v2/xhs/feed".equals(route)) {
+                    sendJson(out, contentApi.xhsFeedJson());
+                } else if ("/v2/xhs/note".equals(route)) {
+                    sendJson(out, contentApi.xhsNoteJson());
+                } else if ("/v2/xhs/comments".equals(route)) {
+                    sendJson(out, contentApi.xhsCommentsJson(intParam(query, "advance", 0) == 1));
+                } else if ("/v2/xhs/image".equals(route)) {
+                    byte[] bmp = contentApi.xhsImageBmp(intParam(query, "index", 0));
+                    if (bmp == null) sendSimple(out, 404, "application/json", "{\"ok\":false,\"error\":\"image unavailable\"}");
+                    else sendBytes(out, "image/bmp", bmp);
                 } else {
                     sendSimple(out, 404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
                 }
@@ -141,6 +155,15 @@ public final class HttpServer {
                     boolean ok = x >= 0 && y >= 0 && onTap != null
                             && Boolean.TRUE.equals(onTap.apply(x, y));
                     sendJson(out, "{\"ok\":" + ok + "}");
+                } else if ("/v2/apps/open".equals(route)) {
+                    drainBody(in, contentLength);
+                    sendJson(out, "{\"ok\":" + contentApi.openApp(stringParam(query, "id")) + "}");
+                } else if ("/v2/xhs/feed/open".equals(route)) {
+                    drainBody(in, contentLength);
+                    sendJson(out, "{\"ok\":" + contentApi.openXhsNote(stringParam(query, "token")) + "}");
+                } else if ("/v2/xhs/comments/open".equals(route)) {
+                    drainBody(in, contentLength);
+                    sendJson(out, "{\"ok\":" + contentApi.openXhsComments() + "}");
                 } else {
                     drainBody(in, contentLength);
                     sendSimple(out, 404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
@@ -229,19 +252,35 @@ public final class HttpServer {
         return any ? v : def;
     }
 
+    private static String stringParam(String query, String name) {
+        String prefix = name + "=";
+        for (String part : query.split("&")) {
+            if (part.startsWith(prefix)) return part.substring(prefix.length());
+        }
+        return "";
+    }
+
     private static void sendJson(OutputStream out, String body) throws IOException {
         sendSimple(out, 200, "application/json", body);
     }
 
+    private static void sendBytes(OutputStream out, String type, byte[] body) throws IOException {
+        out.write(("HTTP/1.1 200 OK\r\nContent-Type: " + type + "\r\nContent-Length: "
+                + body.length + "\r\nConnection: close\r\n\r\n")
+                .getBytes(StandardCharsets.ISO_8859_1));
+        out.write(body);
+    }
+
     private static void sendSimple(OutputStream out, int status, String type, String body)
             throws IOException {
-        byte[] b = body.getBytes(StandardCharsets.ISO_8859_1);
+        byte[] b = body.getBytes(StandardCharsets.UTF_8);
         String reason = status == 200 ? "OK"
                 : status == 404 ? "Not Found"
                 : status == 400 ? "Bad Request"
                 : status == 405 ? "Method Not Allowed" : "Error";
         out.write(("HTTP/1.1 " + status + " " + reason + "\r\n"
-                + "Content-Type: " + type + "\r\n"
+                + "Content-Type: " + type + (type.startsWith("text/") || type.contains("json")
+                        ? "; charset=utf-8" : "") + "\r\n"
                 + "Content-Length: " + b.length + "\r\n"
                 + "Connection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
         out.write(b);

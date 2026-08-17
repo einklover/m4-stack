@@ -130,6 +130,16 @@ void numericEntities() {
   assert(s->nodes[0].text == std::string("A\nB中"));
 }
 
+void imageComponent() {
+  const char* xml = R"XML(<m4ui version="1"><screen id="x"><image id="hero" text="@image.path" height="650"/></screen></m4ui>)XML";
+  const auto r = M4NativeUi::parse(xml, std::char_traits<char>::length(xml));
+  assert(r);
+  const auto* s = M4NativeUi::findScreen(r.document, "x");
+  assert(s && s->nodes.size() == 1);
+  assert(s->nodes[0].type == M4NativeUi::NodeType::Image);
+  assert(s->nodes[0].height == 650);
+}
+
 void rootArrayRecords() {
   const std::string json =
       R"JSON([{"chapterid":"101","chaptername":"第一章","isvip":"0"},{"chapterid":"102","chaptername":"第二章","isvip":"1"}])JSON";
@@ -235,6 +245,7 @@ int main() {
   exploreContract();
   loadingPresentation();
   numericEntities();
+  imageComponent();
   rootArrayRecords();
   largeShelfRecords();
   unknownStyleIsForwardCompatible();

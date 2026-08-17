@@ -20,15 +20,24 @@
 #include <cstdint>
 #include <cstring>
 
-#ifdef M4_QEMU_BUILD
+#include "qemu/M4QemuNet.h"
+
+#if defined(CROSSPOINT_MURPHY_M4)
+static TaskHandle_t gM4MainTask = nullptr;
+#endif
+
+#if defined(M4_QEMU_BUILD) || (defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG)
 #include <hal/adc_hal_common.h>
 
 // Espressif QEMU 9.2.2 never raises the ESP32-S3 ADC calibration-done bit,
 // so IDF's pre-app_main calibration constructor otherwise waits forever.
+// Kept for plugin-debug builds that may run without QEMU ADC patch 0001.
 extern "C" uint32_t __wrap_adc_hal_self_calibration(adc_unit_t, adc_atten_t, bool) {
   return 0;
 }
+#endif
 
+#ifdef M4_QEMU_BUILD
 // Volatile keeps the complete application reachable in the QEMU ELF while
 // defaulting the current emulator to its modeled-peripheral boundary.
 static volatile bool gM4QemuScreenMode = true;
@@ -104,6 +113,11 @@ Activity* currentActivity;
 #ifdef CROSSPOINT_MURPHY_M4
 static M4SerialDebug::Bridge gM4DebugBridge;
 static std::string gDebugActiveAppId;
+
+extern "C" void m4YieldToDebugBridge() {
+  if (!gM4MainTask || xTaskGetCurrentTaskHandle() != gM4MainTask) return;
+  gM4DebugBridge.poll();
+}
 
 namespace {
 
@@ -751,6 +765,14 @@ void setup() {
 #endif
 
     SETTINGS.loadFromFile();
+#ifdef M4_QEMU_PLUGIN_FONT
+    if (SdMan.exists("/FONT/" M4_QEMU_PLUGIN_FONT)) {
+      SETTINGS.fontFamily = CrossPointSettings::FONT_CUSTOM;
+      std::snprintf(SETTINGS.customFontFamily, sizeof(SETTINGS.customFontFamily), "%s",
+                    M4_QEMU_PLUGIN_FONT);
+      Serial.printf("[%lu] [M4-QEMU] runtime TTF selected: %s\n", millis(), M4_QEMU_PLUGIN_FONT);
+    }
+#endif
 #ifdef CROSSPOINT_MURPHY_M4
     applyFrontlightSettings(true);
     m4LightOk = true;
@@ -920,6 +942,15 @@ void setup() {
 #endif
     Serial.flush();
 
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    // open_eth + DHCP so Lua plugins / m4adb wifi_* see a usable netif.
+    // Real ESP Wi-Fi is not modeled in Espressif QEMU for S3.
+    if (!m4QemuNetStart(15000)) {
+      Serial.printf("[%lu] [M4-QEMU-PLUGIN] WARNING: open_eth DHCP failed; plugin net will fail\n",
+                    millis());
+    }
+#endif
+
 #ifdef CROSSPOINT_MURPHY_M4
     {
       M4SerialDebug::HostHooks hooks;
@@ -1002,8 +1033,15 @@ void setup() {
         return true;
       };
       gM4DebugBridge.begin(&renderer, &mappedInputManager, &display, std::move(hooks));
+      gM4MainTask = xTaskGetCurrentTaskHandle();
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+      // QEMU plugin-debug: auto-authorize m4adb over UART0 (no Developer Options UI).
+      gM4DebugBridge.setAuthorized(true);
+      Serial.printf("[%lu] [M4-QEMU-PLUGIN] serial debug bridge auto-authorized\n", millis());
+#else
       // Apply persisted setting (default off). No serial path can enable this.
       gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);
+#endif
     }
 #endif
 
@@ -1295,12 +1333,25 @@ void loop() {
 
   // Global full-screen navigation gestures (all activities):
   //   • edge swipe (either direction) → Back (synthetic button so every page responds)
-  //   • bottom-edge swipe up  → Home
+  //   • bottom-edge swipe up / bottom-bar 主页 → Home
+  //
+  // Order matters for m4adb synthetic input:
+  //   beginFrame() clears the previous frame's synth events, then poll() may
+  //   inject a new tap/key for *this* frame. Gesture checks and activity loop
+  //   must run after poll(), otherwise on-screen 主页/返回 never see the tap.
   mappedInputManager.beginFrame();
 #ifdef CROSSPOINT_MURPHY_M4
+  // Apply Developer Options switch every frame (idempotent). Local UI only.
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  gM4DebugBridge.setAuthorized(true);
+#else
+  gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);
+#endif
+  gM4DebugBridge.poll();
+
   if (mappedInputManager.hasTouch() && currentActivity) {
     if (!currentActivity->isHomeActivity() && mappedInputManager.wasHomeGesture()) {
-      Serial.printf("[%lu] [M4-GESTURE] home (bottom swipe up)\n", millis());
+      Serial.printf("[%lu] [M4-GESTURE] home (bottom bar / swipe up)\n", millis());
       // Only the bottom-edge swipe animates. The on-screen Home control is
       // intentionally immediate, like the physical button.
       const bool swipe = mappedInputManager.wasHomeSwipeGesture();
@@ -1308,7 +1359,7 @@ void loop() {
       // Home activity entered; never run the old activity again this frame.
       return;
     } else if (!currentActivity->isHomeActivity() && mappedInputManager.wasBackGesture()) {
-      Serial.printf("[%lu] [M4-GESTURE] back (edge swipe)\n", millis());
+      Serial.printf("[%lu] [M4-GESTURE] back (edge swipe / bottom bar)\n", millis());
       // Arm only for the touch gesture. The destination may be a new activity
       // or a child activity closing inside the current one; both paths render
       // through GfxRenderer::displayBuffer(). Physical Back stays immediate.
@@ -1322,13 +1373,6 @@ void loop() {
       mappedInputManager.pulseSyntheticBack();
     }
   }
-#endif
-
-#ifdef CROSSPOINT_MURPHY_M4
-  // Apply Developer Options switch every frame (idempotent). Local UI only.
-  gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);
-  // After beginFrame (clears prior synthetic), before activity loop consumes input.
-  gM4DebugBridge.poll();
 #endif
 
   const unsigned long activityStartTime = millis();

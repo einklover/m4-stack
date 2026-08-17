@@ -54,7 +54,11 @@ bool isRuntimeTtfFamily(const std::string& familyName) {
   std::transform(suffix.begin(), suffix.end(), suffix.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
-  return suffix == ".ttf";
+  // Keep this in sync with FontManager::isRuntimeFontName(). Collections and
+  // OpenType/CFF faces are the same streamed runtime backend as standalone TTF.
+  // Misclassifying .otf/.ttc/.otc as a legacy epdfont makes the loader create
+  // six independent reader sizes, each with its own parser/cache budget.
+  return suffix == ".ttf" || suffix == ".ttc" || suffix == ".otf" || suffix == ".otc";
 }
 
 void logFontHeap(const char* stage) {
@@ -69,7 +73,7 @@ void logFontHeap(const char* stage) {
 #endif
 }
 
-// Runtime TTFs are expensive faces (stream + cmap + cache metadata). Reuse the
+// Runtime sfnt faces are expensive (stream + cmap + cache metadata). Reuse the
 // exact current reader face across settings/layout reloads instead of recreating
 // it whenever orientation or a non-font setting invalidates pagination.
 std::string activeRuntimeTtfFamily;
@@ -188,7 +192,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
                   d.loadCustomFamily.c_str(), runtimeReaderSize);
   }
 
-  // 1) Explicit CUSTOM family -> reader hash IDs. Runtime TTF deliberately
+  // 1) Explicit CUSTOM family -> reader hash IDs. Runtime sfnt deliberately
   // owns only one Reader rasterizer at the selected body size. System/plugin
   // chrome is owned exclusively by M4FixedRuntimeUiFonts (18/22/26px) so there
   // is no intermediate bitmap-scaled reader face that can leak missing glyphs
@@ -199,7 +203,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
       sizes.push_back(runtimeReaderSize);
     } else {
       // Preserve legacy epdfont behavior; its fixed bitmap artifact is cheap
-      // compared with the runtime TTF rasterizer and existing IDs depend on it.
+      // compared with the runtime sfnt rasterizer and existing IDs depend on it.
       sizes = {12, 14, 16, 18, 20, 24};
       const uint8_t explicitSize = SETTINGS.customFontSize == 0
                                        ? 0
@@ -226,7 +230,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
       activeRuntimeTtfFamily = d.loadCustomFamily;
       activeRuntimeTtfSize = runtimeReaderSize;
       const bool uiPromoted = M4FixedRuntimeUiFonts::ensure(renderer, d.loadCustomFamily.c_str());
-      Serial.printf("[M4-FONT] Runtime TTF '%s' reader=%dpx; fixed UI chrome=%s\n",
+      Serial.printf("[M4-FONT] Runtime sfnt '%s' reader=%dpx; fixed UI chrome=%s\n",
                     d.loadCustomFamily.c_str(), runtimeReaderSize, uiPromoted ? "custom" : "builtin_cjk");
       logFontHeap("runtime_ttf_ready");
     } else {
@@ -238,7 +242,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
 
   if (runtimeTtf && reuseRuntimeTtf) {
     const bool uiPromoted = M4FixedRuntimeUiFonts::ensure(renderer, d.loadCustomFamily.c_str());
-    Serial.printf("[M4-FONT] Reused runtime TTF fixed UI chrome=%s\n",
+    Serial.printf("[M4-FONT] Reused runtime sfnt fixed UI chrome=%s\n",
                   uiPromoted ? "custom" : "builtin_cjk");
     logFontHeap("runtime_ttf_reused");
   }
@@ -294,9 +298,12 @@ int EpdFontLoader::getBestFontId(const char* familyName, int size) {
   }
 #ifdef CROSSPOINT_MURPHY_M4
   // The active runtime face is the source of truth. Bookkeeping is rebuilt on
-  // every SD/font refresh, but a successfully retained TTF face and renderer
+  // every SD/font refresh, but a successfully retained sfnt face and renderer
   // mapping must never silently degrade to the compact OMIT_FONTS fallback.
-  if (activeRuntimeTtfFamily == familyName && activeRuntimeTtfSize == size) return id;
+  if (activeRuntimeTtfFamily == familyName) {
+    if (activeRuntimeTtfSize == size) return id;
+    if (activeRuntimeTtfSize > 0) return hashFontId(activeRuntimeTtfFamily.c_str(), activeRuntimeTtfSize);
+  }
 #endif
   return -1;
 }

@@ -43,6 +43,11 @@ const EpdGlyph* EpdFontFamily::getGlyph(const uint32_t cp, const Style style) co
   return font ? font->getGlyph(cp, style) : nullptr;
 }
 
+int EpdFontFamily::glyphAdvanceX(const uint32_t cp, const Style style) const {
+  const EpdFont* font = getFont(style);
+  return font ? font->glyphAdvanceX(cp, style) : 0;
+}
+
 const uint8_t* EpdFontFamily::loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffer, const Style style) const {
   const EpdFont* font = getFont(style);
   return font ? font->loadGlyphBitmap(glyph, buffer, style) : nullptr;

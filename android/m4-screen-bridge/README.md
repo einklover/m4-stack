@@ -1,8 +1,10 @@
 # M4 Screen Bridge (Android)
 
-Android accessibility screenshot bridge to Murphy M4. Captures the current book
-app screen, converts it to the M4 e-ink framebuffer format, and serves pages
-over fixed TCP port **48624**.
+Android accessibility bridge to Murphy M4. It serves both the original 1bpp
+screen stream and a structured content API over fixed TCP port **48624**. The
+structured API currently exposes the phone launcher directory plus Xiaohongshu
+image/text recommendations, readable note text and comments. Video and live
+cards are rejected rather than opened as a fallback.
 
 Zero third-party dependencies (no AndroidX). minSdk 30 (AccessibilityService
 `takeScreenshot` requires API 30).
@@ -33,6 +35,21 @@ All multi-byte header fields are little-endian.
 - `POST /v1/tap?x=X&y=Y` -> `200` JSON. In realtime mode, maps the M4 logical
   480x800 coordinate onto the letterboxed phone screen, taps it, then captures
   a fresh page 0.
+
+Structured content endpoints used by the native XML plugin:
+
+- `GET /v2/apps`, `POST /v2/apps/open?id=PACKAGE`
+- `GET /v2/xhs/feed`, `POST /v2/xhs/feed/open?token=TOKEN`
+- `GET /v2/xhs/note`
+- `GET /v2/xhs/image?index=N` (480x650 1bpp BMP)
+- `POST /v2/xhs/comments/open`, `GET /v2/xhs/comments?advance=0|1`
+
+The XHS adapter is autonomous: it recognizes the foreground Activity and
+semantic view anchors, navigates back to Discover/Recommend, scrolls the feed,
+and opens visible image/text cards before RecyclerView recycles them. It caches
+the note body, comments, and e-ink-ready images, then returns to the feed. Only
+ready entries are exposed to M4. Stable feed tokens select cached records, so
+reading no longer depends on the phone showing the same page.
 
 Framebuffer: physical 800x480, MSB first, 1 = white, 0 = black. Logical
 portrait (x 0..479, y 0..799) maps to physical `phyX = y`, `phyY = 479 - x`,
@@ -94,6 +111,8 @@ app/src/main/
     Header.java             24-byte LE header (pure Java)
     PageStore.java          bounded page cache (pure Java)
     HttpServer.java         minimal HTTP server, port 48624 (pure Java)
+    BridgeContentApi.java   launcher and structured Xiaohongshu accessibility API
+    XhsFeedParser.java      fail-closed image/text card classifier
     Prefs.java              tunable clamping
   res/...                   manifest, strings, accessibility config, launcher
 app/src/test/java/.../TestMain.java   off-device self-checks (RLE, header, packing, gaps)
@@ -110,3 +129,7 @@ build.gradle                equivalent Gradle build (needs AGP, optional)
   paged readers. Realtime mode forwards the actual M4 touch instead.
 - If a tap fails to turn the page, the duplicate screen is still stored as
   the next page index (kept simple; M4 will just show the same page).
+- Xiaohongshu view ids and descriptions are not a public API. The adapter uses
+  multiple fallbacks, but a future app release may require selector recovery.
+- Structured XHS reading requires the phone unlocked and its accessibility
+  service enabled. The app may visibly navigate while it fills the cache.

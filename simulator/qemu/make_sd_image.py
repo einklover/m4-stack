@@ -29,6 +29,21 @@ def format_image(path: Path, size_mb: int, label: str) -> None:
 
     newfs = shutil.which("newfs_msdos")
     if newfs:
+        # macOS newfs_msdos wants a character device; attach the raw image first.
+        attach = shutil.which("hdiutil")
+        if attach:
+            info = subprocess.run(
+                [attach, "attach", "-imagekey", "diskimage-class=CRawDiskImage",
+                 "-nomount", str(path)],
+                check=True, capture_output=True, text=True,
+            )
+            dev = info.stdout.strip().split()[0]
+            try:
+                subprocess.run([newfs, "-F", "32", "-v", label[:11], dev], check=True)
+            finally:
+                subprocess.run([attach, "detach", dev], check=False,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
         subprocess.run([newfs, "-F", "32", "-v", label[:11], str(path)], check=True)
         return
 

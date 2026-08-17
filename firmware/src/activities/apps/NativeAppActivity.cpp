@@ -105,16 +105,6 @@ void NativeAppActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   error_.clear();
   authLoginPrompted_ = false;
-  if (app_.provider == "screenbridge") {
-    // ScreenBridge is a dedicated fullscreen reader activity, not an XML/UI
-    // document. Closing the child closes the app: the callback only arms a
-    // deferred-exit flag that loop() applies after the child frame returns.
-    screenBridgeExitPending_ = false;
-    enterNewActivity(new ScreenBridgeActivity(renderer, mappedInput, app_.id, [this]() {
-      screenBridgeExitPending_ = true;
-    }));
-    return;
-  }
   if (!loadDocument()) {
     updateRequired_ = true;
     return;
@@ -124,6 +114,7 @@ void NativeAppActivity::onEnter() {
   screenId_ = document_.startScreen;
   selectedIndex_ = 0;
   tabIndex_ = 0;
+  resetFlowPaging();
   controllerRevision_ = controller_ ? controller_->revision() : 0;
   updateRequired_ = true;
 
@@ -142,6 +133,30 @@ void NativeAppActivity::onEnter() {
       (void)M4NativeProviderDiscovery::startDefault(app_.provider, app_.id);
     }
   }
+}
+
+void NativeAppActivity::resetFlowPaging() {
+  flowTextCache_.clear();
+  flowPageOffsets_.assign(1, 0);
+  flowNextOffset_ = 0;
+  flowPageIndex_ = 0;
+  flowHasMore_ = false;
+  flowVisible_ = false;
+}
+
+void NativeAppActivity::turnFlowPage(bool forward) {
+  if (!flowVisible_) return;
+  if (forward) {
+    if (!flowHasMore_) return;
+    if (flowPageIndex_ + 1 >= static_cast<int>(flowPageOffsets_.size())) {
+      flowPageOffsets_.push_back(flowNextOffset_);
+    }
+    ++flowPageIndex_;
+  } else {
+    if (flowPageIndex_ <= 0) return;
+    --flowPageIndex_;
+  }
+  updateRequired_ = true;
 }
 
 void NativeAppActivity::onExit() {
@@ -227,6 +242,14 @@ bool NativeAppActivity::rowAt(int index0, M4NativeUi::Row& out) const {
 }
 
 void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi::Node* node, int index0) {
+  if (action == "ui.flowPrev") {
+    turnFlowPage(false);
+    return;
+  }
+  if (action == "ui.flowNext") {
+    turnFlowPage(true);
+    return;
+  }
   if (action.empty() || !controller_) return;
 
   M4NativeUi::ActionContext ctx;
@@ -264,6 +287,7 @@ void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi
       screenId_ = result.screenId;
       selectedIndex_ = 0;
       tabIndex_ = 0;
+      resetFlowPaging();
       updateRequired_ = true;
       return;
     case M4NativeUi::ActionKind::Close:
@@ -308,6 +332,12 @@ void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi
           }));
       return;
     }
+    case M4NativeUi::ActionKind::OpenScreenBridge:
+      enterNewActivity(new ScreenBridgeActivity(renderer, mappedInput, app_.id, [this]() {
+        requestExitSubActivity();
+        updateRequired_ = true;
+      }));
+      return;
     case M4NativeUi::ActionKind::Error:
       setError(result.error.empty() ? "native_action_failed" : result.error);
       return;
@@ -318,15 +348,6 @@ void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi
 }
 
 void NativeAppActivity::loop() {
-  // ScreenBridge child requested app close. Tear the child down here (parent
-  // frame, outside the child's own loop stack) before closing the app.
-  if (screenBridgeExitPending_) {
-    screenBridgeExitPending_ = false;
-    exitActivity();
-    onExitApp_();
-    return;
-  }
-
   if (subActivity) {
     if (pumpSubActivityFrame()) updateRequired_ = true;
     return;
@@ -348,6 +369,7 @@ void NativeAppActivity::loop() {
   if (!authRequired) authLoginPrompted_ = false;
 
   if (controller_) {
+    controller_->pollAsync();
     const uint32_t revision = controller_->revision();
     if (revision != controllerRevision_) {
       controllerRevision_ = revision;
@@ -377,6 +399,15 @@ void NativeAppActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
     if (!buttonActions_[0].empty()) handleAction(buttonActions_[0]);
     else onExitApp_();
+    return;
+  }
+
+  if (flowVisible_ && mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
+    turnFlowPage(false);
+    return;
+  }
+  if (flowVisible_ && mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
+    turnFlowPage(true);
     return;
   }
 
@@ -411,6 +442,12 @@ void NativeAppActivity::loop() {
 
   if (!mappedInput.hasTouch()) return;
   const auto sw = mappedInput.wasSwipe();
+  if (flowVisible_ && listCount_ <= 0 &&
+      (sw == MappedInputManager::SwipeDir::Up || sw == MappedInputManager::SwipeDir::Left ||
+       sw == MappedInputManager::SwipeDir::Down || sw == MappedInputManager::SwipeDir::Right)) {
+    turnFlowPage(sw == MappedInputManager::SwipeDir::Up || sw == MappedInputManager::SwipeDir::Left);
+    return;
+  }
   if (listCount_ > 0 && (sw == MappedInputManager::SwipeDir::Up ||
                          sw == MappedInputManager::SwipeDir::Down)) {
     const auto metrics = UITheme::getInstance().getMetrics();
@@ -430,6 +467,16 @@ void NativeAppActivity::loop() {
     selectedIndex_ = M4ListTouchPolicy::applyPage(
         selectedIndex_, listCount_, pageItems, sw == MappedInputManager::SwipeDir::Up);
     updateRequired_ = true;
+    return;
+  }
+  if (!flowVisible_ && listCount_ <= 0 && sw == MappedInputManager::SwipeDir::Left &&
+      !buttonActions_[3].empty()) {
+    handleAction(buttonActions_[3]);
+    return;
+  }
+  if (!flowVisible_ && listCount_ <= 0 && sw == MappedInputManager::SwipeDir::Right &&
+      !buttonActions_[2].empty()) {
+    handleAction(buttonActions_[2]);
     return;
   }
 
@@ -507,6 +554,7 @@ void NativeAppActivity::render() {
   tilesCount_ = 0;
   tilesColumns_ = 4;
   tilesNode_ = nullptr;
+  flowVisible_ = false;
 
   if (!error_.empty()) {
     const auto labels = mappedInput.mapLabels("« 返回", "关闭提示", "", "");
@@ -542,6 +590,7 @@ void NativeAppActivity::render() {
     switch (node.type) {
       case M4NativeUi::NodeType::Text: fixedHeight += node.height > 0 ? node.height : textDefaultHeight(node); break;
       case M4NativeUi::NodeType::FlowText: fixedHeight += node.height > 0 ? node.height : flowDefaultHeight(node); break;
+      case M4NativeUi::NodeType::Image: fixedHeight += node.height > 0 ? node.height : 620; break;
       case M4NativeUi::NodeType::Tiles: fixedHeight += node.height > 0 ? node.height : tilesDefaultHeight(node); break;
       case M4NativeUi::NodeType::Tabs: fixedHeight += node.height > 0 ? node.height : metrics.tabBarHeight; break;
       case M4NativeUi::NodeType::Progress: fixedHeight += node.height > 0 ? node.height : 34; break;
@@ -580,24 +629,53 @@ void NativeAppActivity::render() {
       }
       case M4NativeUi::NodeType::FlowText: {
         const int height = node.height > 0 ? node.height : flowDefaultHeight(node);
-        const std::string text = resolved(node.text.empty() ? node.source : node.text);
+        const std::string text = M4UiText::normalizeDisplayBreaks(
+            resolved(node.text.empty() ? node.source : node.text).c_str());
+        if (text != flowTextCache_) {
+          flowTextCache_ = text;
+          flowPageOffsets_.assign(1, 0);
+          flowPageIndex_ = 0;
+        }
+        flowVisible_ = true;
         const bool muted = M4NativeUi::hasStyle(node.style, M4NativeUi::StyleMuted);
         const bool compact = M4NativeUi::hasStyle(node.style, M4NativeUi::StyleCompact) || muted;
         const int fontId = compact ? UI_10_FONT_ID : UI_12_FONT_ID;
         const int lineStep = compact ? 24 : 28;
         const int pad = nodeSidePadding(node, metrics.contentSidePadding);
-        size_t start = 0;
         int lineY = y + 2;
-        while (start <= text.size() && lineY < y + height) {
-          const size_t nl = text.find('\n', start);
-          const size_t end = nl == std::string::npos ? text.size() : nl;
-          const std::string logical = text.substr(start, end - start);
-          const std::string line = M4UiText::truncated(renderer, fontId, logical.c_str(), w - 2 * pad);
+        const int maxLines = std::max(1, height / lineStep - 1);  // reserve footer marker
+        const size_t pageOffset = flowPageOffsets_[static_cast<size_t>(flowPageIndex_)];
+        const auto page = M4UiText::wrapPage(renderer, fontId, text, w - 2 * pad, maxLines,
+                                             pageOffset);
+        flowNextOffset_ = page.nextOffset;
+        flowHasMore_ = page.hasMore;
+        for (const auto& line : page.lines) {
           if (muted) M4UiText::drawMuted(renderer, fontId, pad, lineY, line.c_str());
           else M4UiText::draw(renderer, fontId, pad, lineY, line.c_str());
           lineY += lineStep;
-          if (nl == std::string::npos) break;
-          start = nl + 1;
+        }
+        const std::string marker = "第 " + std::to_string(flowPageIndex_ + 1) + " 页";
+        const int markerWidth = M4UiText::textWidth(renderer, SMALL_FONT_ID, marker.c_str());
+        M4UiText::drawMuted(renderer, SMALL_FONT_ID, std::max(pad, w - pad - markerWidth),
+                            y + height - 22, marker.c_str());
+        y += height;
+        break;
+      }
+      case M4NativeUi::NodeType::Image: {
+        const int height = node.height > 0 ? node.height : 620;
+        const int pad = nodeSidePadding(node, metrics.contentSidePadding);
+        const std::string path = resolved(node.text.empty() ? node.source : node.text);
+        FsFile file;
+        if (!path.empty() && SdMan.openFileForRead("NativeUIImage", path.c_str(), file)) {
+          Bitmap bitmap(file);
+          if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+            renderer.drawBitmap(bitmap, pad, y, std::max(1, w - 2 * pad), height);
+          } else {
+            M4UiText::drawCentered(renderer, UI_10_FONT_ID, y + height / 2, "图片格式错误");
+          }
+          file.close();
+        } else {
+          M4UiText::drawCentered(renderer, UI_10_FONT_ID, y + height / 2, "图片加载中…");
         }
         y += height;
         break;

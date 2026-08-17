@@ -31,6 +31,7 @@ enum class ActionKind {
   OpenProviderBook,
   OpenProviderToc,
   OpenLogin,
+  OpenScreenBridge,
   Error,
 };
 
@@ -60,6 +61,11 @@ struct ActionResult {
     ActionResult r;
     r.kind = ActionKind::OpenProviderBook;
     r.payload = std::move(uri);
+    return r;
+  }
+  static ActionResult openScreenBridge() {
+    ActionResult r;
+    r.kind = ActionKind::OpenScreenBridge;
     return r;
   }
 };
@@ -101,6 +107,10 @@ class Controller {
   // only compares equality; wraparound is harmless. A changed token requests
   // one repaint, avoiding timers or network work inside render().
   virtual uint32_t revision() const { return 0; }
+
+  // Called once per activity loop frame (outside render). Providers may start
+  // background discovery/network here; must not block.
+  virtual void pollAsync() {}
 };
 
 inline bool isBinding(const std::string& s) { return s.size() > 1 && s[0] == '@'; }

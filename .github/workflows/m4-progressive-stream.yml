@@ -1,0 +1,80 @@
+name: Murphy progressive stream regressions
+
+on:
+  push:
+    branches:
+      - agent/m4-emulator-stage13-e2e-validation
+    paths:
+      - 'firmware/src/apps/M4xProgressiveLoader.*'
+      - 'firmware/src/apps/M4xProgressiveHttpState.h'
+      - 'firmware/src/apps/M4xJsonStream.h'
+      - 'firmware/src/apps/providers/M4ProgressiveCatalog.h'
+      - 'firmware/tests/native_app/test_progressive_http_state.cpp'
+      - 'firmware/tests/native_app/test_progressive_catalog.cpp'
+      - 'firmware/tests/native_app/test_jjwxc_catalog_shape.cpp'
+      - 'scripts/bootstrap_deps.sh'
+      - '.github/workflows/m4-progressive-stream.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'firmware/src/apps/M4xProgressiveLoader.*'
+      - 'firmware/src/apps/M4xProgressiveHttpState.h'
+      - 'firmware/src/apps/M4xJsonStream.h'
+      - 'firmware/src/apps/providers/M4ProgressiveCatalog.h'
+      - 'firmware/tests/native_app/test_progressive_http_state.cpp'
+      - 'firmware/tests/native_app/test_progressive_catalog.cpp'
+      - 'firmware/tests/native_app/test_jjwxc_catalog_shape.cpp'
+      - 'scripts/bootstrap_deps.sh'
+      - '.github/workflows/m4-progressive-stream.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-stream-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Payload inactivity and chunk-boundary state
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/src \
+            firmware/tests/native_app/test_progressive_http_state.cpp \
+            -o "$RUNNER_TEMP/test_progressive_http_state"
+          "$RUNNER_TEMP/test_progressive_http_state"
+
+      - name: JJWXC 5,000-row streaming catalog
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/src \
+            firmware/tests/native_app/test_jjwxc_catalog_shape.cpp \
+            -o "$RUNNER_TEMP/test_jjwxc_catalog_shape"
+          "$RUNNER_TEMP/test_jjwxc_catalog_shape"
+
+      - name: Shared progressive catalog policy
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/src \
+            firmware/tests/native_app/test_progressive_catalog.cpp \
+            -o "$RUNNER_TEMP/test_progressive_catalog"
+          "$RUNNER_TEMP/test_progressive_catalog"
+
+  firmware-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: python -m pip install --disable-pip-version-check platformio==6.1.18
+
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Compile Murphy M4 production profile
+        working-directory: firmware
+        run: pio run -e murphy_m4

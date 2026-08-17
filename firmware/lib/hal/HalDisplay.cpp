@@ -1,10 +1,15 @@
 #include <HalDisplay.h>
 #include <HalGPIO.h>
 
-#ifdef M4_QEMU_BUILD
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
 #include <esp_heap_caps.h>
 
 namespace {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+constexpr uintptr_t kQemuEpdFrameAddress = 0x60100000;
+constexpr uintptr_t kQemuEpdRefreshAddress = 0x6010C000;
+#endif
+
 void dumpQemuFrame(const uint8_t* buffer) {
   if (!buffer) return;
   static constexpr uint32_t kChunkBytes = 128;
@@ -41,13 +46,13 @@ HalDisplay::HalDisplay() : einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_R
 #endif
 
 HalDisplay::~HalDisplay() {
-#ifdef M4_QEMU_BUILD
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
   free(qemuFrameBuffer);
 #endif
 }
 
 void HalDisplay::begin() {
-#ifdef M4_QEMU_BUILD
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
   if (!qemuFrameBuffer) {
     qemuFrameBuffer = static_cast<uint8_t*>(heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_SPIRAM));
     if (!qemuFrameBuffer) qemuFrameBuffer = static_cast<uint8_t*>(malloc(BUFFER_SIZE));
@@ -61,7 +66,7 @@ void HalDisplay::begin() {
   Serial.printf("[%lu] [M4-DISP] begin() panel=%ux%u buffer=%lu\n", millis(),
                 static_cast<unsigned>(DISPLAY_WIDTH), static_cast<unsigned>(DISPLAY_HEIGHT),
                 static_cast<unsigned long>(BUFFER_SIZE));
-#ifndef M4_QEMU_BUILD
+#ifndef HALDISPLAY_QEMU_FRAMEBUFFER
   einkDisplay.begin();
 #endif
   if (getFrameBuffer() == nullptr) {
@@ -72,7 +77,7 @@ void HalDisplay::begin() {
 }
 
 void HalDisplay::clearScreen(uint8_t color) const {
-#ifdef M4_QEMU_BUILD
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
   if (qemuFrameBuffer) memset(qemuFrameBuffer, color, BUFFER_SIZE);
 #else
   einkDisplay.clearScreen(color);
@@ -81,7 +86,7 @@ void HalDisplay::clearScreen(uint8_t color) const {
 
 void HalDisplay::drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                            bool fromProgmem) const {
-#ifdef M4_QEMU_BUILD
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
   if (!qemuFrameBuffer) return;
   const uint16_t imageWidthBytes = w / 8;
   for (uint16_t row = 0; row < h && y + row < DISPLAY_HEIGHT; ++row) {
@@ -98,7 +103,7 @@ void HalDisplay::drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uin
 
 void HalDisplay::drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                                       bool fromProgmem) const {
-#ifdef M4_QEMU_BUILD
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
   if (!qemuFrameBuffer) return;
   const uint16_t imageWidthBytes = w / 8;
   for (uint16_t row = 0; row < h && y + row < DISPLAY_HEIGHT; ++row) {
@@ -131,7 +136,13 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
 }
 
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-#ifdef M4_QEMU_BUILD
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  (void)mode;
+  (void)turnOffScreen;
+  if (!qemuFrameBuffer) return;
+  memcpy(reinterpret_cast<void*>(kQemuEpdFrameAddress), qemuFrameBuffer, BUFFER_SIZE);
+  *reinterpret_cast<volatile uint32_t*>(kQemuEpdRefreshAddress) = 1;
+#elif defined(M4_QEMU_BUILD)
   (void)mode;
   (void)turnOffScreen;
   dumpQemuFrame(qemuFrameBuffer);
@@ -141,7 +152,9 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 }
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
-#ifdef M4_QEMU_BUILD
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  displayBuffer(mode, turnOffScreen);
+#elif defined(M4_QEMU_BUILD)
   displayBuffer(mode, turnOffScreen);
 #else
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
@@ -149,13 +162,13 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
 }
 
 void HalDisplay::deepSleep() {
-#ifndef M4_QEMU_BUILD
+#ifndef HALDISPLAY_QEMU_FRAMEBUFFER
   einkDisplay.deepSleep();
 #endif
 }
 
 uint8_t* HalDisplay::getFrameBuffer() const {
-#ifdef M4_QEMU_BUILD
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
   return qemuFrameBuffer;
 #else
   return einkDisplay.getFrameBuffer();
@@ -163,16 +176,47 @@ uint8_t* HalDisplay::getFrameBuffer() const {
 }
 
 void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
+  // The simulator surface is monochrome. Use the high bit as a stable 50%
+  // threshold when a caller supplies the normal two grayscale planes.
+  const uint8_t* plane = msbBuffer ? msbBuffer : lsbBuffer;
+  if (qemuFrameBuffer && plane) memcpy(qemuFrameBuffer, plane, BUFFER_SIZE);
+#else
   einkDisplay.copyGrayscaleBuffers(lsbBuffer, msbBuffer);
+#endif
 }
 
-void HalDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) { einkDisplay.copyGrayscaleLsbBuffers(lsbBuffer); }
+void HalDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
+  if (qemuFrameBuffer && lsbBuffer) memcpy(qemuFrameBuffer, lsbBuffer, BUFFER_SIZE);
+#else
+  einkDisplay.copyGrayscaleLsbBuffers(lsbBuffer);
+#endif
+}
 
-void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay.copyGrayscaleMsbBuffers(msbBuffer); }
+void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
+  if (qemuFrameBuffer && msbBuffer) memcpy(qemuFrameBuffer, msbBuffer, BUFFER_SIZE);
+#else
+  einkDisplay.copyGrayscaleMsbBuffers(msbBuffer);
+#endif
+}
 
-void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
+void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
+  if (qemuFrameBuffer && bwBuffer) memcpy(qemuFrameBuffer, bwBuffer, BUFFER_SIZE);
+#else
+  einkDisplay.cleanupGrayscaleBuffers(bwBuffer);
+#endif
+}
 
-void HalDisplay::displayGrayBuffer(bool turnOffScreen) { einkDisplay.displayGrayBuffer(turnOffScreen); }
+void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
+#ifdef HALDISPLAY_QEMU_FRAMEBUFFER
+  displayBuffer(HALF_REFRESH, turnOffScreen);
+#else
+  einkDisplay.displayGrayBuffer(turnOffScreen);
+#endif
+}
 
 uint32_t HalDisplay::waveformLabRefresh(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                                         bool turnOff) {

@@ -19,6 +19,14 @@ class Transport(ABC):
     def close(self) -> None: ...
 
 
+def is_pty_port(port: str) -> bool:
+    """QEMU exposes the guest UART as a host PTY (/dev/ttysNNN or /dev/pts/N)."""
+    path = port.replace("\\", "/")
+    name = path.rsplit("/", 1)[-1]
+    parent = path.rsplit("/", 2)[-2] if "/" in path else ""
+    return name.startswith("ttys") or parent == "pts"
+
+
 class SerialTransport(Transport):
     def __init__(self, port: str, baud: int = 115200) -> None:
         try:
@@ -41,6 +49,10 @@ class SerialTransport(Transport):
         self._ser.dtr = False
         self._ser.rts = False
         self._ser.open()
+        # tcdrain/flush on a PTY waits until the guest UART reads. External TTF
+        # paints block poll() for several seconds, so flush() makes ./m4sim ui
+        # tap/key look timed out. USB serial still drains.
+        self._drain_on_write = not is_pty_port(port)
 
     def write(self, data: str) -> None:
         if not data.endswith("\n"):
@@ -49,14 +61,16 @@ class SerialTransport(Transport):
         # USB-Serial/JTAG has a 64-byte FIFO and Arduino's RX queue is 256
         # bytes.  A single pyserial write can otherwise arrive as one burst,
         # overflow RX, and silently lose a long chk frame.  Pace only long
-        # frames; normal control/status requests remain one write/flush.
+        # frames; normal control/status requests remain one write.
         if len(payload) <= 192:
             self._ser.write(payload)
-            self._ser.flush()
+            if self._drain_on_write:
+                self._ser.flush()
             return
         for off in range(0, len(payload), 64):
             self._ser.write(payload[off : off + 64])
-            self._ser.flush()
+            if self._drain_on_write:
+                self._ser.flush()
             if off + 64 < len(payload):
                 # The owner loop may be in an e-ink refresh for several
                 # milliseconds; 25 ms keeps the 256-byte RX queue from

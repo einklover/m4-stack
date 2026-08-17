@@ -18,6 +18,10 @@ class EpdFont {
   bool hasPrintableChars(const char* string, const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const;
 
   virtual const EpdGlyph* getGlyph(uint32_t cp, const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const;
+  // Horizontal layout advance. Bitmap fonts read the table; runtime TTF must
+  // answer from hmtx and must not rasterize. Wrapping/indexing call this.
+  virtual int glyphAdvanceX(uint32_t cp,
+                            const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const;
   virtual const uint8_t* loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffer,
                                          const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const;
 

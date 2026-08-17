@@ -41,6 +41,27 @@ It deliberately does **not** claim analog ADC accuracy. Battery-voltage and
 external-channel analog input belong to the Murphy board model and can be added
 as QOM properties later.
 
+## Patch 0008 — SSD1677 attach
+
+Attaches a digital `murphy-ssd1677` SSI peripheral to GP-SPI2. Requires
+`#include "hw/ssi/ssi.h"` in `esp32s3.c` so `SSI_BUS` expands as a QOM cast
+macro (otherwise the cumulative series fails to link with an undefined
+`SSI_BUS` reference).
+
+## Patch 0009 — SPI0 alias onto SPI1
+
+Production second-stage bootloaders and MSPI paths access SPI0 at
+`0x60003000` as well as SPI1 at `0x60002000`. Upstream only realizes SPI1;
+SPI0 falls into the catch-all iomem window and returns zero, which leaves the
+guest spinning after `entry` while APP CPU waits in ROM `main` for
+`ets_set_user_start`.
+
+This patch aliases SPI0's MMIO onto the existing SPI1 controller so both
+register windows drive the same flash/PSRAM SSI bus. With it applied, an
+unmodified production `murphy_m4` image progresses past second-stage into the
+Arduino/ESP-IDF application (visible via UART0 host logs even when USB-CDC
+`Serial` is silent).
+
 ## Patch 0002 — SPI transfer-buffer indexing
 
 The ESP32-S3 SPI helper iterates `i = 0 .. max(tx_bytes, rx_bytes)` but used the
@@ -73,6 +94,28 @@ The remaining investigation must therefore distinguish:
 - EXTMEM/MMU mapping of PSRAM pages;
 - differences between the older installed QEMU 9.2.2 build and this pinned
   `esp-develop` source baseline.
+
+## Patch 0010 — AES + GDMA (TLS)
+
+mbedtls hardware AES hangs because GDMA could bind the wrong channel
+(`peri_sel || START`), could not DMA to IRAM/PSRAM, and because QEMU modeled
+I-bus SRAM and D-bus DRAM as two different RAM objects. Silicon uses one SRAM
+window; GDMA reconstructs only a 20-bit DRAM address.
+
+This patch matches channels by `peri_sel` only, points GDMA at system memory,
+and aliases `esp32s3.iram` onto `esp32s3.dram`. After it, production-style
+HTTPS (WeRead/JJWXC) should complete a handshake without firmware URL shims.
+
+## Patch 0011 — GDMA full address + AES always DONE
+
+ESP-IDF writes the full virtual descriptor address into the 32-bit LINK
+register. Reconstructing only the 20-bit DRAM window mis-translates PSRAM
+buffers used by larger TLS records (WeRead shelf). Combined with AES leaving
+STATE unset on GDMA failure, mbedtls busy-waits and the guest looks frozen
+after login.
+
+Use the software high bits when present, and always retire AES DMA with
+STATE=DONE so a failed descriptor cannot wedge UART/input.
 
 ## Rules for future patches
 

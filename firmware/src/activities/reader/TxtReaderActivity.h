@@ -288,6 +288,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // tap (panel idle) starts the animation immediately.
   bool quickMode_ = false;
   uint32_t lastPageTurnMs_ = 0;
+  // Taps that arrived while the display task holds the state lock. Applied on
+  // the next unlocked UI tick so poll() never waits on TTF layout.
+  std::atomic<int> pendingTurnDelta_{0};
   // Physical frame snapshot: the page actually laid into the framebuffer and
   // submitted to the EPD. Updated when render starts; consumed by
   // finishPhysicalDisplay AFTER the animation settles. NEVER assign

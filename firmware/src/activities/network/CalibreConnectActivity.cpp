@@ -3,6 +3,7 @@
 #include <ESPmDNS.h>
 #include <GfxRenderer.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
 
 #include "MappedInputManager.h"
@@ -10,22 +11,53 @@
 #include "WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "qemu/M4QemuNet.h"
 #include "util/M4UiText.h"
 
 namespace {
 constexpr const char* HOSTNAME = "crosspoint";
+
+void logInternalHeap(const char* where) {
+  Serial.printf("[%lu] [CAL] [MEM] %s internal_free=%u largest=%u\n", millis(), where,
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+}
 }  // namespace
 
 void CalibreConnectActivity::taskTrampoline(void* param) {
-  auto* self = static_cast<CalibreConnectActivity*>(param);
-  self->displayTaskLoop();
+  static_cast<CalibreConnectActivity*>(param)->displayTaskLoop();
+}
+
+bool CalibreConnectActivity::ensureDisplayTask() {
+  if (displayTaskHandle) return true;
+  if (!renderingMutex) {
+    renderingMutex = xSemaphoreCreateMutex();
+    if (!renderingMutex) {
+      Serial.printf("[%lu] [CAL] display mutex allocation failed; transfer remains active\n", millis());
+      return false;
+    }
+  }
+  const BaseType_t ok = xTaskCreate(&CalibreConnectActivity::taskTrampoline, "CalibreConnectTask", 2048,
+                                    this, 1, &displayTaskHandle);
+  if (ok != pdPASS) {
+    displayTaskHandle = nullptr;
+    vSemaphoreDelete(renderingMutex);
+    renderingMutex = nullptr;
+    Serial.printf("[%lu] [CAL] display task allocation failed; transfer remains active\n", millis());
+    return false;
+  }
+  return true;
 }
 
 void CalibreConnectActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
 
-  renderingMutex = xSemaphoreCreateMutex();
-  updateRequired = true;
+  // Do not allocate the 2KB display task while WifiSelection owns the screen.
+  // WiFi/LWIP needs internal RAM more than a hidden parent renderer does.
+  renderingMutex = nullptr;
+  displayTaskHandle = nullptr;
+  updateRequired = false;
+  pendingStartServer = false;
   state = CalibreConnectState::WIFI_SELECTION;
   connectedIP.clear();
   connectedSSID.clear();
@@ -37,26 +69,23 @@ void CalibreConnectActivity::onEnter() {
   lastCompleteAt = 0;
   exitRequested = false;
 
-  xTaskCreate(&CalibreConnectActivity::taskTrampoline, "CalibreConnectTask",
-              2048,               // Stack size
-              this,               // Parameters
-              1,                  // Priority
-              &displayTaskHandle  // Task handle
-  );
-
-  if (WiFi.status() != WL_CONNECTED) {
+  // QEMU plugin-debug rides on open_eth rather than a modeled ESP32-S3 Wi-Fi
+  // radio. Use the shared compatibility layer here just like m4adb/network
+  // probes do; otherwise Calibre incorrectly opens WifiSelection and enters
+  // the unmodeled Wi-Fi scan path, blocking the main owner loop.
+  if (!M4QemuNet::staConnected()) {
     enterNewActivity(new WifiSelectionActivity(renderer, mappedInput,
                                                [this](const bool connected) { onWifiSelectionComplete(connected); }));
   } else {
-    connectedIP = WiFi.localIP().toString().c_str();
-    connectedSSID = WiFi.SSID().c_str();
+    connectedIP = M4QemuNet::localIpStd();
+    connectedSSID = M4QemuNet::ssidStd();
     startWebServer();
   }
 }
 
 void CalibreConnectActivity::onExit() {
   ActivityWithSubactivity::onExit();
-
+  pendingStartServer = false;
   stopWebServer();
   MDNS.end();
 
@@ -66,13 +95,15 @@ void CalibreConnectActivity::onExit() {
   WiFi.mode(WIFI_OFF);
   delay(30);
 
-  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  if (displayTaskHandle && renderingMutex) xSemaphoreTake(renderingMutex, portMAX_DELAY);
   if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
   }
-  vSemaphoreDelete(renderingMutex);
-  renderingMutex = nullptr;
+  if (renderingMutex) {
+    vSemaphoreDelete(renderingMutex);
+    renderingMutex = nullptr;
+  }
 }
 
 void CalibreConnectActivity::onWifiSelectionComplete(const bool connected) {
@@ -82,34 +113,50 @@ void CalibreConnectActivity::onWifiSelectionComplete(const bool connected) {
     return;
   }
 
+  // Capture child data before requesting its deferred exit. Do not allocate
+  // Calibre HTTP/display resources until the child (and its display task) is
+  // actually destroyed by pumpSubActivityFrame().
   if (subActivity) {
     connectedIP = static_cast<WifiSelectionActivity*>(subActivity.get())->getConnectedIP();
   } else {
-    connectedIP = WiFi.localIP().toString().c_str();
+    connectedIP = M4QemuNet::localIpStd();
   }
-  connectedSSID = WiFi.SSID().c_str();
+  connectedSSID = M4QemuNet::ssidStd();
   exitActivity();
-  startWebServer();
+  pendingStartServer = true;
 }
 
 void CalibreConnectActivity::startWebServer() {
+  pendingStartServer = false;
   state = CalibreConnectState::SERVER_STARTING;
-  updateRequired = true;
+  logInternalHeap("before server start (WiFi child released)");
 
   if (MDNS.begin(HOSTNAME)) {
-    // mDNS is optional for the Calibre plugin but still helpful for users.
     Serial.printf("[%lu] [CAL] mDNS started: http://%s.local/\n", millis(), HOSTNAME);
   }
 
-  webServer.reset(new CrossPointWebServer());
+  webServer.reset(new (std::nothrow) CrossPointWebServer());
+  if (!webServer) {
+    state = CalibreConnectState::ERROR;
+    render();
+    logInternalHeap("web server allocation failed");
+    return;
+  }
   webServer->begin();
 
   if (webServer->isRunning()) {
     state = CalibreConnectState::SERVER_RUNNING;
-    updateRequired = true;
+    // Render the first usable screen synchronously. Only then spend internal
+    // RAM on the optional background status-refresh task.
+    render();
+    (void)ensureDisplayTask();
+    updateRequired = false;
+    logInternalHeap("after server start");
   } else {
+    webServer.reset();
     state = CalibreConnectState::ERROR;
-    updateRequired = true;
+    render();
+    logInternalHeap("server begin failed");
   }
 }
 
@@ -122,18 +169,18 @@ void CalibreConnectActivity::stopWebServer() {
 
 void CalibreConnectActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
+    if (!subActivity && pendingStartServer) startWebServer();
     return;
   }
 
-  // Calibre's transfer page also uses the bottom button-hint row.  Make that
-  // row and the M4 edge-left gesture real touch exits, not decorative text.
+  if (pendingStartServer) startWebServer();
+
   auto touchRequestsBack = [this]() {
     if (!mappedInput.hasTouch()) return false;
     if (mappedInput.wasBackGesture()) return true;
     if (mappedInput.wasSwipe() == MappedInputManager::SwipeDir::Left) return true;
-    int tx = 0;
-    int ty = 0;
+    int tx = 0, ty = 0;
     const int bottom = renderer.getScreenHeight() - 92;
     if (mappedInput.wasScreenTapped(tx, ty) && ty >= bottom) return true;
     if (mappedInput.wasScreenTouchDown(tx, ty) && ty >= bottom) return true;
@@ -145,18 +192,11 @@ void CalibreConnectActivity::loop() {
   }
 
   if (webServer && webServer->isRunning()) {
-    const unsigned long timeSinceLastHandleClient = millis() - lastHandleClientTime;
-    if (lastHandleClientTime > 0 && timeSinceLastHandleClient > 100) {
-      Serial.printf("[%lu] [CAL] WARNING: %lu ms gap since last handleClient\n", millis(), timeSinceLastHandleClient);
-    }
-
     esp_task_wdt_reset();
     constexpr int MAX_ITERATIONS = 80;
-    for (int i = 0; i < MAX_ITERATIONS && webServer->isRunning(); i++) {
+    for (int i = 0; i < MAX_ITERATIONS && webServer->isRunning(); ++i) {
       webServer->handleClient();
-      if ((i & 0x07) == 0x07) {
-        esp_task_wdt_reset();
-      }
+      if ((i & 0x07) == 0x07) esp_task_wdt_reset();
       if ((i & 0x0F) == 0x0F) {
         yield();
         if (mappedInput.wasPressed(MappedInputManager::Button::Back) || touchRequestsBack()) {
@@ -194,7 +234,8 @@ void CalibreConnectActivity::loop() {
       changed = true;
     }
     if (changed) {
-      updateRequired = true;
+      if (displayTaskHandle) updateRequired = true;
+      else render();
     }
   }
 
@@ -217,19 +258,18 @@ void CalibreConnectActivity::displayTaskLoop() {
 }
 
 void CalibreConnectActivity::render() const {
-  if (state == CalibreConnectState::SERVER_RUNNING) {
-    renderer.clearScreen();
-    renderServerRunning();
-    renderer.displayBuffer();
-    return;
-  }
-
   renderer.clearScreen();
   const auto pageHeight = renderer.getScreenHeight();
-  if (state == CalibreConnectState::SERVER_STARTING) {
-    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 20, "Starting Calibre...", true, EpdFontFamily::BOLD);
+  if (state == CalibreConnectState::SERVER_RUNNING) {
+    renderServerRunning();
+  } else if (state == CalibreConnectState::SERVER_STARTING) {
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 20, "Starting Calibre...", true,
+                           EpdFontFamily::BOLD);
   } else if (state == CalibreConnectState::ERROR) {
-    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 20, "Calibre setup failed", true, EpdFontFamily::BOLD);
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 20, "Calibre setup failed", true,
+                           EpdFontFamily::BOLD);
+  } else {
+    return;  // WifiSelection child owns the display.
   }
   renderer.displayBuffer();
 }
@@ -245,9 +285,7 @@ void CalibreConnectActivity::renderServerRunning() const {
   M4UiText::drawCentered(renderer, UI_10_FONT_ID, y, "Network", true, EpdFontFamily::BOLD);
   y += LINE_SPACING;
   std::string ssidInfo = "Network: " + connectedSSID;
-  if (ssidInfo.length() > 28) {
-    ssidInfo.replace(25, ssidInfo.length() - 25, "...");
-  }
+  if (ssidInfo.length() > 28) ssidInfo.replace(25, ssidInfo.length() - 25, "...");
   M4UiText::drawCentered(renderer, UI_10_FONT_ID, y, ssidInfo.c_str());
   M4UiText::drawCentered(renderer, UI_10_FONT_ID, y + LINE_SPACING, ("IP: " + connectedIP).c_str());
 
@@ -266,9 +304,7 @@ void CalibreConnectActivity::renderServerRunning() const {
     std::string label = "Receiving";
     if (!currentUploadName.empty()) {
       label += ": " + currentUploadName;
-      if (label.length() > 34) {
-        label.replace(31, label.length() - 31, "...");
-      }
+      if (label.length() > 34) label.replace(31, label.length() - 31, "...");
     }
     renderer.drawCenteredText(SMALL_FONT_ID, y, label.c_str());
     constexpr int barWidth = 300;
@@ -280,9 +316,7 @@ void CalibreConnectActivity::renderServerRunning() const {
 
   if (lastCompleteAt > 0 && (millis() - lastCompleteAt) < 6000) {
     std::string msg = "Received: " + lastCompleteName;
-    if (msg.length() > 36) {
-      msg.replace(33, msg.length() - 33, "...");
-    }
+    if (msg.length() > 36) msg.replace(33, msg.length() - 33, "...");
     renderer.drawCenteredText(SMALL_FONT_ID, y, msg.c_str());
   }
 

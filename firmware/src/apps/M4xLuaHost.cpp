@@ -33,6 +33,7 @@
 #include "util/QRCodeHelper.h"
 #include "util/UrlUtils.h"
 #include "WifiCredentialStore.h"
+#include "qemu/M4QemuNet.h"
 
 #include <EpdFontLoader.h>
 #include <mbedtls/sha256.h>
@@ -1898,12 +1899,23 @@ int l_fs_readAppFile(lua_State* L) {
 
 // Device radio adapter for M4xWifiConnect (never logs passwords).
 struct EspWifiRadio final : M4xWifiConnect::IRadio {
-  bool isConnected() const override { return WiFi.status() == WL_CONNECTED; }
+  bool isConnected() const override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return true;
+#endif
+    return WiFi.status() == WL_CONNECTED;
+  }
   std::string connectedSsid() const override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return "qemu-openeth";
+#endif
     if (WiFi.status() != WL_CONNECTED) return {};
     return std::string(WiFi.SSID().c_str());
   }
   M4xWifiConnect::RadioStatus status() const override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return M4xWifiConnect::RadioStatus::Connected;
+#endif
     const wl_status_t s = WiFi.status();
     if (s == WL_CONNECTED) return M4xWifiConnect::RadioStatus::Connected;
     if (s == WL_CONNECT_FAILED || s == WL_NO_SSID_AVAIL || s == WL_CONNECTION_LOST)
@@ -1912,6 +1924,12 @@ struct EspWifiRadio final : M4xWifiConnect::IRadio {
     return M4xWifiConnect::RadioStatus::Connecting;
   }
   void begin(const std::string& ssid, const std::string& password) override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) {
+      Serial.printf("[M4xNet] QEMU open_eth already up (ssid=%s ignored)\n", ssid.c_str());
+      return;
+    }
+#endif
     // Log SSID only — never password.
     Serial.printf("[M4xNet] WiFi begin ssid=%s\n", ssid.c_str());
     if (password.empty())
@@ -1920,10 +1938,18 @@ struct EspWifiRadio final : M4xWifiConnect::IRadio {
       WiFi.begin(ssid.c_str(), password.c_str());
   }
   void disconnectKeepCreds() override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return;
+#endif
     // false = do not erase credentials
     WiFi.disconnect(false);
   }
-  void setStaMode() override { WiFi.mode(WIFI_STA); }
+  void setStaMode() override {
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+    if (m4QemuNetWifiCompatConnected()) return;
+#endif
+    WiFi.mode(WIFI_STA);
+  }
 };
 
 void pushConnectResult(lua_State* L, const M4xWifiConnect::ConnectResult& r) {
@@ -1943,6 +1969,12 @@ void pushConnectResult(lua_State* L, const M4xWifiConnect::ConnectResult& r) {
 
 int l_net_isConnected(lua_State* L) {
   // Current state only — never pretends connectSaved will succeed.
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  if (m4QemuNetWifiCompatConnected()) {
+    lua_pushboolean(L, 1);
+    return 1;
+  }
+#endif
   lua_pushboolean(L, WiFi.status() == WL_CONNECTED ? 1 : 0);
   return 1;
 }
@@ -2059,7 +2091,12 @@ int l_net_request(lua_State* L) {
     return 1;
   };
 
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  if (!m4QemuNetWifiCompatConnected() && WiFi.status() != WL_CONNECTED)
+    return fail("wifi_not_connected");
+#else
   if (WiFi.status() != WL_CONNECTED) return fail("wifi_not_connected");
+#endif
 
   // Reclaim transient Lua objects before mbedTLS asks for large contiguous
   // internal blocks. If headroom is already unsafe, return a stable OOM code
@@ -2393,7 +2430,12 @@ int l_net_extractPsvts(lua_State* L) {
     return 1;
   };
 
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  if (!m4QemuNetWifiCompatConnected() && WiFi.status() != WL_CONNECTED)
+    return fail("wifi_not_connected");
+#else
   if (WiFi.status() != WL_CONNECTED) return fail("wifi_not_connected");
+#endif
 
   lua_gc(L, LUA_GCCOLLECT, 0);
   const size_t largestInternal =

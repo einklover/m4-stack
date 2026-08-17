@@ -1,5 +1,7 @@
 #include "apps/providers/M4NativeProviderLogin.h"
 
+#include "apps/providers/M4JjwxcEndpoint.h"
+#include "apps/providers/M4WereadEndpoint.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4Psram.h"
 #include "apps/providers/M4NativeProviderIo.h"
@@ -181,7 +183,7 @@ bool waitCancelable(uint32_t ms) {
 
 bool wereadLogin(const std::string& root) {
   publish(Phase::Connecting, "连接微信读书…");
-  SmallResponse uidResp = smallRequest("GET", "https://weread.qq.com/api/auth/getLoginUid");
+  SmallResponse uidResp = smallRequest("GET", std::string(M4_WEREAD_ORIGIN) + "/api/auth/getLoginUid");
   if (!uidResp.ok) {
     publish(uidResp.error == "cancelled" ? Phase::Cancelled : Phase::Error,
             nullptr, uidResp.error.c_str());
@@ -201,7 +203,7 @@ bool wereadLogin(const std::string& root) {
     return false;
   }
 
-  const std::string qr = std::string("https://weread.qq.com/web/confirm?uid=") + uid;
+  const std::string qr = std::string(M4_WEREAD_PUBLIC_ORIGIN) + "/web/confirm?uid=" + uid;
   publish(Phase::WaitingScan, "请用微信或微信读书扫码", nullptr, &qr);
 
   const uint32_t started = millis();
@@ -211,7 +213,7 @@ bool wereadLogin(const std::string& root) {
       return false;
     }
     SmallResponse poll = smallRequest(
-        "GET", std::string("https://weread.qq.com/api/auth/getLoginInfo?uid=") + uid + "&otp=");
+        "GET", std::string(M4_WEREAD_ORIGIN) + "/api/auth/getLoginInfo?uid=" + uid + "&otp=");
     if (cancelled()) {
       publish(Phase::Cancelled, "已取消");
       return false;
@@ -275,7 +277,7 @@ std::string extractJjKey(const std::string& html) {
 
 bool jjwxcLogin(const std::string& root) {
   publish(Phase::Connecting, "连接晋江登录…");
-  const std::string loginUrl = "https://my.jjwxc.net/backend/login/jjreader/login.php";
+  const std::string loginUrl = std::string(M4_JJWXC_MY_BASE) + "/backend/login/jjreader/login.php";
   SmallResponse page = smallRequest("GET", loginUrl, {}, {}, 64u * 1024u);
   if (!page.ok) {
     publish(page.error == "cancelled" ? Phase::Cancelled : Phase::Error,
@@ -291,7 +293,7 @@ bool jjwxcLogin(const std::string& root) {
   const std::string qr = loginUrl + "?sign=" + key;
   publish(Phase::WaitingScan, "请用晋江 App 扫码", nullptr, &qr);
 
-  const std::string callback = "https://my.jjwxc.net/backend/login/jjreader/callback.php";
+  const std::string callback = std::string(M4_JJWXC_MY_BASE) + "/backend/login/jjreader/callback.php";
   const uint32_t started = millis();
   while (millis() - started < 90000u) {
     if (!waitCancelable(2000)) {

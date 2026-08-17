@@ -119,6 +119,7 @@ class Bridge {
   // Off→on authorization is not executable until every byte queued while off
   // has been discarded. Draining is bounded per loop but continues to empty.
   bool enableRxDrainPending_ = false;
+  bool inPoll_ = false;
 
   // Stable copies for status snprintf (Activity::getName() is stable while activity lives;
   // we still copy so StatusSnapshot pointers never dangle if activity switches mid-reply).

@@ -1,0 +1,102 @@
+name: m4 fast firmware loop
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'firmware/src/**'
+      - 'firmware/platformio.ini'
+      - 'firmware/scripts/**'
+      - 'simulator/tests/**'
+      - 'simulator/m4sim.py'
+      - 'simulator/qemu/**'
+      - 'm4sim'
+      - '.github/workflows/m4-fast.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure persistent build cache
+        run: echo "PLATFORMIO_BUILD_CACHE_DIR=$RUNNER_TEMP/platformio-build-cache" >> "$GITHUB_ENV"
+
+      - name: Cache patched QEMU
+        id: qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/espressif-qemu-v3/build-murphy-v3
+            ${{ runner.temp }}/espressif-qemu-v3/pc-bios
+          key: m4sim-qemu-v3-${{ runner.os }}-${{ hashFiles('simulator/qemu/build.py', 'simulator/qemu/build_patched_qemu_v3.py', 'simulator/qemu/patches/**') }}
+
+      - name: Cache PlatformIO packages and compiler objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ${{ runner.temp }}/platformio-build-cache
+          key: m4sim-pio-v1-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config python3 python3-pip python3-venv \
+            libglib2.0-dev libpixman-1-dev libgcrypt20-dev libslirp-dev libsdl2-dev \
+            flex bison dosfstools
+          python3 -m pip install --user -r simulator/qemu/requirements.txt platformio
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap firmware deps
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Build patched QEMU only on cache miss
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 simulator/qemu/build.py \
+            --source-dir "$RUNNER_TEMP/espressif-qemu-v3" \
+            --reconfigure -j 2
+
+      - name: Resolve patched QEMU
+        run: |
+          QEMU="$RUNNER_TEMP/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa"
+          if [[ ! -x "$QEMU" ]]; then
+            QEMU="${QEMU}-unsigned"
+          fi
+          test -x "$QEMU"
+          test -s "$RUNNER_TEMP/espressif-qemu-v3/pc-bios/esp32s3_rev0_rom.bin"
+          echo "QEMU_XTENSA=$QEMU" >> "$GITHUB_ENV"
+          "$QEMU" -machine help | grep -q 'murphy-m4'
+
+      - name: Build plugin-debug firmware once
+        run: |
+          cd firmware
+          pio run -e murphy_m4_qemu_plugin -j 2
+
+      - name: Fast boot/protocol smoke
+        env:
+          M4SIM_SMOKE_TMP: ${{ runner.temp }}/m4sim-fast-smoke
+        run: ./m4sim test smoke --plugin-debug --skip-build --ready-seconds 90
+
+      - name: Network Manager regression
+        env:
+          M4SIM_NETWORK_TMP: ${{ runner.temp }}/m4sim-fast-network
+        run: ./m4sim test network-manager --plugin-debug --skip-build --ready-seconds 90
+
+      - name: Upload fast-loop diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-fast-diagnostics
+          path: |
+            ${{ runner.temp }}/m4sim-fast-smoke/**
+            ${{ runner.temp }}/m4sim-fast-network/**
+          if-no-files-found: ignore
+          retention-days: 3

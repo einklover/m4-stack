@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -97,10 +98,34 @@ def configure_and_build(src: Path, *, jobs: int, reconfigure: bool) -> Path:
             ],
             cwd=build,
         )
-    run(["ninja", "-j", str(max(1, jobs))], cwd=build)
+    # On macOS the final qemu-system-xtensa is an entitlement-wrapped custom
+    # target; a bare ninja all may stop at qemu-system-xtensa-unsigned.
+    run(["ninja", "-j", str(max(1, jobs)), "qemu-system-xtensa"], cwd=build)
     if not binary.is_file():
-        raise RuntimeError(f"expected QEMU binary not produced: {binary}")
+        unsigned = build / "qemu-system-xtensa-unsigned"
+        if unsigned.is_file():
+            binary = unsigned
+        else:
+            raise RuntimeError(f"expected QEMU binary not produced: {binary}")
     return binary
+
+
+def run_stage13_ci_e2e(binary: Path) -> None:
+    """On PR CI, continue from the QEMU gate into the real Stage-13 journey.
+
+    The established workflow on the base branch invokes this script, so putting
+    the continuation here avoids relying on a newly-added workflow being
+    schedulable from a stacked PR. Local builds are unchanged.
+    """
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        return
+    if os.environ.get("M4_SKIP_FULL_E2E", "0") == "1":
+        return
+    runner = HERE / "run_full_e2e_from_existing_qemu.py"
+    if not runner.is_file():
+        return
+    print("[Stage13] QEMU gate passed; starting full TTF/TXT/plugin E2E", flush=True)
+    run([sys.executable, str(runner), str(binary)], cwd=HERE.parents[1])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
             print("patch series applied cleanly")
             return 0
         binary = configure_and_build(src, jobs=args.jobs, reconfigure=args.reconfigure)
+        run_stage13_ci_e2e(binary)
     except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
