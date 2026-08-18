@@ -476,6 +476,19 @@ public final class VirtualBrowserSession {
         return s != null && s.debugInjectCorruptCrc();
     }
 
+    // dumpsys-only synthetic pointer. Same dispatch path as M4B3 TOUCH.
+    // Not a product input source; used for unattended present-mode evidence.
+    public boolean debugTap(int x, int y) {
+        if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT) return false;
+        if (!active || presentation == null) return false;
+        main.post(() -> {
+            long now = SystemClock.uptimeMillis();
+            dispatchTouch(new M4B3Message.Touch(M4B3.TOUCH_DOWN, 0, x, y, now, 1, 1));
+            dispatchTouch(new M4B3Message.Touch(M4B3.TOUCH_UP, 0, x, y, now + 16, 2, 1));
+        });
+        return true;
+    }
+
     public void applyHostOverride(String host, int port) {
         android.content.SharedPreferences sp =
                 hostCtx().getSharedPreferences(ScreenBridgeService.PREFS, android.content.Context.MODE_PRIVATE);

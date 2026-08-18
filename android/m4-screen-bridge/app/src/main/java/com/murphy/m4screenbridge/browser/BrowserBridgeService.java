@@ -164,6 +164,21 @@ public final class BrowserBridgeService extends Service {
                     writer.println("inject-base=" + session.debugInjectWrongBase());
                 } else if ("inject-crc".equals(arg) && session != null) {
                     writer.println("inject-crc=" + session.debugInjectCorruptCrc());
+                } else if (arg.startsWith("tap=") && session != null) {
+                    String[] xy = arg.substring(4).split(",");
+                    boolean ok = false;
+                    int x = -1;
+                    int y = -1;
+                    if (xy.length == 2) {
+                        try {
+                            x = Integer.parseInt(xy[0].trim());
+                            y = Integer.parseInt(xy[1].trim());
+                            ok = session.debugTap(x, y);
+                        } catch (NumberFormatException ignored) {
+                            ok = false;
+                        }
+                    }
+                    writer.println("tap=" + ok + " " + x + "," + y);
                 }
             }
         }

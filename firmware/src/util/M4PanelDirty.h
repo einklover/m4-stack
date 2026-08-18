@@ -31,6 +31,13 @@ constexpr uint32_t kMaxPartialChangedPixels = (kPanelPixels * 28u) / 100u;  // 1
 constexpr uint32_t kMaxPartialsSinceFull = 8;
 constexpr uint32_t kMaxCumulativePartialPixels = kPanelPixels;  // one panel-equivalent
 constexpr uint16_t kPlanCap = 16;  // merge output cap before declaring fragmented
+// Nearby-window compaction only. 96px (~3 tiles X / 6 tiles Y) joins glyph/HUD
+// gaps on one strip. 200px-separated corners stay distinct so Fragmented still
+// covers a scattered multi-widget page. Union-area cap blocks greedy
+// chain-swallow of medium widgets into a half-panel Partial.
+constexpr uint16_t kMergeGapX = 96;
+constexpr uint16_t kMergeGapY = 96;
+constexpr uint32_t kMaxMergeUnionArea = (kPanelPixels * 8u) / 100u;  // 30720
 
 static_assert((kWidth % kTileW) == 0, "tile width divides panel");
 static_assert((kHeight % kTileH) == 0, "tile height divides panel");
@@ -107,6 +114,50 @@ inline bool rowBytesDiffer(const uint8_t* a, const uint8_t* b, int y, int byte0,
     if (a[row + static_cast<size_t>(bx)] != b[row + static_cast<size_t>(bx)]) return true;
   }
   return false;
+}
+
+inline uint32_t rectArea(const Rect& r) {
+  return static_cast<uint32_t>(r.w) * r.h;
+}
+
+inline uint16_t axisGap(int a0, int a1, int b0, int b1) {
+  const int left = a0 < b0 ? a1 : b1;
+  const int right = a0 < b0 ? b0 : a0;
+  const int g = right - left;
+  return g > 0 ? static_cast<uint16_t>(g) : 0;
+}
+
+inline uint16_t gapX(const Rect& a, const Rect& b) {
+  return axisGap(static_cast<int>(a.x), static_cast<int>(a.x) + a.w, static_cast<int>(b.x),
+                 static_cast<int>(b.x) + b.w);
+}
+
+inline uint16_t gapY(const Rect& a, const Rect& b) {
+  return axisGap(static_cast<int>(a.y), static_cast<int>(a.y) + a.h, static_cast<int>(b.y),
+                 static_cast<int>(b.y) + b.h);
+}
+
+inline Rect unionRect(const Rect& a, const Rect& b) {
+  const int x0 = a.x < b.x ? static_cast<int>(a.x) : static_cast<int>(b.x);
+  const int y0 = a.y < b.y ? static_cast<int>(a.y) : static_cast<int>(b.y);
+  const int x1 = (static_cast<int>(a.x) + a.w) > (static_cast<int>(b.x) + b.w)
+                     ? (static_cast<int>(a.x) + a.w)
+                     : (static_cast<int>(b.x) + b.w);
+  const int y1 = (static_cast<int>(a.y) + a.h) > (static_cast<int>(b.y) + b.h)
+                     ? (static_cast<int>(a.y) + a.h)
+                     : (static_cast<int>(b.y) + b.h);
+  Rect r;
+  r.x = static_cast<uint16_t>(x0);
+  r.y = static_cast<uint16_t>(y0);
+  r.w = static_cast<uint16_t>(x1 - x0);
+  r.h = static_cast<uint16_t>(y1 - y0);
+  return r;
+}
+
+inline uint32_t mergeWaste(const Rect& a, const Rect& b) {
+  const uint32_t ua = rectArea(unionRect(a, b));
+  const uint32_t sa = rectArea(a) + rectArea(b);
+  return ua > sa ? ua - sa : 0;
 }
 
 inline bool shrinkToDirty(const uint8_t* prev, const uint8_t* next, Rect& r) {
@@ -228,10 +279,46 @@ inline bool plan(const uint8_t* prev, const uint8_t* next, size_t len, Plan& out
     if (!shrinkToDirty(prev, next, r)) continue;
     if (produced < kPlanCap) {
       out.windows[produced++] = r;
-      out.windowArea += static_cast<uint32_t>(r.w) * r.h;
     } else {
       overflow = true;
     }
+  }
+
+  // Compact nearby windows so a sparse HUD/glyph update (many small gaps on
+  // one strip) does not trip Fragmented. Overflowed plans stay Fragmented so
+  // we never Partial-refresh a truncated cover. Distant widgets stay split.
+  if (!overflow) {
+    while (produced > kMaxWindows) {
+      int bestI = -1;
+      int bestJ = -1;
+      uint32_t bestWaste = 0xFFFFFFFFu;
+      for (uint16_t i = 0; i < produced; ++i) {
+        for (uint16_t j = static_cast<uint16_t>(i + 1); j < produced; ++j) {
+          if (gapX(out.windows[i], out.windows[j]) > kMergeGapX) continue;
+          if (gapY(out.windows[i], out.windows[j]) > kMergeGapY) continue;
+          if (rectArea(unionRect(out.windows[i], out.windows[j])) > kMaxMergeUnionArea) continue;
+          const uint32_t waste = mergeWaste(out.windows[i], out.windows[j]);
+          if (waste < bestWaste) {
+            bestWaste = waste;
+            bestI = static_cast<int>(i);
+            bestJ = static_cast<int>(j);
+          }
+        }
+      }
+      if (bestI < 0) break;
+      Rect u = unionRect(out.windows[bestI], out.windows[bestJ]);
+      if (!shrinkToDirty(prev, next, u)) break;
+      out.windows[bestI] = u;
+      for (uint16_t k = static_cast<uint16_t>(bestJ + 1); k < produced; ++k) {
+        out.windows[k - 1] = out.windows[k];
+      }
+      --produced;
+    }
+  }
+
+  out.windowArea = 0;
+  for (uint16_t i = 0; i < produced; ++i) {
+    out.windowArea += rectArea(out.windows[i]);
   }
   out.windowCount = produced;
   if (overflow) out.windowCount = static_cast<uint16_t>(kPlanCap + 1);

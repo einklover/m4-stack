@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "util/M4PanelDirty.h"
+#include "util/M4PanelMapper.h"
 #include "util/M4PanelPresenter.h"
 
 namespace {
@@ -55,6 +56,9 @@ int main() {
   assert(M4PanelDirty::kMaxPartialChangedPixels == 107520u);
   assert(M4PanelDirty::kMaxPartialsSinceFull == 8);
   assert(M4PanelDirty::kMaxCumulativePartialPixels == 384000u);
+  assert(M4PanelDirty::kMergeGapX == 96);
+  assert(M4PanelDirty::kMergeGapY == 96);
+  assert(M4PanelDirty::kMaxMergeUnionArea == 30720u);
 
   // No-change => skip, no windows.
   {
@@ -163,6 +167,108 @@ int main() {
     assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
     assert(p.windowCount == 5);
     assertAligned(p);
+    Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
+    assert(d.mode == Mode::Full);
+    assert(d.reason == Reason::Fragmented);
+  }
+
+  // Nearby HUD/glyph gaps on one strip compact to <=4 windows (the live
+  // INPUT_TEST counter update: several disconnected digits, changedPixels
+  // far below the 28% dense cap, previously windowCount>4 => Fragmented).
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    const int xs[] = {32, 32, 32, 32, 32, 32};
+    const int ys[] = {20, 68, 116, 164, 212, 260};
+    for (int i = 0; i < 6; ++i) fill(next, xs[i], ys[i], 8, 12);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    assert(p.changedPixels == 6u * 8u * 12u);
+    assert(p.windowCount >= 1 && p.windowCount <= M4PanelDirty::kMaxWindows);
+    assertAligned(p);
+    for (int i = 0; i < 6; ++i) {
+      bool covered = false;
+      for (uint16_t w = 0; w < p.windowCount; ++w) {
+        if (containsPixel(p.windows[w], xs[i] + 1, ys[i] + 1)) covered = true;
+      }
+      assert(covered);
+    }
+    Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
+    assert(d.mode == Mode::Partial);
+    assert(d.reason == Reason::SparsePartial);
+  }
+
+  // Same pattern after the 90° logical->physical map: a HUD text line is a
+  // physical column of glyphs. Digit-only updates must stay Partial.
+  {
+    auto prevLog = std::vector<uint8_t>(M4PanelMapper::kLogicalSize, 0xFF);
+    auto nextLog = prevLog;
+    auto setLog = [](std::vector<uint8_t>& fb, int x, int y, int w, int h) {
+      for (int yy = y; yy < y + h; ++yy) {
+        for (int xx = x; xx < x + w; ++xx) {
+          const size_t off = static_cast<size_t>(yy) * M4PanelMapper::kLogicalStride +
+                             static_cast<size_t>(xx >> 3);
+          fb[off] = static_cast<uint8_t>(fb[off] & static_cast<uint8_t>(~(0x80u >> (xx & 7))));
+        }
+      }
+    };
+    // INPUT_TEST HUD is logical (8,250) 464x250; a one-line counter rewrite
+    // dirties several 8x12 glyphs across that line.
+    const int ly = 252;
+    const int lxs[] = {16, 64, 112, 160, 208, 256};
+    for (int i = 0; i < 6; ++i) setLog(nextLog, lxs[i], ly, 8, 12);
+    auto prevPhy = std::vector<uint8_t>(M4PanelMapper::kPhysicalSize, 0);
+    auto nextPhy = std::vector<uint8_t>(M4PanelMapper::kPhysicalSize, 0);
+    assert(M4PanelMapper::mapLogicalToPhysical(prevLog.data(), prevLog.size(), prevPhy.data(),
+                                               prevPhy.size()) == M4PanelMapper::Status::Ok);
+    assert(M4PanelMapper::mapLogicalToPhysical(nextLog.data(), nextLog.size(), nextPhy.data(),
+                                               nextPhy.size()) == M4PanelMapper::Status::Ok);
+    Plan p{};
+    assert(M4PanelDirty::plan(prevPhy.data(), nextPhy.data(), prevPhy.size(), p));
+    assert(p.changedPixels == 6u * 8u * 12u);
+    assert(p.windowCount >= 1 && p.windowCount <= M4PanelDirty::kMaxWindows);
+    assertAligned(p);
+    Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
+    assert(d.mode == Mode::Partial);
+    assert(d.reason == Reason::SparsePartial);
+  }
+
+  // INPUT_TEST-like first paint vs white: many distant widgets stay Fragmented.
+  // Do not collapse a scattered page into one huge Partial.
+  {
+    auto prevLog = std::vector<uint8_t>(M4PanelMapper::kLogicalSize, 0xFF);
+    auto nextLog = prevLog;
+    auto setLog = [](std::vector<uint8_t>& fb, int x, int y, int w, int h) {
+      for (int yy = y; yy < y + h; ++yy) {
+        for (int xx = x; xx < x + w; ++xx) {
+          const size_t off = static_cast<size_t>(yy) * M4PanelMapper::kLogicalStride +
+                             static_cast<size_t>(xx >> 3);
+          fb[off] = static_cast<uint8_t>(fb[off] & static_cast<uint8_t>(~(0x80u >> (xx & 7))));
+        }
+      }
+    };
+    setLog(nextLog, 0, 0, 48, 48);        // TL
+    setLog(nextLog, 432, 0, 48, 48);      // TR
+    setLog(nextLog, 0, 752, 48, 48);      // BL
+    setLog(nextLog, 432, 752, 48, 48);    // BR
+    setLog(nextLog, 216, 376, 48, 48);    // CTR
+    setLog(nextLog, 64, 140, 72, 36);     // A
+    setLog(nextLog, 300, 420, 40, 72);    // B
+    setLog(nextLog, 168, 72, 144, 48);    // BTN
+    setLog(nextLog, 16, 520, 200, 200);   // SCROLL
+    setLog(nextLog, 240, 560, 220, 80);   // DRAG
+    setLog(nextLog, 240, 650, 220, 80);   // LP
+    auto prevPhy = std::vector<uint8_t>(M4PanelMapper::kPhysicalSize, 0);
+    auto nextPhy = std::vector<uint8_t>(M4PanelMapper::kPhysicalSize, 0);
+    assert(M4PanelMapper::mapLogicalToPhysical(prevLog.data(), prevLog.size(), prevPhy.data(),
+                                               prevPhy.size()) == M4PanelMapper::Status::Ok);
+    assert(M4PanelMapper::mapLogicalToPhysical(nextLog.data(), nextLog.size(), nextPhy.data(),
+                                               nextPhy.size()) == M4PanelMapper::Status::Ok);
+    Plan p{};
+    assert(M4PanelDirty::plan(prevPhy.data(), nextPhy.data(), prevPhy.size(), p));
+    assert(p.changedPixels > 0);
+    assert(p.changedPixels < M4PanelDirty::kMaxPartialChangedPixels);
+    assert(p.windowCount > M4PanelDirty::kMaxWindows);
     Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
     assert(d.mode == Mode::Full);
     assert(d.reason == Reason::Fragmented);
