@@ -1,8 +1,9 @@
 #pragma once
 
 // ESP32 glue: map an accepted M4B3 logical frame into a PSRAM panel snapshot
-// and present it with HalDisplay full or production-safe window Fast/DU
-// refresh on the main owner loop. Does not change FRAME_ACK semantics.
+// and present it with HalDisplay full, snapshot HALF hygiene, or
+// production-safe window Fast/DU refresh on the main owner loop.
+// Does not change FRAME_ACK semantics.
 
 #if defined(CROSSPOINT_MURPHY_M4)
 
@@ -32,15 +33,20 @@ struct Snapshot {
   uint32_t partialReq = 0;
   uint32_t partialOk = 0;
   uint32_t partialErr = 0;
+  uint32_t hygieneReq = 0;
+  uint32_t hygieneOk = 0;
+  uint32_t hygieneErr = 0;
   uint32_t noChange = 0;
   uint32_t partialsSinceFull = 0;
   uint32_t cumulativePartialPixels = 0;
+  uint32_t uniqueCoveragePixels = 0;
   uint32_t lastDirtyPixels = 0;
   uint32_t lastDirtyArea = 0;
   uint16_t lastRectCount = 0;
   uint32_t lastPolicyReason = 0;
   uint32_t lastFullMs = 0;
   uint32_t lastPartialMs = 0;
+  uint32_t lastHygieneMs = 0;
   int32_t sourceFrameId = -1;
   uint32_t sourceCrc = 0;
   uint32_t panelCrc = 0;

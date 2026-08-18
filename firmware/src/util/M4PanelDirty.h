@@ -28,8 +28,21 @@ constexpr uint16_t kTilesY = kHeight / kTileH;  // 30
 // Conservative production defaults (Phase D). Tune only with hardware evidence.
 constexpr uint16_t kMaxWindows = 4;
 constexpr uint32_t kMaxPartialChangedPixels = (kPanelPixels * 28u) / 100u;  // 107520
-constexpr uint32_t kMaxPartialsSinceFull = 8;
-constexpr uint32_t kMaxCumulativePartialPixels = kPanelPixels;  // one panel-equivalent
+// Content-aware hygiene: a fixed count of tiny Partials must not force a
+// heavy FULL. Cleaning is based on unique tile coverage since the last
+// true clean plus accumulated transition churn. A hard count ceiling exists
+// only as a safety backstop and still requires measured evidence.
+constexpr uint32_t kTilePixels = static_cast<uint32_t>(kTileW) * kTileH;  // 512
+constexpr uint32_t kTileCount = static_cast<uint32_t>(kTilesX) * kTilesY;  // 750
+constexpr uint16_t kCoverageWords = static_cast<uint16_t>((kTileCount + 31u) / 32u);  // 24
+constexpr uint32_t kMaxHygieneCoveragePixels = (kPanelPixels * 25u) / 100u;  // 96000
+constexpr uint32_t kMaxHygieneChurnPixels = (kPanelPixels * 50u) / 100u;     // 192000
+constexpr uint32_t kHardSafetyPartials = 64;
+constexpr uint32_t kHardSafetyMinCoveragePixels = 16384;
+constexpr uint32_t kHardSafetyMinChurnPixels = 32768;
+// Legacy names: count is no longer a sole trigger; cumulative is churn.
+constexpr uint32_t kMaxPartialsSinceFull = kHardSafetyPartials;
+constexpr uint32_t kMaxCumulativePartialPixels = kMaxHygieneChurnPixels;
 constexpr uint16_t kPlanCap = 16;  // merge output cap before declaring fragmented
 // Nearby-window compaction only. 96px (~3 tiles X / 6 tiles Y) joins glyph/HUD
 // gaps on one strip. 200px-separated corners stay distinct so Fragmented still
@@ -57,7 +70,21 @@ enum class Reason : uint8_t {
   ForcedFullRecovery = 9,
 };
 
-enum class Mode : uint8_t { Full = 0, Partial = 1, Skip = 2 };
+enum class Mode : uint8_t { Full = 0, Partial = 1, Skip = 2, Hygiene = 3 };
+
+inline const char* modeName(Mode m) {
+  switch (m) {
+    case Mode::Partial:
+      return "partial";
+    case Mode::Skip:
+      return "skip";
+    case Mode::Hygiene:
+      return "hygiene";
+    case Mode::Full:
+    default:
+      return "full";
+  }
+}
 
 inline const char* reasonName(Reason r) {
   switch (r) {
@@ -106,6 +133,55 @@ struct Decision {
 
 inline uint32_t popcount8(uint8_t v) {
   return static_cast<uint32_t>(__builtin_popcount(static_cast<unsigned>(v)));
+}
+
+inline uint32_t satAdd(uint32_t a, uint32_t b) {
+  const uint32_t s = a + b;
+  return s < a ? 0xFFFFFFFFu : s;
+}
+
+inline void clearCoverage(uint32_t* bits) {
+  if (!bits) return;
+  std::memset(bits, 0, static_cast<size_t>(kCoverageWords) * sizeof(uint32_t));
+}
+
+inline void markCoverageTile(uint32_t* bits, uint16_t tx, uint16_t ty) {
+  if (!bits || tx >= kTilesX || ty >= kTilesY) return;
+  const uint32_t i = static_cast<uint32_t>(ty) * kTilesX + tx;
+  bits[i >> 5] |= (1u << (i & 31u));
+}
+
+inline void markPlanCoverage(uint32_t* bits, const Plan& plan) {
+  if (!bits) return;
+  const uint16_t n = plan.windowCount > kPlanCap ? kPlanCap : plan.windowCount;
+  for (uint16_t i = 0; i < n; ++i) {
+    const Rect& r = plan.windows[i];
+    if (r.w == 0 || r.h == 0) continue;
+    const uint16_t x1 = static_cast<uint16_t>(r.x + r.w - 1);
+    const uint16_t y1 = static_cast<uint16_t>(r.y + r.h - 1);
+    const uint16_t tx0 = static_cast<uint16_t>(r.x / kTileW);
+    const uint16_t tx1 = static_cast<uint16_t>(x1 / kTileW);
+    const uint16_t ty0 = static_cast<uint16_t>(r.y / kTileH);
+    const uint16_t ty1 = static_cast<uint16_t>(y1 / kTileH);
+    for (uint16_t ty = ty0; ty <= ty1 && ty < kTilesY; ++ty) {
+      for (uint16_t tx = tx0; tx <= tx1 && tx < kTilesX; ++tx) {
+        markCoverageTile(bits, tx, ty);
+      }
+    }
+  }
+}
+
+inline uint32_t coverageTileCount(const uint32_t* bits) {
+  if (!bits) return 0;
+  uint32_t n = 0;
+  for (uint16_t i = 0; i < kCoverageWords; ++i) {
+    n += static_cast<uint32_t>(__builtin_popcount(bits[i]));
+  }
+  return n;
+}
+
+inline uint32_t coveragePixels(const uint32_t* bits) {
+  return coverageTileCount(bits) * kTilePixels;
 }
 
 inline bool rowBytesDiffer(const uint8_t* a, const uint8_t* b, int y, int byte0, int byte1Incl) {
@@ -326,7 +402,7 @@ inline bool plan(const uint8_t* prev, const uint8_t* next, size_t len, Plan& out
 }
 
 inline Decision decide(bool baselineTrusted, bool everPresented, const Plan& plan, uint32_t partialsSinceFull,
-                       uint32_t cumulativePartialPixels) {
+                       uint32_t cumulativePartialPixels, uint32_t uniqueCoveragePixels = 0) {
   Decision d;
   if (!everPresented) {
     d.mode = Mode::Full;
@@ -343,16 +419,7 @@ inline Decision decide(bool baselineTrusted, bool everPresented, const Plan& pla
     d.reason = Reason::NoChange;
     return d;
   }
-  if (partialsSinceFull >= kMaxPartialsSinceFull) {
-    d.mode = Mode::Full;
-    d.reason = Reason::CadenceCount;
-    return d;
-  }
-  if (cumulativePartialPixels + plan.changedPixels >= kMaxCumulativePartialPixels) {
-    d.mode = Mode::Full;
-    d.reason = Reason::CadenceArea;
-    return d;
-  }
+  // Content-driven safety FULLs stay absolute. Hygiene is separate.
   if (plan.changedPixels > kMaxPartialChangedPixels) {
     d.mode = Mode::Full;
     d.reason = Reason::DenseArea;
@@ -361,6 +428,23 @@ inline Decision decide(bool baselineTrusted, bool everPresented, const Plan& pla
   if (plan.windowCount == 0 || plan.windowCount > kMaxWindows) {
     d.mode = Mode::Full;
     d.reason = Reason::Fragmented;
+    return d;
+  }
+  const uint32_t nextChurn = satAdd(cumulativePartialPixels, plan.changedPixels);
+  if (uniqueCoveragePixels >= kMaxHygieneCoveragePixels) {
+    d.mode = Mode::Hygiene;
+    d.reason = Reason::CadenceArea;
+    return d;
+  }
+  if (nextChurn >= kMaxHygieneChurnPixels) {
+    d.mode = Mode::Hygiene;
+    d.reason = Reason::CadenceCount;
+    return d;
+  }
+  if (partialsSinceFull >= kHardSafetyPartials &&
+      (uniqueCoveragePixels >= kHardSafetyMinCoveragePixels || nextChurn >= kHardSafetyMinChurnPixels)) {
+    d.mode = Mode::Hygiene;
+    d.reason = Reason::CadenceCount;
     return d;
   }
   d.mode = Mode::Partial;

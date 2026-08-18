@@ -61,6 +61,69 @@ path.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
 fi
 
+# Browser Bridge hygiene: snapshot-absolute stock HALF from a frozen frame.
+# Pinned m4-device @ f86b134 already has waveformLabBaseline (FULL) but not
+# waveformLabHygiene. Do not vendor open-m4-sdk; apply the same post-copy
+# patch style as InputManager so CI / clean clones compile HalDisplay.
+FID_H="$FW/open-m4-sdk/libs/display/FreeInkDisplay/include/FreeInkDisplay.h"
+FID_CC="$FW/open-m4-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp"
+if [[ -f "$FID_H" && -f "$FID_CC" ]] && ! grep -q 'waveformLabHygiene' "$FID_H"; then
+  echo "==> patch FreeInkDisplay: snapshot HALF hygiene (waveformLabHygiene)"
+  python3 - "$FID_H" "$FID_CC" <<'PY'
+from pathlib import Path
+import sys
+
+hdr, src = Path(sys.argv[1]), Path(sys.argv[2])
+h = hdr.read_text(encoding="utf-8")
+c = src.read_text(encoding="utf-8")
+old_h = """  // Waveform Lab baseline: absolute FULL refresh to the given frame.
+  void waveformLabBaseline(const uint8_t* frame);
+"""
+new_h = """  // Waveform Lab baseline: absolute FULL refresh to the given frame.
+  void waveformLabBaseline(const uint8_t* frame);
+  // Snapshot-absolute stock HALF (0xD7 both-plane clean). Hygiene only.
+  void waveformLabHygiene(const uint8_t* frame);
+"""
+old_c = """void FreeInkDisplay::waveformLabBaseline(const uint8_t* frame) {
+  if (!_driver || !frame) return;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  // Absolute FULL: both planes rewritten from the frame (no diff against
+  // whatever the panel currently shows).
+  _driver->display(_bus, frame, nullptr, freeink::RefreshMode::Full, /*turnOff=*/false);
+}
+"""
+new_c = """void FreeInkDisplay::waveformLabBaseline(const uint8_t* frame) {
+  if (!_driver || !frame) return;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  // Absolute FULL: both planes rewritten from the frame (no diff against
+  // whatever the panel currently shows).
+  _driver->display(_bus, frame, nullptr, freeink::RefreshMode::Full, /*turnOff=*/false);
+}
+
+void FreeInkDisplay::waveformLabHygiene(const uint8_t* frame) {
+  if (!_driver || !frame) return;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  // Absolute HALF from the caller snapshot (not the live HAL framebuffer).
+  // Stock 0xD7 both-plane clean; seeds RED=BW. Not a substitute for FULL
+  // FirstBaseline / Untrusted / Recover.
+  _driver->display(_bus, frame, nullptr, freeink::RefreshMode::Half, /*turnOff=*/false);
+}
+"""
+if old_h not in h:
+    raise SystemExit(f"FreeInkDisplay.h waveformLabBaseline anchor missing in {hdr}")
+if old_c not in c:
+    raise SystemExit(f"FreeInkDisplay.cpp waveformLabBaseline anchor missing in {src}")
+hdr.write_text(h.replace(old_h, new_h, 1), encoding="utf-8")
+src.write_text(c.replace(old_c, new_c, 1), encoding="utf-8")
+PY
+fi
+
 # platformio.ini embeds this helper image into every hardware build. It is an
 # unvendored production artifact from the same pinned m4-device snapshot, not a
 # generated placeholder; without restoring it a clean clone cannot build the

@@ -1,6 +1,6 @@
 # HANDOFF — Murphy M4 session entry
 
-Last updated: **2026-08-18**
+Last updated: **2026-08-19**
 
 This file is intentionally thin. **Active goals, progress, measurements and acceptance evidence live in GitHub Issues, not here.**
 
@@ -28,6 +28,7 @@ Current execution issues:
 - **#19 — JJWXC live long-catalog progressive-stream E2E**
 - **#32 — M3 Browser Bridge panel framebuffer mapping and display integration**
 - **#33 — M4 Browser Bridge touch return into the hidden WebView**
+- **#34 — Browser Bridge runtime FULL-refresh flicker / content-aware hygiene**
 
 Completed Browser Bridge milestones:
 
@@ -57,7 +58,13 @@ M4 touch-return work is on a parallel branch based on current `main` / M4 head, 
 agent/eink-browser-bridge-m4
 ```
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Validated M2 remains on `agent/eink-browser-bridge-m2`.
+#34 refresh-flicker / hygiene work is on:
+
+```text
+agent/eink-browser-bridge-refresh-flicker
+```
+
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Use `agent/eink-browser-bridge-refresh-flicker` for #34 hygiene/flicker. Validated M2 remains on `agent/eink-browser-bridge-m2`.
 
 Always inspect HEAD before editing.
 

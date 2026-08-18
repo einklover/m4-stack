@@ -13,6 +13,7 @@
 // is computed by the caller against #3 at take time, including coalesced frames.
 
 #include <cstdint>
+#include <cstring>
 
 #include "util/M4PanelDirty.h"
 
@@ -67,15 +68,21 @@ struct State {
   uint32_t partialReq = 0;
   uint32_t partialOk = 0;
   uint32_t partialErr = 0;
+  uint32_t hygieneReq = 0;
+  uint32_t hygieneOk = 0;
+  uint32_t hygieneErr = 0;
   uint32_t noChange = 0;
   uint32_t partialsSinceFull = 0;
   uint32_t cumulativePartialPixels = 0;
+  uint32_t uniqueCoveragePixels = 0;
+  uint32_t coverageBits[M4PanelDirty::kCoverageWords] = {};
   uint32_t lastDirtyPixels = 0;
   uint32_t lastDirtyArea = 0;
   uint16_t lastRectCount = 0;
   uint32_t lastPolicyReason = 0;
   uint32_t lastFullMs = 0;
   uint32_t lastPartialMs = 0;
+  uint32_t lastHygieneMs = 0;
   int32_t pendingFrameId = -1;
   uint32_t pendingCrc = 0;
   int32_t inflightFrameId = -1;
@@ -104,8 +111,7 @@ class Scheduler {
     // Physical baseline is untrusted after a new acquire. First present is FULL.
     st_.baselineTrusted = false;
     st_.everPresented = false;
-    st_.partialsSinceFull = 0;
-    st_.cumulativePartialPixels = 0;
+    resetHygieneLocked();
     st_.baselineEpoch++;
     return true;
   }
@@ -122,8 +128,7 @@ class Scheduler {
   void notePanelReinit() {
     st_.baselineTrusted = false;
     st_.everPresented = false;
-    st_.partialsSinceFull = 0;
-    st_.cumulativePartialPixels = 0;
+    resetHygieneLocked();
     st_.baselineEpoch++;
   }
 
@@ -176,19 +181,27 @@ class Scheduler {
   }
 
   M4PanelDirty::Decision decide(const M4PanelDirty::Plan& plan) const {
+    uint32_t bits[M4PanelDirty::kCoverageWords];
+    std::memcpy(bits, st_.coverageBits, sizeof(bits));
+    M4PanelDirty::markPlanCoverage(bits, plan);
     return M4PanelDirty::decide(st_.baselineTrusted, st_.everPresented, plan, st_.partialsSinceFull,
-                                st_.cumulativePartialPixels);
+                                st_.cumulativePartialPixels, M4PanelDirty::coveragePixels(bits));
   }
 
   void notePolicy(M4PanelDirty::Mode mode, M4PanelDirty::Reason reason, uint32_t dirtyPixels, uint32_t windowArea,
-                  uint16_t rectCount) {
+                  uint16_t rectCount, const M4PanelDirty::Plan* plan = nullptr) {
     st_.lastPolicyReason = static_cast<uint32_t>(reason);
     st_.lastDirtyPixels = dirtyPixels;
     st_.lastDirtyArea = windowArea;
     st_.lastRectCount = rectCount;
     if (mode == M4PanelDirty::Mode::Full) st_.fullReq++;
     if (mode == M4PanelDirty::Mode::Partial) st_.partialReq++;
+    if (mode == M4PanelDirty::Mode::Hygiene) st_.hygieneReq++;
     if (mode == M4PanelDirty::Mode::Skip) st_.noChange++;
+    if (plan && mode == M4PanelDirty::Mode::Partial) {
+      M4PanelDirty::markPlanCoverage(st_.coverageBits, *plan);
+      st_.uniqueCoveragePixels = M4PanelDirty::coveragePixels(st_.coverageBits);
+    }
   }
 
   void injectNextFailure() { st_.injectNextFail = true; }
@@ -220,15 +233,20 @@ class Scheduler {
         if (mode == M4PanelDirty::Mode::Partial) {
           st_.partialOk++;
           st_.lastPartialMs = elapsedMs;
-          st_.partialsSinceFull++;
-          st_.cumulativePartialPixels += dirtyPixels;
+          st_.partialsSinceFull = M4PanelDirty::satAdd(st_.partialsSinceFull, 1);
+          st_.cumulativePartialPixels = M4PanelDirty::satAdd(st_.cumulativePartialPixels, dirtyPixels);
+          st_.baselineTrusted = true;
+          st_.everPresented = true;
+        } else if (mode == M4PanelDirty::Mode::Hygiene) {
+          st_.hygieneOk++;
+          st_.lastHygieneMs = elapsedMs;
+          resetHygieneLocked();
           st_.baselineTrusted = true;
           st_.everPresented = true;
         } else {
           st_.fullOk++;
           st_.lastFullMs = elapsedMs;
-          st_.partialsSinceFull = 0;
-          st_.cumulativePartialPixels = 0;
+          resetHygieneLocked();
           st_.baselineTrusted = true;
           st_.everPresented = true;
         }
@@ -239,6 +257,9 @@ class Scheduler {
       if (mode == M4PanelDirty::Mode::Partial) {
         st_.partialErr++;
         st_.lastPartialMs = elapsedMs;
+      } else if (mode == M4PanelDirty::Mode::Hygiene) {
+        st_.hygieneErr++;
+        st_.lastHygieneMs = elapsedMs;
       } else {
         st_.fullErr++;
         st_.lastFullMs = elapsedMs;
@@ -279,9 +300,15 @@ class Scheduler {
     st_.inflightCrc = 0;
     st_.baselineTrusted = false;
     st_.everPresented = false;
+    resetHygieneLocked();
+    st_.baselineEpoch++;
+  }
+
+  void resetHygieneLocked() {
     st_.partialsSinceFull = 0;
     st_.cumulativePartialPixels = 0;
-    st_.baselineEpoch++;
+    st_.uniqueCoveragePixels = 0;
+    M4PanelDirty::clearCoverage(st_.coverageBits);
   }
 
   State st_{};

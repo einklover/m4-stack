@@ -283,6 +283,13 @@ void HalDisplay::waveformLabBaseline(const uint8_t* frame) {
   einkDisplay.waveformLabBaseline(frame);
 }
 
+void HalDisplay::waveformLabHygiene(const uint8_t* frame) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (skipOwnedHalRefresh("waveformLabHygiene")) return;
+#endif
+  einkDisplay.waveformLabHygiene(frame);
+}
+
 uint32_t HalDisplay::waveformLabRefreshWindow(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                                               uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                                               bool syncAfter) {

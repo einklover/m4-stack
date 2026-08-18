@@ -225,6 +225,8 @@ Maintain counters such as:
 
 Trigger a full/cleanup refresh when a threshold is crossed rather than blindly doing a full refresh every N frames.
 
+Browser Bridge production policy (M4PanelDirty): unique tile coverage and transition churn drive a stock HALF hygiene clean from the frozen present snapshot. A fixed tiny-Partial count is not a sole FULL trigger. FirstBaseline / Untrusted / DenseArea / Fragmented / reconnect recovery stay absolute FULL. Do not invent custom LUT/voltage/waveform.
+
 Exact waveform selection must follow the M4's existing display driver capabilities; this design must not invent unsupported grayscale/partial modes.
 
 ## 6. Transport
