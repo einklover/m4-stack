@@ -396,9 +396,26 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _tap(client, 420, 756)
         more_ui = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         more_body = _deepest_body(more_ui)
-        if more_body.get("layer") != "more" or more_body.get("overlay") is not False or more_body.get("has_sync") is not False:
-            raise m4sim.M4SimError(f"TXT More capability contract violated: {more_body!r}")
-        more = _capture(client, root, "14-more-full-page")
+        if (more_body.get("layer") != "more" or more_body.get("overlay") is not False or
+                more_body.get("has_sync") is not False or more_body.get("items") != 6 or
+                more_body.get("more_section") != "root"):
+            raise m4sim.M4SimError(f"TXT More root contract violated: {more_body!r}")
+        more = _capture(client, root, "14-more-root")
+
+        # Root item 0 opens the typography/font section inside the same Menu Activity.
+        _send_key(client, "confirm")
+        typography_ui = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        typography_body = _deepest_body(typography_ui)
+        if (typography_body.get("layer") != "more" or
+                typography_body.get("more_section") != "typography" or
+                typography_body.get("items") != 2):
+            raise m4sim.M4SimError(f"More typography section contract violated: {typography_body!r}")
+        typography = _capture(client, root, "14b-more-typography")
+        _send_key(client, "back")
+        more_root_again_ui = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        if _deepest_body(more_root_again_ui).get("more_section") != "root":
+            raise m4sim.M4SimError(f"More section Back did not return to root: {more_root_again_ui!r}")
+        more_root_again = _capture(client, root, "14c-more-root-after-back")
         _send_key(client, "back")
         reader_after_more = _settle_reader(client, proc, qlog, root, "15-reader-after-more")
 
@@ -430,7 +447,9 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _assert_changed(progress_from_font, more_from_progress, "font->progress toolbar -> More")
         _assert_changed(more_from_progress, reader_after_progress_more, "progress More -> reader")
         _assert_changed(chapter_from_progress, reader_after_progress_catalog, "progress catalog -> reader")
-        _assert_changed(more, reader_after_more, "More -> reader")
+        _assert_changed(more, typography, "More root -> typography")
+        _assert_changed(typography, more_root_again, "typography -> More root")
+        _assert_changed(more_root_again, reader_after_more, "More -> reader")
         _assert_changed(bookmark_added, bookmark_list, "More -> bookmark manager")
         _assert_changed(bookmark_list, reader_final, "bookmark manager -> reader")
 
@@ -471,7 +490,7 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
                     reader_after_catalog, progress, progress_seek, reader_after_progress,
                     style, style_adjusted, reader_after_style, progress_from_font,
                     more_from_progress, reader_after_progress_more, chapter_from_progress,
-                    reader_after_progress_catalog, more, reader_after_more,
+                    reader_after_progress_catalog, more, typography, more_root_again, reader_after_more,
                     bookmark_added, bookmark_list, reader_final,
                 )
             ],
