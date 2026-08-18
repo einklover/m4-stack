@@ -3,6 +3,14 @@
 
 #ifdef CROSSPOINT_MURPHY_M4
 #include "../../src/util/M4DisplayOwner.h"
+
+namespace {
+bool skipOwnedHalRefresh(const char* why) {
+  if (!m4BrowserBridgeOwnsDisplay() || m4BrowserBridgeIsPresenting()) return false;
+  Serial.printf("[%lu] [M4-DISP] skip %s — browser bridge owns panel\n", millis(), why);
+  return true;
+}
+}  // namespace
 #endif
 
 #ifdef HALDISPLAY_QEMU_FRAMEBUFFER
@@ -143,6 +151,9 @@ EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
 }
 
 void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (skipOwnedHalRefresh("displayBuffer")) return;
+#endif
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
   (void)mode;
   (void)turnOffScreen;
@@ -159,6 +170,9 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 }
 
 bool HalDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (skipOwnedHalRefresh("displayWindow")) return false;
+#endif
   if (w == 0 || h == 0) return false;
   if ((x % 8) != 0 || (w % 8) != 0) return false;
   if (static_cast<uint32_t>(x) + w > DISPLAY_WIDTH || static_cast<uint32_t>(y) + h > DISPLAY_HEIGHT) {
@@ -182,6 +196,9 @@ bool HalDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, b
 }
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (skipOwnedHalRefresh("refreshDisplay")) return;
+#endif
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
   displayBuffer(mode, turnOffScreen);
 #elif defined(M4_QEMU_BUILD)
@@ -241,6 +258,9 @@ void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
 }
 
 void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (skipOwnedHalRefresh("displayGrayBuffer")) return;
+#endif
 #ifdef HALDISPLAY_QEMU_FRAMEBUFFER
   displayBuffer(HALF_REFRESH, turnOffScreen);
 #else
@@ -250,10 +270,16 @@ void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
 
 uint32_t HalDisplay::waveformLabRefresh(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                                         bool turnOff) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (skipOwnedHalRefresh("waveformLabRefresh")) return 0;
+#endif
   return einkDisplay.waveformLabRefresh(prev, next, lut, turnOff);
 }
 
 void HalDisplay::waveformLabBaseline(const uint8_t* frame) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (skipOwnedHalRefresh("waveformLabBaseline")) return;
+#endif
   einkDisplay.waveformLabBaseline(frame);
 }
 

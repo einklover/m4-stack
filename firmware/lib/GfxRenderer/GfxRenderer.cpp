@@ -740,6 +740,12 @@ void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoi
 static unsigned long start_ms = 0;
 
 void GfxRenderer::clearScreen(const uint8_t color) const {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (m4BrowserBridgeIsPresenting()) {
+    Serial.printf("[%lu] [GFX] skip clearScreen — browser present in flight\n", millis());
+    return;
+  }
+#endif
   start_ms = millis();
   display.clearScreen(color);
 }

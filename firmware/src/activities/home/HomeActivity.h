@@ -21,6 +21,7 @@ class HomeActivity final : public Activity {
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;
+  bool lastBrowserOwned = false;
   bool animateEntry = false;
   int entryAnimationDirection = 0;
   bool hasOpdsUrl = false;

@@ -59,6 +59,8 @@ void invalidatePhysicalBaseline();
 void notePanelReinit();
 void tick(HalDisplay& display, uint32_t nowMs);
 bool browserOwnsDisplay();
+bool isPresenting();
+void setPresenting(bool presenting);
 void snapshot(Snapshot& out, uint32_t nowMs = 0);
 void injectNextFailure();
 

@@ -19,6 +19,10 @@
 
 bool m4BrowserBridgeOwnsDisplay() { return M4B3Panel::browserOwnsDisplay(); }
 
+bool m4BrowserBridgeIsPresenting() { return M4B3Panel::isPresenting(); }
+
+void m4BrowserBridgeSetPresenting(bool presenting) { M4B3Panel::setPresenting(presenting); }
+
 void m4BrowserBridgeInvalidatePhysicalBaseline() { M4B3Panel::invalidatePhysicalBaseline(); }
 
 void m4BrowserBridgeNotePanelReinit() { M4B3Panel::notePanelReinit(); }
@@ -35,14 +39,21 @@ struct Runtime {
   uint8_t* scratch = nullptr;
   uint8_t* pending = nullptr;
   uint8_t* presented = nullptr;
+  uint8_t* presentBuf = nullptr;
   std::atomic<bool> ready{false};
   std::atomic<bool> connected{false};
   std::atomic<bool> owns{false};
+  std::atomic<bool> presenting{false};
   uint8_t lastCorner[4] = {};
   uint16_t lastWin[4][4] = {};
 };
 
 Runtime gRt;
+
+struct PresentingGuard {
+  PresentingGuard() { gRt.presenting.store(true, std::memory_order_release); }
+  ~PresentingGuard() { gRt.presenting.store(false, std::memory_order_release); }
+};
 
 void publishOwner() { gRt.owns.store(gRt.sched.browserOwns(), std::memory_order_release); }
 
@@ -99,21 +110,25 @@ bool begin() {
   gRt.scratch = static_cast<uint8_t*>(M4Psram::mallocPrefer(kPanelBytes));
   gRt.pending = static_cast<uint8_t*>(M4Psram::mallocPrefer(kPanelBytes));
   gRt.presented = static_cast<uint8_t*>(M4Psram::mallocPrefer(kPanelBytes));
-  if (!gRt.scratch || !gRt.pending || !gRt.presented) {
-    Serial.printf("[%lu] [M4B3-PANEL] PSRAM alloc failed scratch=%p pending=%p presented=%p\n", millis(),
-                  static_cast<void*>(gRt.scratch), static_cast<void*>(gRt.pending),
-                  static_cast<void*>(gRt.presented));
+  gRt.presentBuf = static_cast<uint8_t*>(M4Psram::mallocPrefer(kPanelBytes));
+  if (!gRt.scratch || !gRt.pending || !gRt.presented || !gRt.presentBuf) {
+    Serial.printf("[%lu] [M4B3-PANEL] PSRAM alloc failed scratch=%p pending=%p presented=%p present=%p\n",
+                  millis(), static_cast<void*>(gRt.scratch), static_cast<void*>(gRt.pending),
+                  static_cast<void*>(gRt.presented), static_cast<void*>(gRt.presentBuf));
     M4Psram::freePrefer(gRt.scratch);
     M4Psram::freePrefer(gRt.pending);
     M4Psram::freePrefer(gRt.presented);
+    M4Psram::freePrefer(gRt.presentBuf);
     gRt.scratch = nullptr;
     gRt.pending = nullptr;
     gRt.presented = nullptr;
+    gRt.presentBuf = nullptr;
     return false;
   }
   std::memset(gRt.scratch, 0xFF, kPanelBytes);
   std::memset(gRt.pending, 0xFF, kPanelBytes);
   std::memset(gRt.presented, 0xFF, kPanelBytes);
+  std::memset(gRt.presentBuf, 0xFF, kPanelBytes);
   gRt.sched.reset();
   gRt.ready.store(true, std::memory_order_release);
   Serial.printf("[%lu] [M4B3-PANEL] ready snapshot=%u minInterval=%u maxPartialPct=28 maxWin=%u "
@@ -126,7 +141,8 @@ bool begin() {
 }
 
 void offerAccepted(const uint8_t* logical, size_t logicalLen, int32_t frameId, uint32_t sourceCrc) {
-  if (!gRt.ready.load(std::memory_order_acquire) || !gRt.scratch || !gRt.pending || !gRt.presented) {
+  if (!gRt.ready.load(std::memory_order_acquire) || !gRt.scratch || !gRt.pending || !gRt.presented ||
+      !gRt.presentBuf) {
     std::lock_guard<std::mutex> lock(gRt.mu);
     gRt.sched.noteDroppedNoBuffer();
     return;
@@ -235,7 +251,7 @@ void tick(HalDisplay& display, uint32_t nowMs) {
   if (ts != M4PanelPresenter::TakeStatus::Ready) return;
 
   uint8_t* fb = display.getFrameBuffer();
-  if (!fb || HalDisplay::BUFFER_SIZE != kPanelBytes || !gRt.presented) {
+  if (!fb || HalDisplay::BUFFER_SIZE != kPanelBytes || !gRt.presented || !gRt.presentBuf) {
     {
       std::lock_guard<std::mutex> lock(gRt.mu);
       finishFailed(nowMs, static_cast<uint32_t>(M4PanelPresenter::Error::NoFramebuffer),
@@ -260,7 +276,11 @@ void tick(HalDisplay& display, uint32_t nowMs) {
       storeWindows(plan);
       gRt.sched.notePolicy(dec.mode, dec.reason, plan.changedPixels, plan.windowArea, plan.windowCount);
       injectFail = gRt.sched.consumeInjectedFailure();
-      std::memcpy(fb, gRt.pending, kPanelBytes);
+      // Freeze a presenter-owned copy. Home/UI clearScreen() memsets the live
+      // HAL framebuffer on another task; SSD1677 displayImpl re-reads that
+      // pointer after the ~4s FULL, which previously rewrote both planes white.
+      std::memcpy(gRt.presentBuf, gRt.pending, kPanelBytes);
+      std::memcpy(fb, gRt.presentBuf, kPanelBytes);
     }
   }
   if (!planOk) {
@@ -291,8 +311,8 @@ void tick(HalDisplay& display, uint32_t nowMs) {
     return;
   }
 
-  const uint32_t panelCrc = M4B3::crc32(fb, kPanelBytes);
-  copyCorners(fb);
+  const uint32_t panelCrc = M4B3::crc32(gRt.presentBuf, kPanelBytes);
+  copyCorners(gRt.presentBuf);
   Serial.printf("[%lu] [M4B3-PANEL] present-start mode=%s reason=%s src=%ld crc=0x%08x panel=0x%08x "
                 "dirty=%u area=%u rects=%u\n",
                 static_cast<unsigned long>(nowMs),
@@ -303,19 +323,23 @@ void tick(HalDisplay& display, uint32_t nowMs) {
 
   const uint32_t t0 = millis();
   bool ok = true;
-  if (dec.mode == M4PanelDirty::Mode::Partial) {
-    const uint16_t n = plan.windowCount > M4PanelDirty::kMaxWindows ? M4PanelDirty::kMaxWindows
-                                                                   : plan.windowCount;
-    for (uint16_t i = 0; i < n; ++i) {
-      const M4PanelDirty::Rect& r = plan.windows[i];
-      if (!display.displayWindow(r.x, r.y, r.w, r.h, false)) {
-        ok = false;
-        Serial.printf("[%lu] [M4B3-PANEL] window-fail %u,%u %ux%u\n", millis(), r.x, r.y, r.w, r.h);
-        break;
+  {
+    PresentingGuard presenting;
+    if (dec.mode == M4PanelDirty::Mode::Partial) {
+      const uint16_t n = plan.windowCount > M4PanelDirty::kMaxWindows ? M4PanelDirty::kMaxWindows
+                                                                     : plan.windowCount;
+      for (uint16_t i = 0; i < n; ++i) {
+        const M4PanelDirty::Rect& r = plan.windows[i];
+        if (!display.displayWindow(r.x, r.y, r.w, r.h, false)) {
+          ok = false;
+          Serial.printf("[%lu] [M4B3-PANEL] window-fail %u,%u %ux%u\n", millis(), r.x, r.y, r.w, r.h);
+          break;
+        }
       }
+    } else {
+      // Absolute FULL from the frozen snapshot, not the live HAL framebuffer.
+      display.waveformLabBaseline(gRt.presentBuf);
     }
-  } else {
-    display.displayBuffer(HalDisplay::FULL_REFRESH);
   }
   const uint32_t doneMs = millis();
   const uint32_t elapsed = doneMs - t0;
@@ -323,7 +347,7 @@ void tick(HalDisplay& display, uint32_t nowMs) {
   {
     std::lock_guard<std::mutex> lock(gRt.mu);
     if (ok) {
-      std::memcpy(gRt.presented, gRt.pending, kPanelBytes);
+      std::memcpy(gRt.presented, gRt.presentBuf, kPanelBytes);
       gRt.sched.complete(true, panelCrc, doneMs, 0, dec.mode, elapsed, plan.changedPixels, plan.windowArea,
                          plan.windowCount, dec.reason);
     } else {
@@ -337,6 +361,10 @@ void tick(HalDisplay& display, uint32_t nowMs) {
 }
 
 bool browserOwnsDisplay() { return gRt.owns.load(std::memory_order_acquire); }
+
+bool isPresenting() { return gRt.presenting.load(std::memory_order_acquire); }
+
+void setPresenting(bool presenting) { gRt.presenting.store(presenting, std::memory_order_release); }
 
 void injectNextFailure() {
   std::lock_guard<std::mutex> lock(gRt.mu);

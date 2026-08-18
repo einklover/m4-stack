@@ -27,6 +27,7 @@
 #include "components/UITheme.h"
 #include "components/themes/BaseTheme.h"
 #include "fontIds.h"
+#include "util/M4DisplayOwner.h"
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
 #include "util/TouchHitGeometry.h"
@@ -610,6 +611,15 @@ void HomeActivity::loop() {
 
 void HomeActivity::displayTaskLoop() {
   while (true) {
+#ifdef CROSSPOINT_MURPHY_M4
+    const bool owned = m4BrowserBridgeOwnsDisplay();
+    if (lastBrowserOwned && !owned) updateRequired = true;
+    lastBrowserOwned = owned;
+    if (owned) {
+      vTaskDelay(10 / portTICK_PERIOD_MS);
+      continue;
+    }
+#endif
     if (updateRequired) {
       updateRequired = false;
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
