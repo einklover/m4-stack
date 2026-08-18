@@ -15,6 +15,7 @@
 #include <freertos/portmacro.h>
 
 #include "apps/providers/M4Psram.h"
+#include "network/M4B3DiscoveryAdvertise.h"
 #include "network/M4B3Panel.h"
 #include "util/M4B3Input.h"
 #include "util/M4PanelMapper.h"
@@ -90,6 +91,10 @@ void fillSnapshot(Snapshot& s) {
   s.helloOk = gRt.session.helloOk();
   copyCapped(s.peer, sizeof(s.peer), gRt.peer);
   copyCapped(s.bindIp, sizeof(s.bindIp), gRt.bindIp);
+  s.mdnsAdvertised = M4B3DiscoveryAdvertise::advertised();
+  s.mdnsAdds = M4B3DiscoveryAdvertise::adds();
+  s.mdnsRemoves = M4B3DiscoveryAdvertise::removes();
+  s.mdnsErrors = M4B3DiscoveryAdvertise::errors();
   s.acceptedFrameId = gRt.session.acceptedFrameId();
   s.acceptedCrc = gRt.session.acceptedCrc();
   const M4B3::Stats& st = gRt.session.stats();
@@ -179,13 +184,15 @@ void logSnapshot(const char* why) {
   Serial.printf(
       "[%lu] [M4B3] %s listen=%d conn=%d peer=%s bind=%s hello=%d accepted=%ld crc=0x%08x "
       "key=%u patch=%u nack=%u helloN=%u ping=%u rx=%u tx=%u applyErr=%u recon=%u "
-      "rxFill=%u heap=%u minHeap=%u psram=%u panel(owner=%u busy=%d pend=%d req=%u ok=%u coal=%u "
+      "rxFill=%u heap=%u minHeap=%u psram=%u mdns=%d "
+      "panel(owner=%u busy=%d pend=%d req=%u ok=%u coal=%u "
       "drop=%u src=%ld pcrc=0x%08x full=%u/%u part=%u/%u reason=%u "
       "touch(d=%u m=%u u=%u c=%u coal=%u dropM=%u rej=%u q=%u act=%d sess=%u)\n",
       millis(), why, s.listening ? 1 : 0, s.connected ? 1 : 0, s.peer[0] ? s.peer : "-",
       s.bindIp[0] ? s.bindIp : "-", s.helloOk ? 1 : 0, static_cast<long>(s.acceptedFrameId),
       static_cast<unsigned>(s.acceptedCrc), s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx,
       s.applyErrors, s.reconnects, s.rxFilled, s.freeHeap, s.minFreeHeap, s.freePsram,
+      s.mdnsAdvertised ? 1 : 0,
       static_cast<unsigned>(s.panelOwner), s.panelBusy ? 1 : 0, s.panelPending ? 1 : 0, s.presentReq,
       s.presentOk, s.presentCoal, s.presentDrop, static_cast<long>(s.panelSrcId),
       static_cast<unsigned>(s.panelCrc), s.fullOk, s.fullErr, s.partialOk, s.partialErr,
@@ -250,6 +257,7 @@ void closeClient(const char* why) {
 
 void stopListen() {
   closeClient("wifi-down");
+  M4B3DiscoveryAdvertise::sync(false, "");
   if (gRt.server) {
     gRt.server->stop();
     delete gRt.server;
@@ -268,6 +276,7 @@ bool startListen(const IPAddress& ip) {
   gRt.server = srv;
   copyCapped(gRt.bindIp, sizeof(gRt.bindIp), ip.toString().c_str());
   gRt.listening.store(true);
+  M4B3DiscoveryAdvertise::sync(true, gRt.bindIp);
   Serial.printf("[%lu] [M4B3] listen %s:%u (STA only)\n", millis(), gRt.bindIp, static_cast<unsigned>(kPort));
   logSnapshot("listen");
   return true;
@@ -375,6 +384,7 @@ void taskMain(void*) {
         continue;
       }
     }
+    M4B3DiscoveryAdvertise::sync(true, gRt.bindIp);
     acceptIfIdle();
     serviceClient();
     flushInput();

@@ -31,6 +31,8 @@ import com.murphy.m4screenbridge.browser.stream.M4B3InputState;
 import com.murphy.m4screenbridge.browser.stream.M4B3Message;
 import com.murphy.m4screenbridge.browser.stream.M4B3ReferenceReceiver;
 import com.murphy.m4screenbridge.browser.stream.M4B3Sender;
+import com.murphy.m4screenbridge.browser.discovery.M4LanDiscovery;
+import com.murphy.m4screenbridge.browser.discovery.NsdM4Discovery;
 import com.murphy.m4screenbridge.browser.stream.M4B3TcpTransport;
 
 import java.nio.ByteBuffer;
@@ -63,12 +65,16 @@ public final class VirtualBrowserSession {
     private M4B3Sender sender;
     private M4B3ReferenceReceiver localReceiver;
     private M4B3TcpTransport tcpTransport;
-    private String transportMode = "loopback";
-    private String transportEndpoint = "loopback";
+    private String transportMode = "none";
+    private String transportEndpoint = "";
     private volatile boolean transportConnected;
     private volatile long transportReconnects;
     private volatile String transportError = "";
     private boolean helloStarted;
+    private M4LanDiscovery.Engine discoveryEngine;
+    private NsdM4Discovery nsdDiscovery;
+    private volatile String discoverySnap = "";
+    private volatile long discoveryWaitFrames;
 
     private volatile boolean active;
     private volatile long frameCount;
@@ -107,6 +113,7 @@ public final class VirtualBrowserSession {
     private final M4B3InputState inputState = new M4B3InputState();
     private volatile long inputDispatched;
     private volatile String inputSnap = "";
+    private final Runnable discoveryTick = this::tickDiscovery;
 
     public VirtualBrowserSession(Context host) {
         if (host == null) throw new IllegalArgumentException("host is null");
@@ -155,6 +162,8 @@ public final class VirtualBrowserSession {
         transportReconnects = 0;
         transportError = "";
         helloStarted = false;
+        discoveryWaitFrames = 0;
+        discoverySnap = "";
 
         try {
             protocolThread = new HandlerThread("m4-browser-m4b3");
@@ -385,6 +394,8 @@ public final class VirtualBrowserSession {
                 .append(" recon ").append(transportReconnects)
                 .append(" crc ").append(M4B3.crcHex(lastAckedCrc));
         if (!transportError.isEmpty()) sb.append("\nM4B3 err ").append(transportError);
+        if (!discoverySnap.isEmpty()) sb.append("\n").append(discoverySnap);
+        if (discoveryWaitFrames > 0) sb.append(" waitFrames=").append(discoveryWaitFrames);
         sb.append("\n").append(inputSnap.isEmpty() ? inputState.snapshot() : inputSnap)
                 .append(" dispatched=").append(inputDispatched);
         BrowserPresentation.JsProbe probe = presentation == null ? null : presentation.jsProbe();
@@ -461,7 +472,10 @@ public final class VirtualBrowserSession {
 
     private void processLogicalFrame(byte[] target) {
         M4B3Sender s = sender;
-        if (s == null) throw new IllegalStateException("M4B3 sender not started");
+        if (s == null) {
+            discoveryWaitFrames++;
+            return;
+        }
         s.offerFrame(target);
         refreshProtocolStats();
     }
@@ -505,23 +519,120 @@ public final class VirtualBrowserSession {
     private void startTransport() {
         android.content.SharedPreferences sp =
                 host.getSharedPreferences(ScreenBridgeService.PREFS, android.content.Context.MODE_PRIVATE);
-        String hostName = Prefs.m4b3Host(sp);
+        String rawHost = Prefs.m4b3HostRaw(sp);
         int port = Prefs.m4b3Port(sp);
-        if (hostName.isEmpty()) {
-            transportMode = "loopback";
-            transportEndpoint = "loopback";
-            transportConnected = true;
-            localReceiver = new M4B3ReferenceReceiver();
-            sender = new M4B3Sender(packet -> {
-                Handler h = protocolHandler;
-                if (h != null) h.post(() -> deliverLoopback(packet));
-            });
-            sender.connect();
-            helloStarted = true;
+        M4LanDiscovery.HostMode mode = M4LanDiscovery.classify(rawHost);
+        discoveryEngine = new M4LanDiscovery.Engine();
+        if (mode == M4LanDiscovery.HostMode.MANUAL) {
+            discoveryEngine.setManual(rawHost, port);
+            applyDiscoveryDecision(discoveryEngine.decision(), false);
             return;
         }
-        transportMode = "tcp";
-        transportEndpoint = hostName + ":" + port;
+        if (mode == M4LanDiscovery.HostMode.LOOPBACK) {
+            discoveryEngine.setLoopback();
+            applyDiscoveryDecision(discoveryEngine.decision(), false);
+            return;
+        }
+        String cachedHost = Prefs.cachedHost(sp);
+        int cachedPort = Prefs.cachedPort(sp);
+        M4LanDiscovery.Endpoint cached = M4LanDiscovery.validHost(cachedHost) && M4LanDiscovery.validPort(cachedPort)
+                ? new M4LanDiscovery.Endpoint("cached", cachedHost, cachedPort) : null;
+        discoveryEngine.startAuto(cached, SystemClock.elapsedRealtime());
+        applyDiscoveryDecision(discoveryEngine.decision(), false);
+        nsdDiscovery = new NsdM4Discovery(host, new NsdM4Discovery.Listener() {
+            @Override
+            public void onResolved(M4LanDiscovery.Endpoint endpoint) {
+                M4LanDiscovery.Engine eng = discoveryEngine;
+                if (eng == null) return;
+                eng.onResolved(endpoint, SystemClock.elapsedRealtime());
+                applyDiscoveryDecision(eng.decision(), true);
+                NsdM4Discovery nsd = nsdDiscovery;
+                if (nsd != null) nsd.requestRestartIfNeeded(eng);
+            }
+
+            @Override
+            public void onLost(String lostHost, int lostPort) {
+                M4LanDiscovery.Engine eng = discoveryEngine;
+                if (eng == null) return;
+                eng.onLost(lostHost, lostPort, SystemClock.elapsedRealtime());
+                applyDiscoveryDecision(eng.decision(), true);
+            }
+
+            @Override
+            public void onError(String message) {
+                M4LanDiscovery.Engine eng = discoveryEngine;
+                if (eng == null) return;
+                eng.onError(message, SystemClock.elapsedRealtime());
+                discoverySnap = eng.snapshot();
+            }
+        });
+        nsdDiscovery.start();
+        main.removeCallbacks(discoveryTick);
+        main.postDelayed(discoveryTick, 1000);
+    }
+
+    private void tickDiscovery() {
+        M4LanDiscovery.Engine eng = discoveryEngine;
+        NsdM4Discovery nsd = nsdDiscovery;
+        if (eng == null || eng.isStopped()) return;
+        eng.tick(SystemClock.elapsedRealtime());
+        if (nsd != null) nsd.requestRestartIfNeeded(eng);
+        discoverySnap = eng.snapshot();
+        main.postDelayed(discoveryTick, 1000);
+    }
+
+    private void applyDiscoveryDecision(M4LanDiscovery.Decision d, boolean persistCache) {
+        if (d == null) return;
+        discoverySnap = discoveryEngine == null ? "" : discoveryEngine.snapshot();
+        if (d.source == M4LanDiscovery.Source.LOOPBACK) {
+            startLoopbackTransport();
+            return;
+        }
+        if (d.source == M4LanDiscovery.Source.NONE) {
+            stopTcpOnly();
+            transportMode = "none";
+            transportEndpoint = "";
+            transportConnected = false;
+            return;
+        }
+        if (!d.hasEndpoint()) {
+            stopTcpOnly();
+            transportMode = "none";
+            transportEndpoint = "";
+            return;
+        }
+        if (persistCache && d.source == M4LanDiscovery.Source.DISCOVERED) {
+            android.content.SharedPreferences sp =
+                    host.getSharedPreferences(ScreenBridgeService.PREFS, android.content.Context.MODE_PRIVATE);
+            Prefs.storeCachedEndpoint(sp, d.endpoint.host, d.endpoint.port);
+        }
+        startTcpTransport(d.endpoint.host, d.endpoint.port, d.source.name().toLowerCase(Locale.ROOT));
+    }
+
+    private void startLoopbackTransport() {
+        if ("loopback".equals(transportMode) && sender != null && tcpTransport == null) return;
+        stopTcpOnly();
+        transportMode = "loopback";
+        transportEndpoint = "loopback";
+        transportConnected = true;
+        localReceiver = new M4B3ReferenceReceiver();
+        sender = new M4B3Sender(packet -> {
+            Handler h = protocolHandler;
+            if (h != null) h.post(() -> deliverLoopback(packet));
+        });
+        sender.connect();
+        helloStarted = true;
+    }
+
+    private void startTcpTransport(String hostName, int port, String modeLabel) {
+        String ep = hostName + ":" + port;
+        if (tcpTransport != null && ep.equals(transportEndpoint) && sender != null) {
+            transportMode = modeLabel;
+            return;
+        }
+        stopTcpOnly();
+        transportMode = modeLabel;
+        transportEndpoint = ep;
         tcpTransport = new M4B3TcpTransport(protocolHandler, new M4B3TcpTransport.Listener() {
             @Override
             public void onConnected(String endpoint) {
@@ -562,6 +673,20 @@ public final class VirtualBrowserSession {
         });
         sender = new M4B3Sender(tcpTransport);
         tcpTransport.start(hostName, port);
+    }
+
+    private void stopTcpOnly() {
+        if (tcpTransport != null) {
+            tcpTransport.stop();
+            tcpTransport = null;
+        }
+        if (sender != null) {
+            sender.disconnect();
+            sender = null;
+        }
+        localReceiver = null;
+        helloStarted = false;
+        transportConnected = false;
     }
 
     private void deliverLoopback(byte[] packet) {
@@ -648,17 +773,17 @@ public final class VirtualBrowserSession {
             protocolThread = null;
             protocolHandler = null;
         }
-        if (tcpTransport != null) {
-            tcpTransport.stop();
-            tcpTransport = null;
+        main.removeCallbacks(discoveryTick);
+        if (nsdDiscovery != null) {
+            nsdDiscovery.stop();
+            nsdDiscovery = null;
         }
-        if (sender != null) {
-            sender.disconnect();
-            sender = null;
+        if (discoveryEngine != null) {
+            discoveryEngine.stop();
+            discoverySnap = discoveryEngine.snapshot();
+            discoveryEngine = null;
         }
-        localReceiver = null;
-        helloStarted = false;
-        transportConnected = false;
+        stopTcpOnly();
         logicalFrameId = -1;
         if (clearError) error = "";
     }

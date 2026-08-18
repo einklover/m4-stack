@@ -63,14 +63,17 @@ if [ "${1:-}" = "--test" ]; then
     "$STREAM_SRC/M4B3ReferenceReceiver.java" \
     "$STREAM_SRC/M4B3Framer.java" \
     "$STREAM_SRC/M4B3InputState.java" \
+    "$SRC/browser/discovery/M4LanDiscovery.java" \
     "$TEST_SRC/TestMain.java" \
     "$TEST_SRC/BrowserPatchTest.java" \
     "$TEST_SRC/M4B3ProtocolTest.java" \
-    "$TEST_SRC/M4B3InputTest.java"
+    "$TEST_SRC/M4B3InputTest.java" \
+    "$TEST_SRC/M4LanDiscoveryTest.java"
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.TestMain
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.BrowserPatchTest
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.M4B3ProtocolTest
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.M4B3InputTest
+  java -cp "$OUT/testclasses" com.murphy.m4screenbridge.M4LanDiscoveryTest
   exit 0
 fi
 

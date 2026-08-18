@@ -28,6 +28,9 @@ Current execution issues:
 - **#19 — JJWXC live long-catalog progressive-stream E2E**
 - **#32 — M3 Browser Bridge panel framebuffer mapping and display integration**
 - **#33 — M4 Browser Bridge touch return into the hidden WebView**
+- **#34 — Browser Bridge FULL-refresh flicker / nearby-window Partial** — automated host PASS; waiting on human optical confirmation. Do not mutate the live M4/Motorola/display session until that gate.
+- **#38 — Host soak for #34 merge-boundary coverage** — `PASS_AUTOMATED_HOST` at `bd23f73`.
+- **#39 — Browser Bridge LAN discovery / auto-connect groundwork** — host-only mDNS/NsdManager implementation on `agent/eink-browser-bridge-discovery`. Real-device discovery/reconnect proof waits for the #34 optical gate.
 
 Completed Browser Bridge milestones:
 
@@ -57,7 +60,13 @@ M4 touch-return work is on a parallel branch based on current `main` / M4 head, 
 agent/eink-browser-bridge-m4
 ```
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Validated M2 remains on `agent/eink-browser-bridge-m2`.
+LAN discovery / auto-connect groundwork (#39) is on a parallel branch based on the #38 host-soak head (`bd23f73`):
+
+```text
+agent/eink-browser-bridge-discovery
+```
+
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Use `agent/eink-browser-bridge-discovery` for #39 LAN discovery. Validated M2 remains on `agent/eink-browser-bridge-m2`. Do not merge discovery to `main` until the #34 optical gate and a separate real-device discovery task.
 
 Always inspect HEAD before editing.
 

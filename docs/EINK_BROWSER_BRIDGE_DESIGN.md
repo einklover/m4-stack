@@ -247,6 +247,33 @@ HTTP/1.1 101 Switching Protocols
 
 A raw second port is simpler internally, but reusing `48624` is preferable for discovery, firewall behaviour and one-service ownership.
 
+### 6.1.1 LAN discovery (mDNS / DNS-SD)
+
+The Browser Bridge TCP endpoint is advertised and discovered on the local LAN so the Android client does not have to type the M4 IPv4 address. BLE is not used.
+
+**Service record** (existing ESP32 `ESPmDNS` / `mdns.h` + Android `NsdManager` / DNS-SD; no extra libraries):
+
+```text
+type     _m4b3._tcp.local
+name     murphy-m4-browser
+host     murphy-m4.local  (STA IPv4 A record)
+port     48624
+TXT      proto=m4b3
+         role=browser-bridge
+```
+
+Firmware (`M4B3DiscoveryAdvertise`) adds this service only while the M4B3 listener is bound on a real STA IPv4. It never calls `MDNS.end()`, so keyboard/web responders can keep the shared hostname. Framing, ACK, display, and input are unchanged.
+
+Android (`M4LanDiscovery` + `NsdM4Discovery`) classifies `m4b3_host` and selects an endpoint with this precedence:
+
+1. **manual** — non-empty `m4b3_host` that is not `loopback`/`local`. Discovery does not start. Invalid host/port → no-host.
+2. **discovered** — live `_m4b3._tcp` records, validated (IPv4/hostname, port 1–65535, proto TXT empty or `m4b3`), deduplicated by `host:port`, then lexicographically smallest host/port/name.
+3. **cached** — last successfully discovered endpoint, used while searching and after live loss (unless that same host is reported lost).
+4. **none** — empty host, no live/cache. Capture continues; frames are skipped until an endpoint appears.
+5. **loopback** — explicit `loopback`/`local` bypasses discovery and stays on the in-process reference receiver.
+
+Discovery is lifecycle-bounded: one `NsdManager` listener, one in-flight resolve, queue/candidate cap 8, at most 3 discover restarts, 8 s search timeout. `VirtualBrowserSession.stop()` drops the listener, multicast lock, and engine. Status is exposed on the session snapshot (`src=`, `phase=`, `ep=`, retries/errors) without a UI redesign.
+
 Binary packet envelope proposal:
 
 ```text

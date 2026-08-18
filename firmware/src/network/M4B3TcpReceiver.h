@@ -21,6 +21,10 @@ struct Snapshot {
   bool helloOk = false;
   char peer[24] = {};
   char bindIp[16] = {};
+  bool mdnsAdvertised = false;
+  uint32_t mdnsAdds = 0;
+  uint32_t mdnsRemoves = 0;
+  uint32_t mdnsErrors = 0;
   int32_t acceptedFrameId = -1;
   uint32_t acceptedCrc = 0;
   uint32_t keys = 0;

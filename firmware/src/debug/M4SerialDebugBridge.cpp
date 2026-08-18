@@ -542,6 +542,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     snprintf(out, sizeof(out),
              "{\"op\":\"m4b3_status\",\"listening\":%s,\"connected\":%s,\"hello\":%s,"
              "\"peer\":\"%s\",\"bind\":\"%s\",\"port\":48624,"
+             "\"mdns\":%s,\"mdns_adds\":%u,\"mdns_removes\":%u,\"mdns_errors\":%u,"
              "\"accepted_frame_id\":%ld,\"accepted_crc\":%u,"
              "\"keys\":%u,\"patches\":%u,\"nacks\":%u,\"hellos\":%u,\"pings\":%u,"
              "\"bytes_rx\":%u,\"bytes_tx\":%u,\"apply_errors\":%u,\"reconnects\":%u,"
@@ -561,7 +562,8 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"touch_sess_cancel\":%u,\"touch_last_seq\":%u,\"touch_last_xy\":[%u,%u],"
              "\"touch_lat_ms\":%u}",
              s.listening ? "true" : "false", s.connected ? "true" : "false", s.helloOk ? "true" : "false",
-             peerSafe, bindSafe, static_cast<long>(s.acceptedFrameId), static_cast<unsigned>(s.acceptedCrc),
+             peerSafe, bindSafe, s.mdnsAdvertised ? "true" : "false", s.mdnsAdds, s.mdnsRemoves, s.mdnsErrors,
+             static_cast<long>(s.acceptedFrameId), static_cast<unsigned>(s.acceptedCrc),
              s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx, s.applyErrors, s.reconnects,
              static_cast<unsigned>(s.lastNack), s.rxFilled, s.freeHeap, s.minFreeHeap, s.freePsram,
              static_cast<unsigned>(s.panelOwner), s.panelBusy ? "true" : "false",

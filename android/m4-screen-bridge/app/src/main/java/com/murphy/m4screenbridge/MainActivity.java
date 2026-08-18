@@ -147,10 +147,10 @@ public class MainActivity extends Activity {
         browserUrlEt.setText("https://example.com/");
         root.addView(browserUrlEt);
 
-        root.addView(label("M4 主机（空=loopback；实验室填阅读器 STA IP）"));
+        root.addView(label("M4 主机（空=局域网自动发现；loopback=本机；IP=手动覆盖）"));
         m4HostEt = new EditText(this);
         m4HostEt.setSingleLine(true);
-        m4HostEt.setHint("192.168.1.20 或 loopback");
+        m4HostEt.setHint("空=自动发现 或 192.168.0.152 或 loopback");
         root.addView(m4HostEt);
         m4PortEt = new EditText(this);
         m4PortEt.setSingleLine(true);
