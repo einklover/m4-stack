@@ -347,6 +347,42 @@ def cmd_wifi_status(args: argparse.Namespace) -> int:
         c.close()
 
 
+def cmd_m4b3_status(args: argparse.Namespace) -> int:
+    c = _open_client(args)
+    try:
+        print(json.dumps(c.m4b3_status(), ensure_ascii=False, indent=2))
+        return 0
+    except BridgeError as e:
+        print(f"错误 {e.key}: {e.message}", file=sys.stderr)
+        return 1
+    finally:
+        c.close()
+
+
+def cmd_m4b3_panel(args: argparse.Namespace) -> int:
+    c = _open_client(args)
+    try:
+        print(json.dumps(c.m4b3_panel(), ensure_ascii=False, indent=2))
+        return 0
+    except BridgeError as e:
+        print(f"错误 {e.key}: {e.message}", file=sys.stderr)
+        return 1
+    finally:
+        c.close()
+
+
+def cmd_m4b3_inject_fail(args: argparse.Namespace) -> int:
+    c = _open_client(args)
+    try:
+        print(json.dumps(c.m4b3_inject_fail(), ensure_ascii=False, indent=2))
+        return 0
+    except BridgeError as e:
+        print(f"错误 {e.key}: {e.message}", file=sys.stderr)
+        return 1
+    finally:
+        c.close()
+
+
 def cmd_wifi_prepare(args: argparse.Namespace) -> int:
     c = _open_client(args)
     try:
@@ -571,6 +607,7 @@ def cmd_shell(args: argparse.Namespace) -> int:
             if op == "help":
                 print(
                     "ping | status | wifi_status | wifi_prepare | wifi_transfer | sd_probe | "
+                    "m4b3_status | m4b3_panel | m4b3_inject_fail | "
                     "sd_read <path> | "
                     "install <m4x|源码目录> | sync <源码目录> | "
                     "launch <app_id> | screenshot <pbm> | tap <x> <y> | "
@@ -590,6 +627,12 @@ def cmd_shell(args: argparse.Namespace) -> int:
                     result = c.wifi_transfer(timeout=45.0)
                 elif op == "sd_probe" and len(parts) == 1:
                     result = c.sd_probe()
+                elif op == "m4b3_status" and len(parts) == 1:
+                    result = c.m4b3_status()
+                elif op == "m4b3_panel" and len(parts) == 1:
+                    result = c.m4b3_panel()
+                elif op == "m4b3_inject_fail" and len(parts) == 1:
+                    result = c.m4b3_inject_fail()
                 elif op in ("install", "sync") and len(parts) == 2:
                     src = Path(parts[1])
                     m4x, content_hash, _ = pkg.resolve_package(src, DEFAULT_CACHE)
@@ -890,6 +933,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="同 install --transport（默认 auto：Wi-Fi 失败回退 USB）",
     )
     pws = sub.add_parser("wifi_status", help="读取设备 Wi-Fi/IP 状态（不改动连接）")
+    sub.add_parser("m4b3_status", help="读取 M4B3 TCP 接收器状态（逻辑 framebuffer / ACK）")
+    sub.add_parser("m4b3_panel", help="读取 Browser Bridge 面板 present 计数 / 所有权")
+    sub.add_parser("m4b3_inject_fail", help="武装下一次 Browser Bridge present 失败（不驱动面板）")
     pwp = sub.add_parser("wifi_prepare", help="通过当前 USB 会话激活已保存 Wi-Fi")
     pwp.add_argument("--wifi-timeout", type=float, default=45.0)
     pwt = sub.add_parser("wifi_transfer", help="USB 激活 Wi-Fi 并打开设备文件传输界面")
@@ -946,6 +992,9 @@ def main(argv: list[str] | None = None) -> int:
         "http_probe": cmd_http_probe,
         "sd_read": cmd_sd_read,
         "wifi_status": cmd_wifi_status,
+        "m4b3_status": cmd_m4b3_status,
+        "m4b3_panel": cmd_m4b3_panel,
+        "m4b3_inject_fail": cmd_m4b3_inject_fail,
         "wifi_prepare": cmd_wifi_prepare,
         "wifi_transfer": cmd_wifi_transfer,
         "install": cmd_install,

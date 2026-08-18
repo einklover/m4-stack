@@ -1,0 +1,40 @@
+name: Android Screen Bridge
+
+on:
+  push:
+    branches:
+      - agent/eink-browser-bridge
+    paths:
+      - 'android/m4-screen-bridge/**'
+      - '.github/workflows/android-screen-bridge.yml'
+  pull_request:
+    paths:
+      - 'android/m4-screen-bridge/**'
+      - '.github/workflows/android-screen-bridge.yml'
+  workflow_dispatch:
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android platform
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Pure Java self-checks
+        working-directory: android/m4-screen-bridge
+        run: ./build.sh --test
+      - name: Build debug APK
+        working-directory: android/m4-screen-bridge
+        run: ./build.sh
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-screen-bridge-debug
+          path: android/m4-screen-bridge/m4-screen-bridge-debug.apk
+          retention-days: 7

@@ -151,6 +151,29 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
 #endif
 }
 
+bool HalDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
+  if (w == 0 || h == 0) return false;
+  if ((x % 8) != 0 || (w % 8) != 0) return false;
+  if (static_cast<uint32_t>(x) + w > DISPLAY_WIDTH || static_cast<uint32_t>(y) + h > DISPLAY_HEIGHT) {
+    return false;
+  }
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  (void)turnOffScreen;
+  displayBuffer(FAST_REFRESH, false);
+  return true;
+#elif defined(M4_QEMU_BUILD)
+  (void)turnOffScreen;
+  displayBuffer(FAST_REFRESH, false);
+  return true;
+#else
+  // Stock FreeInk API is void. Validation above is the production reject path.
+  // SSD1677 displayWindow already Fast/DU-refreshes a byte-aligned window and,
+  // in single-buffer mode, equalizes RED=BW in that window after activation.
+  einkDisplay.displayWindow(x, y, w, h, turnOffScreen);
+  return true;
+#endif
+}
+
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
   displayBuffer(mode, turnOffScreen);

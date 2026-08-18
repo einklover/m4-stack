@@ -12,6 +12,7 @@
 
 #include "../../src/CrossPointSettings.h"
 #include "../../src/debug/M4WaveformLab.h"
+#include "../../src/util/M4DisplayOwner.h"
 #endif
 
 // Half-buffer geometry constants derived from display dimensions (orientation-aware).
@@ -787,6 +788,12 @@ void GfxRenderer::ageEntryAnimation() {
 }
 
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (m4BrowserBridgeOwnsDisplay()) {
+    Serial.printf("[%lu] [GFX] skip displayBuffer — browser bridge owns panel\n", millis());
+    return;
+  }
+#endif
   auto elapsed = millis() - start_ms;
   Serial.printf("[%lu] [GFX] Time = %lu ms from clearScreen to displayBuffer\n", millis(), elapsed);
 

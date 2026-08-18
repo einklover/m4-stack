@@ -91,6 +91,8 @@ static volatile bool gM4QemuScreenMode = true;
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "activities/apps/AppRuntimeActivity.h"
 #include "activities/apps/NativeAppActivity.h"
+#include "network/M4B3Panel.h"
+#include "network/M4B3TcpReceiver.h"
 #endif
 
 #ifdef CROSSPOINT_X3
@@ -1042,6 +1044,7 @@ void setup() {
       // Apply persisted setting (default off). No serial path can enable this.
       gM4DebugBridge.setAuthorized(SETTINGS.developerSerialDebugEnabled == 1);
 #endif
+      M4B3Tcp::begin();
     }
 #endif
 
@@ -1266,6 +1269,7 @@ void loop() {
 #ifdef CROSSPOINT_MURPHY_M4
   // Keep awake only while authorized AND host is actively scripting (bounded window).
   hasActivity = hasActivity || gM4DebugBridge.recentHostActivity(millis());
+  hasActivity = hasActivity || M4B3Panel::browserOwnsDisplay();
 #endif
   
   // Also check for recent BLE activity to prevent power sleep during BLE use
@@ -1380,6 +1384,9 @@ void loop() {
     currentActivity->loop();
   }
   const unsigned long activityDuration = millis() - activityStartTime;
+#ifdef CROSSPOINT_MURPHY_M4
+  M4B3Panel::tick(display, millis());
+#endif
 
 #ifdef CROSSPOINT_MURPHY_M4
   // Re-apply if settings UI changed brightness/warmth.
