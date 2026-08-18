@@ -343,6 +343,58 @@ int main() {
     assert(d.reason == M4PanelDirty::Reason::ForcedFullRecovery);
   }
 
+  // ACK independence: Session FRAME_ACK commits accepted CRC without a present
+  // take/complete. Presenter failure/busy must not rewrite the accepted buffer.
+  {
+    Harness h;
+    uint8_t wire[M4B3::kMaxMessageSize];
+    assert(h.handle(wire, M4B3::encodeHello(wire, sizeof(wire), 1, M4B3::kHelloOk)) > 0);
+    std::vector<uint8_t> fb = whiteLogical();
+    setBlack(fb, 8, 8);
+    const uint32_t crc = M4B3::crc32(fb.data(), fb.size());
+    const size_t kn = M4B3::encodeKeyframe(wire, sizeof(wire), 2, 7, fb.data());
+    const size_t ackN = h.handle(wire, kn);
+    assert(ackN > 0);
+    assert(h.reply[4] == M4B3::kTypeFrameAck);
+    assert(h.reply[M4B3::kEnvelopeSize + 4] == M4B3::kAckOk);
+    assert(h.session.acceptedFrameId() == 7);
+    assert(h.session.acceptedCrc() == crc);
+
+    M4PanelPresenter::Scheduler s;
+    s.acquire(M4PanelPresenter::Owner::BrowserBridge);
+    assert(s.offer(h.session.acceptedFrameId(), h.session.acceptedCrc(), 0) ==
+           M4PanelPresenter::OfferStatus::Scheduled);
+    assert(s.take(0) == M4PanelPresenter::TakeStatus::Ready);
+    assert(s.offer(8, 0xBEEF, 1) == M4PanelPresenter::OfferStatus::Scheduled);
+    assert(s.take(1) == M4PanelPresenter::TakeStatus::Busy);
+    s.complete(false, 0, 2, static_cast<uint32_t>(M4PanelPresenter::Error::DisplayFailed));
+    assert(h.session.acceptedFrameId() == 7);
+    assert(h.session.acceptedCrc() == crc);
+    assert(std::memcmp(h.session.accepted(), fb.data(), fb.size()) == 0);
+    assert(!s.state().baselineTrusted);
+  }
+
+  // Frozen present snapshot is caller-owned and independent of a later HAL wipe.
+  // Host-testable analogue of 229543e: lastPresented advances from the frozen
+  // copy, not from a live buffer that Home can memset during FULL.
+  {
+    std::vector<uint8_t> pending(M4PanelMapper::kPhysicalSize, 0x00);
+    pending[0] = 0xA5;
+    pending[99] = 0x5A;
+    pending[47999] = 0x3C;
+    std::vector<uint8_t> presentBuf = pending;
+    std::vector<uint8_t> liveHal = presentBuf;
+    std::memset(liveHal.data(), 0xFF, liveHal.size());
+    assert(presentBuf[0] == 0xA5);
+    assert(presentBuf[99] == 0x5A);
+    assert(presentBuf[47999] == 0x3C);
+    assert(std::memcmp(presentBuf.data(), liveHal.data(), presentBuf.size()) != 0);
+    std::vector<uint8_t> lastPresented = presentBuf;
+    assert(std::memcmp(lastPresented.data(), pending.data(), pending.size()) == 0);
+    const uint32_t frozenCrc = M4B3::crc32(presentBuf.data(), presentBuf.size());
+    assert(frozenCrc != M4B3::crc32(liveHal.data(), liveHal.size()));
+  }
+
   printf("test_m4_panel_presenter: PASS\n");
   return 0;
 }

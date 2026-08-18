@@ -343,6 +343,128 @@ int main() {
     assert(!M4PanelDirty::plan(nullptr, a.data(), a.size(), p));
   }
 
+  // #34 boundary: nearby-window merge must not bypass CadenceCount / FirstBaseline /
+  // ForcedFullRecovery. A HUD-like coalesced plan is still SparsePartial only while
+  // the hygiene counters allow it.
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    const int xs[] = {32, 32, 32, 32, 32, 32};
+    const int ys[] = {20, 68, 116, 164, 212, 260};
+    for (int i = 0; i < 6; ++i) fill(next, xs[i], ys[i], 8, 12);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    assert(p.windowCount >= 1 && p.windowCount <= M4PanelDirty::kMaxWindows);
+    Decision sparse = M4PanelDirty::decide(true, true, p, 0, 0);
+    assert(sparse.mode == Mode::Partial);
+    assert(sparse.reason == Reason::SparsePartial);
+    Decision cadN = M4PanelDirty::decide(true, true, p, M4PanelDirty::kMaxPartialsSinceFull, 0);
+    assert(cadN.mode == Mode::Full);
+    assert(cadN.reason == Reason::CadenceCount);
+    Decision cadNMinus = M4PanelDirty::decide(true, true, p, M4PanelDirty::kMaxPartialsSinceFull - 1, 0);
+    assert(cadNMinus.mode == Mode::Partial);
+    assert(cadNMinus.reason == Reason::SparsePartial);
+    Decision cadA = M4PanelDirty::decide(true, true, p, 0,
+                                         M4PanelDirty::kMaxCumulativePartialPixels - p.changedPixels);
+    assert(cadA.mode == Mode::Full);
+    assert(cadA.reason == Reason::CadenceArea);
+    Decision first = M4PanelDirty::decide(false, false, p, M4PanelDirty::kMaxPartialsSinceFull, 0);
+    assert(first.mode == Mode::Full);
+    assert(first.reason == Reason::FirstBaseline);
+    Decision rec = M4PanelDirty::decide(false, true, p, 0, 0);
+    assert(rec.mode == Mode::Full);
+    assert(rec.reason == Reason::ForcedFullRecovery);
+  }
+
+  // Merge gap is inclusive at 96px and exclusive at 97px when compaction is needed.
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    const int ys96[] = {0, 104, 208, 312, 416};  // 8px tall, gap 96
+    for (int i = 0; i < 5; ++i) fill(next, 0, ys96[i], 8, 8);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    assert(p.windowCount >= 1 && p.windowCount <= M4PanelDirty::kMaxWindows);
+    assertAligned(p);
+    Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
+    assert(d.mode == Mode::Partial);
+    assert(d.reason == Reason::SparsePartial);
+
+    next = whitePhys();
+    const int ys97[] = {0, 105, 210, 315, 420};  // 8px tall, gap 97
+    for (int i = 0; i < 5; ++i) fill(next, 0, ys97[i], 8, 8);
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    assert(p.windowCount == 5);
+    assertAligned(p);
+    d = M4PanelDirty::decide(true, true, p, 0, 0);
+    assert(d.mode == Mode::Full);
+    assert(d.reason == Reason::Fragmented);
+  }
+
+  // Union-area cap: nearby medium widgets must not chain-swallow into a Partial.
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    // 34px gaps sit in a clean 32px tile so tile-runs stay split, but the
+    // 96px nearby-merge would still consider them — union-area must refuse.
+    fill(next, 0, 0, 190, 80);
+    fill(next, 224, 0, 190, 80);
+    fill(next, 448, 0, 190, 80);
+    fill(next, 0, 96, 190, 80);
+    fill(next, 224, 96, 190, 80);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    assert(p.changedPixels == 5u * 190u * 80u);
+    assert(p.changedPixels < M4PanelDirty::kMaxPartialChangedPixels);
+    assert(p.windowCount > M4PanelDirty::kMaxWindows);
+    assertAligned(p);
+    Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
+    assert(d.mode == Mode::Full);
+    assert(d.reason == Reason::Fragmented);
+  }
+
+  // Overflowed plans stay Fragmented: merge must not run on a truncated cover.
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    int n = 0;
+    for (int y = 0; y < 480 && n < 18; y += 32) {
+      for (int x = 0; x < 800 && n < 18; x += 160) {
+        setBlack(next, x, y);
+        ++n;
+      }
+    }
+    assert(n == 18);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    assert(p.changedPixels == 18u);
+    assert(p.windowCount == M4PanelDirty::kPlanCap + 1);
+    Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
+    assert(d.mode == Mode::Full);
+    assert(d.reason == Reason::Fragmented);
+  }
+
+  // Determinism: the same HUD strip yields a stable Partial plan.
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    const int xs[] = {32, 32, 32, 32, 32, 32};
+    const int ys[] = {20, 68, 116, 164, 212, 260};
+    for (int i = 0; i < 6; ++i) fill(next, xs[i], ys[i], 8, 12);
+    Plan first{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), first));
+    for (int i = 0; i < 64; ++i) {
+      Plan p{};
+      assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+      assert(p.changedPixels == first.changedPixels);
+      assert(p.windowCount == first.windowCount);
+      assert(p.windowArea == first.windowArea);
+      Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
+      assert(d.mode == Mode::Partial);
+      assert(d.reason == Reason::SparsePartial);
+    }
+  }
+
   // Presenter: first / release-reacquire / cadence / failure does not advance policy.
   {
     M4PanelPresenter::Scheduler s;

@@ -225,6 +225,34 @@ int main() {
     assert(!q.active());
   }
 
+  // Bounded MOVE coalescing stays depth=2 across a long latest-wins stream.
+  {
+    M4B3Input::Queue q;
+    assert(q.push(M4B3::kTouchDown, 10, 10, 1) == M4B3Input::PushResult::Ok);
+    uint32_t coalesced = 0;
+    for (int i = 0; i < 10000; ++i) {
+      const M4B3Input::PushResult st =
+          q.push(M4B3::kTouchMove, static_cast<uint16_t>((10 + i) % 480),
+                 static_cast<uint16_t>((10 + (i / 3)) % 800), static_cast<uint32_t>(2 + i));
+      assert(st == M4B3Input::PushResult::Ok || st == M4B3Input::PushResult::Coalesced);
+      if (st == M4B3Input::PushResult::Coalesced) ++coalesced;
+      assert(q.size() <= 2);
+    }
+    assert(q.size() == 2);
+    assert(coalesced >= 9999u);
+    assert(q.push(M4B3::kTouchUp, 20, 20, 20000) == M4B3Input::PushResult::Ok);
+    assert(q.size() == 3);
+    std::vector<M4B3Input::Event> evs;
+    drain(q, evs);
+    assert(evs.size() == 3);
+    assert(evs[0].action == M4B3::kTouchDown);
+    assert(evs[1].action == M4B3::kTouchMove);
+    assert(evs[1].x == static_cast<uint16_t>((10 + 9999) % 480));
+    assert(evs[2].action == M4B3::kTouchUp);
+    assert(!q.active());
+    assert(q.stats().coalesced >= 9999u);
+  }
+
   std::printf("OK: M4B3 input mapping/codec/queue\n");
   return 0;
 }
