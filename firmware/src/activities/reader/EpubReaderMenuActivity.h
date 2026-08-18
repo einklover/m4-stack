@@ -105,7 +105,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   }
 
  private:
-  enum class MoreSection : uint8_t { ROOT = 0, TYPOGRAPHY, TURNING, DISPLAY, CONTROL, DATA };
+  // APPEARANCE, not DISPLAY: Arduino.h #defines DISPLAY as 0x1.
+  enum class MoreSection : uint8_t { ROOT = 0, TYPOGRAPHY, TURNING, APPEARANCE, CONTROL, DATA };
 
   enum class InternalAction : uint8_t {
     NONE = 0,
@@ -228,7 +229,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     switch (moreSection_) {
       case MoreSection::TYPOGRAPHY: return typographyMenuItems;
       case MoreSection::TURNING: return turningMenuItems;
-      case MoreSection::DISPLAY: return displayMenuItems;
+      case MoreSection::APPEARANCE: return displayMenuItems;
       case MoreSection::CONTROL: return controlMenuItems;
       case MoreSection::DATA: return dataMenuItems;
       case MoreSection::ROOT:

@@ -256,7 +256,7 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
     menuLayer_ = MenuLayer::MORE;
     if (action == InternalAction::OPEN_MORE_TYPOGRAPHY) moreSection_ = MoreSection::TYPOGRAPHY;
     else if (action == InternalAction::OPEN_MORE_TURNING) moreSection_ = MoreSection::TURNING;
-    else if (action == InternalAction::OPEN_MORE_DISPLAY) moreSection_ = MoreSection::DISPLAY;
+    else if (action == InternalAction::OPEN_MORE_DISPLAY) moreSection_ = MoreSection::APPEARANCE;
     else if (action == InternalAction::OPEN_MORE_CONTROL) moreSection_ = MoreSection::CONTROL;
     else moreSection_ = MoreSection::DATA;
     selectedIndex = 0;
@@ -393,7 +393,7 @@ const char* EpubReaderMenuActivity::moreSectionKey() const {
   switch (moreSection_) {
     case MoreSection::TYPOGRAPHY: return "typography";
     case MoreSection::TURNING: return "turning";
-    case MoreSection::DISPLAY: return "display";
+    case MoreSection::APPEARANCE: return "display";
     case MoreSection::CONTROL: return "control";
     case MoreSection::DATA: return "data";
     case MoreSection::ROOT:
@@ -405,7 +405,7 @@ const char* EpubReaderMenuActivity::moreSectionTitle() const {
   switch (moreSection_) {
     case MoreSection::TYPOGRAPHY: return "排版与字体";
     case MoreSection::TURNING: return "翻页与自动";
-    case MoreSection::DISPLAY: return "显示";
+    case MoreSection::APPEARANCE: return "显示";
     case MoreSection::CONTROL: return "操作控制";
     case MoreSection::DATA: return "数据与缓存";
     case MoreSection::ROOT:
