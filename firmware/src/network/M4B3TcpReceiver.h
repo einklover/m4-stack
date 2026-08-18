@@ -11,6 +11,8 @@
 
 #include "util/M4B3Protocol.h"
 
+class HalGPIO;
+
 namespace M4B3Tcp {
 
 struct Snapshot {
@@ -67,10 +69,31 @@ struct Snapshot {
   uint32_t lastFullMs = 0;
   uint32_t lastPartialMs = 0;
   uint16_t lastWin[4][4] = {};
+  uint32_t touchDown = 0;
+  uint32_t touchMove = 0;
+  uint32_t touchUp = 0;
+  uint32_t touchCancel = 0;
+  uint32_t touchCoalesced = 0;
+  uint32_t touchDroppedMove = 0;
+  uint32_t touchRejected = 0;
+  uint32_t touchOverflow = 0;
+  uint32_t touchTxErr = 0;
+  uint32_t touchSession = 0;
+  uint32_t touchSessionResets = 0;
+  uint32_t touchSessionCancels = 0;
+  uint32_t touchLastSeq = 0;
+  uint16_t touchLastX = 0;
+  uint16_t touchLastY = 0;
+  uint32_t touchLastLatencyMs = 0;
+  uint8_t touchQueue = 0;
+  bool touchActive = false;
+  bool touchCapture = false;
 };
 
 void begin();
 void snapshot(Snapshot& out);
+bool inputCaptureActive();
+void captureFromGpio(HalGPIO& gpio, uint32_t nowMs);
 
 }  // namespace M4B3Tcp
 

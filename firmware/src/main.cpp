@@ -1353,6 +1353,14 @@ void loop() {
 #endif
   gM4DebugBridge.poll();
 
+  // Route the raw FT6x36 pointer into M4B3 only while a Browser session is
+  // hello-ok. Reader/Home gestures stay on the existing path otherwise.
+  const bool browserTouch = M4B3Tcp::inputCaptureActive();
+  mappedInputManager.setTouchRoutedToBrowser(browserTouch);
+  if (browserTouch) {
+    M4B3Tcp::captureFromGpio(gpio, millis());
+  }
+
   if (mappedInputManager.hasTouch() && currentActivity) {
     if (!currentActivity->isHomeActivity() && mappedInputManager.wasHomeGesture()) {
       Serial.printf("[%lu] [M4-GESTURE] home (bottom bar / swipe up)\n", millis());

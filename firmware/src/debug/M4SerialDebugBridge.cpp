@@ -538,7 +538,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     char bindSafe[16] = {};
     copyJsonSafe(s.peer, peerSafe, sizeof(peerSafe));
     copyJsonSafe(s.bindIp, bindSafe, sizeof(bindSafe));
-    char out[1100];
+    char out[1600];
     snprintf(out, sizeof(out),
              "{\"op\":\"m4b3_status\",\"listening\":%s,\"connected\":%s,\"hello\":%s,"
              "\"peer\":\"%s\",\"bind\":\"%s\",\"port\":48624,"
@@ -552,7 +552,13 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"present_err\":%u,\"map_err\":%u,\"panel_src_id\":%ld,\"panel_src_crc\":%u,"
              "\"panel_crc\":%u,\"panel_err\":%u,\"panel_age_ms\":%u,"
              "\"panel_corners\":[%u,%u,%u,%u],"
-             "\"panel_trusted\":%s,\"full_ok\":%u,\"partial_ok\":%u,\"last_reason\":%u}",
+             "\"panel_trusted\":%s,\"full_ok\":%u,\"partial_ok\":%u,\"last_reason\":%u,"
+             "\"touch_capture\":%s,\"touch_active\":%s,\"touch_queue\":%u,"
+             "\"touch_down\":%u,\"touch_move\":%u,\"touch_up\":%u,\"touch_cancel\":%u,"
+             "\"touch_coal\":%u,\"touch_drop_move\":%u,\"touch_rej\":%u,\"touch_ovf\":%u,"
+             "\"touch_tx_err\":%u,\"touch_sess\":%u,\"touch_sess_reset\":%u,"
+             "\"touch_sess_cancel\":%u,\"touch_last_seq\":%u,\"touch_last_xy\":[%u,%u],"
+             "\"touch_lat_ms\":%u}",
              s.listening ? "true" : "false", s.connected ? "true" : "false", s.helloOk ? "true" : "false",
              peerSafe, bindSafe, static_cast<long>(s.acceptedFrameId), static_cast<unsigned>(s.acceptedCrc),
              s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx, s.applyErrors, s.reconnects,
@@ -563,7 +569,13 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              static_cast<unsigned>(s.panelCrc), s.panelLastErr, s.panelAgeMs,
              static_cast<unsigned>(s.panelCorner[0]), static_cast<unsigned>(s.panelCorner[1]),
              static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]),
-             s.panelTrusted ? "true" : "false", s.fullOk, s.partialOk, s.lastPolicyReason);
+             s.panelTrusted ? "true" : "false", s.fullOk, s.partialOk, s.lastPolicyReason,
+             s.touchCapture ? "true" : "false", s.touchActive ? "true" : "false",
+             static_cast<unsigned>(s.touchQueue), s.touchDown, s.touchMove, s.touchUp, s.touchCancel,
+             s.touchCoalesced, s.touchDroppedMove, s.touchRejected, s.touchOverflow, s.touchTxErr,
+             s.touchSession, s.touchSessionResets, s.touchSessionCancels, s.touchLastSeq,
+             static_cast<unsigned>(s.touchLastX), static_cast<unsigned>(s.touchLastY),
+             s.touchLastLatencyMs);
     replyOk(reqId, out);
     return;
   }

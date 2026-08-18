@@ -39,6 +39,10 @@ class MappedInputManager {
 
   // Touch boundary (false/no-op on non-touch hardware)
   bool hasTouch() const;
+  // When a Browser Bridge session owns the pointer, UI gestures/taps stay
+  // idle so Reader/Home input is unchanged unless the session is active.
+  void setTouchRoutedToBrowser(bool routed) { touchRoutedToBrowser_ = routed; }
+  bool touchRoutedToBrowser() const { return touchRoutedToBrowser_; }
   bool wasScreenTapped(int& x, int& y) const;
   bool wasScreenTouchDown(int& x, int& y) const;
   bool isScreenTouchHeld(int& x, int& y) const;
@@ -84,6 +88,7 @@ class MappedInputManager {
  private:
   HalGPIO& gpio;
   const GfxRenderer* renderer = nullptr;
+  bool touchRoutedToBrowser_ = false;
 
   // Per-frame tap cache. Global navigation checks run before activity loop();
   // caching prevents those checks from consuming an ordinary list/button tap.

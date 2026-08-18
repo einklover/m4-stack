@@ -21,6 +21,7 @@ constexpr uint8_t kTypeFramePatch = 3;
 constexpr uint8_t kTypeFrameAck = 4;
 constexpr uint8_t kTypePing = 5;
 constexpr uint8_t kTypePong = 6;
+constexpr uint8_t kTypeTouch = 7;
 
 constexpr uint8_t kPixelMono1 = 1;
 constexpr uint16_t kWidth = 480;
@@ -33,7 +34,19 @@ constexpr uint16_t kKeyHeaderSize = 19;
 constexpr uint16_t kPatchHeaderSize = 14;
 constexpr uint16_t kAckHeaderSize = 9;
 constexpr uint16_t kPingHeaderSize = 4;
+constexpr uint16_t kTouchHeaderSize = 20;
 constexpr uint16_t kRectMetaSize = 12;
+
+// Additive M4→Android single-pointer input. Existing HELLO/KEY/PATCH/ACK
+// layouts are unchanged. 0 is reserved so an all-zero header is invalid.
+constexpr uint8_t kTouchDown = 1;
+constexpr uint8_t kTouchMove = 2;
+constexpr uint8_t kTouchUp = 3;
+constexpr uint8_t kTouchCancel = 4;
+
+inline bool validTouchAction(uint8_t action) {
+  return action >= kTouchDown && action <= kTouchCancel;
+}
 
 constexpr uint16_t kMaxHeaderLen = 32;
 constexpr uint32_t kMaxPayloadLen = 96u * 1024u;
@@ -93,7 +106,7 @@ inline bool sameLogicalFormat(uint16_t width, uint16_t height, uint8_t pixel, ui
   return width == kWidth && height == kHeight && pixel == kPixelMono1 && stride == kStride;
 }
 
-inline bool isKnownType(uint8_t type) { return type >= kTypeHello && type <= kTypePong; }
+inline bool isKnownType(uint8_t type) { return type >= kTypeHello && type <= kTypeTouch; }
 
 inline uint8_t nackFor(Status st) {
   switch (st) {
@@ -187,6 +200,22 @@ inline size_t encodePingPong(uint8_t* out, size_t cap, uint8_t type, uint32_t se
   uint8_t h[kPingHeaderSize];
   wr32(h, nonce);
   return wrap(out, cap, type, 0, seq, h, kPingHeaderSize, nullptr, 0);
+}
+
+// TOUCH header (20 B LE): action u8, flags u8, reserved u16, x u16, y u16,
+// t_ms u32, input_seq u32, session u32. Payload is empty.
+inline size_t encodeTouch(uint8_t* out, size_t cap, uint32_t envSeq, uint8_t action, uint8_t flags,
+                          uint16_t x, uint16_t y, uint32_t tMs, uint32_t inputSeq, uint32_t session) {
+  uint8_t h[kTouchHeaderSize];
+  h[0] = action;
+  h[1] = flags;
+  wr16(h + 2, 0);
+  wr16(h + 4, x);
+  wr16(h + 6, y);
+  wr32(h + 8, tMs);
+  wr32(h + 12, inputSeq);
+  wr32(h + 16, session);
+  return wrap(out, cap, kTypeTouch, 0, envSeq, h, kTouchHeaderSize, nullptr, 0);
 }
 
 inline size_t encodeKeyframe(uint8_t* out, size_t cap, uint32_t seq, uint32_t frameId, const uint8_t* fb) {
@@ -378,6 +407,7 @@ class Session {
         break;
       case kTypePong:
       case kTypeFrameAck:
+      case kTypeTouch:
         return 0;
       default:
         stats_.applyErrors++;

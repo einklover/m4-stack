@@ -268,6 +268,7 @@ int MappedInputManager::getPressedFrontButton() const {
 }
 
 bool MappedInputManager::hasTouch() const {
+  if (touchRoutedToBrowser_) return false;
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
   // Plugin-debug QEMU skips FT6x36 I2C polling. Activities gate on hasTouch()
   // before wasScreenTapped(); keep true so m4adb synthetic taps still reach UI.

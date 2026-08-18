@@ -27,6 +27,7 @@ Current execution issues:
 - **#18 — Real-device runtime OTF/OTC soak validation**
 - **#19 — JJWXC live long-catalog progressive-stream E2E**
 - **#32 — M3 Browser Bridge panel framebuffer mapping and display integration**
+- **#33 — M4 Browser Bridge touch return into the hidden WebView**
 
 Completed Browser Bridge milestones:
 
@@ -50,7 +51,13 @@ E-ink Browser Bridge M3 is on a parallel branch based on current `main`, with va
 agent/eink-browser-bridge-m3
 ```
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Validated M2 remains on `agent/eink-browser-bridge-m2`.
+M4 touch-return work is on a parallel branch based on current `main` / M4 head, with validated M3 merged in:
+
+```text
+agent/eink-browser-bridge-m4
+```
+
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Validated M2 remains on `agent/eink-browser-bridge-m2`.
 
 Always inspect HEAD before editing.
 

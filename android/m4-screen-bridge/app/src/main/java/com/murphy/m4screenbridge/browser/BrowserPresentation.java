@@ -9,6 +9,8 @@ import android.view.Display;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.MotionEvent;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -17,6 +19,7 @@ import android.webkit.WebViewClient;
 /** Minimal Chromium/WebView surface hosted entirely on the M4 virtual display. */
 final class BrowserPresentation extends Presentation {
     private final String initialUrl;
+    private final JsProbe jsProbe = new JsProbe();
     private WebView webView;
 
     BrowserPresentation(Context context, Display display, String initialUrl) {
@@ -55,12 +58,21 @@ final class BrowserPresentation extends Presentation {
 
         webView.setWebViewClient(new WebViewClient());
         webView.setWebChromeClient(new WebChromeClient());
+        webView.addJavascriptInterface(jsProbe, "M4Input");
         setContentView(webView);
         webView.loadUrl(initialUrl);
     }
 
     void loadUrl(String url) {
         if (webView != null) webView.loadUrl(url);
+    }
+
+    boolean dispatchBrowserTouch(MotionEvent event) {
+        return webView != null && event != null && webView.dispatchTouchEvent(event);
+    }
+
+    JsProbe jsProbe() {
+        return jsProbe;
     }
 
     void destroyBrowser() {
@@ -71,5 +83,41 @@ final class BrowserPresentation extends Presentation {
         webView.removeAllViews();
         webView.destroy();
         webView = null;
+    }
+
+    /** Filled by the deterministic input page through addJavascriptInterface. */
+    static final class JsProbe {
+        volatile int buttonA;
+        volatile int down;
+        volatile int move;
+        volatile int up;
+        volatile int cancel;
+        volatile int lastX;
+        volatile int lastY;
+        volatile String lastAction = "";
+        volatile String lastHit = "";
+        volatile int scrollY;
+        volatile int longPress;
+        volatile int hits;
+        volatile String lastLog = "";
+
+        @JavascriptInterface
+        public void report(String action, int x, int y, String hit, int buttonAClicks,
+                int scroll, int longPressCount, int downN, int moveN, int upN, int cancelN) {
+            lastAction = action == null ? "" : action;
+            lastX = x;
+            lastY = y;
+            lastHit = hit == null ? "" : hit;
+            buttonA = buttonAClicks;
+            scrollY = scroll;
+            longPress = longPressCount;
+            down = downN;
+            move = moveN;
+            up = upN;
+            cancel = cancelN;
+            hits++;
+            lastLog = lastAction + " " + lastX + "," + lastY + " hit=" + lastHit
+                    + " btnA=" + buttonA + " scrollY=" + scrollY + " lp=" + longPress;
+        }
     }
 }

@@ -67,6 +67,7 @@ public class MainActivity extends Activity {
         String action = intent.getAction();
         if ("com.murphy.m4screenbridge.browser.SELF_TEST".equals(action)
                 || "com.murphy.m4screenbridge.browser.LANDMARK".equals(action)
+                || "com.murphy.m4screenbridge.browser.INPUT_TEST".equals(action)
                 || "com.murphy.m4screenbridge.browser.STOP".equals(action)) {
             if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)) {
                 m4HostEt.setText(intent.getStringExtra(BrowserBridgeService.EXTRA_HOST));
@@ -82,6 +83,8 @@ public class MainActivity extends Activity {
                 BrowserBridgeService.stop(this);
             } else if ("com.murphy.m4screenbridge.browser.LANDMARK".equals(action)) {
                 BrowserBridgeService.startLandmarkTest(this);
+            } else if ("com.murphy.m4screenbridge.browser.INPUT_TEST".equals(action)) {
+                BrowserBridgeService.startInputTest(this);
             } else {
                 BrowserBridgeService.startJavaScriptSelfTest(this);
             }
@@ -180,6 +183,16 @@ public class MainActivity extends Activity {
                 saveM4Host();
                 BrowserBridgeService.startLandmarkTest(MainActivity.this);
                 toast("已启动非对称定位页，用于核对面板方向/镜像/极性");
+                ui.postDelayed(() -> refresh(), 300);
+            }
+        }));
+
+        root.addView(button("启动触控回传页 (四角/中心/BUTTON A/滚动/长按)", new Runnable() {
+            @Override
+            public void run() {
+                saveM4Host();
+                BrowserBridgeService.startInputTest(MainActivity.this);
+                toast("已启动触控回传页；dumpsys/JsProbe 可核对 hidden WebView 命中");
                 ui.postDelayed(() -> refresh(), 300);
             }
         }));

@@ -97,6 +97,7 @@ public final class M4B3Sender {
                 emit(M4B3Codec.encodePong(msg.nonce, nextSeq++));
                 break;
             case M4B3.TYPE_PONG:
+            case M4B3.TYPE_TOUCH:
                 break;
             default:
                 throw M4B3Exception.invalid("sender rejected unexpected " + M4B3.typeName(msg.type));

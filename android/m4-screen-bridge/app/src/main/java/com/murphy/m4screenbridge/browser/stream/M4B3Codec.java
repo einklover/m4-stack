@@ -98,6 +98,26 @@ public final class M4B3Codec {
         return encodePingPong(M4B3.TYPE_PONG, nonce, seq);
     }
 
+    public static byte[] encodeTouch(M4B3Message.Touch touch, long seq) {
+        if (touch == null) throw M4B3Exception.invalid("touch is null");
+        if (!M4B3.validTouchAction(touch.action)) {
+            throw M4B3Exception.invalid("touch action " + touch.action);
+        }
+        if (touch.x < 0 || touch.x >= M4B3.WIDTH || touch.y < 0 || touch.y >= M4B3.HEIGHT) {
+            throw M4B3Exception.invalid("touch xy " + touch.x + "," + touch.y);
+        }
+        ByteBuffer header = le(M4B3.TOUCH_HEADER_SIZE);
+        header.put((byte) touch.action);
+        header.put((byte) touch.flags);
+        header.putShort((short) 0);
+        header.putShort((short) touch.x);
+        header.putShort((short) touch.y);
+        putU32(header, touch.tMs);
+        putU32(header, touch.inputSeq);
+        putU32(header, touch.session);
+        return wrap(M4B3.TYPE_TOUCH, 0, header.array(), new byte[0], seq);
+    }
+
     /**
      * Builds a raw envelope. Length fields are taken from the supplied arrays unless
      * the optional overrides are non-null (used by tests to craft lying lengths).
@@ -200,6 +220,8 @@ public final class M4B3Codec {
             case M4B3.TYPE_PING:
             case M4B3.TYPE_PONG:
                 return parsePingPong(type, flags, seq, header, payloadLen);
+            case M4B3.TYPE_TOUCH:
+                return M4B3Message.touch(flags, seq, parseTouch(header, payloadLen));
             default:
                 throw M4B3Exception.invalid("unknown type " + type);
         }
@@ -349,6 +371,29 @@ public final class M4B3Codec {
         return type == M4B3.TYPE_PING
                 ? M4B3Message.ping(flags, seq, nonce)
                 : M4B3Message.pong(flags, seq, nonce);
+    }
+
+    private static M4B3Message.Touch parseTouch(byte[] header, int payloadLen) {
+        if (payloadLen != 0) throw M4B3Exception.invalid("TOUCH payload must be empty");
+        if (header.length != M4B3.TOUCH_HEADER_SIZE) {
+            throw M4B3Exception.invalid("TOUCH header_len=" + header.length);
+        }
+        ByteBuffer h = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+        int action = h.get() & 0xFF;
+        int flags = h.get() & 0xFF;
+        h.getShort();
+        int x = h.getShort() & 0xFFFF;
+        int y = h.getShort() & 0xFFFF;
+        long tMs = h.getInt() & 0xFFFFFFFFL;
+        long inputSeq = h.getInt() & 0xFFFFFFFFL;
+        long session = h.getInt() & 0xFFFFFFFFL;
+        if (!M4B3.validTouchAction(action)) {
+            throw M4B3Exception.invalid("TOUCH action " + action);
+        }
+        if (x >= M4B3.WIDTH || y >= M4B3.HEIGHT) {
+            throw M4B3Exception.invalid("TOUCH xy " + x + "," + y);
+        }
+        return new M4B3Message.Touch(action, flags, x, y, tMs, inputSeq, session);
     }
 
     private static byte[] encodePingPong(int type, long nonce, long seq) {

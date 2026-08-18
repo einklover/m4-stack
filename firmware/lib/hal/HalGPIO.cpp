@@ -149,6 +149,44 @@ bool HalGPIO::wasTouchActivity() const {
 #endif
 }
 
+bool HalGPIO::isTouchPressed() const {
+#ifdef CROSSPOINT_MURPHY_M4
+  return inputMgr.isTouchPressed();
+#else
+  return false;
+#endif
+}
+
+bool HalGPIO::wasTouchPressed() const {
+#ifdef CROSSPOINT_MURPHY_M4
+  return inputMgr.wasTouchPressed();
+#else
+  return false;
+#endif
+}
+
+bool HalGPIO::wasTouchReleased() const {
+#ifdef CROSSPOINT_MURPHY_M4
+  return inputMgr.wasTouchReleased();
+#else
+  return false;
+#endif
+}
+
+bool HalGPIO::getTouchPanelPoint(int& x, int& y) const {
+#ifdef CROSSPOINT_MURPHY_M4
+  const InputManager::TouchPoint pt = inputMgr.getTouchPoint();
+  if (!pt.valid) return false;
+  x = static_cast<int>(pt.x);
+  y = static_cast<int>(pt.y);
+  return true;
+#else
+  (void)x;
+  (void)y;
+  return false;
+#endif
+}
+
 void HalGPIO::startDeepSleep() {
 #ifdef CROSSPOINT_MURPHY_M4
   // Use verified FreeInk power manager: correct S3 EXT1 wake, power-rail hold,

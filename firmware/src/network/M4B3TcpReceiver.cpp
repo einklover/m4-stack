@@ -10,8 +10,13 @@
 #include <cstring>
 #include <new>
 
+#include <HalGPIO.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
+
 #include "apps/providers/M4Psram.h"
 #include "network/M4B3Panel.h"
+#include "util/M4B3Input.h"
 #include "util/M4PanelMapper.h"
 
 // Compile the mapper into the production firmware without touching the
@@ -38,6 +43,7 @@ struct Runtime {
   uint8_t* candidate = nullptr;
   uint8_t* rx = nullptr;
   uint8_t tx[64] = {};
+  uint8_t touchTx[M4B3::kEnvelopeSize + M4B3::kTouchHeaderSize] = {};
   WiFiServer* server = nullptr;
   WiFiClient client;
   TaskHandle_t task = nullptr;
@@ -48,6 +54,14 @@ struct Runtime {
   char peer[24] = {};
   char bindIp[16] = {};
   uint32_t lastDiagMs = 0;
+  portMUX_TYPE inputMux = portMUX_INITIALIZER_UNLOCKED;
+  M4B3Input::Queue input;
+  uint32_t touchEnvSeq = 0;
+  uint32_t touchTxErr = 0;
+  uint32_t touchLastLatencyMs = 0;
+  int lastPanelX = 0;
+  int lastPanelY = 0;
+  bool haveLastPanel = false;
 };
 
 Runtime gRt;
@@ -133,6 +147,28 @@ void fillSnapshot(Snapshot& s) {
     s.lastWin[i][2] = panel.lastWin[i][2];
     s.lastWin[i][3] = panel.lastWin[i][3];
   }
+  portENTER_CRITICAL(&gRt.inputMux);
+  const M4B3Input::Stats in = gRt.input.stats();
+  s.touchDown = in.down;
+  s.touchMove = in.move;
+  s.touchUp = in.up;
+  s.touchCancel = in.cancel;
+  s.touchCoalesced = in.coalesced;
+  s.touchDroppedMove = in.droppedMove;
+  s.touchRejected = in.rejected;
+  s.touchOverflow = in.overflow;
+  s.touchSession = gRt.input.session();
+  s.touchSessionResets = in.sessionResets;
+  s.touchSessionCancels = in.sessionCancels;
+  s.touchLastSeq = gRt.input.lastSeq();
+  s.touchLastX = gRt.input.lastX();
+  s.touchLastY = gRt.input.lastY();
+  s.touchQueue = static_cast<uint8_t>(gRt.input.size());
+  s.touchActive = gRt.input.active();
+  portEXIT_CRITICAL(&gRt.inputMux);
+  s.touchTxErr = gRt.touchTxErr;
+  s.touchLastLatencyMs = gRt.touchLastLatencyMs;
+  s.touchCapture = gRt.connected.load(std::memory_order_relaxed) && gRt.session.helloOk();
 }
 
 void logSnapshot(const char* why) {
@@ -142,7 +178,8 @@ void logSnapshot(const char* why) {
       "[%lu] [M4B3] %s listen=%d conn=%d peer=%s bind=%s hello=%d accepted=%ld crc=0x%08x "
       "key=%u patch=%u nack=%u helloN=%u ping=%u rx=%u tx=%u applyErr=%u recon=%u "
       "rxFill=%u heap=%u minHeap=%u psram=%u panel(owner=%u busy=%d pend=%d req=%u ok=%u coal=%u "
-      "drop=%u src=%ld pcrc=0x%08x full=%u/%u part=%u/%u reason=%u)\n",
+      "drop=%u src=%ld pcrc=0x%08x full=%u/%u part=%u/%u reason=%u "
+      "touch(d=%u m=%u u=%u c=%u coal=%u dropM=%u rej=%u q=%u act=%d sess=%u)\n",
       millis(), why, s.listening ? 1 : 0, s.connected ? 1 : 0, s.peer[0] ? s.peer : "-",
       s.bindIp[0] ? s.bindIp : "-", s.helloOk ? 1 : 0, static_cast<long>(s.acceptedFrameId),
       static_cast<unsigned>(s.acceptedCrc), s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx,
@@ -150,7 +187,41 @@ void logSnapshot(const char* why) {
       static_cast<unsigned>(s.panelOwner), s.panelBusy ? 1 : 0, s.panelPending ? 1 : 0, s.presentReq,
       s.presentOk, s.presentCoal, s.presentDrop, static_cast<long>(s.panelSrcId),
       static_cast<unsigned>(s.panelCrc), s.fullOk, s.fullErr, s.partialOk, s.partialErr,
-      s.lastPolicyReason);
+      s.lastPolicyReason, s.touchDown, s.touchMove, s.touchUp, s.touchCancel, s.touchCoalesced,
+      s.touchDroppedMove, s.touchRejected, static_cast<unsigned>(s.touchQueue), s.touchActive ? 1 : 0,
+      s.touchSession);
+}
+
+void resetInputSession() {
+  portENTER_CRITICAL(&gRt.inputMux);
+  gRt.input.resetSession();
+  gRt.haveLastPanel = false;
+  portEXIT_CRITICAL(&gRt.inputMux);
+}
+
+void flushInput() {
+  if (!gRt.client || !gRt.connected.load(std::memory_order_relaxed)) return;
+  const uint32_t now = millis();
+  for (;;) {
+    M4B3Input::Event ev;
+    portENTER_CRITICAL(&gRt.inputMux);
+    const bool have = gRt.input.pop(ev);
+    portEXIT_CRITICAL(&gRt.inputMux);
+    if (!have) return;
+    const size_t n = M4B3::encodeTouch(gRt.touchTx, sizeof(gRt.touchTx), gRt.touchEnvSeq++, ev.action,
+                                       ev.flags, ev.x, ev.y, ev.tMs, ev.seq, ev.session);
+    if (n == 0) {
+      gRt.touchTxErr++;
+      continue;
+    }
+    const size_t wrote = gRt.client.write(gRt.touchTx, n);
+    if (wrote != n) {
+      gRt.touchTxErr++;
+      return;
+    }
+    gRt.session.stats().bytesTx += static_cast<uint32_t>(n);
+    gRt.touchLastLatencyMs = now >= ev.tMs ? (now - ev.tMs) : 0;
+  }
 }
 
 bool staReady(IPAddress& ip) {
@@ -166,6 +237,9 @@ void closeClient(const char* why) {
   const bool was = gRt.connected.exchange(false);
   gRt.parser.reset();
   gRt.peer[0] = 0;
+  if (was) {
+    resetInputSession();
+  }
   M4B3Panel::noteDisconnect();
   if (was) {
     logSnapshot(why);
@@ -227,6 +301,8 @@ void processRx() {
     }
     handleComplete(msg, msgLen);
     gRt.parser.consume(msgLen);
+    // Input TX is adjacent and never gates FRAME_ACK / offerAccepted.
+    flushInput();
   }
 }
 
@@ -253,6 +329,7 @@ void serviceClient() {
     processRx();
     if (!gRt.connected.load()) return;
   }
+  flushInput();
 }
 
 void acceptIfIdle() {
@@ -298,6 +375,7 @@ void taskMain(void*) {
     }
     acceptIfIdle();
     serviceClient();
+    flushInput();
     maybeDiag();
     vTaskDelay(kPollTicks);
   }
@@ -347,6 +425,43 @@ void begin() {
 }
 
 void snapshot(Snapshot& out) { fillSnapshot(out); }
+
+bool inputCaptureActive() {
+  return gRt.connected.load(std::memory_order_relaxed) && gRt.session.helloOk();
+}
+
+void captureFromGpio(HalGPIO& gpio, uint32_t nowMs) {
+  if (!inputCaptureActive()) return;
+  int px = 0;
+  int py = 0;
+  if (gpio.getTouchPanelPoint(px, py)) {
+    gRt.lastPanelX = px;
+    gRt.lastPanelY = py;
+    gRt.haveLastPanel = true;
+  }
+  if (!gRt.haveLastPanel && !gpio.wasTouchPressed() && !gpio.wasTouchReleased()) return;
+
+  int lx = 0;
+  int ly = 0;
+  if (!M4B3Input::panelToLogical(gRt.lastPanelX, gRt.lastPanelY, &lx, &ly)) {
+    portENTER_CRITICAL(&gRt.inputMux);
+    gRt.input.stats().rejected++;
+    portEXIT_CRITICAL(&gRt.inputMux);
+    return;
+  }
+  const uint16_t x = static_cast<uint16_t>(lx);
+  const uint16_t y = static_cast<uint16_t>(ly);
+  portENTER_CRITICAL(&gRt.inputMux);
+  if (gpio.wasTouchPressed()) {
+    (void)gRt.input.push(M4B3::kTouchDown, x, y, nowMs);
+  } else if (gpio.isTouchPressed()) {
+    (void)gRt.input.push(M4B3::kTouchMove, x, y, nowMs);
+  }
+  if (gpio.wasTouchReleased()) {
+    (void)gRt.input.push(M4B3::kTouchUp, x, y, nowMs);
+  }
+  portEXIT_CRITICAL(&gRt.inputMux);
+}
 
 }  // namespace M4B3Tcp
 

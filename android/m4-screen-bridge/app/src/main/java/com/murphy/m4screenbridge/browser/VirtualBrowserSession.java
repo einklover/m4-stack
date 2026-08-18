@@ -14,6 +14,8 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.Display;
+import android.view.InputDevice;
+import android.view.MotionEvent;
 
 import android.util.Log;
 
@@ -24,6 +26,9 @@ import com.murphy.m4screenbridge.browser.patch.RgbaFrameProbe;
 import com.murphy.m4screenbridge.Prefs;
 import com.murphy.m4screenbridge.ScreenBridgeService;
 import com.murphy.m4screenbridge.browser.stream.M4B3;
+import com.murphy.m4screenbridge.browser.stream.M4B3Codec;
+import com.murphy.m4screenbridge.browser.stream.M4B3InputState;
+import com.murphy.m4screenbridge.browser.stream.M4B3Message;
 import com.murphy.m4screenbridge.browser.stream.M4B3ReferenceReceiver;
 import com.murphy.m4screenbridge.browser.stream.M4B3Sender;
 import com.murphy.m4screenbridge.browser.stream.M4B3TcpTransport;
@@ -99,6 +104,10 @@ public final class VirtualBrowserSession {
     private volatile long nackRecoveries;
     private volatile int lastAckedCrc;
 
+    private final M4B3InputState inputState = new M4B3InputState();
+    private volatile long inputDispatched;
+    private volatile String inputSnap = "";
+
     public VirtualBrowserSession(Context host) {
         if (host == null) throw new IllegalArgumentException("host is null");
         this.host = host.getApplicationContext();
@@ -139,6 +148,9 @@ public final class VirtualBrowserSession {
         protocolPending = false;
         nackRecoveries = 0;
         lastAckedCrc = 0;
+        inputState.reset();
+        inputDispatched = 0;
+        inputSnap = "";
         transportConnected = false;
         transportReconnects = 0;
         transportError = "";
@@ -250,6 +262,76 @@ public final class VirtualBrowserSession {
         start("data:text/html;charset=utf-8," + Uri.encode(landmarkHtml()));
     }
 
+    public static String inputTestHtml() {
+        StringBuilder lines = new StringBuilder();
+        for (int i = 0; i < 40; i++) lines.append("line ").append(i).append("<br>");
+        return "<!doctype html><html><head>"
+                + "<meta name=viewport content='width=480,initial-scale=1,user-scalable=no'>"
+                + "<style>"
+                + "html,body{margin:0;padding:0;background:#ffffff;color:#000000;"
+                + "width:480px;height:800px;overflow:hidden;font:14px sans-serif}"
+                + ".t{position:absolute;background:#000;color:#fff;display:flex;"
+                + "align-items:center;justify-content:center;font-weight:bold}"
+                + "#btnA{position:absolute;left:168px;top:72px;width:144px;height:48px;"
+                + "background:#000;color:#fff;font:bold 16px sans-serif;border:0}"
+                + "#scroll{position:absolute;left:16px;top:520px;width:200px;height:200px;"
+                + "overflow-y:scroll;background:#eee;border:2px solid #000}"
+                + "#drag{position:absolute;left:240px;top:560px;width:220px;height:80px;"
+                + "background:#000;color:#fff;display:flex;align-items:center;justify-content:center}"
+                + "#lp{position:absolute;left:240px;top:650px;width:220px;height:80px;"
+                + "background:#444;color:#fff;display:flex;align-items:center;justify-content:center}"
+                + "#hud{position:absolute;left:8px;top:250px;width:464px;height:250px;"
+                + "font:12px monospace;white-space:pre-wrap}"
+                + "</style></head><body>"
+                + "<div class=t id=TL style='left:0;top:0;width:48px;height:48px'>TL</div>"
+                + "<div class=t id=TR style='left:432px;top:0;width:48px;height:48px'>TR</div>"
+                + "<div class=t id=BL style='left:0;top:752px;width:48px;height:48px'>BL</div>"
+                + "<div class=t id=BR style='left:432px;top:752px;width:48px;height:48px'>BR</div>"
+                + "<div class=t id=CTR style='left:216px;top:376px;width:48px;height:48px'>CTR</div>"
+                + "<div class=t id=A style='left:64px;top:140px;width:72px;height:36px'>A</div>"
+                + "<div class=t id=B style='left:300px;top:420px;width:40px;height:72px'>B</div>"
+                + "<button id=btnA>BUTTON A 0</button>"
+                + "<div id=scroll><div id=si>" + lines + "</div></div>"
+                + "<div id=drag>DRAG</div><div id=lp>LONG 0</div><div id=hud></div>"
+                + "<script>"
+                + "let buttonA=0,down=0,move=0,up=0,cancel=0,lp=0,lpT=0,last='';"
+                + "const boxes=["
+                + "['TL',0,0,48,48],['TR',432,0,48,48],['BL',0,752,48,48],['BR',432,752,48,48],"
+                + "['CTR',216,376,48,48],['A',64,140,72,36],['B',300,420,40,72],"
+                + "['BTN_A',168,72,144,48],['SCROLL',16,520,200,200],['DRAG',240,560,220,80],"
+                + "['LP',240,650,220,80]];"
+                + "function hit(x,y){for(let i=0;i<boxes.length;i++){const b=boxes[i];"
+                + "if(x>=b[1]&&x<b[1]+b[3]&&y>=b[2]&&y<b[2]+b[4])return b[0];}return '';}"
+                + "function hud(){const s=document.getElementById('scroll').scrollTop;"
+                + "const t='btnA='+buttonA+' d/m/u/c='+down+'/'+move+'/'+up+'/'+cancel"
+                + "+' scrollY='+s+' lp='+lp+'\\n'+last;"
+                + "document.getElementById('hud').textContent=t;"
+                + "if(window.M4Input)M4Input.report(last.split(' ')[0]||'',"
+                + "parseInt((last.split(' ')[1]||'0,0').split(',')[0],10)||0,"
+                + "parseInt((last.split(' ')[1]||'0,0').split(',')[1],10)||0,"
+                + "hit(parseInt((last.split(' ')[1]||'0,0').split(',')[0],10)||0,"
+                + "parseInt((last.split(' ')[1]||'0,0').split(',')[1],10)||0),"
+                + "buttonA,s,lp,down,move,up,cancel);}"
+                + "function onPtr(ev){"
+                + "const x=ev.clientX|0,y=ev.clientY|0,h=hit(x,y);"
+                + "if(ev.type==='pointerdown'){down++;lpT=setTimeout(function(){lp++;"
+                + "document.getElementById('lp').textContent='LONG '+lp;hud();},500);}"
+                + "else if(ev.type==='pointermove'){move++;}"
+                + "else if(ev.type==='pointerup'){up++;clearTimeout(lpT);"
+                + "if(h==='BTN_A'){buttonA++;document.getElementById('btnA').textContent='BUTTON A '+buttonA;}}"
+                + "else if(ev.type==='pointercancel'){cancel++;clearTimeout(lpT);}"
+                + "last=ev.type.replace('pointer','').toUpperCase()+' '+x+','+y+' '+h;"
+                + "hud();}"
+                + "['pointerdown','pointermove','pointerup','pointercancel'].forEach(function(t){"
+                + "document.addEventListener(t,onPtr,true);});"
+                + "hud();"
+                + "</script></body></html>";
+    }
+
+    public void startInputTest() {
+        start("data:text/html;charset=utf-8," + Uri.encode(inputTestHtml()));
+    }
+
     public void stop() {
         ensureMainThread();
         stopInternal(true);
@@ -303,6 +385,22 @@ public final class VirtualBrowserSession {
                 .append(" recon ").append(transportReconnects)
                 .append(" crc ").append(M4B3.crcHex(lastAckedCrc));
         if (!transportError.isEmpty()) sb.append("\nM4B3 err ").append(transportError);
+        sb.append("\n").append(inputSnap.isEmpty() ? inputState.snapshot() : inputSnap)
+                .append(" dispatched=").append(inputDispatched);
+        BrowserPresentation.JsProbe probe = presentation == null ? null : presentation.jsProbe();
+        if (probe != null) {
+            sb.append("\njs hit=").append(probe.lastHit)
+                    .append(" act=").append(probe.lastAction)
+                    .append(" xy=").append(probe.lastX).append(',').append(probe.lastY)
+                    .append(" btnA=").append(probe.buttonA)
+                    .append(" d/m/u/c=")
+                    .append(probe.down).append('/').append(probe.move).append('/')
+                    .append(probe.up).append('/').append(probe.cancel)
+                    .append(" scrollY=").append(probe.scrollY)
+                    .append(" lp=").append(probe.longPress)
+                    .append(" reports=").append(probe.hits);
+            if (!probe.lastLog.isEmpty()) sb.append("\njs ").append(probe.lastLog);
+        }
         if (!currentUrl.isEmpty()) sb.append("\nURL: ").append(currentUrl);
         if (!error.isEmpty()) sb.append("\n错误: ").append(error);
         return sb.toString();
@@ -435,21 +533,13 @@ public final class VirtualBrowserSession {
                 if (!reason.isEmpty()) transportError = reason;
                 M4B3Sender s = sender;
                 if (s != null) s.noteTransportLost();
+                main.post(() -> cancelActivePointer("tcp-disconnect"));
                 refreshProtocolStats();
             }
 
             @Override
             public void onReply(byte[] packet) {
-                M4B3Sender s = sender;
-                if (s == null) return;
-                try {
-                    s.receive(packet);
-                    refreshProtocolStats();
-                } catch (Throwable t) {
-                    applyErrors++;
-                    error = t.getClass().getSimpleName() + ": " + safeMessage(t);
-                    Log.e(TAG, "M4B3 tcp reply failed: " + error, t);
-                }
+                handleInbound(packet);
             }
 
             @Override
@@ -511,6 +601,7 @@ public final class VirtualBrowserSession {
 
     private void stopInternal(boolean clearError) {
         active = false;
+        cancelActivePointer("session-stop");
         if (presentation != null) {
             try {
                 presentation.destroyBrowser();
@@ -574,6 +665,67 @@ public final class VirtualBrowserSession {
         if (Looper.myLooper() != main.getLooper()) {
             throw new IllegalStateException("VirtualBrowserSession must be controlled from main thread");
         }
+    }
+
+    private void handleInbound(byte[] packet) {
+        M4B3Message msg;
+        try {
+            msg = M4B3Codec.parse(packet);
+        } catch (Throwable t) {
+            applyErrors++;
+            error = t.getClass().getSimpleName() + ": " + safeMessage(t);
+            Log.e(TAG, "M4B3 tcp parse failed: " + error, t);
+            return;
+        }
+        if (msg.type == M4B3.TYPE_TOUCH) {
+            main.post(() -> dispatchTouch(msg.touch));
+            return;
+        }
+        M4B3Sender s = sender;
+        if (s == null) return;
+        try {
+            s.receive(packet);
+            refreshProtocolStats();
+        } catch (Throwable t) {
+            applyErrors++;
+            error = t.getClass().getSimpleName() + ": " + safeMessage(t);
+            Log.e(TAG, "M4B3 tcp reply failed: " + error, t);
+        }
+    }
+
+    private void dispatchTouch(M4B3Message.Touch touch) {
+        List<M4B3InputState.Dispatch> events =
+                inputState.apply(touch, SystemClock.uptimeMillis());
+        for (int i = 0; i < events.size(); i++) {
+            emitMotion(events.get(i));
+        }
+        inputSnap = inputState.snapshot();
+    }
+
+    private void cancelActivePointer(String why) {
+        M4B3InputState.Dispatch cancel = inputState.onTransportLost(SystemClock.uptimeMillis());
+        if (cancel != null) {
+            emitMotion(cancel);
+            Log.i(TAG, "input CANCEL synthesized (" + why + ")");
+        }
+        inputSnap = inputState.snapshot();
+    }
+
+    private void emitMotion(M4B3InputState.Dispatch d) {
+        MotionEvent ev = MotionEvent.obtain(d.downTime, d.eventTime, d.motionAction,
+                (float) d.x, (float) d.y, 0);
+        ev.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        BrowserPresentation p = presentation;
+        boolean ok = p != null && p.dispatchBrowserTouch(ev);
+        ev.recycle();
+        if (ok) inputDispatched++;
+        String name = d.motionAction == M4B3InputState.ACTION_DOWN ? "DOWN"
+                : d.motionAction == M4B3InputState.ACTION_MOVE ? "MOVE"
+                : d.motionAction == M4B3InputState.ACTION_UP ? "UP" : "CANCEL";
+        Log.i(TAG, String.format(Locale.ROOT,
+                "input %s xy=%d,%d seq=%d sess=%d synth=%d dispatched=%d ok=%d",
+                name, d.x, d.y, d.inputSeq, d.session, d.synthesized ? 1 : 0,
+                inputDispatched, ok ? 1 : 0));
     }
 
     private static String safeMessage(Throwable t) {

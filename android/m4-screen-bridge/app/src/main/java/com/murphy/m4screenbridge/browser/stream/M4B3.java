@@ -22,6 +22,7 @@ public final class M4B3 {
     public static final int TYPE_FRAME_ACK = 4;
     public static final int TYPE_PING = 5;
     public static final int TYPE_PONG = 6;
+    public static final int TYPE_TOUCH = 7;
 
     public static final int PIXEL_MONO1 = 1;
     public static final int WIDTH = LogicalMonoFrame.WIDTH;
@@ -34,7 +35,13 @@ public final class M4B3 {
     public static final int PATCH_HEADER_SIZE = 14;
     public static final int ACK_HEADER_SIZE = 9;
     public static final int PING_HEADER_SIZE = 4;
+    public static final int TOUCH_HEADER_SIZE = 20;
     public static final int RECT_META_SIZE = 12;
+
+    public static final int TOUCH_DOWN = 1;
+    public static final int TOUCH_MOVE = 2;
+    public static final int TOUCH_UP = 3;
+    public static final int TOUCH_CANCEL = 4;
 
     /** Tight bound: reserved space only, never a large allocation ceiling. */
     public static final int MAX_HEADER_LEN = 32;
@@ -68,7 +75,11 @@ public final class M4B3 {
     private M4B3() {}
 
     public static boolean isKnownType(int type) {
-        return type >= TYPE_HELLO && type <= TYPE_PONG;
+        return type >= TYPE_HELLO && type <= TYPE_TOUCH;
+    }
+
+    public static boolean validTouchAction(int action) {
+        return action >= TOUCH_DOWN && action <= TOUCH_CANCEL;
     }
 
     public static String typeName(int type) {
@@ -79,6 +90,7 @@ public final class M4B3 {
             case TYPE_FRAME_ACK: return "FRAME_ACK";
             case TYPE_PING: return "PING";
             case TYPE_PONG: return "PONG";
+            case TYPE_TOUCH: return "TOUCH";
             default: return "UNKNOWN(" + type + ")";
         }
     }

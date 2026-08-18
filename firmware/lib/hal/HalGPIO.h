@@ -63,6 +63,12 @@ class HalGPIO {
   unsigned long lastTouchHeldMs() const;
   bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
   bool wasTouchActivity() const;
+  // Raw FT6x36 stream after BoardConfig swapXY/flipY. Coordinates are
+  // panel-native 800x480 pixels (same frame as HalDisplay), not Browser-logical.
+  bool isTouchPressed() const;
+  bool wasTouchPressed() const;
+  bool wasTouchReleased() const;
+  bool getTouchPanelPoint(int& x, int& y) const;
 
   // Setup wake up GPIO and enter deep sleep
   void startDeepSleep();

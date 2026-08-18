@@ -27,6 +27,7 @@ public final class BrowserBridgeService extends Service {
     private static final String ACTION_START_URL = "com.murphy.m4screenbridge.browser.START_URL";
     private static final String ACTION_SELF_TEST = "com.murphy.m4screenbridge.browser.SELF_TEST";
     private static final String ACTION_LANDMARK = "com.murphy.m4screenbridge.browser.LANDMARK";
+    private static final String ACTION_INPUT_TEST = "com.murphy.m4screenbridge.browser.INPUT_TEST";
     private static final String ACTION_STOP = "com.murphy.m4screenbridge.browser.STOP";
     private static final String ACTION_INJECT_BASE = "com.murphy.m4screenbridge.browser.INJECT_BASE";
     private static final String ACTION_INJECT_CRC = "com.murphy.m4screenbridge.browser.INJECT_CRC";
@@ -68,6 +69,9 @@ public final class BrowserBridgeService extends Service {
         } else if (ACTION_LANDMARK.equals(action)) {
             session.startLandmarkTest();
             acquireWakeLock();
+        } else if (ACTION_INPUT_TEST.equals(action)) {
+            session.startInputTest();
+            acquireWakeLock();
         } else if (ACTION_START_URL.equals(action)) {
             session.start(intent == null ? null : intent.getStringExtra(EXTRA_URL));
             acquireWakeLock();
@@ -107,6 +111,12 @@ public final class BrowserBridgeService extends Service {
     public static void startLandmarkTest(Context context) {
         Intent i = new Intent(context, BrowserBridgeService.class);
         i.setAction(ACTION_LANDMARK);
+        context.startForegroundService(i);
+    }
+
+    public static void startInputTest(Context context) {
+        Intent i = new Intent(context, BrowserBridgeService.class);
+        i.setAction(ACTION_INPUT_TEST);
         context.startForegroundService(i);
     }
 

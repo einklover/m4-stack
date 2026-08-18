@@ -16,10 +16,11 @@ public final class M4B3Message {
     public final Keyframe keyframe;
     public final Patch patch;
     public final Ack ack;
+    public final Touch touch;
     public final long nonce;
 
     private M4B3Message(int type, int flags, long seq, Hello hello, Keyframe keyframe,
-            Patch patch, Ack ack, long nonce) {
+            Patch patch, Ack ack, Touch touch, long nonce) {
         this.type = type;
         this.flags = flags;
         this.seq = seq;
@@ -27,31 +28,36 @@ public final class M4B3Message {
         this.keyframe = keyframe;
         this.patch = patch;
         this.ack = ack;
+        this.touch = touch;
         this.nonce = nonce;
     }
 
     public static M4B3Message hello(int flags, long seq, Hello hello) {
-        return new M4B3Message(M4B3.TYPE_HELLO, flags, seq, hello, null, null, null, 0);
+        return new M4B3Message(M4B3.TYPE_HELLO, flags, seq, hello, null, null, null, null, 0);
     }
 
     public static M4B3Message keyframe(int flags, long seq, Keyframe keyframe) {
-        return new M4B3Message(M4B3.TYPE_FRAME_KEY, flags, seq, null, keyframe, null, null, 0);
+        return new M4B3Message(M4B3.TYPE_FRAME_KEY, flags, seq, null, keyframe, null, null, null, 0);
     }
 
     public static M4B3Message patch(int flags, long seq, Patch patch) {
-        return new M4B3Message(M4B3.TYPE_FRAME_PATCH, flags, seq, null, null, patch, null, 0);
+        return new M4B3Message(M4B3.TYPE_FRAME_PATCH, flags, seq, null, null, patch, null, null, 0);
     }
 
     public static M4B3Message ack(int flags, long seq, Ack ack) {
-        return new M4B3Message(M4B3.TYPE_FRAME_ACK, flags, seq, null, null, null, ack, 0);
+        return new M4B3Message(M4B3.TYPE_FRAME_ACK, flags, seq, null, null, null, ack, null, 0);
     }
 
     public static M4B3Message ping(int flags, long seq, long nonce) {
-        return new M4B3Message(M4B3.TYPE_PING, flags, seq, null, null, null, null, nonce);
+        return new M4B3Message(M4B3.TYPE_PING, flags, seq, null, null, null, null, null, nonce);
     }
 
     public static M4B3Message pong(int flags, long seq, long nonce) {
-        return new M4B3Message(M4B3.TYPE_PONG, flags, seq, null, null, null, null, nonce);
+        return new M4B3Message(M4B3.TYPE_PONG, flags, seq, null, null, null, null, null, nonce);
+    }
+
+    public static M4B3Message touch(int flags, long seq, Touch touch) {
+        return new M4B3Message(M4B3.TYPE_TOUCH, flags, seq, null, null, null, null, touch, 0);
     }
 
     public boolean isFrame() {
@@ -146,6 +152,26 @@ public final class M4B3Message {
 
         public boolean ok() {
             return result == M4B3.ACK_OK;
+        }
+    }
+
+    public static final class Touch {
+        public final int action;
+        public final int flags;
+        public final int x;
+        public final int y;
+        public final long tMs;
+        public final long inputSeq;
+        public final long session;
+
+        public Touch(int action, int flags, int x, int y, long tMs, long inputSeq, long session) {
+            this.action = action;
+            this.flags = flags;
+            this.x = x;
+            this.y = y;
+            this.tMs = tMs;
+            this.inputSeq = inputSeq;
+            this.session = session;
         }
     }
 }
