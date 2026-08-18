@@ -791,7 +791,7 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   Serial.printf("[%lu] [GFX] Time = %lu ms from clearScreen to displayBuffer\n", millis(), elapsed);
 
 #ifdef CROSSPOINT_MURPHY_M4
-  if (pendingEntryFrame && frameBuffer && SETTINGS.pageTurnAnimationEnabled != 0) {
+  if (pendingEntryFrame && frameBuffer && SETTINGS.systemAnimationEnabled != 0) {
     uint8_t* oldFrame = pendingEntryFrame;
     pendingEntryFrame = nullptr;
     pendingEntryDeadlineMs = 0;

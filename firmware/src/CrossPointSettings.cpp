@@ -100,7 +100,8 @@ bool CrossPointSettings::saveToFile() const {
   doc["transparentOverlayPxc"]     = transparentOverlayPxc;
   doc["sleepPngInvert"]            = sleepPngInvert;
   doc["sleepBeforeFullRefresh"]    = sleepBeforeFullRefresh;
-  // Page-turn animation
+  // System + reader page-turn animation
+  doc["systemAnimationEnabled"]      = systemAnimationEnabled;
   doc["pageTurnAnimationEnabled"]    = pageTurnAnimationEnabled;
   doc["pageTurnAnimationSteps"]      = pageTurnAnimationSteps;
   doc["pageTurnAnimationMult"]       = pageTurnAnimationMult;
@@ -302,6 +303,13 @@ void CrossPointSettings::resetToDefaults() {
   wifiAlwaysReselect = 1;
   sleepPngInvert = 1;
   sleepBeforeFullRefresh = 1;
+  systemAnimationEnabled = 0;
+  pageTurnAnimationEnabled = 0;
+  pageTurnAnimationSteps = 9;
+  pageTurnAnimationMult = 4;
+  pageTurnAnimationTp = 0x02;
+  pageTurnAnimationFrameRate = 0x88;
+  pageTurnAnimationDir = 0;
   imageQuality = QUALITY_NORMAL;
   transparentOverlayPxc[0] = '\0';
   epubDarkMode = 0;
@@ -738,6 +746,13 @@ bool CrossPointSettings::loadFromFile() {
           // Page-turn animation (sanitize: FrameRate is a raw LUT byte, Dir is 0..3 index)
           pageTurnAnimationEnabled   = doc["pageTurnAnimationEnabled"]   | (uint8_t)0;
           if (pageTurnAnimationEnabled > 1) pageTurnAnimationEnabled = 0;
+          // Older builds used pageTurnAnimationEnabled as the global master switch.
+          if (doc["systemAnimationEnabled"].isNull()) {
+            systemAnimationEnabled = pageTurnAnimationEnabled;
+          } else {
+            systemAnimationEnabled = doc["systemAnimationEnabled"] | (uint8_t)0;
+            if (systemAnimationEnabled > 1) systemAnimationEnabled = 0;
+          }
           pageTurnAnimationSteps     = doc["pageTurnAnimationSteps"]     | (uint8_t)9;
           if (pageTurnAnimationSteps < 2) pageTurnAnimationSteps = 2;
           if (pageTurnAnimationSteps > 64) pageTurnAnimationSteps = 64;
