@@ -28,6 +28,7 @@
 #include "apps/M4xRegistry.h"
 #include "apps/M4xWifiConnect.h"
 #include "qemu/M4QemuNet.h"
+#include "network/M4B3Panel.h"
 #include "network/M4B3TcpReceiver.h"
 
 namespace M4SerialDebug {
@@ -550,7 +551,8 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"present_req\":%u,\"present_ok\":%u,\"present_coal\":%u,\"present_drop\":%u,"
              "\"present_err\":%u,\"map_err\":%u,\"panel_src_id\":%ld,\"panel_src_crc\":%u,"
              "\"panel_crc\":%u,\"panel_err\":%u,\"panel_age_ms\":%u,"
-             "\"panel_corners\":[%u,%u,%u,%u]}",
+             "\"panel_corners\":[%u,%u,%u,%u],"
+             "\"panel_trusted\":%s,\"full_ok\":%u,\"partial_ok\":%u,\"last_reason\":%u}",
              s.listening ? "true" : "false", s.connected ? "true" : "false", s.helloOk ? "true" : "false",
              peerSafe, bindSafe, static_cast<long>(s.acceptedFrameId), static_cast<unsigned>(s.acceptedCrc),
              s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx, s.applyErrors, s.reconnects,
@@ -560,7 +562,8 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              s.presentErr, s.mapErr, static_cast<long>(s.panelSrcId), static_cast<unsigned>(s.panelSrcCrc),
              static_cast<unsigned>(s.panelCrc), s.panelLastErr, s.panelAgeMs,
              static_cast<unsigned>(s.panelCorner[0]), static_cast<unsigned>(s.panelCorner[1]),
-             static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]));
+             static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]),
+             s.panelTrusted ? "true" : "false", s.fullOk, s.partialOk, s.lastPolicyReason);
     replyOk(reqId, out);
     return;
   }
@@ -568,20 +571,38 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
   if (strcmp(op, "m4b3_panel") == 0) {
     M4B3Tcp::Snapshot s;
     M4B3Tcp::snapshot(s);
-    char out[640];
+    char out[980];
     snprintf(out, sizeof(out),
              "{\"op\":\"m4b3_panel\",\"owner\":%u,\"busy\":%s,\"pending\":%s,"
              "\"req\":%u,\"ok\":%u,\"coal\":%u,\"drop\":%u,\"err\":%u,\"map_err\":%u,"
              "\"src_id\":%ld,\"src_crc\":%u,\"panel_crc\":%u,\"last_err\":%u,\"age_ms\":%u,"
-             "\"accepted_id\":%ld,\"accepted_crc\":%u,\"corners\":[%u,%u,%u,%u]}",
+             "\"accepted_id\":%ld,\"accepted_crc\":%u,\"corners\":[%u,%u,%u,%u],"
+             "\"trusted\":%s,\"full_req\":%u,\"full_ok\":%u,\"full_err\":%u,"
+             "\"partial_req\":%u,\"partial_ok\":%u,\"partial_err\":%u,\"no_change\":%u,"
+             "\"n\":%u,\"cum\":%u,\"dirty\":%u,\"area\":%u,\"rects\":%u,\"reason\":%u,"
+             "\"full_ms\":%u,\"part_ms\":%u,"
+             "\"win\":[[%u,%u,%u,%u],[%u,%u,%u,%u],[%u,%u,%u,%u],[%u,%u,%u,%u]]}",
              static_cast<unsigned>(s.panelOwner), s.panelBusy ? "true" : "false",
              s.panelPending ? "true" : "false", s.presentReq, s.presentOk, s.presentCoal, s.presentDrop,
              s.presentErr, s.mapErr, static_cast<long>(s.panelSrcId), static_cast<unsigned>(s.panelSrcCrc),
              static_cast<unsigned>(s.panelCrc), s.panelLastErr, s.panelAgeMs,
              static_cast<long>(s.acceptedFrameId), static_cast<unsigned>(s.acceptedCrc),
              static_cast<unsigned>(s.panelCorner[0]), static_cast<unsigned>(s.panelCorner[1]),
-             static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]));
+             static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]),
+             s.panelTrusted ? "true" : "false", s.fullReq, s.fullOk, s.fullErr, s.partialReq, s.partialOk,
+             s.partialErr, s.noChange, s.partialsSinceFull, s.cumulativePartialPixels, s.lastDirtyPixels,
+             s.lastDirtyArea, static_cast<unsigned>(s.lastRectCount), s.lastPolicyReason, s.lastFullMs,
+             s.lastPartialMs, s.lastWin[0][0], s.lastWin[0][1], s.lastWin[0][2], s.lastWin[0][3],
+             s.lastWin[1][0], s.lastWin[1][1], s.lastWin[1][2], s.lastWin[1][3], s.lastWin[2][0],
+             s.lastWin[2][1], s.lastWin[2][2], s.lastWin[2][3], s.lastWin[3][0], s.lastWin[3][1],
+             s.lastWin[3][2], s.lastWin[3][3]);
     replyOk(reqId, out);
+    return;
+  }
+
+  if (strcmp(op, "m4b3_inject_fail") == 0) {
+    M4B3Panel::injectNextFailure();
+    replyOk(reqId, "{\"op\":\"m4b3_inject_fail\",\"armed\":true}");
     return;
   }
 

@@ -1,16 +1,20 @@
 #pragma once
 
-// Host-testable Browser Bridge full-refresh scheduler.
+// Host-testable Browser Bridge panel scheduler.
 //
-// Three concepts stay separate:
+// Four concepts stay separate:
 //   1. M4B3 accepted logical framebuffer (session / ACK)
-//   2. mapped 800x480 panel snapshot (caller-owned, not this object)
-//   3. physical refresh scheduling / completion (this object)
+//   2. newest mapped 800x480 snapshot (caller-owned)
+//   3. last successfully physically presented 800x480 snapshot (caller-owned)
+//   4. physical refresh scheduling / completion (this object)
 //
 // Pending depth is exactly one latest-frame-wins slot. Network FRAME_ACK is
-// not represented here and must not wait on present completion.
+// not represented here and must not wait on present completion. Dirty/policy
+// is computed by the caller against #3 at take time, including coalesced frames.
 
 #include <cstdint>
+
+#include "util/M4PanelDirty.h"
 
 namespace M4PanelPresenter {
 
@@ -48,12 +52,30 @@ struct State {
   bool busy = false;
   bool pending = false;
   bool wantRelease = false;
+  bool baselineTrusted = false;
+  bool everPresented = false;
+  bool injectNextFail = false;
   uint32_t requested = 0;
   uint32_t completed = 0;
   uint32_t coalesced = 0;
   uint32_t dropped = 0;
   uint32_t presentErrors = 0;
   uint32_t mapErrors = 0;
+  uint32_t fullReq = 0;
+  uint32_t fullOk = 0;
+  uint32_t fullErr = 0;
+  uint32_t partialReq = 0;
+  uint32_t partialOk = 0;
+  uint32_t partialErr = 0;
+  uint32_t noChange = 0;
+  uint32_t partialsSinceFull = 0;
+  uint32_t cumulativePartialPixels = 0;
+  uint32_t lastDirtyPixels = 0;
+  uint32_t lastDirtyArea = 0;
+  uint16_t lastRectCount = 0;
+  uint32_t lastPolicyReason = 0;
+  uint32_t lastFullMs = 0;
+  uint32_t lastPartialMs = 0;
   int32_t pendingFrameId = -1;
   uint32_t pendingCrc = 0;
   int32_t inflightFrameId = -1;
@@ -78,6 +100,11 @@ class Scheduler {
     if (st_.owner == Owner::BrowserBridge) return true;
     st_.owner = Owner::BrowserBridge;
     st_.wantRelease = false;
+    // Physical baseline is untrusted after a new acquire. First present is FULL.
+    st_.baselineTrusted = false;
+    st_.everPresented = false;
+    st_.partialsSinceFull = 0;
+    st_.cumulativePartialPixels = 0;
     return true;
   }
 
@@ -129,17 +156,76 @@ class Scheduler {
     return TakeStatus::Ready;
   }
 
-  void complete(bool ok, uint32_t panelCrc, uint32_t nowMs, uint32_t error = 0) {
+  M4PanelDirty::Decision decide(const M4PanelDirty::Plan& plan) const {
+    return M4PanelDirty::decide(st_.baselineTrusted, st_.everPresented, plan, st_.partialsSinceFull,
+                                st_.cumulativePartialPixels);
+  }
+
+  void notePolicy(M4PanelDirty::Mode mode, M4PanelDirty::Reason reason, uint32_t dirtyPixels, uint32_t windowArea,
+                  uint16_t rectCount) {
+    st_.lastPolicyReason = static_cast<uint32_t>(reason);
+    st_.lastDirtyPixels = dirtyPixels;
+    st_.lastDirtyArea = windowArea;
+    st_.lastRectCount = rectCount;
+    if (mode == M4PanelDirty::Mode::Full) st_.fullReq++;
+    if (mode == M4PanelDirty::Mode::Partial) st_.partialReq++;
+    if (mode == M4PanelDirty::Mode::Skip) st_.noChange++;
+  }
+
+  void injectNextFailure() { st_.injectNextFail = true; }
+
+  bool consumeInjectedFailure() {
+    const bool v = st_.injectNextFail;
+    st_.injectNextFail = false;
+    return v;
+  }
+
+  void complete(bool ok, uint32_t panelCrc, uint32_t nowMs, uint32_t error = 0,
+                M4PanelDirty::Mode mode = M4PanelDirty::Mode::Full, uint32_t elapsedMs = 0,
+                uint32_t dirtyPixels = 0, uint32_t windowArea = 0, uint16_t rectCount = 0,
+                M4PanelDirty::Reason reason = M4PanelDirty::Reason::None) {
     if (!st_.busy) return;
     st_.busy = false;
+    if (reason != M4PanelDirty::Reason::None) st_.lastPolicyReason = static_cast<uint32_t>(reason);
+    st_.lastDirtyPixels = dirtyPixels;
+    st_.lastDirtyArea = windowArea;
+    st_.lastRectCount = rectCount;
     if (ok) {
-      st_.completed++;
-      st_.lastCompleteMs = nowMs;
-      st_.lastPanelCrc = panelCrc;
-      st_.lastError = 0;
+      if (mode == M4PanelDirty::Mode::Skip) {
+        st_.lastError = 0;
+      } else {
+        st_.completed++;
+        st_.lastCompleteMs = nowMs;
+        st_.lastPanelCrc = panelCrc;
+        st_.lastError = 0;
+        if (mode == M4PanelDirty::Mode::Partial) {
+          st_.partialOk++;
+          st_.lastPartialMs = elapsedMs;
+          st_.partialsSinceFull++;
+          st_.cumulativePartialPixels += dirtyPixels;
+          st_.baselineTrusted = true;
+          st_.everPresented = true;
+        } else {
+          st_.fullOk++;
+          st_.lastFullMs = elapsedMs;
+          st_.partialsSinceFull = 0;
+          st_.cumulativePartialPixels = 0;
+          st_.baselineTrusted = true;
+          st_.everPresented = true;
+        }
+      }
     } else {
       st_.presentErrors++;
       st_.lastError = error ? error : static_cast<uint32_t>(Error::DisplayFailed);
+      if (mode == M4PanelDirty::Mode::Partial) {
+        st_.partialErr++;
+        st_.lastPartialMs = elapsedMs;
+      } else {
+        st_.fullErr++;
+        st_.lastFullMs = elapsedMs;
+      }
+      // Do not advance lastPresented (caller). Baseline is untrusted; retry FULL.
+      st_.baselineTrusted = false;
       if (!st_.pending) {
         st_.pending = true;
         st_.pendingFrameId = st_.inflightFrameId;
@@ -172,6 +258,10 @@ class Scheduler {
     st_.pendingCrc = 0;
     st_.inflightFrameId = -1;
     st_.inflightCrc = 0;
+    st_.baselineTrusted = false;
+    st_.everPresented = false;
+    st_.partialsSinceFull = 0;
+    st_.cumulativePartialPixels = 0;
   }
 
   State st_{};

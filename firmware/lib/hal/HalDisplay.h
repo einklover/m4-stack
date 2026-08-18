@@ -47,6 +47,11 @@ class HalDisplay {
   void displayBuffer(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
 
+  // Production-safe byte-aligned window Fast/DU update. Uses the built-in
+  // SSD1677/FreeInk default fast waveform (no custom LUT / voltage tails).
+  // X and W must be multiples of 8. Returns false on reject/failure.
+  bool displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
+
   // Power management
   void deepSleep();
 

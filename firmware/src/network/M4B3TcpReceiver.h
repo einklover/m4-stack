@@ -50,6 +50,23 @@ struct Snapshot {
   uint32_t panelLastErr = 0;
   uint32_t panelAgeMs = 0;
   uint8_t panelCorner[4] = {};
+  bool panelTrusted = false;
+  uint32_t fullReq = 0;
+  uint32_t fullOk = 0;
+  uint32_t fullErr = 0;
+  uint32_t partialReq = 0;
+  uint32_t partialOk = 0;
+  uint32_t partialErr = 0;
+  uint32_t noChange = 0;
+  uint32_t partialsSinceFull = 0;
+  uint32_t cumulativePartialPixels = 0;
+  uint32_t lastDirtyPixels = 0;
+  uint32_t lastDirtyArea = 0;
+  uint16_t lastRectCount = 0;
+  uint32_t lastPolicyReason = 0;
+  uint32_t lastFullMs = 0;
+  uint32_t lastPartialMs = 0;
+  uint16_t lastWin[4][4] = {};
 };
 
 void begin();

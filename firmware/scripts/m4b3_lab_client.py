@@ -233,6 +233,97 @@ def cmd_ping_hold(host: str, port: int) -> int:
         return 0
 
 
+def sparse_fb(n: int) -> bytearray:
+    """Landmark baseline + one small walking block (byte-boundary x)."""
+    fb = landmark_fb()
+    # Keep the extra block away from the landmark stamps so dirty stays 1-2 windows.
+    x = 11 + (n * 17) % 200
+    y = 300 + (n * 13) % 160
+    paint_rect(fb, x, y, 24, 16)
+    return fb
+
+
+def two_region_fb(n: int) -> bytearray:
+    fb = landmark_fb()
+    paint_rect(fb, 120 + (n % 4) * 8, 320, 16, 16)
+    paint_rect(fb, 280, 360 + (n % 3) * 8, 16, 16)
+    return fb
+
+
+def dense_fb() -> bytearray:
+    fb = landmark_fb()
+    paint_rect(fb, 0, 80, 480, 360)  # large mid-band overwrite, >28% physical
+    return fb
+
+
+def fragmented_fb() -> bytearray:
+    fb = landmark_fb()
+    paint_rect(fb, 96, 120, 8, 8)
+    paint_rect(fb, 240, 160, 8, 8)
+    paint_rect(fb, 360, 280, 8, 8)
+    paint_rect(fb, 140, 640, 8, 8)
+    paint_rect(fb, 300, 680, 8, 8)
+    return fb
+
+
+def cmd_sparse(host: str, port: int, count: int, interval: float, start_id: int) -> int:
+    with connect(host, port) as sock:
+        hello_ok(sock)
+        last_crc = 0
+        for i in range(count):
+            fb = bytes(sparse_fb(i))
+            last_crc = crc32(fb)
+            fid = start_id + i
+            result, accepted, dt = send_key(sock, fid, fb, fid + 1)
+            print(f"sparse={i} id={fid} ack result={result} accepted={accepted} "
+                  f"ack_ms={dt:.1f} crc=0x{last_crc:08X}")
+            if accepted != fid:
+                return 2
+            if i + 1 < count:
+                time.sleep(interval)
+        print(f"sparse ok count={count} last_crc=0x{last_crc:08X}")
+        return 0
+
+
+def cmd_two_region(host: str, port: int, count: int, interval: float, start_id: int) -> int:
+    with connect(host, port) as sock:
+        hello_ok(sock)
+        last_crc = 0
+        for i in range(count):
+            fb = bytes(two_region_fb(i))
+            last_crc = crc32(fb)
+            fid = start_id + i
+            result, accepted, dt = send_key(sock, fid, fb, fid + 1)
+            print(f"two={i} id={fid} ack result={result} accepted={accepted} "
+                  f"ack_ms={dt:.1f} crc=0x{last_crc:08X}")
+            if accepted != fid:
+                return 2
+            if i + 1 < count:
+                time.sleep(interval)
+        print(f"two-region ok count={count} last_crc=0x{last_crc:08X}")
+        return 0
+
+
+def cmd_dense(host: str, port: int, start_id: int) -> int:
+    fb = bytes(dense_fb())
+    with connect(host, port) as sock:
+        hello_ok(sock)
+        result, accepted, dt = send_key(sock, start_id, fb, start_id + 1)
+        print(f"dense id={start_id} ack result={result} accepted={accepted} "
+              f"ack_ms={dt:.1f} crc=0x{crc32(fb):08X}")
+        return 0 if accepted == start_id else 2
+
+
+def cmd_fragmented(host: str, port: int, start_id: int) -> int:
+    fb = bytes(fragmented_fb())
+    with connect(host, port) as sock:
+        hello_ok(sock)
+        result, accepted, dt = send_key(sock, start_id, fb, start_id + 1)
+        print(f"frag id={start_id} ack result={result} accepted={accepted} "
+              f"ack_ms={dt:.1f} crc=0x{crc32(fb):08X}")
+        return 0 if accepted == start_id else 2
+
+
 def cmd_nack(host: str, port: int) -> int:
     fb = white()
     with connect(host, port) as sock:
@@ -266,7 +357,22 @@ def main() -> int:
     p.add_argument("--port", type=int, default=48624)
     p.add_argument("--count", type=int, default=6)
     p.add_argument("--interval", type=float, default=2.5)
-    p.add_argument("cmd", choices=("hello-key", "nack", "landmark", "sequence", "burst", "ping-hold"))
+    p.add_argument("--start-id", type=int, default=0)
+    p.add_argument(
+        "cmd",
+        choices=(
+            "hello-key",
+            "nack",
+            "landmark",
+            "sequence",
+            "burst",
+            "ping-hold",
+            "sparse",
+            "two-region",
+            "dense",
+            "fragmented",
+        ),
+    )
     args = p.parse_args()
     if args.cmd == "hello-key":
         return cmd_hello_key(args.host, args.port)
@@ -278,6 +384,14 @@ def main() -> int:
         return cmd_burst(args.host, args.port, args.count)
     if args.cmd == "ping-hold":
         return cmd_ping_hold(args.host, args.port)
+    if args.cmd == "sparse":
+        return cmd_sparse(args.host, args.port, args.count, args.interval, args.start_id)
+    if args.cmd == "two-region":
+        return cmd_two_region(args.host, args.port, args.count, args.interval, args.start_id)
+    if args.cmd == "dense":
+        return cmd_dense(args.host, args.port, args.start_id)
+    if args.cmd == "fragmented":
+        return cmd_fragmented(args.host, args.port, args.start_id)
     return cmd_nack(args.host, args.port)
 
 

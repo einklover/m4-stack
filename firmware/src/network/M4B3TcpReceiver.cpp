@@ -111,6 +111,28 @@ void fillSnapshot(Snapshot& s) {
   s.panelCorner[1] = panel.corner[1];
   s.panelCorner[2] = panel.corner[2];
   s.panelCorner[3] = panel.corner[3];
+  s.panelTrusted = panel.baselineTrusted;
+  s.fullReq = panel.fullReq;
+  s.fullOk = panel.fullOk;
+  s.fullErr = panel.fullErr;
+  s.partialReq = panel.partialReq;
+  s.partialOk = panel.partialOk;
+  s.partialErr = panel.partialErr;
+  s.noChange = panel.noChange;
+  s.partialsSinceFull = panel.partialsSinceFull;
+  s.cumulativePartialPixels = panel.cumulativePartialPixels;
+  s.lastDirtyPixels = panel.lastDirtyPixels;
+  s.lastDirtyArea = panel.lastDirtyArea;
+  s.lastRectCount = panel.lastRectCount;
+  s.lastPolicyReason = panel.lastPolicyReason;
+  s.lastFullMs = panel.lastFullMs;
+  s.lastPartialMs = panel.lastPartialMs;
+  for (int i = 0; i < 4; ++i) {
+    s.lastWin[i][0] = panel.lastWin[i][0];
+    s.lastWin[i][1] = panel.lastWin[i][1];
+    s.lastWin[i][2] = panel.lastWin[i][2];
+    s.lastWin[i][3] = panel.lastWin[i][3];
+  }
 }
 
 void logSnapshot(const char* why) {
@@ -120,14 +142,15 @@ void logSnapshot(const char* why) {
       "[%lu] [M4B3] %s listen=%d conn=%d peer=%s bind=%s hello=%d accepted=%ld crc=0x%08x "
       "key=%u patch=%u nack=%u helloN=%u ping=%u rx=%u tx=%u applyErr=%u recon=%u "
       "rxFill=%u heap=%u minHeap=%u psram=%u panel(owner=%u busy=%d pend=%d req=%u ok=%u coal=%u "
-      "drop=%u src=%ld pcrc=0x%08x)\n",
+      "drop=%u src=%ld pcrc=0x%08x full=%u/%u part=%u/%u reason=%u)\n",
       millis(), why, s.listening ? 1 : 0, s.connected ? 1 : 0, s.peer[0] ? s.peer : "-",
       s.bindIp[0] ? s.bindIp : "-", s.helloOk ? 1 : 0, static_cast<long>(s.acceptedFrameId),
       static_cast<unsigned>(s.acceptedCrc), s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx,
       s.applyErrors, s.reconnects, s.rxFilled, s.freeHeap, s.minFreeHeap, s.freePsram,
       static_cast<unsigned>(s.panelOwner), s.panelBusy ? 1 : 0, s.panelPending ? 1 : 0, s.presentReq,
       s.presentOk, s.presentCoal, s.presentDrop, static_cast<long>(s.panelSrcId),
-      static_cast<unsigned>(s.panelCrc));
+      static_cast<unsigned>(s.panelCrc), s.fullOk, s.fullErr, s.partialOk, s.partialErr,
+      s.lastPolicyReason);
 }
 
 bool staReady(IPAddress& ip) {

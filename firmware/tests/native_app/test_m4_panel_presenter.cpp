@@ -155,7 +155,30 @@ int main() {
     assert(s.take(5, &id, &scrc) == M4PanelPresenter::TakeStatus::Ready);
     s.complete(true, 0xFEED, 10);
     assert(s.state().completed == 1);
+    assert(s.state().fullOk == 1);
+    assert(s.state().baselineTrusted);
     assert(h.session.acceptedCrc() == crc);
+  }
+
+  // Acquire/release resets physical baseline; first present after reacquire is FULL.
+  {
+    M4PanelPresenter::Scheduler s;
+    s.acquire(M4PanelPresenter::Owner::BrowserBridge);
+    assert(!s.state().everPresented);
+    assert(!s.state().baselineTrusted);
+    s.offer(1, 0x11, 0);
+    s.take(0);
+    s.complete(true, 0x22, 5);
+    assert(s.state().everPresented);
+    assert(s.state().baselineTrusted);
+    assert(s.release());
+    assert(!s.state().everPresented);
+    assert(!s.state().baselineTrusted);
+    assert(s.acquire(M4PanelPresenter::Owner::BrowserBridge));
+    M4PanelDirty::Plan empty{};
+    auto d = s.decide(empty);
+    assert(d.mode == M4PanelDirty::Mode::Full);
+    assert(d.reason == M4PanelDirty::Reason::FirstBaseline);
   }
 
   // Landmark geometry maps to distinct physical regions; corners are black.

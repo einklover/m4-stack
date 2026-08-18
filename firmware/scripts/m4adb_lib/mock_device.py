@@ -179,6 +179,10 @@ class MockDevice:
                     "panel_err": 0,
                     "panel_age_ms": 0,
                     "panel_corners": [0, 0, 0, 0],
+                    "panel_trusted": False,
+                    "full_ok": 0,
+                    "partial_ok": 0,
+                    "last_reason": 0,
                 },
             )
         if op == "m4b3_panel":
@@ -203,8 +207,27 @@ class MockDevice:
                     "accepted_id": -1,
                     "accepted_crc": 0,
                     "corners": [0, 0, 0, 0],
+                    "trusted": False,
+                    "full_req": 0,
+                    "full_ok": 0,
+                    "full_err": 0,
+                    "partial_req": 0,
+                    "partial_ok": 0,
+                    "partial_err": 0,
+                    "no_change": 0,
+                    "n": 0,
+                    "cum": 0,
+                    "dirty": 0,
+                    "area": 0,
+                    "rects": 0,
+                    "reason": 0,
+                    "full_ms": 0,
+                    "part_ms": 0,
+                    "win": [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
                 },
             )
+        if op == "m4b3_inject_fail":
+            return self._ok(req_id, {"op": "m4b3_inject_fail", "armed": True})
         if op in ("wifi_status", "wifi_prepare", "wifi_transfer"):
             ready = bool(self.wifi_connected and self.wifi_ip)
             return self._ok(

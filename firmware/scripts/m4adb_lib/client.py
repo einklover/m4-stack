@@ -186,6 +186,10 @@ class Client:
         """Read Browser Bridge panel-presenter counters (no radio change)."""
         return self.request({"op": "m4b3_panel"}, timeout=5)
 
+    def m4b3_inject_fail(self) -> dict:
+        """Arm a one-shot presenter failure (no panel drive)."""
+        return self.request({"op": "m4b3_inject_fail"}, timeout=5)
+
     def wifi_prepare(self, timeout: float = 45.0) -> dict:
         """Use the persistent USB bridge to bring up saved STA Wi-Fi.
 
