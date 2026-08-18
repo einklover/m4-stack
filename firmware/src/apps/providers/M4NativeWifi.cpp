@@ -10,6 +10,8 @@
 
 namespace M4NativeWifi {
 
+bool isReady() { return M4QemuNet::staConnected(); }
+
 Result ensureConnected(uint32_t timeoutMs, const CancelFn& cancelled) {
   Result r;
   // QEMU plugin-debug uses open_eth (not the Wi-Fi radio). Treat that path as

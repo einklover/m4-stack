@@ -13,6 +13,11 @@
 namespace M4NativeProviderIo {
 
 bool ensureParentDirs(const std::string& absPath);
+
+// Replace the last path extension (`toc_rows.txt` → `toc_rows.part`).
+// Do not append `.tmp` onto an existing `.txt`: FatFS 8.3 aliases
+// `toc_rows.txt.tmp` to `TOC_ROWS.TXT` and catalog commit then fails.
+std::string replacedExtension(const std::string& path, const char* ext);
 bool cacheComplete(const std::string& absPath, size_t* sizeOut = nullptr);
 // Strong cache check for providers that must not trust legacy one-byte markers.
 // New markers record the committed byte size; legacy markers return false.
@@ -50,6 +55,7 @@ class PartFileSink final : public M4xJsonStream::Sink {
 
  private:
   bool flushBuffer();
+  bool ensureFile();
   static constexpr size_t kBufferBytes = 8u * 1024u;
   FsFile file_;
   std::string finalPath_;
@@ -58,6 +64,7 @@ class PartFileSink final : public M4xJsonStream::Sink {
   size_t used_ = 0;
   size_t written_ = 0;
   bool open_ = false;
+  bool fileReady_ = false;
 };
 
 // Compatibility credential reader for existing plugin config.json files.

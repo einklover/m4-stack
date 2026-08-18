@@ -32,10 +32,10 @@ constexpr LayoutPreset kCompactLayout{8, 8, 6, 6, 9};
 constexpr LayoutPreset kStandardLayout{10, 10, 10, 10, 10};
 constexpr LayoutPreset kRelaxedLayout{14, 14, 18, 18, 12};
 
-constexpr int kOverlayTopBarH = 58;
-constexpr int kOverlayBottomBarH = 88;
-constexpr int kStyleSheetH = 340;
-constexpr int kStyleSheetHeaderH = 38;
+constexpr int kOverlayTopBarH = M4ReaderMenuLayout::kOverlayTopBarH;
+constexpr int kOverlayBottomBarH = M4ReaderMenuLayout::kOverlayBottomBarH;
+constexpr int kStyleSheetH = M4ReaderMenuLayout::kStyleSheetH;
+constexpr int kStyleSheetHeaderH = M4ReaderMenuLayout::kStyleSheetHeaderH;
 constexpr int kTopBackHitW = 64;
 constexpr int kTopBookmarkHitW = 64;
 constexpr int kQuickFontMaxExternal = 3;
@@ -131,12 +131,17 @@ void drawBookmarkGlyph(const GfxRenderer& renderer, int x, int y) {
 void EpubReaderMenuActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex = xSemaphoreCreateMutex();
-  menuLayer_ = MenuLayer::QUICK;
+  menuLayer_ = initialLayer_;
   selectedIndex = 0;
   readerStyleDirty_ = false;
   readerFontDirty_ = false;
   firstPaint_ = true;
+  // Tab switches stay on FAST_REFRESH. HALF is only for returning from a
+  // full-page child (font picker / interval / Bluetooth) onto More.
   forceHalfRefresh_ = false;
+  if (menuLayer_ == MenuLayer::STYLE) {
+    prepareQuickFontFamilies();
+  }
 
   if (auto* host = getParentActivity(); host && !host->readerMenuSyncSupported()) {
     moreMenuItems.erase(
@@ -147,7 +152,7 @@ void EpubReaderMenuActivity::onEnter() {
   }
 
   updateRequired = true;
-  xTaskCreate(&EpubReaderMenuActivity::taskTrampoline, "EpubMenuTask", 4096, this, 1, &displayTaskHandle);
+  xTaskCreate(&EpubReaderMenuActivity::taskTrampoline, "EpubMenuTask", 8192, this, 1, &displayTaskHandle);
 }
 
 void EpubReaderMenuActivity::onExit() {
@@ -224,7 +229,11 @@ void EpubReaderMenuActivity::applyQuickFontChoice(int slot) {
 
 void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
   if (action == InternalAction::OPEN_STYLE) {
+    // Font directory iteration uses the same SD handle as TTF rasterization.
+    // Do it only while the menu display task is not mid-draw.
+    if (renderingMutex) xSemaphoreTake(renderingMutex, portMAX_DELAY);
     prepareQuickFontFamilies();
+    if (renderingMutex) xSemaphoreGive(renderingMutex);
     menuLayer_ = MenuLayer::STYLE;
     selectedIndex = 0;
     updateRequired = true;
@@ -233,7 +242,6 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
   if (action == InternalAction::OPEN_MORE) {
     menuLayer_ = MenuLayer::MORE;
     selectedIndex = 0;
-    forceHalfRefresh_ = true;
     updateRequired = true;
     return;
   }

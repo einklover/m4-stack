@@ -3,10 +3,24 @@
 Api = {}
 
 local HOST = "https://fq-book.netsite.cc"
+-- Chapter bodies 302 from HOST to this NAT mirror on :8043. Device TLS
+-- cannot auto-follow that hop (ESP_ERR_HTTP_CONNECT); hit the mirror
+-- directly with today's UTC date (required `nt=` query).
+local CHAPTER_HOST = "https://fq-book.nat.netsite.cc:8043"
 local UA = "Mozilla/5.0 (Linux; Android 10.0; wv) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/4.0 Chrome/58.0.3029.110 Mobile Safari/537.36 T7/10.3 SearchCraft/2.6.2 (Baidu; P1 7.0)"
 
 local function headers()
   return { ["User-Agent"] = UA, Referer = "https://fanqienovel.com/" }
+end
+
+local function chapter_url(itemId)
+  local nt = os.date("!%Y-%m-%d")
+  -- Device clock is often unset; 1970-01-01 makes the mirror return empty.
+  if type(nt) ~= "string" or nt < "2024-01-01" then
+    nt = os.date("!%Y-%m-%d") -- keep if host clock is sane
+    if type(nt) ~= "string" or nt < "2024-01-01" then nt = "2026-08-18" end
+  end
+  return CHAPTER_HOST .. "/content?item_id=" .. tostring(itemId) .. "&nt=" .. nt
 end
 
 local function http_get(path, timeout)
@@ -196,7 +210,7 @@ function Api.chapter_loader_spec(bookId, ch, relPath, openMeta)
   if itemId == "" or type(relPath) ~= "string" or relPath == "" then return nil end
   openMeta = openMeta or {}
   return {
-    url = HOST .. "/content?item_id=" .. itemId,
+    url = chapter_url(itemId),
     headers = headers(),
     out = relPath,
     extract = { kind = "json_field", path = { "data", "data" }, field = "content" },
@@ -250,7 +264,7 @@ function Api.fetch_chapter_to_file(bookId, ch, relPath)
   if type(dl) ~= "table" or type(dl.jsonGet) ~= "function" then
     return nil, "unsupported"
   end
-  local url = HOST .. "/content?item_id=" .. itemId
+  local url = chapter_url(itemId)
   local res, jerr = dl.jsonGet({
     url = url,
     headers = headers(),
@@ -277,7 +291,7 @@ end
 function Api.fetch_chapter_text(bookId, ch)
   local itemId = tostring((ch and ch.chapterUid) or "")
   if itemId == "" then return nil, "no_item_id" end
-  local url = HOST .. "/content?item_id=" .. itemId
+  local url = chapter_url(itemId)
 
   -- The public mirror returns a short-lived redirect to a non-default TLS
   -- port.  The generic net.request path follows redirects in the host's

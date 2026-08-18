@@ -594,9 +594,15 @@ void EpubReaderActivity::loop() {
     //   updateRequired = true;
     //   return;
     // }
-    // Pass input responsibility to sub activity if exists
+    // Pass input responsibility to sub activity if exists.
+    // pumpSubActivityFrame defers menu->settings replacement until loop returns,
+    // so opening 阅读设置 no longer destroys EpubReaderMenu mid-stack.
     if (subActivity) {
-      subActivity->loop();
+      const bool replaced = pumpSubActivityFrame();
+      if (replaced) {
+        updateRequired = false;
+        skipNextButtonCheck = true;
+      }
       // Deferred exit: process after subActivity->loop() returns to avoid use-after-free
       if (pendingSubactivityExit) {
         pendingSubactivityExit = false;
@@ -704,19 +710,8 @@ void EpubReaderActivity::loop() {
     if (!globalNextPageMode && (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || touchMenu)) {
       // Don't start activity transition while rendering
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      const int currentPage = section ? section->currentPage + 1 : 0;
-      const int totalPages = section ? section->pageCount : 0;
-      float bookProgress = 0.0f;
-      if (epub && epub->getBookSize() > 0 && section && section->pageCount > 0) {
-        const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
-        bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
-      }
-      const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
       exitActivity();
-      enterNewActivity(new EpubReaderMenuActivity(
-          this->renderer, this->mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
-          SETTINGS.orientation, [this](const uint8_t orientation) { onReaderMenuBack(orientation); },
-          [this](EpubReaderMenuActivity::MenuAction action) { onReaderMenuConfirm(action); }));
+      enterReaderMenu(EpubReaderMenuActivity::MenuLayer::QUICK);
       xSemaphoreGive(renderingMutex);
     }
 
@@ -742,19 +737,8 @@ void EpubReaderActivity::loop() {
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
         // Don't start activity transition while rendering
         xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        const int currentPage = section ? section->currentPage + 1 : 0;
-        const int totalPages = section ? section->pageCount : 0;
-        float bookProgress = 0.0f;
-        if (epub && epub->getBookSize() > 0 && section && section->pageCount > 0) {
-          const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
-          bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
-        }
-        const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
         exitActivity();
-        enterNewActivity(new EpubReaderMenuActivity(
-            this->renderer, this->mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent,
-            SETTINGS.orientation, [this](const uint8_t orientation) { onReaderMenuBack(orientation); },
-            [this](EpubReaderMenuActivity::MenuAction action) { onReaderMenuConfirm(action); }));
+        enterReaderMenu(EpubReaderMenuActivity::MenuLayer::QUICK);
         xSemaphoreGive(renderingMutex);
         return;
       }
@@ -1208,72 +1192,97 @@ void EpubReaderActivity::jumpToPercent(float normalizedPercent) {
   xSemaphoreGive(renderingMutex);
 }
 
+void EpubReaderActivity::enterReaderMenu(EpubReaderMenuActivity::MenuLayer layer) {
+  const int currentPage = section ? section->currentPage + 1 : 0;
+  const int totalPages = section ? section->pageCount : 0;
+  float bookProgress = 0.0f;
+  if (epub && epub->getBookSize() > 0 && section && section->pageCount > 0) {
+    const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
+    bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
+  }
+  const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
+  const std::string title = epub ? epub->getTitle() : std::string();
+  enterNewActivity(new EpubReaderMenuActivity(
+      this->renderer, this->mappedInput, title, currentPage, totalPages, bookProgressPercent,
+      SETTINGS.orientation, [this](const uint8_t orientation) { onReaderMenuBack(orientation); },
+      [this](EpubReaderMenuActivity::MenuAction action) { onReaderMenuConfirm(action); }, layer));
+}
+
+void EpubReaderActivity::enterChapterSelector() {
+  const int currentP = section ? section->currentPage : 0;
+  const int totalP = section ? section->pageCount : 0;
+  const int spineIdx = currentSpineIndex;
+  const std::string path = epub ? epub->getPath() : std::string();
+  enterNewActivity(new EpubReaderChapterSelectionActivity(
+      this->renderer, this->mappedInput, epub, path, spineIdx, currentP, totalP,
+      [this] {
+        exitActivity();
+        updateRequired = true;
+      },
+      [this](const int newSpineIndex) {
+        if (currentSpineIndex != newSpineIndex) {
+          currentSpineIndex = newSpineIndex;
+          nextPageNumber = 0;
+          section.reset();
+        }
+        exitActivity();
+        updateRequired = true;
+      },
+      [this](const int newSpineIndex, const int newPage) {
+        if (currentSpineIndex != newSpineIndex || (section && section->currentPage != newPage)) {
+          currentSpineIndex = newSpineIndex;
+          nextPageNumber = newPage;
+          section.reset();
+        }
+        exitActivity();
+        updateRequired = true;
+      }));
+}
+
+void EpubReaderActivity::enterPercentSheet() {
+  float bookProgress = 0.0f;
+  if (epub && epub->getBookSize() > 0 && section && section->pageCount > 0) {
+    const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
+    bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
+  }
+  const int initialPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
+  enterNewActivity(new EpubReaderPercentSelectionActivity(
+      renderer, mappedInput, initialPercent,
+      [this](const int percent) {
+        jumpToPercent(percent);
+        exitActivity();
+        updateRequired = true;
+      },
+      [this]() {
+        exitActivity();
+        updateRequired = true;
+      },
+      [this](int toolbarHit) {
+        if (toolbarHit == 1) return;
+        exitActivity();
+        if (toolbarHit == 0) {
+          enterChapterSelector();
+        } else if (toolbarHit == 2) {
+          enterReaderMenu(EpubReaderMenuActivity::MenuLayer::STYLE);
+        } else if (toolbarHit == 3) {
+          enterReaderMenu(EpubReaderMenuActivity::MenuLayer::MORE);
+        }
+      }));
+}
+
 void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action) {
   switch (action) {
     case EpubReaderMenuActivity::MenuAction::SELECT_CHAPTER: {
-      // Calculate values BEFORE we start destroying things
-      const int currentP = section ? section->currentPage : 0;
-      const int totalP = section ? section->pageCount : 0;
-      const int spineIdx = currentSpineIndex;
-      const std::string path = epub->getPath();
-
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
-
-      // 1. Close the menu
       exitActivity();
-
-      // 2. Open the Chapter Selector
-      enterNewActivity(new EpubReaderChapterSelectionActivity(
-          this->renderer, this->mappedInput, epub, path, spineIdx, currentP, totalP,
-          [this] {
-            exitActivity();
-            updateRequired = true;
-          },
-          [this](const int newSpineIndex) {
-            if (currentSpineIndex != newSpineIndex) {
-              currentSpineIndex = newSpineIndex;
-              nextPageNumber = 0;
-              section.reset();
-            }
-            exitActivity();
-            updateRequired = true;
-          },
-          [this](const int newSpineIndex, const int newPage) {
-            if (currentSpineIndex != newSpineIndex || (section && section->currentPage != newPage)) {
-              currentSpineIndex = newSpineIndex;
-              nextPageNumber = newPage;
-              section.reset();
-            }
-            exitActivity();
-            updateRequired = true;
-          }));
-
+      enterChapterSelector();
       xSemaphoreGive(renderingMutex);
       break;
     }
     case EpubReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
-      // Launch the slider-based percent selector and return here on confirm/cancel.
-      float bookProgress = 0.0f;
-      if (epub && epub->getBookSize() > 0 && section && section->pageCount > 0) {
-        const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
-        bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
-      }
-      const int initialPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       exitActivity();
-      enterNewActivity(new EpubReaderPercentSelectionActivity(
-          renderer, mappedInput, initialPercent,
-          [this](const int percent) {
-            // Apply the new position and exit back to the reader.
-            jumpToPercent(percent);
-            exitActivity();
-            updateRequired = true;
-          },
-          [this]() {
-            // Cancel selection and return to the reader.
-            exitActivity();
-            updateRequired = true;
-          }));
+      enterPercentSheet();
       xSemaphoreGive(renderingMutex);
       break;
     }
@@ -1706,8 +1715,17 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
 
 void EpubReaderActivity::displayTaskLoop() {
   while (true) {
+    if (subActivity) {
+      updateRequired = false;
+      vTaskDelay(20 / portTICK_PERIOD_MS);
+      continue;
+    }
     if (updateRequired) {
       updateRequired = false;
+      if (subActivity) {
+        vTaskDelay(20 / portTICK_PERIOD_MS);
+        continue;
+      }
       // 加锁保证渲染过程独占
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       APP_STATE.isRenderComplete = false; // 标记渲染开始

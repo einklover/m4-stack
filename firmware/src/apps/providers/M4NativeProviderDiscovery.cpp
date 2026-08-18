@@ -74,16 +74,22 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
   bool open(const std::string& finalPath) {
     close();
     finalPath_ = finalPath;
-    tmpPath_ = finalPath_ + ".tmp";
+    tmpPath_ = M4NativeProviderIo::replacedExtension(finalPath_, "part");
     written_ = 0;
     if (!M4NativeProviderIo::ensureParentDirs(finalPath_)) return false;
-    // Stale zero-byte *.tmp from a previous aborted discovery can block FatFS
+    // Stale zero-byte sibling from a previous aborted discovery can block FatFS
     // open-for-write on some cards; force-remove then retry once.
     if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
     open_ = SdMan.openFileForWrite("NP-DISC", tmpPath_.c_str(), f_);
     if (!open_) {
       if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
       open_ = SdMan.openFileForWrite("NP-DISC", tmpPath_.c_str(), f_);
+    }
+    if (open_) {
+      // FatFS open-for-write does not always truncate; leftover first-cluster
+      // slack then prefixes the next TSV with NULs and idOk() rejects book IDs.
+      (void)f_.truncate(0);
+      (void)f_.seekSet(0);
     }
     return open_;
   }
@@ -111,19 +117,10 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
 
   bool commit() {
     close();
-    if (tmpPath_.empty() || finalPath_.empty() || written_ == 0 || !SdMan.exists(tmpPath_.c_str())) {
-      return false;
-    }
-    const std::string backup = finalPath_ + ".bak";
-    if (SdMan.exists(backup.c_str())) SdMan.remove(backup.c_str());
-    const bool hadOld = SdMan.exists(finalPath_.c_str());
-    if (hadOld && !SdMan.rename(finalPath_.c_str(), backup.c_str())) return false;
-    if (!SdMan.rename(tmpPath_.c_str(), finalPath_.c_str())) {
-      if (hadOld && SdMan.exists(backup.c_str())) (void)SdMan.rename(backup.c_str(), finalPath_.c_str());
-      return false;
-    }
-    if (SdMan.exists(backup.c_str())) SdMan.remove(backup.c_str());
-    return true;
+    if (tmpPath_.empty() || finalPath_.empty() || written_ == 0) return false;
+    // replacedExtension bak (not final+".bak"): FatFS 8.3 aliases
+    // shelf_rows.tsv.bak onto SHELF_ROWS.TSV. already-final is success.
+    return M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true);
   }
 
   void discard() {

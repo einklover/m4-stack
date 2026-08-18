@@ -161,14 +161,16 @@ std::string displayWordCount(const std::string& raw) {
 NativeProviderBookActivity::NativeProviderBookActivity(
     GfxRenderer& renderer, MappedInputManager& mappedInput, std::string providerId,
     std::string bookId, std::string appId, std::string title, std::string author,
-    const std::function<void()>& onExitBook)
+    const std::function<void()>& onExitBook, bool autoStartReading, int autoOpenIndex)
     : ActivityWithSubactivity("NativeProviderBook", renderer, mappedInput),
       providerId_(std::move(providerId)),
       bookId_(std::move(bookId)),
       appId_(std::move(appId)),
       title_(std::move(title)),
       author_(std::move(author)),
-      onExitBook_(onExitBook) {}
+      onExitBook_(onExitBook),
+      autoStartReading_(autoStartReading),
+      autoOpenIndex_(autoOpenIndex) {}
 
 void NativeProviderBookActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
@@ -178,6 +180,16 @@ void NativeProviderBookActivity::onEnter() {
   // Local/persisted catalog discovery is cheap and does not start network I/O.
   // A missing catalog is intentionally not an error on the detail page.
   if (!prepareCatalog()) error_.clear();
+  if (autoStartReading_) {
+    // History / TOC-handoff: skip the detail page so chapter switch has an
+    // owner without bouncing the user through the book card.
+    if (titles_) {
+      startReading();
+    } else if (!startCatalogBootstrap(PendingCatalogAction::StartReading)) {
+      loadBookDetail();
+    }
+    return;
+  }
   loadBookDetail();
 }
 
@@ -234,11 +246,15 @@ bool NativeProviderBookActivity::startCatalogBootstrap(PendingCatalogAction acti
     error_ = "另一本书的目录正在加载";
     return false;
   }
+  // Paint first and let the FAST_REFRESH finish. A small JJ catalog downloads
+  // in ~1s; starting HTTPS while the panel still owns the shared SPI bus is
+  // the usual catalog_commit_failed after a successful parse.
+  renderCatalogLoading(true);
+  delay(600);
   if (!M4NativeProviderCatalog::start(providerId_, bookId_, appId_, title_, currentIndex_)) {
     error_ = "目录任务启动失败";
     return false;
   }
-  renderCatalogLoading(true);
   return true;
 }
 
@@ -475,17 +491,21 @@ void NativeProviderBookActivity::startReading() {
   pendingInitialByteOffset_ = 0;
   hasPendingInitialByteOffset_ = false;
   pendingInitialIndex_ = -1;
-  const auto history = M4ContentProviderSession::makeHistorySnapshot(providerId_, bookId_);
-  if (history.providerId == providerId_ && history.bookId == bookId_ && history.chapterIndex0 >= 0 &&
-      history.chapterIndex0 < chapterCount_) {
-    index0 = history.chapterIndex0;
-    if (history.hasByteOffset) {
-      pendingInitialByteOffset_ = history.byteOffset;
-      hasPendingInitialByteOffset_ = true;
-      pendingInitialIndex_ = index0;
+  if (autoOpenIndex_ >= 0 && autoOpenIndex_ < chapterCount_) {
+    index0 = autoOpenIndex_;
+  } else {
+    const auto history = M4ContentProviderSession::makeHistorySnapshot(providerId_, bookId_);
+    if (history.providerId == providerId_ && history.bookId == bookId_ && history.chapterIndex0 >= 0 &&
+        history.chapterIndex0 < chapterCount_) {
+      index0 = history.chapterIndex0;
+      if (history.hasByteOffset) {
+        pendingInitialByteOffset_ = history.byteOffset;
+        hasPendingInitialByteOffset_ = true;
+        pendingInitialIndex_ = index0;
+      }
     }
   }
-  requestChapter(index0, false);
+  requestChapter(index0, autoOpenIndex_ >= 0);
 }
 
 std::string NativeProviderBookActivity::titleAt(int index0) const {
@@ -503,9 +523,17 @@ void NativeProviderBookActivity::requestChapter(int index0, bool fromToc) {
   loadingFromToc_ = fromToc;
   loadingTitle_ = titleAt(index0);
   error_.clear();
-  state_ = State::Loading;
   lastLoadingSignature_.clear();
   lastLoadingPaintMs_ = 0;
+  // Cached body: open immediately. A history/TOC switch must not start TLS
+  // just to re-fetch a chapter already on SD (wifi-down getaddrinfo panic).
+  if (openReadyReader(index0)) return;
+  state_ = State::Loading;
+  // Same constraint as catalog bootstrap: FAST_REFRESH owns the shared SPI
+  // bus. Starting TLS/HTTPS while the panel is still refreshing aborts the
+  // handshake as ESP_ERR_HTTP_CONNECT (~100ms, 0 bytes). Paint first.
+  renderLoading(true);
+  delay(600);
   const bool queued = M4NativeProviderManager::requestChapter(
       providerId_, bookId_, index0, M4NativeProviderManager::LoadIntent::Foreground);
   if (!queued) {
@@ -517,7 +545,6 @@ void NativeProviderBookActivity::requestChapter(int index0, bool fromToc) {
       return;
     }
   }
-  renderLoading(true);
 }
 
 void NativeProviderBookActivity::openLogin() {
@@ -842,6 +869,12 @@ void NativeProviderBookActivity::loop() {
         if (error_.empty()) error_ = "目录注册后无法读取";
         renderError();
       }
+      return;
+    }
+    if (mine && c.phase == M4NativeProviderCatalog::Phase::Error &&
+        (c.error == "catalog_commit_failed" || c.error == "sd_open_failed") && prepareCatalog()) {
+      Serial.printf("[NativeBook] catalog commit err but file usable → continue\n");
+      continueAfterCatalogReady();
       return;
     }
     renderCatalogLoading(false);

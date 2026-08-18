@@ -29,6 +29,7 @@
 #include "util/M4HistoryReopen.h"
 #include "apps/M4ContentProviderSession.h"
 #include "apps/providers/M4NativeProviderManager.h"
+#include "apps/providers/M4NativeWifi.h"
 #include "RecentBooksStore.h"
 
 #ifdef CROSSPOINT_X3
@@ -618,6 +619,17 @@ void TxtReaderActivity::applyPendingRestoreIfReady() {
 
 void TxtReaderActivity::providerIdlePrefetchNext() {
   if (!pluginSession_.providerManaged || pluginSession_.providerId.empty()) return;
+  // Offline continue-reading must not start TLS. lwIP is uninitialized until
+  // STA/ETH is up; WeRead fetchChapter then asserts in getaddrinfo.
+  if (!M4NativeWifi::isReady()) {
+    if (!providerPrefetchRequested_) {
+      providerPrefetchRequested_ = true;
+      Serial.printf("[WRCP] t=%lu idle_prefetch skip wifi_down next=%d book=%s\n",
+                    static_cast<unsigned long>(millis()), pluginSession_.chapterIndex + 1,
+                    pluginSession_.bookId.c_str());
+    }
+    return;
+  }
   const int next = pluginSession_.chapterIndex + 1;
   const auto st =
       M4ContentProviderSession::chapterAt(pluginSession_.providerId, pluginSession_.bookId, next);
@@ -723,6 +735,39 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
   Serial.printf("[WRCP] t=%lu switch_chapter idx=%d path=%s\n", static_cast<unsigned long>(millis()), index0,
                 cacheRelPath.c_str());
   return true;
+}
+
+void TxtReaderActivity::applyPluginTocSelection(int newChapterNum) {
+  if (newChapterNum == pluginSession_.chapterIndex) {
+    requestExitSubActivity();
+    updateRequired = true;
+    return;
+  }
+  // Cached provider chapters can stay in this reader. History-reopen used to
+  // parent TxtReader under ReaderActivity; closing for "Lua reopen" then
+  // dropped the whole stack to Home (user-visible 闪退).
+  if (pluginSession_.providerManaged && !pluginSession_.providerId.empty() &&
+      !pluginSession_.bookId.empty()) {
+    const auto st = M4ContentProviderSession::chapterAt(pluginSession_.providerId, pluginSession_.bookId,
+                                                        newChapterNum);
+    if (st.state == M4ContentProvider::ChapterReady::Ready && !st.cacheRelPath.empty()) {
+      bool switched = false;
+      if (lockState(pdMS_TO_TICKS(500))) {
+        switched = switchToProviderChapter(st.cacheRelPath, newChapterNum, st.chapterUid, "");
+        unlockState();
+      }
+      if (switched) {
+        requestExitSubActivity();
+        updateRequired = true;
+        Serial.printf("[%lu] [TRS] toc in-place switch ch=%d\n", millis(), newChapterNum);
+        return;
+      }
+    }
+  }
+  pluginSwitchChapterIndex_ = newChapterNum;
+  requestExitSubActivity();
+  requestPluginClose();
+  pendingGoBack = true;
 }
 
 bool TxtReaderActivity::tryProviderNextChapterAdvance() {
@@ -967,19 +1012,24 @@ void TxtReaderActivity::loop() {
     const bool closed = pumpSubActivityFrame();
     if (closed) {
       applyDeferredMenuClose();
-      // Plugin TOC picked another chapter: keep display suppressed and exit fast.
-      // Re-enabling AA here races plugin close and feels like a freeze.
-      if (pluginSwitchChapterIndex_ >= 0 || pluginCloseRequested_) {
+      // Menu -> settings/catalog/progress/bookmarks is still a child. Keep the
+      // reader display task off the panel or its HALF white-seed races the
+      // child's first paint and the device looks frozen.
+      if (subActivity || pluginSwitchChapterIndex_ >= 0 || pluginCloseRequested_) {
         suppressDisplay_ = true;
         updateRequired = false;
-        waitPhysicalEpdIdle(400);
-        Serial.printf("[%lu] [TRS] toc close → keep suppress (switch=%d close=%d)\n",
-                      millis(), pluginSwitchChapterIndex_, pluginCloseRequested_ ? 1 : 0);
+        if (pluginSwitchChapterIndex_ >= 0 || pluginCloseRequested_) {
+          waitPhysicalEpdIdle(400);
+        }
+        Serial.printf("[%lu] [TRS] child replace → keep suppress (sub=%d switch=%d close=%d)\n",
+                      millis(), subActivity ? 1 : 0, pluginSwitchChapterIndex_,
+                      pluginCloseRequested_ ? 1 : 0);
       } else {
-        // Resume reader paints after menu/settings (same chapter).
-        // Re-seed pure white so the next page-turn does not wipe from menu UI.
+        // Resume reader paints only after returning to the reader itself.
+        // Overlay was FAST-composited on the body; return with FAST so the
+        // bars vanish without a HALF/FULL invert flash.
         suppressDisplay_ = false;
-        armEntryWhiteSeed(EntryPlaceholderKind::Opening);
+        armOverlayReturnFlush();
         updateRequired = true;
       }
       // Chapter select may have deferred state if display held the lock.
@@ -1377,7 +1427,7 @@ void TxtReaderActivity::loop() {
 
 
 
-void TxtReaderActivity::openMenu() {
+void TxtReaderActivity::openMenu(EpubReaderMenuActivity::MenuLayer layer) {
   // Do not let reader AA/e-ink race menu/settings paints (residual overlay).
   suppressDisplay_ = true;
   updateRequired = false;
@@ -1429,6 +1479,84 @@ void TxtReaderActivity::openMenu() {
       // onAction: may schedule deferred child replace (never exitActivity inline).
       [this](EpubReaderMenuActivity::MenuAction action) {
         handleMenuAction(action);
+      },
+      layer));
+}
+
+void TxtReaderActivity::enterChapterPicker() {
+  // Provider sessions reuse the system TOC. Both legacy toc.json and
+  // bounded file-backed catalogs are accepted; never scan a single
+  // cached chapter body for headings. FileRows are paged on demand by
+  // the same native system picker used for local TXT chapters.
+  if (pluginSession_.active) {
+    const auto pagedTitles = openPluginPagedTitles(pluginSession_);
+    if (pagedTitles) {
+      const int count = static_cast<int>(pagedTitles->rowCount());
+      int cur = pluginSession_.chapterIndex;
+      if (cur < 0) cur = 0;
+      if (cur >= count) cur = count - 1;
+      const std::string header =
+          pluginSession_.titleOverride.empty() ? std::string("目  录") : pluginSession_.titleOverride;
+      auto loader = [pagedTitles](int first, int count, std::vector<std::string>& pageTitles,
+                                  std::vector<uint8_t>& pagePresent) {
+        return pagedTitles->loadPage(first, count, pageTitles, pagePresent);
+      };
+      enterNewActivity(new TxtReaderChapterSelectionActivity(
+          this->renderer, this->mappedInput, count, std::move(loader), cur,
+          [this] {
+            requestExitSubActivity();
+            updateRequired = true;
+          },
+          [this](const int newChapterNum) { applyPluginTocSelection(newChapterNum); },
+          header));
+      return;
+    }
+    std::vector<std::string> titles;
+    if (loadPluginTitles(pluginSession_, titles) && !titles.empty()) {
+      int cur = pluginSession_.chapterIndex;
+      if (cur < 0) cur = 0;
+      if (cur >= static_cast<int>(titles.size())) cur = static_cast<int>(titles.size()) - 1;
+      const std::string header =
+          pluginSession_.titleOverride.empty() ? std::string("目  录") : pluginSession_.titleOverride;
+      enterNewActivity(new TxtReaderChapterSelectionActivity(
+          this->renderer, this->mappedInput, std::move(titles), cur,
+          [this] {
+            requestExitSubActivity();
+            updateRequired = true;
+          },
+          [this](const int newChapterNum) { applyPluginTocSelection(newChapterNum); },
+          header));
+      return;
+    }
+  }
+  // Library multi-chapter TXT path.
+  enterNewActivity(new TxtReaderChapterSelectionActivity(
+      this->renderer, this->mappedInput, txt, chapternum,
+      [this] {
+        requestExitSubActivity();
+        updateRequired = true;
+      },
+      [this](const int newChapterNum) {
+        // Never portMAX_DELAY here: display task may hold state lock during
+        // layout; blocking the main loop freezes chapter-picker exit.
+        if (lockState(pdMS_TO_TICKS(500))) {
+          chapternum = newChapterNum;
+          chapter_initialized = false;
+          pageOffsets.clear();
+          totalPages = 0;
+          currentPage = 0;
+          tidxSaved_ = false;
+          hasPendingRestore_ = false;
+          unlockState();
+          hasDeferredChapterSwitch_ = false;
+        } else {
+          deferredChapterSwitch_ = newChapterNum;
+          hasDeferredChapterSwitch_ = true;
+          Serial.printf("[%lu] [TRS] chapter select deferred (lock busy) ch=%d\n", millis(),
+                        newChapterNum);
+        }
+        updateRequired = true;
+        requestExitSubActivity();
       }));
 }
 
@@ -1436,104 +1564,7 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
   switch (action) {
     case EpubReaderMenuActivity::MenuAction::SELECT_CHAPTER: {
       // Defer menu teardown + chapter picker until after menu.loop returns.
-      deferredChildTransition_ = [this]() {
-        // Provider sessions reuse the system TOC. Both legacy toc.json and
-        // bounded file-backed catalogs are accepted; never scan a single
-        // cached chapter body for headings. FileRows are paged on demand by
-        // the same native system picker used for local TXT chapters.
-        if (pluginSession_.active) {
-          const auto pagedTitles = openPluginPagedTitles(pluginSession_);
-          if (pagedTitles) {
-            const int count = static_cast<int>(pagedTitles->rowCount());
-            int cur = pluginSession_.chapterIndex;
-            if (cur < 0) cur = 0;
-            if (cur >= count) cur = count - 1;
-            const std::string header =
-                pluginSession_.titleOverride.empty() ? std::string("目  录") : pluginSession_.titleOverride;
-            auto loader = [pagedTitles](int first, int count, std::vector<std::string>& pageTitles,
-                                        std::vector<uint8_t>& pagePresent) {
-              return pagedTitles->loadPage(first, count, pageTitles, pagePresent);
-            };
-            enterNewActivity(new TxtReaderChapterSelectionActivity(
-                this->renderer, this->mappedInput, count, std::move(loader), cur,
-                [this] {
-                  requestExitSubActivity();
-                  updateRequired = true;
-                },
-                [this](const int newChapterNum) {
-                  if (newChapterNum == pluginSession_.chapterIndex) {
-                    requestExitSubActivity();
-                    updateRequired = true;
-                    return;
-                  }
-                  pluginSwitchChapterIndex_ = newChapterNum;
-                  requestExitSubActivity();
-                  requestPluginClose();
-                  pendingGoBack = true;
-                },
-                header));
-            return;
-          }
-          std::vector<std::string> titles;
-          if (loadPluginTitles(pluginSession_, titles) && !titles.empty()) {
-            int cur = pluginSession_.chapterIndex;
-            if (cur < 0) cur = 0;
-            if (cur >= static_cast<int>(titles.size())) cur = static_cast<int>(titles.size()) - 1;
-            const std::string header =
-                pluginSession_.titleOverride.empty() ? std::string("目  录") : pluginSession_.titleOverride;
-            enterNewActivity(new TxtReaderChapterSelectionActivity(
-                this->renderer, this->mappedInput, std::move(titles), cur,
-                [this] {
-                  requestExitSubActivity();
-                  updateRequired = true;
-                },
-                [this](const int newChapterNum) {
-                  // Same chapter: just close picker. Other chapter: close reader for Lua reopen.
-                  if (newChapterNum == pluginSession_.chapterIndex) {
-                    requestExitSubActivity();
-                    updateRequired = true;
-                    return;
-                  }
-                  pluginSwitchChapterIndex_ = newChapterNum;
-                  requestExitSubActivity();  // leave picker first (deferred)
-                  // Close reader after picker frame; parent AppRuntime publishes switch.
-                  requestPluginClose();
-                  pendingGoBack = true;
-                },
-                header));
-            return;
-          }
-        }
-        // Library multi-chapter TXT path.
-        enterNewActivity(new TxtReaderChapterSelectionActivity(
-            this->renderer, this->mappedInput, txt, chapternum,
-            [this] {
-              requestExitSubActivity();
-              updateRequired = true;
-            },
-            [this](const int newChapterNum) {
-              // Never portMAX_DELAY here: display task may hold state lock during
-              // layout; blocking the main loop freezes chapter-picker exit.
-              if (lockState(pdMS_TO_TICKS(500))) {
-                chapternum = newChapterNum;
-                chapter_initialized = false;
-                pageOffsets.clear();
-                totalPages = 0;
-                currentPage = 0;
-                tidxSaved_ = false;
-                hasPendingRestore_ = false;
-                unlockState();
-                hasDeferredChapterSwitch_ = false;
-              } else {
-                deferredChapterSwitch_ = newChapterNum;
-                hasDeferredChapterSwitch_ = true;
-                Serial.printf("[%lu] [TRS] chapter select deferred (lock busy) ch=%d\n", millis(),
-                              newChapterNum);
-              }
-              updateRequired = true;
-              requestExitSubActivity();
-            }));
-      };
+      deferredChildTransition_ = [this]() { enterChapterPicker(); };
       requestExitSubActivity();
       break;
     }
@@ -1563,6 +1594,21 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
             [this]() {
               requestExitSubActivity();
               updateRequired = true;
+            },
+            [this](int toolbarHit) {
+              if (toolbarHit == 1) return;
+              if (toolbarHit == 0) {
+                deferredChildTransition_ = [this]() { enterChapterPicker(); };
+              } else if (toolbarHit == 2) {
+                deferredChildTransition_ = [this]() {
+                  openMenu(EpubReaderMenuActivity::MenuLayer::STYLE);
+                };
+              } else if (toolbarHit == 3) {
+                deferredChildTransition_ = [this]() {
+                  openMenu(EpubReaderMenuActivity::MenuLayer::MORE);
+                };
+              }
+              requestExitSubActivity();
             }));
       };
       requestExitSubActivity();
@@ -2058,19 +2104,34 @@ void TxtReaderActivity::displayTaskLoop() {
         // doHalfFlush (blank first layout would flash a white page).
         doLibraryPhysical = libraryPhysicalPending_ && firstFrameHasLines;
         libraryPhysicalPending_ = false;
-        // Prefetch only after progressive page index finishes — concurrent TLS
-        // + index thrash free heap (~50KB) and yield http_request_failed.
-        const bool wantIdlePrefetch = firstPageReady_ && indexComplete_ &&
-                                      pluginSession_.providerManaged && !providerPrefetchRequested_;
+        // Do not enqueue TLS here. First-paint + WeRead idle prefetch raced
+        // the first FAST flush; with Wi-Fi down that panicked in lwIP.
+        // Post-paint idle path in this task starts N+1 once the panel is free.
         unlockState();
-        if (wantIdlePrefetch) providerIdlePrefetchNext();
       }
       if (suppressDisplay_ || subActivity) {
         // Child opened while we were laying out — skip physical (child will paint).
         APP_STATE.isRenderComplete = true;
         continue;
       }
-      if (doHalfFlush) {
+      if (overlayReturnFlush_ && !firstFrameHasLines) {
+        updateRequired = true;
+      } else if (overlayReturnFlush_ && firstFrameHasLines) {
+        overlayReturnFlush_ = false;
+        physicalEpdBusy_ = true;
+        const uint32_t tFlush = millis();
+        // Same FAST LUT as the overlay itself. HALF/FULL here is the black
+        // invert flash the user sees when tapping the page to dismiss the bar.
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+        firstPhysicalShown_ = true;
+        lastPhysicalBodyPage_ = (pendingPhysicalPage_ >= 0) ? pendingPhysicalPage_ : currentPage;
+        (void)renderer.storeBwBuffer();
+        (void)renderer.storeLastShown();
+        Serial.printf("[WR05] t=%lu overlay_return_fast ms=%lu page=%d\n",
+                      static_cast<unsigned long>(millis()),
+                      static_cast<unsigned long>(millis() - tFlush), lastPhysicalBodyPage_);
+        physicalEpdBusy_ = false;
+      } else if (doHalfFlush) {
         // One absolute clean after plugin loading residual — not multi-flash FULL.
         // SSD1677: FAST is differential; HALF is BYPASS_RED single-pass (0xD7);
         // FULL is multi-inversion OTP (0xF7). Policy: exactly one guarded handoff
@@ -3619,6 +3680,15 @@ void TxtReaderActivity::armEntryWhiteSeed(EntryPlaceholderKind kind) {
   entryPlaceholderKind_ = kind;
   firstPhysicalShown_ = false;
   lastPhysicalBodyPage_ = -1;
+  overlayReturnFlush_ = false;
+}
+
+void TxtReaderActivity::armOverlayReturnFlush() {
+  entryWhiteSeedPending_ = false;
+  entryPlaceholderKind_ = EntryPlaceholderKind::None;
+  overlayReturnFlush_ = true;
+  lastPhysicalBodyPage_ = -1;
+  cachedPage = -1;
 }
 
 void TxtReaderActivity::finishPhysicalDisplay() {

@@ -393,22 +393,11 @@ void ReaderActivity::onEnter() {
             }
             if (bookReady && chapterIndex < 0) chapterIndex = 0;
 
-            const std::string appDataRoot = hist.appDataRoot.empty()
-                                                ? M4NativeProviderManager::appDataRootFor(hist.providerId,
-                                                                                           hist.bookId)
-                                                : hist.appDataRoot;
             const std::string cacheRelPath = !resume.cacheRelPath.empty()
                                                  ? resume.cacheRelPath
                                                  : hist.cacheRelPath;
-            const std::string cacheAbsPath = !hist.openPath.empty()
-                                                 ? hist.openPath
-                                                 : (appDataRoot.empty() || cacheRelPath.empty()
-                                                        ? std::string()
-                                                        : appDataRoot + "/" + cacheRelPath);
-            auto txt = cacheAbsPath.empty() ? std::unique_ptr<Txt>() : loadTxt(cacheAbsPath);
-            if (bookReady && txt && txt->isEncodingSupported() && txt->getFileSize() > 0 &&
-                chapterIndex >= 0) {
-              const std::string chapterUid = !resume.chapterUid.empty() ? resume.chapterUid : hist.chapterUid;
+            const std::string chapterUid = !resume.chapterUid.empty() ? resume.chapterUid : hist.chapterUid;
+            if (!cacheRelPath.empty() && chapterIndex >= 0) {
               M4ContentProvider::ChapterStatus ready;
               ready.providerId = hist.providerId;
               ready.bookId = hist.bookId;
@@ -419,50 +408,24 @@ void ReaderActivity::onEnter() {
               (void)M4ContentProviderSession::setChapterStatus(ready);
               M4ContentProviderSession::noteOpen(hist.providerId, hist.bookId, chapterIndex,
                                                  resume.hasByteOffset ? resume.byteOffset : 0);
-
-              TxtReaderActivity::PluginSession sess;
-              sess.active = true;
-              sess.suppressRecentBooks = false;
-              sess.suppressOpenEpubPath = true;
-              sess.progressiveIndex = true;
-              sess.bookId = hist.bookId;
-              sess.chapterUid = chapterUid;
-              sess.progressKey = hist.providerId + ":" + hist.bookId + ":" + chapterUid;
-              sess.titleOverride = hist.title;
-              sess.chapterIndex = chapterIndex;
-              sess.providerManaged = true;
-              sess.providerId = hist.providerId;
-              sess.appId = appId;
-              sess.appDataRoot = appDataRoot;
-              sess.cacheRelPath = cacheRelPath;
-              if (resume.hasByteOffset) {
-                sess.initialByteOffset = resume.byteOffset;
-                sess.hasInitialByteOffset = true;
-              }
-              indexTerminalReady("provider_history_native");
-              Serial.printf("[WRCP] history_open app=%s book=%s ch=%s idx=%d cache=%s via=native\n",
-                            appId.c_str(), hist.bookId.c_str(), chapterUid.c_str(), chapterIndex,
-                            cacheRelPath.c_str());
-              renderer.clearScreen();
-              M4UiText::drawCentered(renderer, UI_12_FONT_ID, renderer.getScreenHeight() / 2,
-                                     "打开上次阅读…", true, EpdFontFamily::BOLD);
-              renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-              currentBookPath = cacheAbsPath;
-              exitActivity();
-              enterNewActivity(new TxtReaderActivity(
-                  renderer, mappedInput, std::move(txt), [this] { onGoBack(); }, [this] { onGoBack(); },
-                  std::move(sess)));
-              return;
             }
 
-            // No usable cached body: stay native and let the provider-owned
-            // book activity show its TOC/loading/error state instead of
-            // falling into the Lua runtime.
-            indexTerminalReady("provider_history_native_book");
+            // Always land in NativeProviderBook so TOC chapter switch has an
+            // owner. Opening TxtReader directly under Reader made a TOC pick
+            // requestPluginClose() and drop the stack to Home.
+            indexTerminalReady(bookReady ? "provider_history_native" : "provider_history_native_book");
+            Serial.printf("[WRCP] history_open app=%s book=%s ch=%s idx=%d cache=%s via=native_book\n",
+                          appId.c_str(), hist.bookId.c_str(), chapterUid.c_str(), chapterIndex,
+                          cacheRelPath.c_str());
+            renderer.clearScreen();
+            M4UiText::drawCentered(renderer, UI_12_FONT_ID, renderer.getScreenHeight() / 2,
+                                   "打开上次阅读…", true, EpdFontFamily::BOLD);
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            if (!hist.openPath.empty()) currentBookPath = hist.openPath;
             exitActivity();
             enterNewActivity(new NativeProviderBookActivity(
                 renderer, mappedInput, hist.providerId, hist.bookId, appId, hist.title,
-                [this] { onGoBack(); }));
+                [this] { onGoBack(); }, true, chapterIndex));
             return;
           }
 
@@ -515,9 +478,11 @@ void ReaderActivity::onEnter() {
           sess.progressKey = hist.providerId + ":" + hist.bookId + ":" + hist.chapterUid;
           currentBookPath = hist.openPath;
           exitActivity();
+          // Last-resort: no provider owner on the stack, so TOC cannot switch
+          // chapters. Firmware is built with -fno-rtti — do not dynamic_cast.
           enterNewActivity(new TxtReaderActivity(
-              renderer, mappedInput, std::move(txt), [this] { onGoBack(); }, [this] { onGoBack(); },
-              std::move(sess)));
+              renderer, mappedInput, std::move(txt), [this] { onGoBack(); },
+              [this] { onGoBack(); }, std::move(sess)));
           return;
         }
       }

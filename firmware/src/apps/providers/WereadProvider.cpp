@@ -2,6 +2,7 @@
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderIo.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
+#include "apps/providers/M4NativeWifi.h"
 #include "apps/providers/M4Psram.h"
 
 #include "apps/M4xPsvtsExtract.h"
@@ -176,6 +177,15 @@ NetResult netRequest(const NetReq& r, M4xJsonStream::Sink& sink,
                      const M4NativeProvider::CancelFn& cancelled,
                      bool useSession, const PsvtsSink* stopWhenPsvts = nullptr) {
 #if M4_HTTP_TRANSPORT_AVAILABLE
+  // Same STA bring-up as Fanqie/JJWXC (M4NativeProviderHttp). WeRead used
+  // M4HttpTransport directly and skipped this, so a cached-chapter open with
+  // Wi-Fi down queued idle prefetch TLS and panicked in lwIP getaddrinfo.
+  const auto wifi = M4NativeWifi::ensureConnected(std::min<uint32_t>(r.timeoutMs, 20000u), cancelled);
+  if (!wifi.ok) {
+    NetResult out;
+    out.error = wifi.error.empty() ? "wifi_not_connected" : wifi.error;
+    return out;
+  }
   M4HttpTransport::Request tr;
   tr.method = r.method;
   tr.url = r.url;

@@ -1,6 +1,7 @@
 #include "apps/M4HttpTransport.h"
 
 #include "apps/providers/M4NativeProviderHeavyGate.h"
+#include "apps/providers/M4NativeWifi.h"
 
 #include <Arduino.h>
 #include <SDCardManager.h>
@@ -125,10 +126,12 @@ esp_http_client_config_t makeConfig(const Request& req) {
   cfg.event_handler = httpEvent;
   cfg.timeout_ms = req.timeoutMs;
   cfg.disable_auto_redirect = !req.followRedirects;
+  // Always attach the CA bundle. insecureTls used to skip the bundle and only
+  // flip skip_cert_common_name_check, which still verifies against an empty
+  // store and fails immediately as ESP_ERR_HTTP_CONNECT (fanqie :8043, 100ms).
+  cfg.crt_bundle_attach = esp_crt_bundle_attach;
   if (req.insecureTls) {
     cfg.skip_cert_common_name_check = true;
-  } else {
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;
   }
   return cfg;
 }
@@ -164,6 +167,13 @@ void sessionRecordHeaders(const Request& req) {
 
 Result perform(esp_http_client_handle_t h, const Request& req, RxCtx& ctx, const char* tag) {
   Result out;
+  // Never call esp_http_client_perform() until lwIP exists. Offline WeRead
+  // idle-prefetch used to hit getaddrinfo → sys_mutex_lock(NULL) → reboot.
+  if (!M4NativeWifi::isReady()) {
+    setError(out, "wifi_not_connected");
+    logStep(tag ? tag : "perform", "wifi_not_connected", nullptr);
+    return out;
+  }
   M4NativeProviderHeavyGate::diagnosticStage() = 0x411;
   esp_http_client_set_user_data(h, &ctx);
   esp_http_client_set_method(h, std::strcmp(req.method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);
@@ -202,6 +212,12 @@ Result perform(esp_http_client_handle_t h, const Request& req, RxCtx& ctx, const
 
   out.status = esp_http_client_get_status_code(h);
   out.bytes = ctx.bytes;
+  {
+    char* loc = nullptr;
+    if (esp_http_client_get_header(h, "Location", &loc) == ESP_OK && loc && loc[0]) {
+      std::snprintf(out.location, sizeof(out.location), "%s", loc);
+    }
+  }
   if (ctx.cancelled) {
     setError(out, "cancelled");
   } else if (ctx.overflow) {

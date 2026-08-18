@@ -285,6 +285,21 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         reader_ui = _wait_path(client, proc, qlog, READER_PATH, seconds=60.0)
         reader = _capture(client, root, "03-reader")
 
+        # Hardware report: after the body is on screen, a page-turn tap or a
+        # center/settings-zone tap froze the device. Exercise both before the
+        # overlay journey so a lock/EPD hang fails this test instead of hiding.
+        _tap(client, 400, 420)
+        reader_turned = _settle_reader(client, proc, qlog, root, "03b-reader-page-turn")
+        _assert_changed(reader, reader_turned, "reader page-turn tap")
+        _tap(client, 240, 400)
+        menu_from_body = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        menu_from_body_body = _deepest_body(menu_from_body)
+        if menu_from_body_body.get("layer") != "quick":
+            raise m4sim.M4SimError(f"center tap did not open overlay: {menu_from_body_body!r}")
+        _capture(client, root, "03c-overlay-from-body-tap")
+        _tap(client, 240, 320)
+        _settle_reader(client, proc, qlog, root, "03d-reader-after-body-menu")
+
         # Reader -> overlay bars. A tap in exposed text must dismiss them.
         _send_key(client, "confirm")
         quick_ui = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
@@ -313,7 +328,7 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _tap(client, 180, 756)
         progress_ui = _wait_path(client, proc, qlog, PROGRESS_PATH, seconds=20.0)
         progress = _capture(client, root, "08-progress-sheet")
-        _tap(client, 347, 541)
+        _tap(client, 347, 509)
         progress_seek = _capture(client, root, "09-progress-sheet-seek")
         _assert_changed(progress, progress_seek, "progress target change")
         _tap(client, 240, 300)
@@ -334,6 +349,46 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _assert_changed(style, style_adjusted, "font size decrease")
         _tap(client, 240, 300)
         reader_after_style = _settle_reader(client, proc, qlog, root, "13-reader-after-font")
+
+        # Font and Progress share one sheet band. Switching must keep the
+        # persistent toolbar live (目录 / 更多) without a leftover header.
+        _send_key(client, "confirm")
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        _tap(client, 300, 756)
+        style_before_progress = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        if _deepest_body(style_before_progress).get("layer") != "style":
+            raise m4sim.M4SimError(
+                f"font sheet did not open before progress switch: {style_before_progress!r}"
+            )
+        _tap(client, 180, 756)
+        progress_from_font_ui = _wait_path(client, proc, qlog, PROGRESS_PATH, seconds=20.0)
+        progress_from_font = _capture(client, root, "13b-font-then-progress")
+        _tap(client, 420, 756)
+        more_from_progress_ui = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        more_from_progress_body = _deepest_body(more_from_progress_ui)
+        if more_from_progress_body.get("layer") != "more":
+            raise m4sim.M4SimError(
+                f"progress toolbar did not open More: {more_from_progress_body!r}"
+            )
+        more_from_progress = _capture(client, root, "13c-progress-to-more")
+        _send_key(client, "back")
+        reader_after_progress_more = _settle_reader(
+            client, proc, qlog, root, "13d-reader-after-progress-more"
+        )
+
+        _send_key(client, "confirm")
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        _tap(client, 300, 756)
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        _tap(client, 180, 756)
+        _wait_path(client, proc, qlog, PROGRESS_PATH, seconds=20.0)
+        _tap(client, 60, 756)
+        chapter_from_progress_ui = _wait_path(client, proc, qlog, CHAPTER_PATH, seconds=30.0)
+        chapter_from_progress = _capture(client, root, "13e-progress-to-catalog")
+        _tap(client, 24, 28)
+        reader_after_progress_catalog = _settle_reader(
+            client, proc, qlog, root, "13f-reader-after-progress-catalog"
+        )
 
         # More remains the existing full secondary list and TXT hides sync rows.
         _send_key(client, "confirm")
@@ -372,6 +427,9 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _assert_changed(chapter, reader_after_catalog, "catalog -> reader")
         _assert_changed(progress, reader_after_progress, "progress sheet -> reader")
         _assert_changed(style, reader_after_style, "font sheet -> reader")
+        _assert_changed(progress_from_font, more_from_progress, "font->progress toolbar -> More")
+        _assert_changed(more_from_progress, reader_after_progress_more, "progress More -> reader")
+        _assert_changed(chapter_from_progress, reader_after_progress_catalog, "progress catalog -> reader")
         _assert_changed(more, reader_after_more, "More -> reader")
         _assert_changed(bookmark_added, bookmark_list, "More -> bookmark manager")
         _assert_changed(bookmark_list, reader_final, "bookmark manager -> reader")
@@ -409,9 +467,11 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
             "txt_more": more_body,
             "screenshots": [
                 p.name for p in (
-                    home, library, reader, quick, reader_after_dismiss, chapter,
+                    home, library, reader, reader_turned, reader_after_dismiss, chapter,
                     reader_after_catalog, progress, progress_seek, reader_after_progress,
-                    style, style_adjusted, reader_after_style, more, reader_after_more,
+                    style, style_adjusted, reader_after_style, progress_from_font,
+                    more_from_progress, reader_after_progress_more, chapter_from_progress,
+                    reader_after_progress_catalog, more, reader_after_more,
                     bookmark_added, bookmark_list, reader_final,
                 )
             ],

@@ -77,6 +77,8 @@ bool readLineAt(const std::string& path, size_t target, const std::vector<uint32
           if (!line.empty() && line.back() == '\r') line.pop_back();
           return !line.empty();
         }
+        // Leading NULs / controls (FatFS slack) are not part of the TSV row.
+        if (line.empty() && static_cast<unsigned char>(c) < 0x20 && c != '\t') continue;
         if (line.size() >= 2048) {
           f.close();
           return false;
@@ -291,7 +293,11 @@ class ProviderController final : public BaseController {
     if ((source != "provider.books" && source != "provider.shelf" && source != "provider.recommend") || index0 >= shelfCount_) return false;
     std::string line;
     if (!readLineAt(shelfRows_, index0, shelfAnchors_, line)) return false;
-    fieldAt(line, 0, out.key);
+    std::string rawKey;
+    fieldAt(line, 0, rawKey);
+    if (!M4ContentProvider::sanitizeId(rawKey, M4ContentProvider::kMaxBookIdLen, out.key)) {
+      return false;
+    }
     fieldAt(line, 1, out.title);
     fieldAt(line, 2, out.subtitle);
     fieldAt(line, 3, out.value);
@@ -305,18 +311,20 @@ class ProviderController final : public BaseController {
     if (action == "system.back" || action == "system.close") return M4NativeUi::ActionResult::close();
 
     if (action == "provider.openBook" || action == "provider.openSelected") {
-      if (ctx.rowKey.empty()) {
+      std::string bookId;
+      if (!M4ContentProvider::sanitizeId(ctx.rowKey, M4ContentProvider::kMaxBookIdLen, bookId)) {
         M4NativeUi::ActionResult r;
         r.kind = M4NativeUi::ActionKind::Error;
-        r.error = "book_not_selected";
+        r.error = ctx.rowKey.empty() ? "book_not_selected" : "provider_bad_route";
         return r;
       }
       std::string title;
       M4NativeUi::Row row;
       if (ctx.index0 >= 0 && rowAt(ctx.source.empty() ? "provider.recommend" : ctx.source,
                                   static_cast<size_t>(ctx.index0), row)) title = row.title;
-      (void)M4NativeProviderManager::ensureBook(app_.provider, ctx.rowKey, app_.id, title);
-      return M4NativeUi::ActionResult::openProviderBook(M4ContentProvider::makeHistoryUri(app_.provider.c_str(), ctx.rowKey.c_str()));
+      (void)M4NativeProviderManager::ensureBook(app_.provider, bookId, app_.id, title);
+      return M4NativeUi::ActionResult::openProviderBook(
+          M4ContentProvider::makeHistoryUri(app_.provider.c_str(), bookId.c_str()));
     }
 
     if (action == "provider.login") {

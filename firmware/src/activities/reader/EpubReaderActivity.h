@@ -81,6 +81,9 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   void jumpToPercent(float normalizedPercent);
   void onReaderMenuBack(uint8_t orientation);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
+  void enterReaderMenu(EpubReaderMenuActivity::MenuLayer layer);
+  void enterPercentSheet();
+  void enterChapterSelector();
   void applyOrientation(uint8_t orientation);
   void applyAutoPageTurnSettings();
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);  // Legacy, calls applyAutoPageTurnSettings

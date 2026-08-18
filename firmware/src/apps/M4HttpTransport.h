@@ -38,6 +38,7 @@ struct Result {
   int status = 0;
   size_t bytes = 0;
   char error[48] = {};   // POD, no std::string
+  char location[192] = {};
 };
 
 // Heap / TLS-gate snapshot for step debugging (POD, safe to log).

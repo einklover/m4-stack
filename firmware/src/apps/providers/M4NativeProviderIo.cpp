@@ -1,5 +1,6 @@
 #include "apps/providers/M4NativeProviderIo.h"
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 
 #if defined(ARDUINO_ARCH_ESP32)
@@ -133,6 +134,18 @@ std::string trim(std::string s) {
 
 }  // namespace
 
+std::string replacedExtension(const std::string& path, const char* ext) {
+  if (path.empty() || ext == nullptr || ext[0] == 0) return path;
+  const size_t slash = path.find_last_of('/');
+  const size_t dot = path.find_last_of('.');
+  const size_t stemEnd =
+      (dot != std::string::npos && (slash == std::string::npos || dot > slash)) ? dot : path.size();
+  std::string out = path.substr(0, stemEnd);
+  if (ext[0] != '.') out.push_back('.');
+  out += ext;
+  return out;
+}
+
 bool ensureParentDirs(const std::string& absPath) {
   const size_t slash = absPath.find_last_of('/');
   if (slash == std::string::npos || slash == 0) return true;
@@ -222,22 +235,42 @@ bool clearCacheArtifacts(const std::string& absPath) {
 
 bool commitTempFile(const std::string& tempAbsPath, const std::string& finalAbsPath,
                     size_t expectedBytes, bool preserveOld) {
-  if (tempAbsPath.empty() || finalAbsPath.empty() || tempAbsPath == finalAbsPath || expectedBytes == 0 ||
-      !SdMan.exists(tempAbsPath.c_str()) || !fileSizeIs(tempAbsPath, expectedBytes) ||
-      !ensureParentDirs(finalAbsPath)) {
+  // Same 8.3 alias as the live file: the payload is already at the destination.
+  if (!finalAbsPath.empty() && expectedBytes > 0 && fileSizeIs(finalAbsPath, expectedBytes)) {
+    Serial.printf("[NP-IO] commit already-final size=%u %s\n", static_cast<unsigned>(expectedBytes),
+                  finalAbsPath.c_str());
+    return true;
+  }
+
+  if (tempAbsPath.empty() || finalAbsPath.empty() || tempAbsPath == finalAbsPath || expectedBytes == 0) {
+    Serial.printf("[NP-IO] commit bad-args expect=%u\n", static_cast<unsigned>(expectedBytes));
+    return false;
+  }
+  if (!SdMan.exists(tempAbsPath.c_str()) || !fileSizeIs(tempAbsPath, expectedBytes)) {
+    Serial.printf("[NP-IO] commit tmp-size-mismatch expect=%u tmp=%s\n",
+                  static_cast<unsigned>(expectedBytes), tempAbsPath.c_str());
+    return false;
+  }
+  if (!ensureParentDirs(finalAbsPath)) {
+    Serial.printf("[NP-IO] commit parent-fail %s\n", finalAbsPath.c_str());
     return false;
   }
 
-  const std::string backup = finalAbsPath + ".bak";
+  const std::string backup = replacedExtension(finalAbsPath, "bak");
   const bool hadOld = SdMan.exists(finalAbsPath.c_str());
   bool backedUp = false;
 
   if (SdMan.exists(backup.c_str())) SdMan.remove(backup.c_str());
   if (hadOld) {
     if (preserveOld) {
-      if (!SdMan.rename(finalAbsPath.c_str(), backup.c_str())) return false;
-      backedUp = true;
+      if (SdMan.rename(finalAbsPath.c_str(), backup.c_str())) {
+        backedUp = true;
+      } else if (!SdMan.remove(finalAbsPath.c_str())) {
+        Serial.printf("[NP-IO] commit old-busy %s\n", finalAbsPath.c_str());
+        return false;
+      }
     } else if (!SdMan.remove(finalAbsPath.c_str())) {
+      Serial.printf("[NP-IO] commit old-remove %s\n", finalAbsPath.c_str());
       return false;
     }
   }
@@ -259,6 +292,8 @@ bool commitTempFile(const std::string& tempAbsPath, const std::string& finalAbsP
     return true;
   }
 
+  Serial.printf("[NP-IO] commit rename+copy failed expect=%u %s\n", static_cast<unsigned>(expectedBytes),
+                finalAbsPath.c_str());
   if (SdMan.exists(finalAbsPath.c_str())) SdMan.remove(finalAbsPath.c_str());
   if (backedUp && SdMan.exists(backup.c_str())) {
     (void)SdMan.rename(backup.c_str(), finalAbsPath.c_str());
@@ -290,20 +325,31 @@ bool PartFileSink::open(const std::string& finalAbsPath) {
   finalPath_ = finalAbsPath;
   partPath_ = finalPath_ + ".part";
   if (finalPath_.empty() || !ensureParentDirs(finalPath_)) return false;
-  if (SdMan.exists(partPath_.c_str())) SdMan.remove(partPath_.c_str());
-  if (!SdMan.openFileForWrite("NP-BODY", partPath_.c_str(), file_)) return false;
-  file_.seek(0);
-  file_.truncate(0);
 #if defined(ARDUINO_ARCH_ESP32)
   buffer_ = static_cast<uint8_t*>(heap_caps_malloc(kBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 #endif
   if (!buffer_) buffer_ = static_cast<uint8_t*>(std::malloc(kBufferBytes));
+  // Defer FatFS open until the first body byte. Holding an SD file open
+  // across the TLS handshake races the shared SPI bus with e-ink.
   open_ = true;
+  fileReady_ = false;
+  return true;
+}
+
+bool PartFileSink::ensureFile() {
+  if (fileReady_) return true;
+  if (!open_ || partPath_.empty()) return false;
+  if (SdMan.exists(partPath_.c_str())) SdMan.remove(partPath_.c_str());
+  if (!SdMan.openFileForWrite("NP-BODY", partPath_.c_str(), file_)) return false;
+  file_.seek(0);
+  file_.truncate(0);
+  fileReady_ = true;
   return true;
 }
 
 bool PartFileSink::flushBuffer() {
   if (!open_ || used_ == 0) return open_;
+  if (!ensureFile()) return false;
   const int n = file_.write(buffer_, used_);
   if (n != static_cast<int>(used_)) return false;
   used_ = 0;
@@ -314,6 +360,7 @@ bool PartFileSink::write(const uint8_t* data, size_t len) {
   if (!open_ || !data) return false;
   if (len == 0) return true;
   if (!buffer_) {
+    if (!ensureFile()) return false;
     const int n = file_.write(data, len);
     if (n != static_cast<int>(len)) return false;
     written_ += len;
@@ -333,15 +380,16 @@ bool PartFileSink::write(const uint8_t* data, size_t len) {
 
 bool PartFileSink::flush() {
   if (!open_ || !flushBuffer()) return false;
-  file_.flush();
+  if (fileReady_) file_.flush();
   return true;
 }
 
 void PartFileSink::close() {
   if (open_) {
     (void)flush();
-    file_.close();
+    if (fileReady_) file_.close();
     open_ = false;
+    fileReady_ = false;
   }
   if (buffer_) {
 #if defined(ARDUINO_ARCH_ESP32)

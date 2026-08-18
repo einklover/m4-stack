@@ -8,14 +8,14 @@
 
 #include "MappedInputManager.h"
 #include "fontIds.h"
+#include "util/M4ReaderMenuLayout.h"
 #include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
 
 namespace {
 constexpr int kSmallStep = 1;
 constexpr int kLargeStep = 10;
-constexpr int kPanelHeight = 270;
-constexpr int kToolbarHeight = 88;
+constexpr int kToolbarHeight = M4ReaderMenuLayout::kOverlayBottomBarH;
 constexpr int kStepCount = 4;
 constexpr int kStepDeltas[kStepCount] = {-10, -1, 1, 10};
 constexpr const char* kStepLabels[kStepCount] = {"-10%", "-1%", "+1%", "+10%"};
@@ -34,25 +34,29 @@ struct ProgressSheetLayout {
 ProgressSheetLayout makeProgressSheet(int width, int height) {
   ProgressSheetLayout L;
   const int toolbarTop = std::max(0, height - kToolbarHeight);
-  const int top = std::max(72, toolbarTop - kPanelHeight);
+  // Same band and header as the font sheet so tab switches share one top edge
+  // and Progress does not leave a blank strip under the title.
+  const int top = std::max(M4ReaderMenuLayout::kOverlayTopBarH + 40,
+                           toolbarTop - M4ReaderMenuLayout::kStyleSheetH);
+  const int contentTop = top + M4ReaderMenuLayout::kStyleSheetHeaderH;
   L.panel = {0, top, width, std::max(0, toolbarTop - top)};
   L.close = {width - 64, top, 64, 52};
-  L.value = {24, top + 38, std::max(80, width - 48), 48};
-  L.track = {24, top + 94, std::max(80, width - 48), 10};
-  L.trackHit = {24, top + 78, std::max(80, width - 48), 42};
+  L.value = {24, contentTop + 38, std::max(80, width - 48), 48};
+  L.track = {24, contentTop + 94, std::max(80, width - 48), 10};
+  L.trackHit = {24, contentTop + 78, std::max(80, width - 48), 42};
 
   constexpr int gap = 8;
   const int innerW = std::max(120, width - 48);
   const int stepW = std::max(48, (innerW - gap * (kStepCount - 1)) / kStepCount);
   const int usedW = stepW * kStepCount + gap * (kStepCount - 1);
   const int startX = 24 + std::max(0, (innerW - usedW) / 2);
-  const int stepY = top + 134;
+  const int stepY = contentTop + 134;
   for (int i = 0; i < kStepCount; ++i) {
     L.steps[i] = {startX + i * (stepW + gap), stepY, stepW, 50};
   }
 
   const int jumpW = std::min(180, std::max(120, width / 3));
-  L.jump = {(width - jumpW) / 2, top + 200, jumpW, 52};
+  L.jump = {(width - jumpW) / 2, contentTop + 200, jumpW, 52};
   return L;
 }
 
@@ -174,9 +178,9 @@ void EpubReaderPercentSelectionActivity::loop() {
     if (mappedInput.wasScreenTapped(tx, ty)) {
       const int toolbarHit = toolbarIndexFromPoint(tx, ty, renderer.getScreenWidth(), renderer.getScreenHeight());
       if (toolbarHit >= 0) {
-        // The persistent reader toolbar remains visible while the progress sheet
-        // is open. Keep it isolated from the progress controls; the active
-        // Progress tab is intentionally stable in this activity.
+        // Progress stays put; other tabs replace this sheet via the parent.
+        if (toolbarHit == 1 || !onToolbar) return;
+        onToolbar(toolbarHit);
         return;
       }
 

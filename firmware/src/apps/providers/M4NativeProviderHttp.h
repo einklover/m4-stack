@@ -65,6 +65,7 @@ struct Result {
   int status = 0;
   size_t bytes = 0;
   std::string error;
+  std::string location;
   HeaderList responseHeaders;
 };
 

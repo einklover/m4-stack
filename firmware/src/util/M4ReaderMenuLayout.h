@@ -9,6 +9,12 @@
 // validate every M4 orientation without booting firmware.
 namespace M4ReaderMenuLayout {
 
+constexpr int kOverlayTopBarH = 58;
+constexpr int kOverlayBottomBarH = 88;
+// Font and Progress sheets share this height so tab switches occupy the same
+// band and do not leave a remnant or a blank strip above the shorter panel.
+constexpr int kStyleSheetH = 340;
+constexpr int kStyleSheetHeaderH = 38;
 constexpr int kQuickProgressBarHeight = 8;
 // Reserve enough vertical space for BaseTheme's percentage label below the
 // compact bar, then a clean gap before the 3x2 action grid. The progress readout

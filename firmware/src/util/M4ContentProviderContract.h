@@ -160,6 +160,32 @@ inline bool idOk(const char* s, size_t maxLen) {
   return true;
 }
 
+// FatFS first-cluster slack / untruncated rewrites can prefix a TSV row with
+// NULs. Length-aware: C-string strlen() would stop at the first NUL.
+inline bool sanitizeId(const char* s, size_t n, size_t maxLen, std::string& out) {
+  out.clear();
+  if (!s) return false;
+  size_t i = 0;
+  while (i < n && static_cast<unsigned char>(s[i]) <= 0x20) ++i;
+  size_t j = n;
+  while (j > i && static_cast<unsigned char>(s[j - 1]) <= 0x20) --j;
+  if (j <= i || (j - i) > maxLen) return false;
+  for (size_t k = i; k < j; ++k) {
+    const unsigned char c = static_cast<unsigned char>(s[k]);
+    if (c < 0x20 || c == ' ' || c == '/' || c == '\\' || c == '?' || c == '#') return false;
+  }
+  out.assign(s + i, j - i);
+  return true;
+}
+
+inline bool sanitizeId(const char* s, size_t maxLen, std::string& out) {
+  return sanitizeId(s, s ? std::strlen(s) : 0, maxLen, out);
+}
+
+inline bool sanitizeId(const std::string& s, size_t maxLen, std::string& out) {
+  return sanitizeId(s.data(), s.size(), maxLen, out);
+}
+
 inline bool isSafeCacheRelPath(const char* rel) {
   if (!rel || !rel[0]) return false;
   if (rel[0] == '/' || rel[0] == '\\') return false;

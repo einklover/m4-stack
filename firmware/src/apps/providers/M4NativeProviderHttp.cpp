@@ -5,6 +5,7 @@
 #include "apps/providers/M4NativeWifi.h"
 #include "apps/providers/M4Psram.h"
 
+#include <Arduino.h>
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -105,6 +106,7 @@ Result fromTransportResult(const M4HttpTransport::Result& src) {
     if (std::strcmp(src.error, "sink_write_failed") == 0) out.error = "sink_failed";
     else out.error = src.error;
   }
+  if (src.location[0]) out.location = src.location;
   return out;
 }
 
@@ -170,6 +172,14 @@ Result perform(const Request& req, M4xJsonStream::Sink& sink,
   out = fromTransportResult(net);
 
   if (canRetryZeroByteTransport(out, req) && !(cancelled && cancelled())) {
+    // A ~100ms ESP_ERR_HTTP_CONNECT with 0 bytes is usually the e-ink
+    // FAST_REFRESH still owning the shared SPI bus, not a dead peer. Immediate
+    // retry repeats the same abort and stretches the UI to ~30s.
+    delay(600);
+    if (cancelled && cancelled()) {
+      out.error = "cancelled";
+      return out;
+    }
     // Re-run the cheap Wi-Fi guard because the first failed socket may have
     // coincided with a station state transition. If association is still good
     // this is immediate; if not, the existing saved-network reconnect policy

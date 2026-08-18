@@ -213,6 +213,20 @@ void providerContract() {
   assert(!M4ContentProvider::isSafeCacheRelPath("../secret.txt"));
   assert(M4ContentProvider::isSafeCacheRelPath("cache/123/ch_1.txt"));
 
+  std::string cleaned;
+  std::string dirty(53, '\0');
+  dirty += "6967151997531196424";
+  assert(M4ContentProvider::sanitizeId(dirty, M4ContentProvider::kMaxBookIdLen, cleaned));
+  assert(cleaned == "6967151997531196424");
+  assert(M4ContentProvider::idOk(cleaned.c_str(), M4ContentProvider::kMaxBookIdLen));
+  const std::string fanqieUri = M4ContentProvider::makeHistoryUri("fanqie", cleaned.c_str());
+  assert(fanqieUri == "m4cp://fanqie/6967151997531196424");
+  assert(!M4ContentProvider::idOk(dirty.c_str(), M4ContentProvider::kMaxBookIdLen));
+  assert(!M4ContentProvider::sanitizeId("bad/id", M4ContentProvider::kMaxBookIdLen, cleaned));
+  assert(cleaned.empty());
+  assert(M4ContentProvider::sanitizeId(std::string("  abc  "), M4ContentProvider::kMaxBookIdLen, cleaned));
+  assert(cleaned == "abc");
+
   M4ContentProvider::ChapterStatus next;
   next.state = M4ContentProvider::ChapterReady::Missing;
   auto decision = M4ContentProvider::decideNextChapter(next, true);

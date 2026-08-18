@@ -18,14 +18,17 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   NativeProviderBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                              std::string providerId, std::string bookId,
                              std::string appId, std::string title, std::string author,
-                             const std::function<void()>& onExitBook);
+                             const std::function<void()>& onExitBook,
+                             bool autoStartReading = false, int autoOpenIndex = -1);
 
   NativeProviderBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                              std::string providerId, std::string bookId,
                              std::string appId, std::string title,
-                             const std::function<void()>& onExitBook)
+                             const std::function<void()>& onExitBook,
+                             bool autoStartReading = false, int autoOpenIndex = -1)
       : NativeProviderBookActivity(renderer, mappedInput, providerId, bookId, appId,
-                                   title, std::string(), onExitBook) {}
+                                   title, std::string(), onExitBook, autoStartReading,
+                                   autoOpenIndex) {}
 
   void onEnter() override;
   void onExit() override;
@@ -76,6 +79,8 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   size_t pendingInitialByteOffset_ = 0;
   bool hasPendingInitialByteOffset_ = false;
   int pendingInitialIndex_ = -1;
+  bool autoStartReading_ = false;
+  int autoOpenIndex_ = -1;
   bool tocBackPending_ = false;
   bool tocSelectionPending_ = false;
   int tocSelectedIndex_ = -1;

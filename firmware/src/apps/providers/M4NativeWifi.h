@@ -14,6 +14,12 @@ struct Result {
 
 using CancelFn = std::function<bool()>;
 
+// True when the TCP stack is already usable (STA associated, or QEMU ETH).
+// Does not start the radio. Call this before any getaddrinfo/TLS: on ESP32,
+// lwIP's tcpip mutex is NULL until Wi-Fi/ETH has been brought up, and
+// esp_http_client_perform() then asserts in xQueueSemaphoreTake.
+bool isReady();
+
 // Connect using the system Wi-Fi credential store. Passwords never cross the
 // provider/UI boundary and are never logged. Connection is intentionally kept
 // alive for the provider/read session; the provider worker owns no separate

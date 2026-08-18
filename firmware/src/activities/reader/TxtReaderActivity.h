@@ -175,7 +175,8 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool needIndent = SETTINGS.firstlineintented;
   int8_t wordSpacing = SETTINGS.wordSpacing;
 
-  void openMenu();
+  void openMenu(EpubReaderMenuActivity::MenuLayer layer = EpubReaderMenuActivity::MenuLayer::QUICK);
+  void enterChapterPicker();
   void handleMenuAction(EpubReaderMenuActivity::MenuAction action);
   void onSettingsChanged();
   // UI/menu path: acquires the state lock then jumps.
@@ -264,6 +265,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   void providerIdlePrefetchNext();
   bool switchToProviderChapter(const std::string& cacheRelPath, int index0, const std::string& chapterUid,
                                const std::string& title);
+  // System TOC pick. Cached provider chapters stay in this reader; uncached
+  // chapters still close so a parent that owns fetch can reopen.
+  void applyPluginTocSelection(int newChapterNum);
   // Library path: layout under lock only; e-ink + AA must run unlocked so the
   // main loop is not frozen for ~1.5s per page (see open hang serial analysis).
   bool deferPhysicalEpd_ = false;
@@ -305,6 +309,10 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   void finishPhysicalDisplay();  // displayBuffer + optional AA (no state lock)
   void waitPhysicalEpdIdle(uint32_t maxMs = 2500);
   void armEntryWhiteSeed(EntryPlaceholderKind kind = EntryPlaceholderKind::Opening);
+  // Overlay dismiss: FAST the current page over the menu (same LUT as the
+  // bar). Do not re-arm the "正在打开阅读器" placeholder.
+  void armOverlayReturnFlush();
+  bool overlayReturnFlush_ = false;
 
   // Deferred nested-menu teardown (requestExitSubActivity + apply after pump).
   bool deferredMenuApply_ = false;

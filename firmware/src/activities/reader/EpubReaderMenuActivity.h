@@ -18,6 +18,8 @@
 
 class EpubReaderMenuActivity final : public ActivityWithSubactivity {
  public:
+  enum class MenuLayer : uint8_t { QUICK = 0, STYLE = 1, MORE = 2 };
+
   enum class MenuAction {
     SELECT_CHAPTER,
     ADD_BOOKMARK,
@@ -48,15 +50,18 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
                                   const uint8_t currentOrientation, const std::function<void(uint8_t)>& onBack,
-                                  const std::function<void(MenuAction)>& onAction)
+                                  const std::function<void(MenuAction)>& onAction,
+                                  MenuLayer initialLayer = MenuLayer::QUICK)
       : ActivityWithSubactivity("EpubReaderMenu", renderer, mappedInput),
+        menuLayer_(initialLayer),
         title(title),
         pendingOrientation(currentOrientation),
         currentPage(currentPage),
         totalPages(totalPages),
         bookProgressPercent(bookProgressPercent),
         onBack(onBack),
-        onAction(onAction) {}
+        onAction(onAction),
+        initialLayer_(initialLayer) {}
 
   void onEnter() override;
   void onExit() override;
@@ -95,7 +100,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   }
 
  private:
-  enum class MenuLayer : uint8_t { QUICK = 0, STYLE = 1, MORE = 2 };
   enum class InternalAction : uint8_t {
     NONE = 0,
     OPEN_STYLE,
@@ -198,6 +202,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
 
   const std::function<void(uint8_t)> onBack;
   const std::function<void(MenuAction)> onAction;
+  MenuLayer initialLayer_ = MenuLayer::QUICK;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();

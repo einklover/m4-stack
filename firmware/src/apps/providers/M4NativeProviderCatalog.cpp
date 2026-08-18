@@ -128,7 +128,7 @@ bool writePlaceholderFile(const std::string& absPath, size_t total) {
   const std::string body = M4ProgressiveCatalog::buildPlaceholderBody(total, policy);
   if (body.empty()) return false;
   if (!M4NativeProviderIo::ensureParentDirs(absPath)) return false;
-  const std::string tmp = absPath + ".tmp";
+  const std::string tmp = M4NativeProviderIo::replacedExtension(absPath, "part");
   if (SdMan.exists(tmp.c_str())) SdMan.remove(tmp.c_str());
   FsFile f;
   if (!SdMan.openFileForWrite("NP-TOC-PH", tmp.c_str(), f)) return false;
@@ -229,7 +229,7 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
   bool open(const std::string& finalPath) {
     close();
     finalPath_ = finalPath;
-    tmpPath_ = finalPath + ".tmp";
+    tmpPath_ = M4NativeProviderIo::replacedExtension(finalPath, "part");
     written_ = 0;
     used_ = 0;
     if (!M4NativeProviderIo::ensureParentDirs(finalPath_)) return false;
@@ -266,18 +266,18 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     return true;
   }
 
-  void close() {
-    if (!open_) return;
-    (void)flushBuffer();
-    f_.sync();
+  bool close() {
+    if (!open_) return true;
+    bool ok = flushBuffer();
+    if (ok) f_.sync();
     f_.close();
     open_ = false;
     used_ = 0;
+    return ok;
   }
 
   bool commit() {
-    close();
-    if (written_ == 0 || tmpPath_.empty()) return false;
+    if (!close() || written_ == 0 || tmpPath_.empty()) return false;
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true)) return true;
       delay(40 + attempt * 60);
@@ -575,6 +575,8 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
   if (window.windowReady() && window.count() > 0) {
     if (!file.commit()) {
       file.discard();
+      Serial.printf("[NativeCatalog] first-window commit failed rows=%u path=%s\n",
+                    static_cast<unsigned>(window.count()), finalPath.c_str());
       publish(Phase::Error, net.bytes, window.count(), "catalog_commit_failed", false, totalHint);
       return false;
     }
@@ -635,6 +637,8 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
   }
   if (!file.commit()) {
     file.discard();
+    Serial.printf("[NativeCatalog] small-catalog commit failed rows=%u path=%s\n",
+                  static_cast<unsigned>(rowCount), finalPath.c_str());
     publish(Phase::Error, net.bytes, rowCount, "catalog_commit_failed");
     return false;
   }

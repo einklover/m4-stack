@@ -523,12 +523,8 @@ void TxtReaderChapterSelectionActivity::displayTaskLoop() {
       }
 
       // Phase 3: e-ink refresh outside mutex so onExit can proceed.
-      if (firstPaint_) {
-        firstPaint_ = false;
-        renderer.displayBuffer(useExternal_ ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
-      } else {
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-      }
+      firstPaint_ = false;
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
       displayBusy_ = false;
     } else if (!useExternal_ && txt && loadedBatchStart_ >= 0 && !finished_) {
       // Idle: rebuild purged batches + prefetch next (may scan seconds).

@@ -32,7 +32,7 @@ void EpubReaderSettingsActivity::onEnter() {
 
   selectedIndex = 0;
   updateRequired = true;
-  xTaskCreate(&EpubReaderSettingsActivity::taskTrampoline, "EpubRdrSet", 4096, this, 1, &displayTaskHandle);
+  xTaskCreate(&EpubReaderSettingsActivity::taskTrampoline, "EpubRdrSet", 8192, this, 1, &displayTaskHandle);
 }
 
 void EpubReaderSettingsActivity::onExit() {
