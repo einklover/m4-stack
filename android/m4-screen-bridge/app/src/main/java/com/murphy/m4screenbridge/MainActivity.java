@@ -16,12 +16,19 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-/** Simple UI: accessibility shortcut, session control, tunables, live status. */
+import com.murphy.m4screenbridge.browser.BrowserBridgeService;
+
+/** Control/status UI for both the M1 virtual browser FGS and the legacy accessibility bridge. */
 public class MainActivity extends Activity {
     private TextView statusView;
+    private TextView browserStatusView;
+    private EditText browserUrlEt;
+    private EditText m4HostEt;
+    private EditText m4PortEt;
     private EditText thresholdEt;
     private EditText gapEt;
     private EditText delayEt;
@@ -45,6 +52,29 @@ public class MainActivity extends Activity {
         setContentView(buildView());
         load();
         ui.post(tick);
+        handleLabIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleLabIntent(intent);
+    }
+
+    private void handleLabIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        if ("com.murphy.m4screenbridge.browser.SELF_TEST".equals(action)) {
+            if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)) {
+                m4HostEt.setText(intent.getStringExtra(BrowserBridgeService.EXTRA_HOST));
+            }
+            if (intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
+                m4PortEt.setText(String.valueOf(intent.getIntExtra(BrowserBridgeService.EXTRA_PORT, Prefs.DEF_M4B3_PORT)));
+            }
+            saveM4Host();
+            BrowserBridgeService.startJavaScriptSelfTest(this);
+        }
     }
 
     @Override
@@ -67,14 +97,19 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         ui.removeCallbacks(tick);
         ScreenBridgeService.statusListener = null;
+        // BrowserBridgeService intentionally outlives this Activity.
         super.onDestroy();
     }
 
-    private LinearLayout buildView() {
+    private View buildView() {
+        ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
         root.setPadding(pad, pad, pad, pad);
+        scroll.addView(root, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(this);
         title.setText(R.string.app_name);
@@ -86,6 +121,81 @@ public class MainActivity extends Activity {
         statusView.setTextSize(14);
         root.addView(statusView);
 
+        root.addView(label("虚拟浏览器 M1（独立前台服务 + dirty patch）"));
+        browserStatusView = new TextView(this);
+        browserStatusView.setText("虚拟浏览器 M1：前台服务未启动");
+        browserStatusView.setTextSize(13);
+        root.addView(browserStatusView);
+
+        browserUrlEt = new EditText(this);
+        browserUrlEt.setSingleLine(true);
+        browserUrlEt.setHint("https://example.com/");
+        browserUrlEt.setText("https://example.com/");
+        root.addView(browserUrlEt);
+
+        root.addView(label("M4 主机（空=loopback；实验室填阅读器 STA IP）"));
+        m4HostEt = new EditText(this);
+        m4HostEt.setSingleLine(true);
+        m4HostEt.setHint("192.168.1.20 或 loopback");
+        root.addView(m4HostEt);
+        m4PortEt = new EditText(this);
+        m4PortEt.setSingleLine(true);
+        m4PortEt.setHint("48624");
+        root.addView(m4PortEt);
+
+        root.addView(button("启动 480×800 虚拟浏览器", new Runnable() {
+            @Override
+            public void run() {
+                saveM4Host();
+                BrowserBridgeService.startUrl(MainActivity.this, browserUrlEt.getText().toString());
+                toast("已请求前台服务启动虚拟浏览器");
+                ui.postDelayed(() -> refresh(), 300);
+            }
+        }));
+
+        root.addView(button("启动 JavaScript 持续帧自测", new Runnable() {
+            @Override
+            public void run() {
+                saveM4Host();
+                BrowserBridgeService.startJavaScriptSelfTest(MainActivity.this);
+                toast("自测页每秒翻转 40% 黑白区；关闭本界面或熄屏后服务应继续运行");
+                ui.postDelayed(() -> refresh(), 300);
+            }
+        }));
+
+        root.addView(button("保存 M4 地址", new Runnable() {
+            @Override
+            public void run() {
+                saveM4Host();
+                toast("已保存 M4 主机；下次启动虚拟浏览器生效");
+            }
+        }));
+
+        root.addView(button("注入 wrong-base NACK", new Runnable() {
+            @Override
+            public void run() {
+                BrowserBridgeService.injectWrongBase(MainActivity.this);
+                toast("已请求 wrong-base 注入");
+            }
+        }));
+
+        root.addView(button("注入 CRC NACK", new Runnable() {
+            @Override
+            public void run() {
+                BrowserBridgeService.injectCorruptCrc(MainActivity.this);
+                toast("已请求 CRC 注入");
+            }
+        }));
+
+        root.addView(button("停止虚拟浏览器前台服务", new Runnable() {
+            @Override
+            public void run() {
+                BrowserBridgeService.stop(MainActivity.this);
+                ui.postDelayed(() -> refresh(), 300);
+            }
+        }));
+
+        root.addView(label("原有无障碍屏幕桥"));
         root.addView(button("打开无障碍设置", new Runnable() {
             @Override
             public void run() {
@@ -161,7 +271,7 @@ public class MainActivity extends Activity {
         help.setTextSize(13);
         root.addView(help);
 
-        return root;
+        return scroll;
     }
 
     private boolean isServiceEnabled() {
@@ -186,7 +296,17 @@ public class MainActivity extends Activity {
         e.putString(Prefs.KEY_CROP, coverRb.isChecked() ? "cover" : "fit");
         e.putBoolean(Prefs.KEY_CACHE_ENABLED, cacheCb.isChecked());
         e.apply();
+        saveM4Host();
         ScreenBridgeService.preferencesChanged();
+    }
+
+    private void saveM4Host() {
+        SharedPreferences sp = getSharedPreferences(ScreenBridgeService.PREFS, Context.MODE_PRIVATE);
+        SharedPreferences.Editor e = sp.edit();
+        String host = m4HostEt.getText().toString().trim();
+        e.putString(Prefs.KEY_M4B3_HOST, host);
+        e.putInt(Prefs.KEY_M4B3_PORT, intOf(m4PortEt, Prefs.DEF_M4B3_PORT));
+        e.apply();
     }
 
     private void load() {
@@ -199,6 +319,8 @@ public class MainActivity extends Activity {
         boolean cover = "cover".equals(sp.getString(Prefs.KEY_CROP, "fit"));
         coverRb.setChecked(cover);
         fitRb.setChecked(!cover);
+        m4HostEt.setText(sp.getString(Prefs.KEY_M4B3_HOST, ""));
+        m4PortEt.setText(String.valueOf(sp.getInt(Prefs.KEY_M4B3_PORT, Prefs.DEF_M4B3_PORT)));
     }
 
     private void refresh() {
@@ -206,6 +328,7 @@ public class MainActivity extends Activity {
         sb.append("无障碍服务：").append(isServiceEnabled() ? "已启用" : "未启用").append('\n');
         sb.append(ScreenBridgeService.snapshot());
         statusView.setText(sb.toString());
+        if (browserStatusView != null) browserStatusView.setText(BrowserBridgeService.snapshot());
     }
 
     private Button button(String text, final Runnable onClick) {

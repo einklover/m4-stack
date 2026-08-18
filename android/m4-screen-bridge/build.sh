@@ -43,8 +43,31 @@ if [ "${1:-}" = "--test" ]; then
   PURE="Framebuffer Rle Header Preprocess PageStore XhsFeedParser"
   SRCS=""
   for c in $PURE; do SRCS="$SRCS $SRC/$c.java"; done
-  javac --release 11 -d "$OUT/testclasses" $SRCS "$TEST_SRC/TestMain.java"
+  PATCH_SRC="$SRC/browser/patch"
+  STREAM_SRC="$SRC/browser/stream"
+  javac --release 11 -d "$OUT/testclasses" \
+    $SRCS \
+    "$PATCH_SRC/LogicalMonoFrame.java" \
+    "$PATCH_SRC/ExtraDimCompensation.java" \
+    "$PATCH_SRC/RgbaFrameProbe.java" \
+    "$PATCH_SRC/PatchRect.java" \
+    "$PATCH_SRC/FramePatch.java" \
+    "$PATCH_SRC/FrameDiffer.java" \
+    "$PATCH_SRC/PatchApplier.java" \
+    "$STREAM_SRC/M4B3.java" \
+    "$STREAM_SRC/M4B3Exception.java" \
+    "$STREAM_SRC/M4B3Outbound.java" \
+    "$STREAM_SRC/M4B3Message.java" \
+    "$STREAM_SRC/M4B3Codec.java" \
+    "$STREAM_SRC/M4B3Sender.java" \
+    "$STREAM_SRC/M4B3ReferenceReceiver.java" \
+    "$STREAM_SRC/M4B3Framer.java" \
+    "$TEST_SRC/TestMain.java" \
+    "$TEST_SRC/BrowserPatchTest.java" \
+    "$TEST_SRC/M4B3ProtocolTest.java"
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.TestMain
+  java -cp "$OUT/testclasses" com.murphy.m4screenbridge.BrowserPatchTest
+  java -cp "$OUT/testclasses" com.murphy.m4screenbridge.M4B3ProtocolTest
   exit 0
 fi
 

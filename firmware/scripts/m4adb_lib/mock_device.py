@@ -133,7 +133,36 @@ class MockDevice:
                     "wifi_ip": self.wifi_ip if self.wifi_connected else "",
                     "wifi_rssi": self.wifi_rssi if self.wifi_connected else -127,
                     "caps": ["install", "install_http", "wifi_status", "wifi_prepare", "wifi_transfer",
-                             "launch", "tap", "swipe", "key", "screenshot", "logs"],
+                             "launch", "tap", "swipe", "key", "screenshot", "logs", "m4b3_status"],
+                },
+            )
+        if op == "m4b3_status":
+            return self._ok(
+                req_id,
+                {
+                    "op": "m4b3_status",
+                    "listening": False,
+                    "connected": False,
+                    "hello": False,
+                    "peer": "",
+                    "bind": "",
+                    "port": 48624,
+                    "accepted_frame_id": -1,
+                    "accepted_crc": 0,
+                    "keys": 0,
+                    "patches": 0,
+                    "nacks": 0,
+                    "hellos": 0,
+                    "pings": 0,
+                    "bytes_rx": 0,
+                    "bytes_tx": 0,
+                    "apply_errors": 0,
+                    "reconnects": 0,
+                    "last_nack": 255,
+                    "rx_filled": 0,
+                    "free_heap": self.free_heap,
+                    "min_free_heap": self.min_free_heap,
+                    "free_psram": self.free_psram,
                 },
             )
         if op in ("wifi_status", "wifi_prepare", "wifi_transfer"):

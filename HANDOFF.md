@@ -1,6 +1,6 @@
 # HANDOFF — Murphy M4 session entry
 
-Last updated: **2026-08-17**
+Last updated: **2026-08-18**
 
 This file is intentionally thin. **Active goals, progress, measurements and acceptance evidence live in GitHub Issues, not here.**
 
@@ -26,16 +26,31 @@ Current execution issues:
 
 - **#18 — Real-device runtime OTF/OTC soak validation**
 - **#19 — JJWXC live long-catalog progressive-stream E2E**
+- **#32 — M3 Browser Bridge panel framebuffer mapping and display integration**
+
+Completed Browser Bridge milestones:
+
+- **#26 — M0 Android virtual-display browser capture validation** — completed with real-device 480×800, HTTPS, JavaScript, and ~90s screen-off Doze evidence.
+- **#27 — M1 Browser Bridge FGS + dirty-tile patch core** — completed on `agent/eink-browser-bridge`.
+- **#30 — M2 Browser Bridge M4B3 TCP keyframe/patch/ACK** — completed and hardware-validated on `agent/eink-browser-bridge-m2` (`8e15f40`).
 
 Detailed progress, commit SHAs, measurements, failures, fixes and acceptance evidence belong in those Issues. Update the relevant Issue during work instead of growing this file.
 
 ## Current working branch
 
+Firmware / production-readiness work stays on:
+
 ```text
 main
 ```
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, and native-provider first-window work was merged here. Start new work from `main`, not from the old validation branch.
+E-ink Browser Bridge M3 is on a parallel branch based on current `main`, with validated M2 merged in:
+
+```text
+agent/eink-browser-bridge-m3
+```
+
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Validated M2 remains on `agent/eink-browser-bridge-m2`.
 
 Always inspect HEAD before editing.
 
@@ -63,4 +78,4 @@ Do not expand m4sim unless a production firmware change proves a simulator fidel
 - **AGENTS.md** = permanent working rules
 - **HANDOFF.md** = only the pointer that tells a new session where to look
 
-When #18 or #19 changes materially, update the Issue. Only update this file when the active Issue set, branch strategy or stable infrastructure entry points change.
+When #18, #19, or #32 changes materially, update the Issue. Only update this file when the active Issue set, branch strategy or stable infrastructure entry points change.
