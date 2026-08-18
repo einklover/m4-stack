@@ -12,6 +12,7 @@ import argparse
 import socket
 import struct
 import sys
+import time
 import zlib
 
 MAGIC = b"M4B3"
@@ -118,6 +119,120 @@ def cmd_hello_key(host: str, port: int) -> int:
         return 0 if typ == TYPE_ACK and result == ACK_OK and accepted == 0 else 2
 
 
+def paint_rect(fb: bytearray, x: int, y: int, w: int, h: int) -> None:
+    for yy in range(y, y + h):
+        for xx in range(x, x + w):
+            set_black(fb, xx, yy)
+
+
+def landmark_fb() -> bytearray:
+    """Same asymmetric blocks as Android VirtualBrowserSession.landmarkHtml()."""
+    fb = white()
+    paint_rect(fb, 0, 0, 64, 64)        # TL
+    paint_rect(fb, 448, 0, 32, 64)      # TR
+    paint_rect(fb, 0, 768, 64, 32)      # BL
+    paint_rect(fb, 432, 752, 48, 48)    # BR
+    paint_rect(fb, 40, 80, 80, 40)      # A
+    paint_rect(fb, 200, 200, 40, 80)    # B
+    paint_rect(fb, 80, 500, 120, 24)    # C
+    return fb
+
+
+def sequence_fb(n: int) -> bytearray:
+    fb = white()
+    paint_rect(fb, 0, 0, 16, 16)
+    paint_rect(fb, 20, 40 + (n % 8) * 80, 440, 48)
+    paint_rect(fb, 40 + n * 40, 700, 32, 32)
+    return fb
+
+
+def hello_ok(sock: socket.socket) -> None:
+    sock.sendall(encode_hello())
+    hello = read_msg(sock)
+    if hello[4] != TYPE_HELLO or hello[16 + 16] != 0:
+        raise RuntimeError("HELLO failed")
+
+
+def send_key(sock: socket.socket, frame_id: int, fb: bytes, seq: int) -> tuple[int, int, float]:
+    t0 = time.perf_counter()
+    sock.sendall(encode_key(frame_id, fb, seq=seq))
+    ack = read_msg(sock, timeout=8.0)
+    dt = (time.perf_counter() - t0) * 1000.0
+    typ, result, accepted = parse_ack(ack)
+    if typ != TYPE_ACK or result != ACK_OK:
+        raise RuntimeError(f"KEY NACK result={result} accepted={accepted}")
+    return result, accepted, dt
+
+
+def encode_ping(seq: int = 10, nonce: int = 1) -> bytes:
+    return wrap(TYPE_PING, struct.pack("<I", nonce), b"", seq)
+
+
+def cmd_landmark(host: str, port: int) -> int:
+    fb = bytes(landmark_fb())
+    with connect(host, port) as sock:
+        hello_ok(sock)
+        result, accepted, dt = send_key(sock, 0, fb, 1)
+        print(f"landmark ack result={result} accepted={accepted} ack_ms={dt:.1f} crc=0x{crc32(fb):08X}")
+        return 0 if accepted == 0 else 2
+
+
+def cmd_sequence(host: str, port: int, count: int, interval: float) -> int:
+    with connect(host, port) as sock:
+        hello_ok(sock)
+        last_crc = 0
+        for i in range(count):
+            fb = bytes(sequence_fb(i))
+            last_crc = crc32(fb)
+            result, accepted, dt = send_key(sock, i, fb, i + 1)
+            print(f"seq={i} ack result={result} accepted={accepted} ack_ms={dt:.1f} crc=0x{last_crc:08X}")
+            if accepted != i:
+                return 2
+            if i + 1 < count:
+                time.sleep(interval)
+        print(f"sequence ok count={count} last_crc=0x{last_crc:08X}")
+        return 0
+
+
+def cmd_burst(host: str, port: int, count: int) -> int:
+    with connect(host, port) as sock:
+        hello_ok(sock)
+        t0 = time.perf_counter()
+        last_crc = 0
+        for i in range(count):
+            fb = bytes(sequence_fb(i))
+            last_crc = crc32(fb)
+            result, accepted, dt = send_key(sock, i, fb, i + 1)
+            print(f"burst={i} ack result={result} accepted={accepted} ack_ms={dt:.1f} crc=0x{last_crc:08X}")
+            if accepted != i:
+                return 2
+        elapsed = (time.perf_counter() - t0) * 1000.0
+        print(f"burst ok count={count} elapsed_ms={elapsed:.1f} last_crc=0x{last_crc:08X}")
+        return 0
+
+
+def cmd_ping_hold(host: str, port: int) -> int:
+    fb = bytes(landmark_fb())
+    with connect(host, port) as sock:
+        hello_ok(sock)
+        result, accepted, dt = send_key(sock, 0, fb, 1)
+        print(f"key ack result={result} accepted={accepted} ack_ms={dt:.1f}")
+        for i in range(5):
+            nonce = 0x1000 + i
+            sock.sendall(encode_ping(seq=20 + i, nonce=nonce))
+            pong = read_msg(sock, timeout=3.0)
+            if pong[4] != TYPE_PONG:
+                print(f"expected PONG got type={pong[4]}", file=sys.stderr)
+                return 2
+            got = struct.unpack_from("<I", pong, 16)[0]
+            print(f"pong nonce=0x{got:08X}")
+            if got != nonce:
+                return 2
+            time.sleep(0.2)
+        print(f"ping-hold ok accepted={accepted} crc=0x{crc32(fb):08X}")
+        return 0
+
+
 def cmd_nack(host: str, port: int) -> int:
     fb = white()
     with connect(host, port) as sock:
@@ -149,10 +264,20 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--host", required=True)
     p.add_argument("--port", type=int, default=48624)
-    p.add_argument("cmd", choices=("hello-key", "nack"))
+    p.add_argument("--count", type=int, default=6)
+    p.add_argument("--interval", type=float, default=2.5)
+    p.add_argument("cmd", choices=("hello-key", "nack", "landmark", "sequence", "burst", "ping-hold"))
     args = p.parse_args()
     if args.cmd == "hello-key":
         return cmd_hello_key(args.host, args.port)
+    if args.cmd == "landmark":
+        return cmd_landmark(args.host, args.port)
+    if args.cmd == "sequence":
+        return cmd_sequence(args.host, args.port, args.count, args.interval)
+    if args.cmd == "burst":
+        return cmd_burst(args.host, args.port, args.count)
+    if args.cmd == "ping-hold":
+        return cmd_ping_hold(args.host, args.port)
     return cmd_nack(args.host, args.port)
 
 

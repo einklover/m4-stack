@@ -11,6 +11,7 @@
 #include <new>
 
 #include "apps/providers/M4Psram.h"
+#include "network/M4B3Panel.h"
 #include "util/M4PanelMapper.h"
 
 // Compile the mapper into the production firmware without touching the
@@ -90,6 +91,26 @@ void fillSnapshot(Snapshot& s) {
   s.lastNack = st.lastNack;
   s.rxFilled = static_cast<uint32_t>(gRt.parser.filled);
   observeHeap(s);
+  M4B3Panel::Snapshot panel;
+  M4B3Panel::snapshot(panel);
+  s.panelOwner = panel.owner;
+  s.panelBusy = panel.busy;
+  s.panelPending = panel.pending;
+  s.presentReq = panel.requested;
+  s.presentOk = panel.completed;
+  s.presentCoal = panel.coalesced;
+  s.presentDrop = panel.dropped;
+  s.presentErr = panel.presentErrors;
+  s.mapErr = panel.mapErrors;
+  s.panelSrcId = panel.sourceFrameId;
+  s.panelSrcCrc = panel.sourceCrc;
+  s.panelCrc = panel.panelCrc;
+  s.panelLastErr = panel.lastError;
+  s.panelAgeMs = panel.ageMs;
+  s.panelCorner[0] = panel.corner[0];
+  s.panelCorner[1] = panel.corner[1];
+  s.panelCorner[2] = panel.corner[2];
+  s.panelCorner[3] = panel.corner[3];
 }
 
 void logSnapshot(const char* why) {
@@ -98,11 +119,15 @@ void logSnapshot(const char* why) {
   Serial.printf(
       "[%lu] [M4B3] %s listen=%d conn=%d peer=%s bind=%s hello=%d accepted=%ld crc=0x%08x "
       "key=%u patch=%u nack=%u helloN=%u ping=%u rx=%u tx=%u applyErr=%u recon=%u "
-      "rxFill=%u heap=%u minHeap=%u psram=%u\n",
+      "rxFill=%u heap=%u minHeap=%u psram=%u panel(owner=%u busy=%d pend=%d req=%u ok=%u coal=%u "
+      "drop=%u src=%ld pcrc=0x%08x)\n",
       millis(), why, s.listening ? 1 : 0, s.connected ? 1 : 0, s.peer[0] ? s.peer : "-",
       s.bindIp[0] ? s.bindIp : "-", s.helloOk ? 1 : 0, static_cast<long>(s.acceptedFrameId),
       static_cast<unsigned>(s.acceptedCrc), s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx,
-      s.applyErrors, s.reconnects, s.rxFilled, s.freeHeap, s.minFreeHeap, s.freePsram);
+      s.applyErrors, s.reconnects, s.rxFilled, s.freeHeap, s.minFreeHeap, s.freePsram,
+      static_cast<unsigned>(s.panelOwner), s.panelBusy ? 1 : 0, s.panelPending ? 1 : 0, s.presentReq,
+      s.presentOk, s.presentCoal, s.presentDrop, static_cast<long>(s.panelSrcId),
+      static_cast<unsigned>(s.panelCrc));
 }
 
 bool staReady(IPAddress& ip) {
@@ -118,6 +143,7 @@ void closeClient(const char* why) {
   const bool was = gRt.connected.exchange(false);
   gRt.parser.reset();
   gRt.peer[0] = 0;
+  M4B3Panel::noteDisconnect();
   if (was) {
     logSnapshot(why);
   }
@@ -149,9 +175,17 @@ bool startListen(const IPAddress& ip) {
 }
 
 void handleComplete(const uint8_t* msg, size_t len) {
+  const int32_t beforeId = gRt.session.acceptedFrameId();
+  const uint32_t beforeCrc = gRt.session.acceptedCrc();
   const size_t n = gRt.session.handle(msg, len, gRt.tx, sizeof(gRt.tx));
+  // FRAME_ACK means protocol/framebuffer accepted. Never wait for panel refresh.
   if (n > 0 && gRt.client) {
     gRt.client.write(gRt.tx, n);
+  }
+  const int32_t afterId = gRt.session.acceptedFrameId();
+  const uint32_t afterCrc = gRt.session.acceptedCrc();
+  if (afterId >= 0 && (afterId != beforeId || afterCrc != beforeCrc)) {
+    M4B3Panel::offerAccepted(gRt.session.accepted(), M4B3::kKeyframeSize, afterId, afterCrc);
   }
 }
 
@@ -275,6 +309,10 @@ void begin() {
   if (!allocBuffers()) {
     gRt.started.store(false);
     return;
+  }
+  if (!M4B3Panel::begin()) {
+    Serial.printf("[%lu] [M4B3] panel presenter alloc failed — transport continues without panel\n",
+                  millis());
   }
   TaskHandle_t h = nullptr;
   if (M4Psram::createTask(taskMain, "M4B3Rx", 12u * 1024u, nullptr, 1, &h) != pdPASS) {

@@ -519,7 +519,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"wifi_connected\":%s,\"wifi_status\":%d,\"wifi_ssid\":\"%s\",\"wifi_ip\":\"%s\","
              "\"wifi_rssi\":%d,\"caps\":[\"install\",\"install_http\",\"wifi_status\",\"wifi_prepare\","
              "\"wifi_transfer\",\"sd_probe\",\"sd_read\",\"http_probe\",\"launch\",\"tap\",\"key\","
-             "\"swipe\",\"screenshot\",\"logs\",\"ui\",\"m4b3_status\"]}",
+             "\"swipe\",\"screenshot\",\"logs\",\"ui\",\"m4b3_status\",\"m4b3_panel\"]}",
              op, kProtocolVersion, st.firmwareVersion ? st.firmwareVersion : "", activityCopy_, appIdCopy_,
              static_cast<unsigned>(st.freeHeap), static_cast<unsigned>(st.minFreeHeap),
              static_cast<unsigned>(st.freePsram), static_cast<unsigned>(st.resetReason),
@@ -537,7 +537,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     char bindSafe[16] = {};
     copyJsonSafe(s.peer, peerSafe, sizeof(peerSafe));
     copyJsonSafe(s.bindIp, bindSafe, sizeof(bindSafe));
-    char out[720];
+    char out[1100];
     snprintf(out, sizeof(out),
              "{\"op\":\"m4b3_status\",\"listening\":%s,\"connected\":%s,\"hello\":%s,"
              "\"peer\":\"%s\",\"bind\":\"%s\",\"port\":48624,"
@@ -545,11 +545,42 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"keys\":%u,\"patches\":%u,\"nacks\":%u,\"hellos\":%u,\"pings\":%u,"
              "\"bytes_rx\":%u,\"bytes_tx\":%u,\"apply_errors\":%u,\"reconnects\":%u,"
              "\"last_nack\":%u,\"rx_filled\":%u,"
-             "\"free_heap\":%u,\"min_free_heap\":%u,\"free_psram\":%u}",
+             "\"free_heap\":%u,\"min_free_heap\":%u,\"free_psram\":%u,"
+             "\"panel_owner\":%u,\"panel_busy\":%s,\"panel_pending\":%s,"
+             "\"present_req\":%u,\"present_ok\":%u,\"present_coal\":%u,\"present_drop\":%u,"
+             "\"present_err\":%u,\"map_err\":%u,\"panel_src_id\":%ld,\"panel_src_crc\":%u,"
+             "\"panel_crc\":%u,\"panel_err\":%u,\"panel_age_ms\":%u,"
+             "\"panel_corners\":[%u,%u,%u,%u]}",
              s.listening ? "true" : "false", s.connected ? "true" : "false", s.helloOk ? "true" : "false",
              peerSafe, bindSafe, static_cast<long>(s.acceptedFrameId), static_cast<unsigned>(s.acceptedCrc),
              s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx, s.applyErrors, s.reconnects,
-             static_cast<unsigned>(s.lastNack), s.rxFilled, s.freeHeap, s.minFreeHeap, s.freePsram);
+             static_cast<unsigned>(s.lastNack), s.rxFilled, s.freeHeap, s.minFreeHeap, s.freePsram,
+             static_cast<unsigned>(s.panelOwner), s.panelBusy ? "true" : "false",
+             s.panelPending ? "true" : "false", s.presentReq, s.presentOk, s.presentCoal, s.presentDrop,
+             s.presentErr, s.mapErr, static_cast<long>(s.panelSrcId), static_cast<unsigned>(s.panelSrcCrc),
+             static_cast<unsigned>(s.panelCrc), s.panelLastErr, s.panelAgeMs,
+             static_cast<unsigned>(s.panelCorner[0]), static_cast<unsigned>(s.panelCorner[1]),
+             static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]));
+    replyOk(reqId, out);
+    return;
+  }
+
+  if (strcmp(op, "m4b3_panel") == 0) {
+    M4B3Tcp::Snapshot s;
+    M4B3Tcp::snapshot(s);
+    char out[640];
+    snprintf(out, sizeof(out),
+             "{\"op\":\"m4b3_panel\",\"owner\":%u,\"busy\":%s,\"pending\":%s,"
+             "\"req\":%u,\"ok\":%u,\"coal\":%u,\"drop\":%u,\"err\":%u,\"map_err\":%u,"
+             "\"src_id\":%ld,\"src_crc\":%u,\"panel_crc\":%u,\"last_err\":%u,\"age_ms\":%u,"
+             "\"accepted_id\":%ld,\"accepted_crc\":%u,\"corners\":[%u,%u,%u,%u]}",
+             static_cast<unsigned>(s.panelOwner), s.panelBusy ? "true" : "false",
+             s.panelPending ? "true" : "false", s.presentReq, s.presentOk, s.presentCoal, s.presentDrop,
+             s.presentErr, s.mapErr, static_cast<long>(s.panelSrcId), static_cast<unsigned>(s.panelSrcCrc),
+             static_cast<unsigned>(s.panelCrc), s.panelLastErr, s.panelAgeMs,
+             static_cast<long>(s.acceptedFrameId), static_cast<unsigned>(s.acceptedCrc),
+             static_cast<unsigned>(s.panelCorner[0]), static_cast<unsigned>(s.panelCorner[1]),
+             static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]));
     replyOk(reqId, out);
     return;
   }

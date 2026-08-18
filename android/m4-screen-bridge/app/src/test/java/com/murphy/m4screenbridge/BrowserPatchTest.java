@@ -28,7 +28,36 @@ public final class BrowserPatchTest {
         rgbaProbeLumaAndMotorolaStride();
         highContrastStimulusStaysDelta();
         extraDimCompensationRecoversWhite();
+        landmarkBlocksDistinct();
         System.out.println("OK: browser patch self-checks passed");
+    }
+
+    private static void landmarkBlocksDistinct() {
+        byte[] fb = LogicalMonoFrame.white();
+        paintRect(fb, 0, 0, 64, 64, true);
+        paintRect(fb, 448, 0, 32, 64, true);
+        paintRect(fb, 0, 768, 64, 32, true);
+        paintRect(fb, 432, 752, 48, 48, true);
+        paintRect(fb, 40, 80, 80, 40, true);
+        paintRect(fb, 200, 200, 40, 80, true);
+        paintRect(fb, 80, 500, 120, 24, true);
+        assertTrue(LogicalMonoFrame.isBlack(fb, 8, 8), "TL black");
+        assertTrue(LogicalMonoFrame.isBlack(fb, 460, 8), "TR black");
+        assertTrue(LogicalMonoFrame.isBlack(fb, 8, 780), "BL black");
+        assertTrue(LogicalMonoFrame.isBlack(fb, 450, 770), "BR black");
+        assertTrue(LogicalMonoFrame.isBlack(fb, 60, 90), "A black");
+        assertTrue(LogicalMonoFrame.isBlack(fb, 210, 230), "B black");
+        assertTrue(LogicalMonoFrame.isBlack(fb, 120, 510), "C black");
+        assertTrue(!LogicalMonoFrame.isBlack(fb, 240, 40), "gap between TL/TR white");
+        assertTrue(!LogicalMonoFrame.isBlack(fb, 240, 400), "center white");
+        int blacks = 0;
+        for (int y = 0; y < LogicalMonoFrame.HEIGHT; y++) {
+            for (int x = 0; x < LogicalMonoFrame.WIDTH; x++) {
+                if (LogicalMonoFrame.isBlack(fb, x, y)) blacks++;
+            }
+        }
+        int expected = 64 * 64 + 32 * 64 + 64 * 32 + 48 * 48 + 80 * 40 + 40 * 80 + 120 * 24;
+        assertEquals(expected, blacks, "landmark black pixel count");
     }
 
     private static void keyframeRoundtrip() {

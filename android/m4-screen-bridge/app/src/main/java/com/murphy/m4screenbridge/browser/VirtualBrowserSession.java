@@ -219,6 +219,37 @@ public final class VirtualBrowserSession {
         start("data:text/html;charset=utf-8," + Uri.encode(html));
     }
 
+    /** Asymmetric full-frame landmark page for physical panel orientation proof. */
+    public static String landmarkHtml() {
+        return "<!doctype html><html><head>"
+                + "<meta name=viewport content='width=480,initial-scale=1,user-scalable=no'>"
+                + "<style>"
+                + "html,body{margin:0;padding:0;background:#ffffff;color:#ffffff;"
+                + "width:480px;height:800px;overflow:hidden;font:bold 14px sans-serif}"
+                + ".box{position:absolute;background:#000000}"
+                + ".lab{position:absolute;color:#ffffff;font:bold 18px sans-serif;z-index:2}"
+                + "</style></head><body>"
+                + "<div class=box style='left:0;top:0;width:64px;height:64px'></div>"
+                + "<div class=lab style='left:8px;top:20px'>TL</div>"
+                + "<div class=box style='left:448px;top:0;width:32px;height:64px'></div>"
+                + "<div class=lab style='left:450px;top:20px'>TR</div>"
+                + "<div class=box style='left:0;top:768px;width:64px;height:32px'></div>"
+                + "<div class=lab style='left:8px;top:770px'>BL</div>"
+                + "<div class=box style='left:432px;top:752px;width:48px;height:48px'></div>"
+                + "<div class=lab style='left:436px;top:764px'>BR</div>"
+                + "<div class=box style='left:40px;top:80px;width:80px;height:40px'></div>"
+                + "<div class=lab style='left:68px;top:90px'>A</div>"
+                + "<div class=box style='left:200px;top:200px;width:40px;height:80px'></div>"
+                + "<div class=lab style='left:212px;top:230px'>B</div>"
+                + "<div class=box style='left:80px;top:500px;width:120px;height:24px'></div>"
+                + "<div class=lab style='left:128px;top:502px'>C</div>"
+                + "</body></html>";
+    }
+
+    public void startLandmarkTest() {
+        start("data:text/html;charset=utf-8," + Uri.encode(landmarkHtml()));
+    }
+
     public void stop() {
         ensureMainThread();
         stopInternal(true);

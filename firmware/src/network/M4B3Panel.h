@@ -1,0 +1,45 @@
+#pragma once
+
+// ESP32 glue: map an accepted M4B3 logical frame into a PSRAM panel snapshot
+// and present it with HalDisplay::displayBuffer(FULL_REFRESH) on the main
+// owner loop. Does not change FRAME_ACK semantics.
+
+#if defined(CROSSPOINT_MURPHY_M4)
+
+#include <cstddef>
+#include <cstdint>
+
+class HalDisplay;
+
+namespace M4B3Panel {
+
+struct Snapshot {
+  uint8_t owner = 0;
+  bool busy = false;
+  bool pending = false;
+  uint32_t requested = 0;
+  uint32_t completed = 0;
+  uint32_t coalesced = 0;
+  uint32_t dropped = 0;
+  uint32_t presentErrors = 0;
+  uint32_t mapErrors = 0;
+  int32_t sourceFrameId = -1;
+  uint32_t sourceCrc = 0;
+  uint32_t panelCrc = 0;
+  uint32_t lastError = 0;
+  uint32_t lastRequestMs = 0;
+  uint32_t lastCompleteMs = 0;
+  uint32_t ageMs = 0;
+  uint8_t corner[4] = {};
+};
+
+bool begin();
+void offerAccepted(const uint8_t* logical, size_t logicalLen, int32_t frameId, uint32_t sourceCrc);
+void noteDisconnect();
+void tick(HalDisplay& display, uint32_t nowMs);
+bool browserOwnsDisplay();
+void snapshot(Snapshot& out, uint32_t nowMs = 0);
+
+}  // namespace M4B3Panel
+
+#endif

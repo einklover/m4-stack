@@ -65,15 +65,26 @@ public class MainActivity extends Activity {
     private void handleLabIntent(Intent intent) {
         if (intent == null) return;
         String action = intent.getAction();
-        if ("com.murphy.m4screenbridge.browser.SELF_TEST".equals(action)) {
+        if ("com.murphy.m4screenbridge.browser.SELF_TEST".equals(action)
+                || "com.murphy.m4screenbridge.browser.LANDMARK".equals(action)
+                || "com.murphy.m4screenbridge.browser.STOP".equals(action)) {
             if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)) {
                 m4HostEt.setText(intent.getStringExtra(BrowserBridgeService.EXTRA_HOST));
             }
             if (intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
                 m4PortEt.setText(String.valueOf(intent.getIntExtra(BrowserBridgeService.EXTRA_PORT, Prefs.DEF_M4B3_PORT)));
             }
-            saveM4Host();
-            BrowserBridgeService.startJavaScriptSelfTest(this);
+            if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)
+                    || intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
+                saveM4Host();
+            }
+            if ("com.murphy.m4screenbridge.browser.STOP".equals(action)) {
+                BrowserBridgeService.stop(this);
+            } else if ("com.murphy.m4screenbridge.browser.LANDMARK".equals(action)) {
+                BrowserBridgeService.startLandmarkTest(this);
+            } else {
+                BrowserBridgeService.startJavaScriptSelfTest(this);
+            }
         }
     }
 
@@ -159,6 +170,16 @@ public class MainActivity extends Activity {
                 saveM4Host();
                 BrowserBridgeService.startJavaScriptSelfTest(MainActivity.this);
                 toast("自测页每秒翻转 40% 黑白区；关闭本界面或熄屏后服务应继续运行");
+                ui.postDelayed(() -> refresh(), 300);
+            }
+        }));
+
+        root.addView(button("启动非对称定位页 (TL/TR/BL/BR + A/B/C)", new Runnable() {
+            @Override
+            public void run() {
+                saveM4Host();
+                BrowserBridgeService.startLandmarkTest(MainActivity.this);
+                toast("已启动非对称定位页，用于核对面板方向/镜像/极性");
                 ui.postDelayed(() -> refresh(), 300);
             }
         }));
