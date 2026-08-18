@@ -71,7 +71,8 @@
   STR(kApp0Official,            "APP0（官方）",       "APP0（官方）") \
   STR(kApp1Custom,              "APP1（自研）",       "APP1（自研）") \
   STR(kUnknownBootSlot,         "启动区未知",        "啟動區未知") \
-  /* --- 翻页动画（System）--- */ \
+  /* --- 系统 / 阅读动画 --- */ \
+  STR(kSystemAnimation,         "系统动画",          "系統動畫") \
   STR(kPageTurnAnimation,       "翻页动画",          "翻頁動畫") \
   STR(kPageTurnAnimSteps,       "动画步数",          "動畫步數") \
   STR(kPageTurnAnimMult,        "窗口倍数",          "窗口倍數") \

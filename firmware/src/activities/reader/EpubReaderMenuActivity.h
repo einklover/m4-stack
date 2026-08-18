@@ -71,7 +71,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     const char* layer = menuLayer_ == MenuLayer::QUICK ? "quick" :
                         (menuLayer_ == MenuLayer::STYLE ? "style" : "more");
     bool hasSync = false;
-    for (const auto& item : moreMenuItems) {
+    for (const auto& item : dataMenuItems) {
       if (item.action == MenuAction::SYNC || item.action == MenuAction::SYNCY) {
         hasSync = true;
         break;
@@ -84,6 +84,11 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     out += hasSync ? "true" : "false";
     out += ",\"overlay\":";
     out += menuLayer_ == MenuLayer::MORE ? "false" : "true";
+    if (menuLayer_ == MenuLayer::MORE) {
+      out += ",\"more_section\":\"";
+      out += moreSectionKey();
+      out += "\"";
+    }
     if (menuLayer_ == MenuLayer::STYLE) {
       out += ",\"quick_fonts\":" + std::to_string(quickFontFamilies_.size() + 1);
     }
@@ -100,10 +105,18 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   }
 
  private:
+  // APPEARANCE, not DISPLAY: Arduino.h #defines DISPLAY as 0x1.
+  enum class MoreSection : uint8_t { ROOT = 0, TYPOGRAPHY, TURNING, APPEARANCE, CONTROL, DATA };
+
   enum class InternalAction : uint8_t {
     NONE = 0,
     OPEN_STYLE,
     OPEN_MORE,
+    OPEN_MORE_TYPOGRAPHY,
+    OPEN_MORE_TURNING,
+    OPEN_MORE_DISPLAY,
+    OPEN_MORE_CONTROL,
+    OPEN_MORE_DATA,
     FONT_DECREASE,
     FONT_INCREASE,
     LAYOUT_COMPACT,
@@ -132,28 +145,50 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
       {MenuAction::READER_SETTINGS, "宽松", InternalAction::LAYOUT_RELAXED},
   };
 
-  std::vector<MenuItem> moreMenuItems = {
-      {MenuAction::AUTO_PAGE_TURN, "翻页 · 自动翻页"},
-      {MenuAction::PAGE_TURN_INTERVAL, "翻页 · 自动间隔"},
-      {MenuAction::PAGE_TURN_MODE, "翻页 · 自动方式"},
-      {MenuAction::ROTATE_SCREEN, "翻页 · 阅读方向"},
+  const std::vector<MenuItem> moreRootItems = {
+      {MenuAction::READER_SETTINGS, "排版与字体", InternalAction::OPEN_MORE_TYPOGRAPHY},
+      {MenuAction::AUTO_PAGE_TURN, "翻页与自动", InternalAction::OPEN_MORE_TURNING},
+      // Keep bookmark management one tap away; it is content, not a device setting.
+      {MenuAction::BOOKMARK_MANAGER, "书签管理"},
+      {MenuAction::TOGGLE_ANTI_ALIAS, "显示", InternalAction::OPEN_MORE_DISPLAY},
+      {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "操作控制", InternalAction::OPEN_MORE_CONTROL},
+      {MenuAction::DELETE_CACHE, "数据与缓存", InternalAction::OPEN_MORE_DATA},
+  };
+
+  const std::vector<MenuItem> typographyMenuItems = {
+      {MenuAction::SELECT_EXTERNAL_FONT, "全部字体"},
+      {MenuAction::READER_SETTINGS, "排版与页面"},
+  };
+
+  const std::vector<MenuItem> turningMenuItems = {
+      {MenuAction::ROTATE_SCREEN, "阅读方向"},
+      {MenuAction::AUTO_PAGE_TURN, "自动翻页"},
+      {MenuAction::PAGE_TURN_INTERVAL, "自动间隔"},
+      {MenuAction::PAGE_TURN_MODE, "自动方式"},
+  };
+
+  const std::vector<MenuItem> displayMenuItems = {
+      {MenuAction::TOGGLE_ANTI_ALIAS, "抗锯齿"},
+      {MenuAction::TOGGLE_DARK_MODE, "暗黑模式"},
+  };
+
+  const std::vector<MenuItem> controlMenuItems = {
+      {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "全局下一页"},
+      {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "长按确认键"},
 #ifdef CROSSPOINT_X3
-      {MenuAction::TILT_PAGE_TURN, "翻页 · 晃动翻页"},
-      {MenuAction::TILT_PAGE_TURN_SETTINGS, "翻页 · 晃动设置"},
+      {MenuAction::TILT_PAGE_TURN, "晃动翻页"},
+      {MenuAction::TILT_PAGE_TURN_SETTINGS, "晃动设置"},
 #endif
-      {MenuAction::TOGGLE_ANTI_ALIAS, "显示 · 抗锯齿"},
-      {MenuAction::TOGGLE_DARK_MODE, "显示 · 暗黑模式"},
-      {MenuAction::SELECT_EXTERNAL_FONT, "显示 · 字体选择"},
-      {MenuAction::READER_SETTINGS, "显示 · 高级排版"},
-      {MenuAction::BOOKMARK_MANAGER, "书签 · 管理书签"},
-      {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "控制 · 全局下一页"},
-      {MenuAction::SYNC, "同步 · KOReader"},
-      {MenuAction::SYNCY, "同步 · 开源阅读"},
-      {MenuAction::DELETE_CACHE, "清理 · 缓存"},
-      {MenuAction::LONG_PRESS_CONFIRM_MAPPING, "控制 · 长按确认键"},
+  };
+
+  std::vector<MenuItem> dataMenuItems = {
+      {MenuAction::SYNC, "KOReader 同步"},
+      {MenuAction::SYNCY, "开源阅读同步"},
+      {MenuAction::DELETE_CACHE, "清理当前书缓存"},
   };
 
   MenuLayer menuLayer_ = MenuLayer::QUICK;
+  MoreSection moreSection_ = MoreSection::ROOT;
   int selectedIndex = 0;
   bool updateRequired = false;
   bool readerStyleDirty_ = false;
@@ -190,7 +225,16 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
 
   const std::vector<MenuItem>& activeMenuItems() const {
     if (menuLayer_ == MenuLayer::STYLE) return styleMenuItems;
-    return menuLayer_ == MenuLayer::QUICK ? quickMenuItems : moreMenuItems;
+    if (menuLayer_ == MenuLayer::QUICK) return quickMenuItems;
+    switch (moreSection_) {
+      case MoreSection::TYPOGRAPHY: return typographyMenuItems;
+      case MoreSection::TURNING: return turningMenuItems;
+      case MoreSection::APPEARANCE: return displayMenuItems;
+      case MoreSection::CONTROL: return controlMenuItems;
+      case MoreSection::DATA: return dataMenuItems;
+      case MoreSection::ROOT:
+      default: return moreRootItems;
+    }
   }
 
   const char* getExternalFontName() const {
@@ -214,4 +258,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   void closeToReader();
   void prepareQuickFontFamilies();
   void applyQuickFontChoice(int slot);
+  void showMoreRoot();
+  const char* moreSectionKey() const;
+  const char* moreSectionTitle() const;
 };

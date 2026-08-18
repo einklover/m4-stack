@@ -132,6 +132,7 @@ void EpubReaderMenuActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex = xSemaphoreCreateMutex();
   menuLayer_ = initialLayer_;
+  moreSection_ = MoreSection::ROOT;
   selectedIndex = 0;
   readerStyleDirty_ = false;
   readerFontDirty_ = false;
@@ -144,11 +145,11 @@ void EpubReaderMenuActivity::onEnter() {
   }
 
   if (auto* host = getParentActivity(); host && !host->readerMenuSyncSupported()) {
-    moreMenuItems.erase(
-        std::remove_if(moreMenuItems.begin(), moreMenuItems.end(), [](const MenuItem& item) {
+    dataMenuItems.erase(
+        std::remove_if(dataMenuItems.begin(), dataMenuItems.end(), [](const MenuItem& item) {
           return item.action == MenuAction::SYNC || item.action == MenuAction::SYNCY;
         }),
-        moreMenuItems.end());
+        dataMenuItems.end());
   }
 
   updateRequired = true;
@@ -187,7 +188,7 @@ void EpubReaderMenuActivity::displayTaskLoop() {
 
 void EpubReaderMenuActivity::prepareQuickFontFamilies() {
   quickFontFamilies_.clear();
-  const auto& available = FontManager::getInstance().getAvailableTtfFamilies();
+  const auto& available = FontManager::getInstance().getAvailableFamilies();
   const std::string current = SETTINGS.customFontFamily;
 
   if (!current.empty() && std::find(available.begin(), available.end(), current) != available.end()) {
@@ -241,6 +242,23 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
   }
   if (action == InternalAction::OPEN_MORE) {
     menuLayer_ = MenuLayer::MORE;
+    moreSection_ = MoreSection::ROOT;
+    selectedIndex = 0;
+    updateRequired = true;
+    return;
+  }
+
+  if (action == InternalAction::OPEN_MORE_TYPOGRAPHY ||
+      action == InternalAction::OPEN_MORE_TURNING ||
+      action == InternalAction::OPEN_MORE_DISPLAY ||
+      action == InternalAction::OPEN_MORE_CONTROL ||
+      action == InternalAction::OPEN_MORE_DATA) {
+    menuLayer_ = MenuLayer::MORE;
+    if (action == InternalAction::OPEN_MORE_TYPOGRAPHY) moreSection_ = MoreSection::TYPOGRAPHY;
+    else if (action == InternalAction::OPEN_MORE_TURNING) moreSection_ = MoreSection::TURNING;
+    else if (action == InternalAction::OPEN_MORE_DISPLAY) moreSection_ = MoreSection::APPEARANCE;
+    else if (action == InternalAction::OPEN_MORE_CONTROL) moreSection_ = MoreSection::CONTROL;
+    else moreSection_ = MoreSection::DATA;
     selectedIndex = 0;
     updateRequired = true;
     return;
@@ -326,6 +344,20 @@ std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
       return matchesLayout(kStandardLayout) ? "当前" : "1.0倍";
     case InternalAction::LAYOUT_RELAXED:
       return matchesLayout(kRelaxedLayout) ? "当前" : "1.2倍";
+    case InternalAction::OPEN_MORE_TYPOGRAPHY:
+      return "字体 · 段落 · 页面";
+    case InternalAction::OPEN_MORE_TURNING:
+      return SETTINGS.autoPageTurnEnabled ? "自动开启" : "方向 · 自动";
+    case InternalAction::OPEN_MORE_DISPLAY:
+      return SETTINGS.textAntiAliasing ? "抗锯齿开" : "抗锯齿关";
+    case InternalAction::OPEN_MORE_CONTROL:
+      return SETTINGS.globalNextPageModeEnabled ? "全局下一页开" : "按键 · 快捷操作";
+    case InternalAction::OPEN_MORE_DATA: {
+      const bool hasSync = std::any_of(dataMenuItems.begin(), dataMenuItems.end(), [](const MenuItem& item) {
+        return item.action == MenuAction::SYNC || item.action == MenuAction::SYNCY;
+      });
+      return hasSync ? "同步 · 缓存" : "缓存";
+    }
     case InternalAction::OPEN_STYLE:
     case InternalAction::OPEN_MORE:
       return ">";
@@ -351,6 +383,36 @@ void EpubReaderMenuActivity::notifyParentStyleChanged() {
   if (auto* host = getParentActivity()) host->onReaderMenuStyleChanged();
 }
 
+void EpubReaderMenuActivity::showMoreRoot() {
+  moreSection_ = MoreSection::ROOT;
+  selectedIndex = 0;
+  updateRequired = true;
+}
+
+const char* EpubReaderMenuActivity::moreSectionKey() const {
+  switch (moreSection_) {
+    case MoreSection::TYPOGRAPHY: return "typography";
+    case MoreSection::TURNING: return "turning";
+    case MoreSection::APPEARANCE: return "display";
+    case MoreSection::CONTROL: return "control";
+    case MoreSection::DATA: return "data";
+    case MoreSection::ROOT:
+    default: return "root";
+  }
+}
+
+const char* EpubReaderMenuActivity::moreSectionTitle() const {
+  switch (moreSection_) {
+    case MoreSection::TYPOGRAPHY: return "排版与字体";
+    case MoreSection::TURNING: return "翻页与自动";
+    case MoreSection::APPEARANCE: return "显示";
+    case MoreSection::CONTROL: return "操作控制";
+    case MoreSection::DATA: return "数据与缓存";
+    case MoreSection::ROOT:
+    default: return "更多";
+  }
+}
+
 void EpubReaderMenuActivity::closeToReader() {
   onBack(pendingOrientation);
   notifyParentStyleChanged();
@@ -367,7 +429,11 @@ void EpubReaderMenuActivity::loop() {
 
   if (mappedInput.hasTouch()) {
     if (mappedInput.wasBackGesture()) {
-      closeToReader();
+      if (menuLayer_ == MenuLayer::MORE && moreSection_ != MoreSection::ROOT) {
+        showMoreRoot();
+      } else {
+        closeToReader();
+      }
       return;
     }
 
@@ -661,7 +727,11 @@ void EpubReaderMenuActivity::loop() {
     if (selectedAction != MenuAction::ADD_BOOKMARK) notifyParentStyleChanged();
     return;
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    closeToReader();
+    if (menuLayer_ == MenuLayer::MORE && moreSection_ != MoreSection::ROOT) {
+      showMoreRoot();
+    } else {
+      closeToReader();
+    }
     return;
   }
 }
@@ -848,7 +918,9 @@ void EpubReaderMenuActivity::renderScreen() {
   const int contentWidth = pageWidth - hintGutterWidth;
   const int hintGutterHeight = isPortraitInverted ? 50 : 0;
 
-  const std::string headerTitle = title + " · 更多";
+  const std::string headerTitle = moreSection_ == MoreSection::ROOT
+                                      ? title + " · 更多"
+                                      : std::string(moreSectionTitle());
   const std::string truncTitle =
       M4UiText::truncated(renderer, UI_12_FONT_ID, headerTitle.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
   GUI.drawHeader(renderer, Rect{contentX, hintGutterHeight, contentWidth, metrics.headerHeight}, truncTitle.c_str());
@@ -898,7 +970,9 @@ void EpubReaderMenuActivity::renderScreen() {
         return ">";
       });
 
-  const auto labels = mappedInput.mapLabels("« 阅读", "选择", "向上", "向下");
+  const auto labels = mappedInput.mapLabels(
+      menuLayer_ == MenuLayer::MORE && moreSection_ != MoreSection::ROOT ? "« 更多" : "« 阅读",
+      "选择", "向上", "向下");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   if (forceHalfRefresh_) {

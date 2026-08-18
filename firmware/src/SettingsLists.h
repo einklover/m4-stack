@@ -125,6 +125,14 @@ inline std::vector<SettingInfo> getSettingsList() {
                       {L(Str::kValCompact), L(Str::kValStandard)},
                       "punctWidth", "Reader"),
     SettingInfo::Toggle(L(Str::kLandscapeDualPage), &CrossPointSettings::landscapeDualPageEnabled, "landscapeDualPageEnabled", "Reader"),
+#ifdef CROSSPOINT_MURPHY_M4
+    SettingInfo::Toggle(L(Str::kPageTurnAnimation), &CrossPointSettings::pageTurnAnimationEnabled,
+                        "pageTurnAnimationEnabled", "Reader"),
+    SettingInfo::Enum(L(Str::kPageTurnAnimDir), &CrossPointSettings::pageTurnAnimationDir,
+                      {L(Str::kPageTurnDirR2L), L(Str::kPageTurnDirL2R), L(Str::kPageTurnDirB2T),
+                       L(Str::kPageTurnDirT2B)},
+                      "pageTurnAnimationDir", "Reader"),
+#endif
 
       // --- Controls ---
       SettingInfo::Enum(L(Str::kSideButtonSettings), &CrossPointSettings::sideButtonLayout,
@@ -198,12 +206,12 @@ inline std::vector<SettingInfo> getSettingsList() {
                         "sleepTimeout", "System"),
 
 #ifdef CROSSPOINT_MURPHY_M4
-      // Page-turn animation (SSD1677 multipass wipe).
+      // System UI wipe (Home / activity entry). Reader page-turn lives in Reader.
       // CRITICAL: pageTurnAnimationFrameRate stores the raw LUT byte (0x22/0x44/0x88),
       // NOT an enum index. Using SettingInfo::Enum with that field OOBs on render
       // (default 0x88 → enumValues[136] → crash when opening System). Map via DynamicEnum.
-      SettingInfo::Toggle(L(Str::kPageTurnAnimation), &CrossPointSettings::pageTurnAnimationEnabled,
-                          "pageTurnAnimationEnabled", "System"),
+      SettingInfo::Toggle(L(Str::kSystemAnimation), &CrossPointSettings::systemAnimationEnabled,
+                          "systemAnimationEnabled", "System"),
       SettingInfo::Value(L(Str::kPageTurnAnimSteps), &CrossPointSettings::pageTurnAnimationSteps, 2, 64, 1,
                          "pageTurnAnimationSteps", "System"),
       // Window width in step units.
@@ -231,11 +239,6 @@ inline std::vector<SettingInfo> getSettingsList() {
             }
           },
           "pageTurnAnimationFrameRate", "System"),
-      // Dir is already a 0..3 index — plain Enum is safe.
-      SettingInfo::Enum(L(Str::kPageTurnAnimDir), &CrossPointSettings::pageTurnAnimationDir,
-                        {L(Str::kPageTurnDirR2L), L(Str::kPageTurnDirL2R), L(Str::kPageTurnDirB2T),
-                         L(Str::kPageTurnDirT2B)},
-                        "pageTurnAnimationDir", "System"),
 #endif
 
       // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---

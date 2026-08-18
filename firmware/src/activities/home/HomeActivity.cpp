@@ -776,7 +776,7 @@ void HomeActivity::render() {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   bool animated = false;
-  if (animateHomeEntry && SETTINGS.pageTurnAnimationEnabled != 0 && oldFrame && renderer.getFrameBuffer()) {
+  if (animateHomeEntry && SETTINGS.systemAnimationEnabled != 0 && oldFrame && renderer.getFrameBuffer()) {
     extern HalDisplay display;
     M4WaveformLab::setDisplay(&display);
     uint8_t lut[M4WaveformLab::kLutBytes] = {};

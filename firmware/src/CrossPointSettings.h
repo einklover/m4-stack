@@ -285,8 +285,12 @@ class CrossPointSettings {
   // 关机前全刷：1=每次关机前清屏全刷，0=直接关机不清屏
   uint8_t sleepBeforeFullRefresh = 1;
 
-  // --- 翻页动画（PageTurnAnimation）---
-  // 总开关：1=开启翻页动画，0=关闭（默认关闭，传统瞬时翻页）
+  // --- 系统动画（Home / activity 转场）---
+  // 1=开启系统界面擦入动画，0=关闭。与阅读器翻页动画独立。
+  uint8_t systemAnimationEnabled = 0;
+
+  // --- 翻页动画（阅读器 PageTurnAnimation）---
+  // 阅读器开关：1=开启翻页动画，0=关闭（默认关闭，传统瞬时翻页）
   uint8_t pageTurnAnimationEnabled = 0;
   // 动画步数（2..64，默认 9；= 刷新次数）
   uint8_t pageTurnAnimationSteps = 9;
