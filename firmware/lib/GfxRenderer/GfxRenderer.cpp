@@ -836,6 +836,7 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
     free(oldFrame);
     if (played) {
       (void)const_cast<GfxRenderer*>(this)->storeLastShown();
+      m4BrowserBridgeInvalidatePhysicalBaseline();
       return;
     }
   } else {
@@ -844,6 +845,9 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
 #endif
 
   display.displayBuffer(refreshMode, fadingFix);
+#ifdef CROSSPOINT_MURPHY_M4
+  m4BrowserBridgeInvalidatePhysicalBaseline();
+#endif
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,

@@ -538,7 +538,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     char bindSafe[16] = {};
     copyJsonSafe(s.peer, peerSafe, sizeof(peerSafe));
     copyJsonSafe(s.bindIp, bindSafe, sizeof(bindSafe));
-    char out[1600];
+    char out[1728];
     snprintf(out, sizeof(out),
              "{\"op\":\"m4b3_status\",\"listening\":%s,\"connected\":%s,\"hello\":%s,"
              "\"peer\":\"%s\",\"bind\":\"%s\",\"port\":48624,"
@@ -552,7 +552,8 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"present_err\":%u,\"map_err\":%u,\"panel_src_id\":%ld,\"panel_src_crc\":%u,"
              "\"panel_crc\":%u,\"panel_err\":%u,\"panel_age_ms\":%u,"
              "\"panel_corners\":[%u,%u,%u,%u],"
-             "\"panel_trusted\":%s,\"full_ok\":%u,\"partial_ok\":%u,\"last_reason\":%u,"
+             "\"panel_trusted\":%s,\"panel_ever\":%s,\"panel_epoch\":%u,"
+             "\"full_ok\":%u,\"partial_ok\":%u,\"last_reason\":%u,"
              "\"touch_capture\":%s,\"touch_active\":%s,\"touch_queue\":%u,"
              "\"touch_down\":%u,\"touch_move\":%u,\"touch_up\":%u,\"touch_cancel\":%u,"
              "\"touch_coal\":%u,\"touch_drop_move\":%u,\"touch_rej\":%u,\"touch_ovf\":%u,"
@@ -569,7 +570,8 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              static_cast<unsigned>(s.panelCrc), s.panelLastErr, s.panelAgeMs,
              static_cast<unsigned>(s.panelCorner[0]), static_cast<unsigned>(s.panelCorner[1]),
              static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]),
-             s.panelTrusted ? "true" : "false", s.fullOk, s.partialOk, s.lastPolicyReason,
+             s.panelTrusted ? "true" : "false", s.panelEverPresented ? "true" : "false", s.panelEpoch,
+             s.fullOk, s.partialOk, s.lastPolicyReason,
              s.touchCapture ? "true" : "false", s.touchActive ? "true" : "false",
              static_cast<unsigned>(s.touchQueue), s.touchDown, s.touchMove, s.touchUp, s.touchCancel,
              s.touchCoalesced, s.touchDroppedMove, s.touchRejected, s.touchOverflow, s.touchTxErr,
@@ -583,13 +585,13 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
   if (strcmp(op, "m4b3_panel") == 0) {
     M4B3Tcp::Snapshot s;
     M4B3Tcp::snapshot(s);
-    char out[980];
+    char out[1088];
     snprintf(out, sizeof(out),
              "{\"op\":\"m4b3_panel\",\"owner\":%u,\"busy\":%s,\"pending\":%s,"
              "\"req\":%u,\"ok\":%u,\"coal\":%u,\"drop\":%u,\"err\":%u,\"map_err\":%u,"
              "\"src_id\":%ld,\"src_crc\":%u,\"panel_crc\":%u,\"last_err\":%u,\"age_ms\":%u,"
              "\"accepted_id\":%ld,\"accepted_crc\":%u,\"corners\":[%u,%u,%u,%u],"
-             "\"trusted\":%s,\"full_req\":%u,\"full_ok\":%u,\"full_err\":%u,"
+             "\"trusted\":%s,\"ever\":%s,\"epoch\":%u,\"full_req\":%u,\"full_ok\":%u,\"full_err\":%u,"
              "\"partial_req\":%u,\"partial_ok\":%u,\"partial_err\":%u,\"no_change\":%u,"
              "\"n\":%u,\"cum\":%u,\"dirty\":%u,\"area\":%u,\"rects\":%u,\"reason\":%u,"
              "\"full_ms\":%u,\"part_ms\":%u,"
@@ -601,7 +603,8 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              static_cast<long>(s.acceptedFrameId), static_cast<unsigned>(s.acceptedCrc),
              static_cast<unsigned>(s.panelCorner[0]), static_cast<unsigned>(s.panelCorner[1]),
              static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]),
-             s.panelTrusted ? "true" : "false", s.fullReq, s.fullOk, s.fullErr, s.partialReq, s.partialOk,
+             s.panelTrusted ? "true" : "false", s.panelEverPresented ? "true" : "false", s.panelEpoch,
+             s.fullReq, s.fullOk, s.fullErr, s.partialReq, s.partialOk,
              s.partialErr, s.noChange, s.partialsSinceFull, s.cumulativePartialPixels, s.lastDirtyPixels,
              s.lastDirtyArea, static_cast<unsigned>(s.lastRectCount), s.lastPolicyReason, s.lastFullMs,
              s.lastPartialMs, s.lastWin[0][0], s.lastWin[0][1], s.lastWin[0][2], s.lastWin[0][3],

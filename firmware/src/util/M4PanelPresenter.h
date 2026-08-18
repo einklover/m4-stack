@@ -87,6 +87,7 @@ struct State {
   uint32_t lastCompleteMs = 0;
   uint32_t lastError = 0;
   uint32_t minIntervalMs = kMinIntervalMs;
+  uint32_t baselineEpoch = 0;
 };
 
 class Scheduler {
@@ -105,7 +106,25 @@ class Scheduler {
     st_.everPresented = false;
     st_.partialsSinceFull = 0;
     st_.cumulativePartialPixels = 0;
+    st_.baselineEpoch++;
     return true;
+  }
+
+  // lastPresented may stay in RAM, but it is no longer known to match glass.
+  // Next non-empty take decides ForcedFullRecovery (everPresented stays true).
+  void invalidatePhysicalBaseline() {
+    st_.baselineTrusted = false;
+    st_.baselineEpoch++;
+  }
+
+  // Panel init / boot / hardware re-init: previous pixels are unknowable.
+  // Next take decides FirstBaseline even if lastPresented still matches pending.
+  void notePanelReinit() {
+    st_.baselineTrusted = false;
+    st_.everPresented = false;
+    st_.partialsSinceFull = 0;
+    st_.cumulativePartialPixels = 0;
+    st_.baselineEpoch++;
   }
 
   bool release() {
@@ -262,6 +281,7 @@ class Scheduler {
     st_.everPresented = false;
     st_.partialsSinceFull = 0;
     st_.cumulativePartialPixels = 0;
+    st_.baselineEpoch++;
   }
 
   State st_{};

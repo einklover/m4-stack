@@ -18,6 +18,8 @@ struct Snapshot {
   bool busy = false;
   bool pending = false;
   bool baselineTrusted = false;
+  bool everPresented = false;
+  uint32_t baselineEpoch = 0;
   uint32_t requested = 0;
   uint32_t completed = 0;
   uint32_t coalesced = 0;
@@ -53,6 +55,8 @@ struct Snapshot {
 bool begin();
 void offerAccepted(const uint8_t* logical, size_t logicalLen, int32_t frameId, uint32_t sourceCrc);
 void noteDisconnect();
+void invalidatePhysicalBaseline();
+void notePanelReinit();
 void tick(HalDisplay& display, uint32_t nowMs);
 bool browserOwnsDisplay();
 void snapshot(Snapshot& out, uint32_t nowMs = 0);

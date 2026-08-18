@@ -126,6 +126,8 @@ void fillSnapshot(Snapshot& s) {
   s.panelCorner[2] = panel.corner[2];
   s.panelCorner[3] = panel.corner[3];
   s.panelTrusted = panel.baselineTrusted;
+  s.panelEverPresented = panel.everPresented;
+  s.panelEpoch = panel.baselineEpoch;
   s.fullReq = panel.fullReq;
   s.fullOk = panel.fullOk;
   s.fullErr = panel.fullErr;

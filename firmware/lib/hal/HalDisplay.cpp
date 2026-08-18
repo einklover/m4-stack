@@ -1,6 +1,10 @@
 #include <HalDisplay.h>
 #include <HalGPIO.h>
 
+#ifdef CROSSPOINT_MURPHY_M4
+#include "../../src/util/M4DisplayOwner.h"
+#endif
+
 #ifdef HALDISPLAY_QEMU_FRAMEBUFFER
 #include <esp_heap_caps.h>
 
@@ -68,6 +72,9 @@ void HalDisplay::begin() {
                 static_cast<unsigned long>(BUFFER_SIZE));
 #ifndef HALDISPLAY_QEMU_FRAMEBUFFER
   einkDisplay.begin();
+#endif
+#ifdef CROSSPOINT_MURPHY_M4
+  m4BrowserBridgeNotePanelReinit();
 #endif
   if (getFrameBuffer() == nullptr) {
     Serial.printf("[%lu] [M4-DISP] ERROR: framebuffer allocation failed\n", millis());

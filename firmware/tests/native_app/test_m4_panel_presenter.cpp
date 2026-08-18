@@ -231,6 +231,118 @@ int main() {
     assert(M4PanelMapper::isBlack(mapped.data(), M4PanelMapper::kPhysicalStride, px, py));
   }
 
+  // Lifecycle A–F: lastPresented is trusted only after a successful physical
+  // present and must be invalidated when glass can have changed elsewhere.
+  {
+    M4PanelDirty::Plan identical{};
+    auto takeAndDecide = [](M4PanelPresenter::Scheduler& s, const M4PanelDirty::Plan& plan, uint32_t now) {
+      assert(s.take(now) == M4PanelPresenter::TakeStatus::Ready);
+      const auto d = s.decide(plan);
+      s.notePolicy(d.mode, d.reason, plan.changedPixels, plan.windowArea, plan.windowCount);
+      return d;
+    };
+    auto presentFull = [&](M4PanelPresenter::Scheduler& s, uint32_t now, int32_t id, uint32_t crc,
+                           uint32_t panelCrc, bool ok) {
+      assert(s.offer(id, crc, now) == M4PanelPresenter::OfferStatus::Scheduled);
+      const auto d = takeAndDecide(s, M4PanelDirty::Plan{}, now);
+      s.complete(ok, panelCrc, now + 5, ok ? 0 : static_cast<uint32_t>(M4PanelPresenter::Error::DisplayFailed),
+                 d.mode, 5, 0, 0, 0, d.reason);
+      return d;
+    };
+
+    // A. FULL succeeds → identical frame NoChange.
+    M4PanelPresenter::Scheduler s;
+    s.setMinIntervalMs(0);
+    assert(s.acquire(M4PanelPresenter::Owner::BrowserBridge));
+    auto d = presentFull(s, 0, 1, 0x89325E27u, 0xE4147346u, true);
+    assert(d.mode == M4PanelDirty::Mode::Full);
+    assert(d.reason == M4PanelDirty::Reason::FirstBaseline);
+    assert(s.state().baselineTrusted);
+    assert(s.state().everPresented);
+    assert(s.state().fullOk == 1);
+    assert(s.offer(1, 0x89325E27u, 20) == M4PanelPresenter::OfferStatus::Scheduled);
+    d = takeAndDecide(s, identical, 20);
+    assert(d.mode == M4PanelDirty::Mode::Skip);
+    assert(d.reason == M4PanelDirty::Reason::NoChange);
+    s.complete(true, 0xE4147346u, 25, 0, d.mode, 0, 0, 0, 0, d.reason);
+    assert(s.state().noChange == 1);
+    assert(s.state().fullOk == 1);
+    const uint32_t epochAfterA = s.state().baselineEpoch;
+
+    // B. External/non-Bridge mutation → same identical frame MUST FULL, not NoChange.
+    s.invalidatePhysicalBaseline();
+    assert(!s.state().baselineTrusted);
+    assert(s.state().everPresented);
+    assert(s.state().baselineEpoch > epochAfterA);
+    assert(s.offer(1, 0x89325E27u, 40) == M4PanelPresenter::OfferStatus::Scheduled);
+    d = takeAndDecide(s, identical, 40);
+    assert(d.mode == M4PanelDirty::Mode::Full);
+    assert(d.reason == M4PanelDirty::Reason::ForcedFullRecovery);
+    s.complete(true, 0xE4147346u, 50, 0, d.mode, 8, 0, 0, 0, d.reason);
+    assert(s.state().baselineTrusted);
+    assert(s.state().fullOk == 2);
+
+    // E. After that recovery FULL, next identical frame is NoChange again.
+    assert(s.offer(1, 0x89325E27u, 60) == M4PanelPresenter::OfferStatus::Scheduled);
+    d = takeAndDecide(s, identical, 60);
+    assert(d.mode == M4PanelDirty::Mode::Skip);
+    assert(d.reason == M4PanelDirty::Reason::NoChange);
+    s.complete(true, 0xE4147346u, 65, 0, d.mode, 0, 0, 0, 0, d.reason);
+    assert(s.state().noChange == 2);
+
+    // C. owner release → UI write → reacquire → identical frame FirstBaseline FULL.
+    assert(s.release());
+    assert(!s.state().baselineTrusted);
+    assert(!s.state().everPresented);
+    s.invalidatePhysicalBaseline();  // GfxRenderer UI write
+    assert(s.acquire(M4PanelPresenter::Owner::BrowserBridge));
+    d = presentFull(s, 80, 1, 0x89325E27u, 0xE4147346u, true);
+    assert(d.mode == M4PanelDirty::Mode::Full);
+    assert(d.reason == M4PanelDirty::Reason::FirstBaseline);
+    assert(s.state().fullOk == 3);
+
+    // D. Simulated boot/panel re-init → same frame FULL (FirstBaseline).
+    s.notePanelReinit();
+    assert(!s.state().baselineTrusted);
+    assert(!s.state().everPresented);
+    d = presentFull(s, 100, 1, 0x89325E27u, 0xE4147346u, true);
+    assert(d.mode == M4PanelDirty::Mode::Full);
+    assert(d.reason == M4PanelDirty::Reason::FirstBaseline);
+    assert(s.state().fullOk == 4);
+    assert(s.state().baselineTrusted);
+
+    // F. Failed recovery FULL keeps baseline untrusted and retries FULL.
+    s.invalidatePhysicalBaseline();
+    assert(s.offer(1, 0x89325E27u, 120) == M4PanelPresenter::OfferStatus::Scheduled);
+    d = takeAndDecide(s, identical, 120);
+    assert(d.mode == M4PanelDirty::Mode::Full);
+    assert(d.reason == M4PanelDirty::Reason::ForcedFullRecovery);
+    const uint32_t fullOkBeforeFail = s.state().fullOk;
+    const uint32_t panelCrcBeforeFail = s.state().lastPanelCrc;
+    s.complete(false, 0, 130, static_cast<uint32_t>(M4PanelPresenter::Error::DisplayFailed), d.mode, 4, 0, 0,
+               0, d.reason);
+    assert(!s.state().baselineTrusted);
+    assert(s.state().fullOk == fullOkBeforeFail);
+    assert(s.state().lastPanelCrc == panelCrcBeforeFail);
+    assert(s.state().pending);
+    d = takeAndDecide(s, identical, 140);
+    assert(d.mode == M4PanelDirty::Mode::Full);
+    assert(d.reason == M4PanelDirty::Reason::ForcedFullRecovery);
+    s.complete(true, 0xE4147346u, 150, 0, d.mode, 8, 0, 0, 0, d.reason);
+    assert(s.state().baselineTrusted);
+    assert(s.state().fullOk == fullOkBeforeFail + 1);
+
+    // Fast-reconnect analogue: disconnect invalidates without release, so the
+    // identical frame cannot stay on NoChange while owner is unchanged.
+    assert(s.browserOwns());
+    s.invalidatePhysicalBaseline();
+    assert(s.browserOwns());
+    assert(s.offer(1, 0x89325E27u, 160) == M4PanelPresenter::OfferStatus::Scheduled);
+    d = takeAndDecide(s, identical, 160);
+    assert(d.mode == M4PanelDirty::Mode::Full);
+    assert(d.reason == M4PanelDirty::Reason::ForcedFullRecovery);
+  }
+
   printf("test_m4_panel_presenter: PASS\n");
   return 0;
 }

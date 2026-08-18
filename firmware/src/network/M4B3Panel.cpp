@@ -19,6 +19,10 @@
 
 bool m4BrowserBridgeOwnsDisplay() { return M4B3Panel::browserOwnsDisplay(); }
 
+void m4BrowserBridgeInvalidatePhysicalBaseline() { M4B3Panel::invalidatePhysicalBaseline(); }
+
+void m4BrowserBridgeNotePanelReinit() { M4B3Panel::notePanelReinit(); }
+
 namespace M4B3Panel {
 namespace {
 
@@ -65,12 +69,13 @@ void logState(const char* why, uint32_t nowMs) {
   Snapshot s;
   snapshot(s, nowMs);
   Serial.printf(
-      "[%lu] [M4B3-PANEL] %s owner=%u busy=%d pend=%d trust=%d req=%u ok=%u coal=%u drop=%u "
+      "[%lu] [M4B3-PANEL] %s owner=%u busy=%d pend=%d trust=%d ever=%d epoch=%u req=%u ok=%u coal=%u drop=%u "
       "full=%u/%u/%u part=%u/%u/%u nochg=%u n=%u cum=%u dirty=%u area=%u rects=%u reason=%s "
       "full_ms=%u part_ms=%u src=%ld crc=0x%08x panel=0x%08x err=%u age=%u "
       "corners=%02x/%02x/%02x/%02x win=%u,%u %ux%u / %u,%u %ux%u heap=%u psram=%u\n",
       static_cast<unsigned long>(nowMs), why, static_cast<unsigned>(s.owner), s.busy ? 1 : 0,
-      s.pending ? 1 : 0, s.baselineTrusted ? 1 : 0, s.requested, s.completed, s.coalesced, s.dropped,
+      s.pending ? 1 : 0, s.baselineTrusted ? 1 : 0, s.everPresented ? 1 : 0, s.baselineEpoch, s.requested,
+      s.completed, s.coalesced, s.dropped,
       s.fullReq, s.fullOk, s.fullErr, s.partialReq, s.partialOk, s.partialErr, s.noChange,
       s.partialsSinceFull, s.cumulativePartialPixels, s.lastDirtyPixels, s.lastDirtyArea,
       static_cast<unsigned>(s.lastRectCount),
@@ -171,10 +176,39 @@ void offerAccepted(const uint8_t* logical, size_t logicalLen, int32_t frameId, u
 
 void noteDisconnect() {
   const bool was = gRt.connected.exchange(false, std::memory_order_relaxed);
-  if (was || gRt.sched.browserOwns()) {
-    Serial.printf("[%lu] [M4B3-PANEL] disconnect owner=%u busy=%d\n", millis(),
-                  static_cast<unsigned>(gRt.sched.state().owner), gRt.sched.state().busy ? 1 : 0);
+  uint32_t epoch = 0;
+  uint8_t owner = 0;
+  bool busy = false;
+  bool owned = false;
+  {
+    std::lock_guard<std::mutex> lock(gRt.mu);
+    owned = gRt.sched.browserOwns();
+    owner = static_cast<uint8_t>(gRt.sched.state().owner);
+    busy = gRt.sched.state().busy;
+    // TCP drop does not itself paint the glass, but the physical baseline is
+    // no longer guaranteed: Home/UI may take the panel before the next tick
+    // release, or a fast reconnect may keep owner and skip FirstBaseline.
+    if (was || owned || gRt.sched.state().baselineTrusted) {
+      gRt.sched.invalidatePhysicalBaseline();
+    }
+    epoch = gRt.sched.state().baselineEpoch;
   }
+  if (was || owned) {
+    Serial.printf("[%lu] [M4B3-PANEL] disconnect owner=%u busy=%d epoch=%u\n", millis(),
+                  static_cast<unsigned>(owner), busy ? 1 : 0, static_cast<unsigned>(epoch));
+  }
+}
+
+void invalidatePhysicalBaseline() {
+  if (!gRt.ready.load(std::memory_order_acquire)) return;
+  std::lock_guard<std::mutex> lock(gRt.mu);
+  gRt.sched.invalidatePhysicalBaseline();
+}
+
+void notePanelReinit() {
+  if (!gRt.ready.load(std::memory_order_acquire)) return;
+  std::lock_guard<std::mutex> lock(gRt.mu);
+  gRt.sched.notePanelReinit();
 }
 
 bool maybeReleaseLocked() {
@@ -325,6 +359,8 @@ void snapshot(Snapshot& out, uint32_t nowMs) {
   out.busy = st.busy;
   out.pending = st.pending;
   out.baselineTrusted = st.baselineTrusted;
+  out.everPresented = st.everPresented;
+  out.baselineEpoch = st.baselineEpoch;
   out.requested = st.requested;
   out.completed = st.completed;
   out.coalesced = st.coalesced;

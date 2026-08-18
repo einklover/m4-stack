@@ -53,6 +53,8 @@ struct Snapshot {
   uint32_t panelAgeMs = 0;
   uint8_t panelCorner[4] = {};
   bool panelTrusted = false;
+  bool panelEverPresented = false;
+  uint32_t panelEpoch = 0;
   uint32_t fullReq = 0;
   uint32_t fullOk = 0;
   uint32_t fullErr = 0;
