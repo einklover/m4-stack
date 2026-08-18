@@ -11,6 +11,17 @@
 #include <new>
 
 #include "apps/providers/M4Psram.h"
+#include "util/M4PanelMapper.h"
+
+// Compile the mapper into the production firmware without touching the
+// 480x800 transport framebuffer or the panel/waveform path.
+static_assert(M4PanelMapper::kLogicalWidth == M4B3::kWidth, "logical width");
+static_assert(M4PanelMapper::kLogicalHeight == M4B3::kHeight, "logical height");
+static_assert(M4PanelMapper::kLogicalStride == M4B3::kStride, "logical stride");
+static_assert(M4PanelMapper::kLogicalSize == M4B3::kKeyframeSize, "logical size");
+static_assert(M4PanelMapper::kPhysicalWidth == 800 && M4PanelMapper::kPhysicalHeight == 480,
+              "panel-native 800x480");
+static_assert(M4PanelMapper::kPhysicalSize == 48000u, "panel buffer 48,000 B");
 
 namespace M4B3Tcp {
 namespace {
