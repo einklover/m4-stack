@@ -1,7 +1,7 @@
 # E-ink Browser Bridge design
 
-Status: design proposal  
-Branch: `agent/eink-browser-bridge`  
+Status: M0–M4 implemented on device; #34 optical gate still OPEN; #39 host-only LAN discovery implemented, real-device validation deferred  
+Current implementation branch: `agent/eink-browser-bridge-discovery` @ `f0cfeb3caf7881c31904a3b8a253918854ac33eb`  
 Target: Murphy M4 + Android `m4-screen-bridge`
 
 ## 1. Goal
@@ -273,6 +273,18 @@ Android (`M4LanDiscovery` + `NsdM4Discovery`) classifies `m4b3_host` and selects
 5. **loopback** — explicit `loopback`/`local` bypasses discovery and stays on the in-process reference receiver.
 
 Discovery is lifecycle-bounded: one `NsdManager` listener, one in-flight resolve, queue/candidate cap 8, at most 3 discover restarts, 8 s search timeout. `VirtualBrowserSession.stop()` drops the listener, multicast lock, and engine. Status is exposed on the session snapshot (`src=`, `phase=`, `ep=`, retries/errors) without a UI redesign.
+
+### 6.1.2 Staged heads and deferred real-device proof
+
+Host-only implementation landed at `f0cfeb3` (`PASS_AUTOMATED_HOST`, `DEVICE_NOT_TOUCHED`). It is **not** real-device accepted.
+
+| Stage | Head | Meaning |
+|-------|------|---------|
+| #34 optical-flicker automated | `821acd8b71464032304b1d90e1ca27c29a7d8320` | Nearby HUD/glyph windows merge so sparse taps stay Partial. **OPEN** until a human confirms HUD/BTN_A updates no longer visibly FULL-flash. |
+| #38 host soak | `bd23f7317c132bde937abe7eb0ee2d11970d8af1` | Deterministic merge-boundary / ACK / presentBuf host tests. Device not touched. |
+| #39 discovery host | `f0cfeb3caf7881c31904a3b8a253918854ac33eb` | `_m4b3._tcp` advertise + Android DNS-SD selection. Device not touched. |
+
+Ancestry: `821acd8` is an ancestor of `bd23f73`, which is an ancestor of `f0cfeb3`. Morning resume order (optical inspect → only then discovery device-validate → else stay on preserved #34 glass) lives in `HANDOFF.md`. Do not install or flash discovery until #34 optical PASS. Firmware flashes stay APP1-only @ `0x6e0000`, hash-verified slot 1.
 
 Binary packet envelope proposal:
 
@@ -637,3 +649,17 @@ Implement M0 before any large firmware patch.
 The decisive technical risk is not TCP or M4 drawing; the repository already has those foundations. The decisive risk is whether an app-owned Android virtual display containing a real WebView reliably keeps rendering and producing `ImageReader` frames while the physical phone screen is off on the target phone.
 
 If M0 passes, proceed with the architecture above. If it fails due to a device/OEM WebView lifecycle restriction, keep the protocol and M4 design but change only the Android rendering backend.
+
+## 18. Display / presenter safety invariants (current line)
+
+Later Browser Bridge work, including LAN discovery, must not regress these. They are already implemented; discovery is control-plane only.
+
+- Frozen PSRAM `presentBuf`: Home must not blank an in-flight FULL. FULL uses `waveformLabBaseline(presentBuf)`; lastPresented is copied from presentBuf only on success.
+- Physical `lastPresented` baseline is invalidated on disconnect, UI write, panel reinit, and failed present. Uncertain baselines stay untrusted.
+- `FRAME_ACK` is independent of physical refresh. Session commits accepted CRC even if the presenter is busy or failed.
+- Dense / fragmented / recover / FirstBaseline / cadence FULL fallbacks remain. Do not force every frame Partial.
+- No waveform / LUT / voltage changes in this line of work.
+- No Accessibility / root / adb / global input as product behavior. Browser input is owned WebView injection via M4B3 TOUCH.
+- Discovery must not change M4B3 framing, ACK, display, or input. Firmware advertises `_m4b3._tcp` only while the STA listener has a valid IPv4 and never calls `MDNS.end()`.
+
+Morning resume (optical inspect of current glass first; discovery device-validate only after #34 optical PASS; otherwise stay on preserved #34 state) is in `HANDOFF.md`. Do not claim optical or real-device discovery acceptance from host tests.
