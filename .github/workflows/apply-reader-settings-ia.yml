@@ -1,0 +1,44 @@
+name: Apply Reader Settings IA
+
+on:
+  push:
+    branches:
+      - agent/reader-settings-ia
+    paths:
+      - tools/apply_reader_settings_ia.py
+      - .github/workflows/apply-reader-settings-ia.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/reader-settings-ia
+          fetch-depth: 0
+      - name: Apply focused reader settings refactor
+        run: python tools/apply_reader_settings_ia.py
+      - name: Validate patch shape
+        run: |
+          git diff --check
+          git status --short
+          git diff -- firmware/src/activities/reader/EpubReaderMenuActivity.h \
+            firmware/src/activities/reader/EpubReaderMenuActivity.cpp \
+            simulator/tests/reader_ui_e2e.py
+      - name: Commit generated source changes
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No source changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add firmware/src/activities/reader/EpubReaderMenuActivity.h \
+            firmware/src/activities/reader/EpubReaderMenuActivity.cpp \
+            simulator/tests/reader_ui_e2e.py
+          git commit -m "Reorganize reader More settings"
+          git push origin HEAD:agent/reader-settings-ia
