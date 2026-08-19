@@ -19,6 +19,7 @@ import com.murphy.m4screenbridge.MainActivity;
 import com.murphy.m4screenbridge.Prefs;
 import com.murphy.m4screenbridge.R;
 import com.murphy.m4screenbridge.ScreenBridgeService;
+import com.murphy.m4screenbridge.browser.session.BrowserConnectionState;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -201,6 +202,28 @@ public final class BrowserBridgeService extends Service {
         BrowserBridgeService s = instance;
         if (s == null || s.session == null) return "虚拟浏览器 M5：前台服务未启动";
         return "FGS：运行中 pid=" + Process.myPid() + "\n" + s.session.snapshot();
+    }
+
+    /** Compact status rendered inside the M4 VirtualDisplay. Empty means no overlay. */
+    static String bridgeOverlayStatus() {
+        BrowserBridgeService s = instance;
+        if (s == null || s.session == null || !s.session.isActive()) return "";
+        BrowserConnectionState.Snapshot state = s.session.connectionSnapshot();
+        switch (state.state) {
+            case DISCOVERING:
+                return "正在查找 M4…";
+            case CONNECTING:
+                return state.endpoint().isEmpty()
+                        ? "正在连接 M4…" : "正在连接 M4… " + state.endpoint();
+            case RECONNECTING:
+                return "M4 已断开，正在重连…";
+            case ERROR:
+                return state.error.isEmpty() ? "M4 连接失败" : "M4 连接失败：" + state.error;
+            case CONNECTED:
+            case DISABLED:
+            default:
+                return "";
+        }
     }
 
     @Override
