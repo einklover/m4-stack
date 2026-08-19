@@ -3,10 +3,16 @@ package com.murphy.m4screenbridge;
 import com.murphy.m4screenbridge.browser.shell.BrowserAddressResolver;
 import com.murphy.m4screenbridge.browser.shell.BrowserKeyboardState;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
+
 public final class BrowserShellLogicTest {
     public static void main(String[] args) {
         addressResolution();
         keyboardEditing();
+        keyboardTargetRouting();
         System.out.println("BrowserShellLogicTest PASS");
     }
 
@@ -50,6 +56,65 @@ public final class BrowserShellLogicTest {
         k.replace("A😀");
         k.backspace();
         eq("A", k.text());
+    }
+
+    private static void keyboardTargetRouting() {
+        try {
+            Class<?> routerClass = Class.forName(
+                    "com.murphy.m4screenbridge.browser.shell.BrowserKeyboardRouter");
+            Class<?> targetClass = Class.forName(
+                    "com.murphy.m4screenbridge.browser.shell.BrowserKeyboardRouter$Target");
+            Object router = routerClass.getConstructor().newInstance();
+            Method setTarget = routerClass.getMethod("setTarget", targetClass);
+            Method clearTarget = routerClass.getMethod("clearTarget");
+            Method commitText = routerClass.getMethod("commitText", String.class);
+            Method backspace = routerClass.getMethod("backspace");
+            Method submit = routerClass.getMethod("submit");
+
+            List<String> events = new ArrayList<>();
+            Object omnibox = recordingTarget(targetClass, events, "omnibox");
+            Object web = recordingTarget(targetClass, events, "web");
+
+            setTarget.invoke(router, omnibox);
+            yes((Boolean) commitText.invoke(router, "a"));
+            yes((Boolean) backspace.invoke(router));
+            yes((Boolean) submit.invoke(router));
+
+            setTarget.invoke(router, web);
+            yes((Boolean) commitText.invoke(router, "中"));
+            yes((Boolean) submit.invoke(router));
+
+            clearTarget.invoke(router);
+            no((Boolean) commitText.invoke(router, "ignored"));
+            no((Boolean) backspace.invoke(router));
+            no((Boolean) submit.invoke(router));
+
+            eq("omnibox:text:a,omnibox:backspace,omnibox:submit,web:text:中,web:submit",
+                    String.join(",", events));
+        } catch (ClassNotFoundException expectedRed) {
+            throw new AssertionError("shared keyboard target router is missing", expectedRed);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("shared keyboard target router API mismatch", e);
+        }
+    }
+
+    private static Object recordingTarget(Class<?> targetClass, List<String> events, String name) {
+        return Proxy.newProxyInstance(targetClass.getClassLoader(), new Class<?>[] {targetClass},
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "commitText":
+                            events.add(name + ":text:" + args[0]);
+                            return null;
+                        case "backspace":
+                            events.add(name + ":backspace");
+                            return null;
+                        case "submit":
+                            events.add(name + ":submit");
+                            return null;
+                        default:
+                            throw new AssertionError("unexpected target method " + method.getName());
+                    }
+                });
     }
 
     private static void yes(boolean value) {
