@@ -419,9 +419,9 @@ int main() {
     assert(!M4PanelDirty::plan(nullptr, a.data(), a.size(), p));
   }
 
-  // #34 boundary: nearby-window merge must not bypass CadenceCount / FirstBaseline /
-  // ForcedFullRecovery. A HUD-like coalesced plan is still SparsePartial only while
-  // the hygiene counters allow it.
+  // #34/#39 boundary: nearby-window merge must not bypass hygiene or mandatory
+  // FULLs. A HUD-like coalesced plan stays SparsePartial on count alone;
+  // coverage/churn still select Hygiene; FirstBaseline / recovery stay FULL.
   {
     auto prev = whitePhys();
     auto next = whitePhys();
@@ -434,17 +434,20 @@ int main() {
     Decision sparse = M4PanelDirty::decide(true, true, p, 0, 0);
     assert(sparse.mode == Mode::Partial);
     assert(sparse.reason == Reason::SparsePartial);
-    Decision cadN = M4PanelDirty::decide(true, true, p, M4PanelDirty::kMaxPartialsSinceFull, 0);
-    assert(cadN.mode == Mode::Full);
-    assert(cadN.reason == Reason::CadenceCount);
-    Decision cadNMinus = M4PanelDirty::decide(true, true, p, M4PanelDirty::kMaxPartialsSinceFull - 1, 0);
+    Decision cadN = M4PanelDirty::decide(true, true, p, M4PanelDirty::kHardSafetyPartials, 0, 0);
+    assert(cadN.mode == Mode::Partial);
+    assert(cadN.reason == Reason::SparsePartial);
+    Decision cadNMinus = M4PanelDirty::decide(true, true, p, M4PanelDirty::kHardSafetyPartials - 1, 0, 0);
     assert(cadNMinus.mode == Mode::Partial);
     assert(cadNMinus.reason == Reason::SparsePartial);
-    Decision cadA = M4PanelDirty::decide(true, true, p, 0,
-                                         M4PanelDirty::kMaxCumulativePartialPixels - p.changedPixels);
-    assert(cadA.mode == Mode::Full);
-    assert(cadA.reason == Reason::CadenceArea);
-    Decision first = M4PanelDirty::decide(false, false, p, M4PanelDirty::kMaxPartialsSinceFull, 0);
+    Decision cadCov = M4PanelDirty::decide(true, true, p, 0, 0, M4PanelDirty::kMaxHygieneCoveragePixels);
+    assert(cadCov.mode == Mode::Hygiene);
+    assert(cadCov.reason == Reason::CadenceArea);
+    Decision cadChurn = M4PanelDirty::decide(true, true, p, 0,
+                                             M4PanelDirty::kMaxHygieneChurnPixels - p.changedPixels, 0);
+    assert(cadChurn.mode == Mode::Hygiene);
+    assert(cadChurn.reason == Reason::CadenceCount);
+    Decision first = M4PanelDirty::decide(false, false, p, M4PanelDirty::kHardSafetyPartials, 0);
     assert(first.mode == Mode::Full);
     assert(first.reason == Reason::FirstBaseline);
     Decision rec = M4PanelDirty::decide(false, true, p, 0, 0);
