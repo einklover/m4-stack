@@ -10,14 +10,14 @@ import android.widget.TextView;
 /** Fixed-geometry, app-owned keyboard rendered inside the M4 browser Presentation. */
 public final class M4KeyboardView extends LinearLayout {
     public interface Listener {
-        void onTextChanged(String text);
-        void onSubmit(String text);
+        void onTextCommitted(String text);
+        void onBackspace();
+        void onSubmit();
         void onHideRequested();
     }
 
     private final BrowserKeyboardState state = new BrowserKeyboardState();
     private final Listener listener;
-    private boolean replaceOnNextTextKey;
 
     public M4KeyboardView(Context context, Listener listener) {
         super(context);
@@ -30,7 +30,6 @@ public final class M4KeyboardView extends LinearLayout {
 
     public void showForText(String initialText) {
         state.replace(initialText);
-        replaceOnNextTextKey = true;
         rebuild();
         setVisibility(View.VISIBLE);
         bringToFront();
@@ -38,7 +37,6 @@ public final class M4KeyboardView extends LinearLayout {
 
     public void hideKeyboard() {
         setVisibility(View.GONE);
-        replaceOnNextTextKey = false;
     }
 
     public boolean isShowing() {
@@ -79,7 +77,7 @@ public final class M4KeyboardView extends LinearLayout {
             rebuild();
         }), weightedKey(1.2f));
         row4.addView(key("Space", this::space), weightedKey(2.3f));
-        row4.addView(key("Go", () -> listener.onSubmit(state.text())), weightedKey(1.2f));
+        row4.addView(key("Go", listener::onSubmit), weightedKey(1.2f));
         row4.addView(key("Hide", listener::onHideRequested), weightedKey(1.3f));
         addView(row4, rowParams());
     }
@@ -101,7 +99,7 @@ public final class M4KeyboardView extends LinearLayout {
             rebuild();
         }), weightedKey(1.2f));
         row4.addView(key("Space", this::space), weightedKey(2.3f));
-        row4.addView(key("Go", () -> listener.onSubmit(state.text())), weightedKey(1.2f));
+        row4.addView(key("Go", listener::onSubmit), weightedKey(1.2f));
         row4.addView(key("Hide", listener::onHideRequested), weightedKey(1.3f));
         addView(row4, rowParams());
     }
@@ -120,32 +118,20 @@ public final class M4KeyboardView extends LinearLayout {
     }
 
     private void appendKey(String value) {
-        prepareForTextMutation();
+        String committed = labelForLetter(value);
         state.append(value);
-        listener.onTextChanged(state.text());
+        listener.onTextCommitted(committed);
         if (state.mode() == BrowserKeyboardState.Mode.LETTERS) rebuild();
     }
 
     private void space() {
-        prepareForTextMutation();
         state.space();
-        listener.onTextChanged(state.text());
+        listener.onTextCommitted(" ");
     }
 
     private void backspace() {
-        if (replaceOnNextTextKey) {
-            state.clear();
-            replaceOnNextTextKey = false;
-        } else {
-            state.backspace();
-        }
-        listener.onTextChanged(state.text());
-    }
-
-    private void prepareForTextMutation() {
-        if (!replaceOnNextTextKey) return;
-        state.clear();
-        replaceOnNextTextKey = false;
+        state.backspace();
+        listener.onBackspace();
     }
 
     private LinearLayout newRow() {
@@ -176,8 +162,7 @@ public final class M4KeyboardView extends LinearLayout {
         view.setTextSize(15);
         view.setGravity(Gravity.CENTER);
         view.setClickable(true);
-        // Keyboard keys must not steal focus from the omnibox. Keeping focus on the editor prevents
-        // page callbacks from overwriting in-progress text while the user taps the app-owned keys.
+        // Keyboard keys must not steal focus from whichever editor owns the current target.
         view.setFocusable(false);
         view.setOnClickListener(v -> action.run());
         return view;
