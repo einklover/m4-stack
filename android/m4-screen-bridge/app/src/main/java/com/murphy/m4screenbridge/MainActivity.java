@@ -52,7 +52,11 @@ public class MainActivity extends Activity {
         setContentView(buildView());
         load();
         ui.post(tick);
-        handleLabIntent(getIntent());
+        Intent launchIntent = getIntent();
+        handleLabIntent(launchIntent);
+        if (!isLabControlIntent(launchIntent)) {
+            BrowserBridgeService.resumeIfConfigured(this);
+        }
     }
 
     @Override
@@ -62,33 +66,37 @@ public class MainActivity extends Activity {
         handleLabIntent(intent);
     }
 
-    private void handleLabIntent(Intent intent) {
-        if (intent == null) return;
+    private static boolean isLabControlIntent(Intent intent) {
+        if (intent == null) return false;
         String action = intent.getAction();
-        if ("com.murphy.m4screenbridge.browser.SELF_TEST".equals(action)
+        return "com.murphy.m4screenbridge.browser.SELF_TEST".equals(action)
                 || "com.murphy.m4screenbridge.browser.LANDMARK".equals(action)
                 || "com.murphy.m4screenbridge.browser.INPUT_TEST".equals(action)
-                || "com.murphy.m4screenbridge.browser.STOP".equals(action)) {
-            if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)) {
-                m4HostEt.setText(intent.getStringExtra(BrowserBridgeService.EXTRA_HOST));
-            }
-            if (intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
-                m4PortEt.setText(String.valueOf(intent.getIntExtra(
-                        BrowserBridgeService.EXTRA_PORT, Prefs.DEF_M4B3_PORT)));
-            }
-            if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)
-                    || intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
-                saveM4Host();
-            }
-            if ("com.murphy.m4screenbridge.browser.STOP".equals(action)) {
-                BrowserBridgeService.stop(this);
-            } else if ("com.murphy.m4screenbridge.browser.LANDMARK".equals(action)) {
-                BrowserBridgeService.startLandmarkTest(this);
-            } else if ("com.murphy.m4screenbridge.browser.INPUT_TEST".equals(action)) {
-                BrowserBridgeService.startInputTest(this);
-            } else {
-                BrowserBridgeService.startJavaScriptSelfTest(this);
-            }
+                || "com.murphy.m4screenbridge.browser.STOP".equals(action);
+    }
+
+    private void handleLabIntent(Intent intent) {
+        if (!isLabControlIntent(intent)) return;
+        String action = intent.getAction();
+        if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)) {
+            m4HostEt.setText(intent.getStringExtra(BrowserBridgeService.EXTRA_HOST));
+        }
+        if (intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
+            m4PortEt.setText(String.valueOf(intent.getIntExtra(
+                    BrowserBridgeService.EXTRA_PORT, Prefs.DEF_M4B3_PORT)));
+        }
+        if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)
+                || intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
+            saveM4Host();
+        }
+        if ("com.murphy.m4screenbridge.browser.STOP".equals(action)) {
+            BrowserBridgeService.stop(this);
+        } else if ("com.murphy.m4screenbridge.browser.LANDMARK".equals(action)) {
+            BrowserBridgeService.startLandmarkTest(this);
+        } else if ("com.murphy.m4screenbridge.browser.INPUT_TEST".equals(action)) {
+            BrowserBridgeService.startInputTest(this);
+        } else {
+            BrowserBridgeService.startJavaScriptSelfTest(this);
         }
     }
 
@@ -353,7 +361,12 @@ public class MainActivity extends Activity {
         boolean cover = "cover".equals(sp.getString(Prefs.KEY_CROP, "fit"));
         coverRb.setChecked(cover);
         fitRb.setChecked(!cover);
-        m4HostEt.setText(sp.getString(Prefs.KEY_M4B3_HOST, ""));
+        String storedHost = sp.getString(Prefs.KEY_M4B3_HOST, "");
+        m4HostEt.setText(storedHost);
+        if (storedHost != null && !storedHost.trim().isEmpty()
+                && Prefs.m4b3HostRaw(sp).isEmpty()) {
+            m4HostEt.setError("无效手动主机；运行时将回退到 AUTO discovery");
+        }
         m4PortEt.setText(String.valueOf(sp.getInt(Prefs.KEY_M4B3_PORT, Prefs.DEF_M4B3_PORT)));
         String lastUrl = Prefs.browserLastUrl(sp);
         browserUrlEt.setText(lastUrl);
