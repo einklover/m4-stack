@@ -2,6 +2,8 @@ package com.murphy.m4screenbridge;
 
 import android.content.SharedPreferences;
 
+import com.murphy.m4screenbridge.browser.discovery.M4LanDiscovery;
+
 /** Tunables and Browser Bridge product state read from SharedPreferences with safe clamping. */
 public final class Prefs {
     public static final String KEY_THRESHOLD = "threshold";
@@ -40,18 +42,23 @@ public final class Prefs {
     }
 
     public static String m4b3Host(SharedPreferences sp) {
-        String host = sp.getString(KEY_M4B3_HOST, "");
-        if (host == null) return "";
-        host = host.trim();
-        if (host.isEmpty() || "loopback".equalsIgnoreCase(host) || "local".equalsIgnoreCase(host)) {
+        String host = m4b3HostRaw(sp);
+        if (host.isEmpty() || M4LanDiscovery.classify(host) == M4LanDiscovery.HostMode.LOOPBACK) {
             return "";
         }
         return host;
     }
 
+    /**
+     * Runtime host selection input. Invalid manual values fail soft to AUTO rather than leaving the
+     * product connection state stuck on a TCP endpoint that can never be selected by discovery.
+     */
     public static String m4b3HostRaw(SharedPreferences sp) {
         String host = sp.getString(KEY_M4B3_HOST, "");
-        return host == null ? "" : host.trim();
+        host = host == null ? "" : host.trim();
+        M4LanDiscovery.HostMode mode = M4LanDiscovery.classify(host);
+        if (mode == M4LanDiscovery.HostMode.MANUAL && !M4LanDiscovery.validHost(host)) return "";
+        return host;
     }
 
     public static int m4b3Port(SharedPreferences sp) {
