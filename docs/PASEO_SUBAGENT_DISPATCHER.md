@@ -64,6 +64,29 @@ Optional: `expected_head`, `timeout` (`60m` default, `180m` cap),
 The comment is a prompt, never a shell script. The workflow writes it to a
 file through an environment variable and never interpolates it into bash.
 
+## Durable knowledge handoff
+
+Every local-agent task must reuse and, when needed, extend the repository runbook:
+
+```text
+docs/PASEO_LOCAL_AGENT_KNOWLEDGE.md
+```
+
+Before debugging, the agent reads that file from the task branch. If the branch predates the file, it reads the authoritative copy from `origin/main`:
+
+```bash
+git show origin/main:docs/PASEO_LOCAL_AGENT_KNOWLEDGE.md
+```
+
+Every `[PASEO_RESULT v1]` must contain a `knowledge_delta` field/section:
+
+- `knowledge_delta: none` when the run learned nothing reusable;
+- otherwise summarize the new reusable fact(s) and update `docs/PASEO_LOCAL_AGENT_KNOWLEDGE.md` in the task worktree.
+
+Reusable knowledge includes verified tool paths, exact commands, recurring failure signatures, root causes, validated fixes, device/lifecycle traps, and safety/ordering constraints. Do not store secrets, credentials, huge raw logs, or unverified guesses.
+
+When the run produces reusable knowledge, the documentation update is part of the task deliverable and must be committed/pushed with the branch before the final result is posted. The final result must name the knowledge-doc commit/path so the remote main agent can review it. Per-task status and acceptance evidence still belong in the GitHub Issue; the knowledge file is only for facts worth reusing later.
+
 ## Local layout
 
 | Path | Role |
