@@ -13,6 +13,7 @@ public final class BrowserShellLogicTest {
         addressResolution();
         keyboardEditing();
         keyboardTargetRouting();
+        webEditorProbePolicy();
         System.out.println("BrowserShellLogicTest PASS");
     }
 
@@ -95,6 +96,28 @@ public final class BrowserShellLogicTest {
             throw new AssertionError("shared keyboard target router is missing", expectedRed);
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("shared keyboard target router API mismatch", e);
+        }
+    }
+
+    private static void webEditorProbePolicy() {
+        try {
+            Class<?> policyClass = Class.forName(
+                    "com.murphy.m4screenbridge.browser.shell.BrowserWebEditorProbePolicy");
+            Method shouldProbe = policyClass.getMethod("shouldProbe",
+                    boolean.class, boolean.class, boolean.class, boolean.class,
+                    float.class, int.class, int.class);
+
+            yes((Boolean) shouldProbe.invoke(null, true, true, true, false, 320f, 52, 744));
+            no((Boolean) shouldProbe.invoke(null, true, true, true, true, 320f, 52, 744));
+            no((Boolean) shouldProbe.invoke(null, true, true, true, false, 20f, 52, 744));
+            no((Boolean) shouldProbe.invoke(null, true, true, true, false, 760f, 52, 744));
+            no((Boolean) shouldProbe.invoke(null, false, true, true, false, 320f, 52, 744));
+            no((Boolean) shouldProbe.invoke(null, true, false, true, false, 320f, 52, 744));
+            no((Boolean) shouldProbe.invoke(null, true, true, false, false, 320f, 52, 744));
+        } catch (ClassNotFoundException expectedRed) {
+            throw new AssertionError("web editor probe policy is missing", expectedRed);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("web editor probe policy API mismatch", e);
         }
     }
 
