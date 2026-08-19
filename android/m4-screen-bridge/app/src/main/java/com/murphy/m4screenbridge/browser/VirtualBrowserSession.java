@@ -721,7 +721,6 @@ public final class VirtualBrowserSession {
         });
         sender.connect();
         helloStarted = true;
-        connectionState.connected();
     }
 
     private void startTcpTransport(String hostName, int port, String modeLabel) {
@@ -745,7 +744,6 @@ public final class VirtualBrowserSession {
                 transportReconnects = tcpTransport == null
                         ? transportReconnects : tcpTransport.reconnects();
                 transportError = "";
-                connectionState.connected();
                 M4B3Sender s = sender;
                 if (s == null) return;
                 if (!helloStarted) {
@@ -814,8 +812,10 @@ public final class VirtualBrowserSession {
         M4B3ReferenceReceiver r = localReceiver;
         if (s == null || r == null) return;
         try {
+            boolean wasReady = s.isHelloOk();
             List<byte[]> replies = r.handle(packet);
             for (byte[] reply : replies) s.receive(reply);
+            if (!wasReady && s.isHelloOk()) connectionState.connected();
             refreshProtocolStats();
         } catch (Throwable t) {
             applyErrors++;
@@ -954,7 +954,12 @@ public final class VirtualBrowserSession {
         M4B3Sender s = sender;
         if (s == null) return;
         try {
+            boolean wasReady = s.isHelloOk();
             s.receive(packet);
+            if (!wasReady && s.isHelloOk()) {
+                transportError = "";
+                connectionState.connected();
+            }
             refreshProtocolStats();
         } catch (Throwable t) {
             applyErrors++;

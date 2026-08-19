@@ -4,6 +4,8 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
 
+import com.murphy.m4screenbridge.browser.session.M4B3HandshakeWatchdog;
+
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -27,9 +29,12 @@ public final class M4B3TcpTransport implements M4B3Outbound {
     private static final int CONNECT_TIMEOUT_MS = 4000;
     private static final int SO_TIMEOUT_MS = 200;
     private static final int MAX_BACKOFF_MS = 5000;
+    private static final int HELLO_TIMEOUT_MS = 3000;
 
     private final Handler replyHandler;
     private final Listener listener;
+    private final M4B3HandshakeWatchdog handshakeWatchdog =
+            new M4B3HandshakeWatchdog(HELLO_TIMEOUT_MS);
 
     private final Object lock = new Object();
     private final ArrayDeque<byte[]> writeQ = new ArrayDeque<>();
@@ -65,6 +70,7 @@ public final class M4B3TcpTransport implements M4B3Outbound {
         this.endpoint = this.host + ":" + this.port;
         running = true;
         connected = false;
+        handshakeWatchdog.reset();
         ioThread = new HandlerThread("m4-browser-tcp");
         ioThread.start();
         new Handler(ioThread.getLooper()).post(this::ioLoop);
@@ -88,6 +94,7 @@ public final class M4B3TcpTransport implements M4B3Outbound {
             lock.notifyAll();
         }
         framer.reset();
+        handshakeWatchdog.reset();
         connected = false;
     }
 
@@ -158,6 +165,7 @@ public final class M4B3TcpTransport implements M4B3Outbound {
             connected = true;
             reconnects++;
             lastError = "";
+            handshakeWatchdog.onSocketConnected(reconnects, monotonicMs());
             Log.i(TAG, "connected " + endpoint);
             replyHandler.post(() -> listener.onConnected(endpoint));
             return true;
@@ -183,6 +191,9 @@ public final class M4B3TcpTransport implements M4B3Outbound {
             try {
                 n = in.read(readBuf);
             } catch (java.net.SocketTimeoutException timeout) {
+                if (handshakeWatchdog.shouldRestart(reconnects, monotonicMs())) {
+                    throw new java.net.SocketTimeoutException("M4B3 HELLO timeout");
+                }
                 continue;
             }
             if (n < 0) {
@@ -192,6 +203,9 @@ public final class M4B3TcpTransport implements M4B3Outbound {
             if (n == 0) continue;
             List<byte[]> msgs = framer.feed(readBuf, 0, n);
             for (byte[] msg : msgs) {
+                if (isCompatibleHelloOk(msg)) {
+                    handshakeWatchdog.onProtocolReady(reconnects);
+                }
                 replies++;
                 byte[] owned = msg;
                 replyHandler.post(() -> listener.onReply(owned));
@@ -212,8 +226,22 @@ public final class M4B3TcpTransport implements M4B3Outbound {
         }
     }
 
+    private boolean isCompatibleHelloOk(byte[] packet) {
+        try {
+            M4B3Message msg = M4B3Codec.parse(packet);
+            return msg.type == M4B3.TYPE_HELLO
+                    && msg.hello.version == M4B3.VERSION
+                    && msg.hello.status == M4B3.HELLO_OK
+                    && M4B3.sameLogicalFormat(msg.hello.width, msg.hello.height,
+                    msg.hello.pixelFormat, msg.hello.stride);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private void closeSocket() {
         connected = false;
+        handshakeWatchdog.onTransportLost(reconnects);
         Socket s = socket;
         socket = null;
         if (s != null) {
@@ -235,6 +263,10 @@ public final class M4B3TcpTransport implements M4B3Outbound {
         Log.w(TAG, lastError);
         String msg = lastError;
         replyHandler.post(() -> listener.onError(msg));
+    }
+
+    private static long monotonicMs() {
+        return System.nanoTime() / 1_000_000L;
     }
 
     private static void sleepQuiet(int ms) {

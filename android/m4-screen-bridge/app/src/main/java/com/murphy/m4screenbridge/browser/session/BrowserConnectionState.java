@@ -123,7 +123,7 @@ public final class BrowserConnectionState {
         if (reason != null && !reason.trim().isEmpty()) error = reason.trim();
     }
 
-    /** The transport has started a first connect attempt for the selected endpoint. */
+    /** The transport has started a connect attempt for the selected endpoint. */
     public synchronized void connecting() {
         requireStarted();
         if (!hasEndpoint()) {
@@ -133,7 +133,9 @@ public final class BrowserConnectionState {
             }
             throw new IllegalStateException("connecting without endpoint");
         }
-        state = State.CONNECTING;
+        // Once a live session has failed, replacement TCP attempts are still reconnect work.
+        // Product CONNECTED is restored only by the protocol-ready event, not by socket creation.
+        if (state != State.RECONNECTING) state = State.CONNECTING;
     }
 
     public synchronized void connected() {

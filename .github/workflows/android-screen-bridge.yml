@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/eink-browser-bridge
+      - agent/eink-browser-bridge-m5-productization
     paths:
       - 'android/m4-screen-bridge/**'
       - '.github/workflows/android-screen-bridge.yml'

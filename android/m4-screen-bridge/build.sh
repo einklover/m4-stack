@@ -66,6 +66,7 @@ if [ "${1:-}" = "--test" ]; then
     "$STREAM_SRC/M4B3InputState.java" \
     "$STREAM_SRC/M4B3KeyState.java" \
     "$SESSION_SRC/BrowserConnectionState.java" \
+    "$SESSION_SRC/M4B3HandshakeWatchdog.java" \
     "$SRC/browser/discovery/M4LanDiscovery.java" \
     "$TEST_SRC/TestMain.java" \
     "$TEST_SRC/BrowserPatchTest.java" \
@@ -73,7 +74,8 @@ if [ "${1:-}" = "--test" ]; then
     "$TEST_SRC/M4B3InputTest.java" \
     "$TEST_SRC/M4B3KeyTest.java" \
     "$TEST_SRC/M4LanDiscoveryTest.java" \
-    "$TEST_SRC/BrowserConnectionStateTest.java"
+    "$TEST_SRC/BrowserConnectionStateTest.java" \
+    "$TEST_SRC/M4B3HandshakeWatchdogTest.java"
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.TestMain
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.BrowserPatchTest
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.M4B3ProtocolTest
@@ -81,6 +83,7 @@ if [ "${1:-}" = "--test" ]; then
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.M4B3KeyTest
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.M4LanDiscoveryTest
   java -cp "$OUT/testclasses" com.murphy.m4screenbridge.BrowserConnectionStateTest
+  java -cp "$OUT/testclasses" com.murphy.m4screenbridge.M4B3HandshakeWatchdogTest
   exit 0
 fi
 
