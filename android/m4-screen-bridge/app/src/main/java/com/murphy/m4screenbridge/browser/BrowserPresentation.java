@@ -32,6 +32,9 @@ import android.widget.TextView;
 
 import com.murphy.m4screenbridge.browser.shell.BrowserAddressResolver;
 import com.murphy.m4screenbridge.browser.shell.BrowserShellStyle;
+import com.murphy.m4screenbridge.browser.shell.M4KeyboardView;
+
+import java.util.Locale;
 
 /** Chromium/WebView surface plus a static E-ink browser shell on the M4 virtual display. */
 final class BrowserPresentation extends Presentation {
@@ -45,6 +48,7 @@ final class BrowserPresentation extends Presentation {
 
     private final String initialUrl;
     private final Listener listener;
+    private final boolean shellEnabled;
     private final JsProbe jsProbe = new JsProbe();
     private final Handler statusHandler = new Handler(Looper.getMainLooper());
     private final Runnable statusTick = new Runnable() {
@@ -60,6 +64,8 @@ final class BrowserPresentation extends Presentation {
     private WebView webView;
     private EditText omnibox;
     private TextView bridgeStatus;
+    private LinearLayout toolbar;
+    private M4KeyboardView keyboard;
     private LinearLayout tabsPanel;
     private LinearLayout menuPanel;
     private TextView tabsCurrent;
@@ -73,6 +79,7 @@ final class BrowserPresentation extends Presentation {
         this.initialUrl = initialUrl;
         this.listener = listener;
         this.currentPageUrl = initialUrl == null ? "" : initialUrl;
+        this.shellEnabled = !isBareLabUrl(initialUrl);
     }
 
     @Override
@@ -88,6 +95,30 @@ final class BrowserPresentation extends Presentation {
             window.setAttributes(lp);
         }
 
+        if (!shellEnabled) {
+            createBareBrowser();
+            return;
+        }
+        createProductBrowserShell();
+    }
+
+    private void createBareBrowser() {
+        shellRoot = new FrameLayout(getContext());
+        shellRoot.setBackgroundColor(BrowserShellStyle.WHITE);
+
+        webView = new WebView(getContext());
+        webView.setBackgroundColor(Color.WHITE);
+        shellRoot.addView(webView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        configureWebView();
+        installBridgeStatus(0);
+
+        setContentView(shellRoot);
+        webView.loadUrl(initialUrl);
+        statusHandler.post(statusTick);
+    }
+
+    private void createProductBrowserShell() {
         shellRoot = new FrameLayout(getContext());
         shellRoot.setBackgroundColor(BrowserShellStyle.WHITE);
 
@@ -102,9 +133,8 @@ final class BrowserPresentation extends Presentation {
 
         FrameLayout webHost = new FrameLayout(getContext());
         webHost.setBackgroundColor(BrowserShellStyle.WHITE);
-        LinearLayout.LayoutParams webHostLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        column.addView(webHost, webHostLp);
+        column.addView(webHost, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         webView = new WebView(getContext());
         webView.setBackgroundColor(Color.WHITE);
@@ -112,28 +142,44 @@ final class BrowserPresentation extends Presentation {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         configureWebView();
 
-        column.addView(buildToolbar(), new LinearLayout.LayoutParams(
+        FrameLayout bottomHost = new FrameLayout(getContext());
+        bottomHost.setBackgroundColor(BrowserShellStyle.BLACK);
+        column.addView(bottomHost, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        toolbar = buildToolbar();
+        bottomHost.addView(toolbar, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, BrowserShellStyle.TOOLBAR_HEIGHT));
+
+        keyboard = new M4KeyboardView(getContext(), new M4KeyboardView.Listener() {
+            @Override
+            public void onTextChanged(String text) {
+                if (omnibox == null) return;
+                omnibox.setText(text);
+                omnibox.setSelection(omnibox.length());
+            }
+
+            @Override
+            public void onSubmit(String text) {
+                if (omnibox == null) return;
+                omnibox.setText(text);
+                omnibox.setSelection(omnibox.length());
+                submitOmnibox();
+            }
+
+            @Override
+            public void onHideRequested() {
+                hideKeyboard(true);
+            }
+        });
+        bottomHost.addView(keyboard, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         tabsPanel = buildTabsPanel();
         shellRoot.addView(tabsPanel, panelLayoutParams());
         menuPanel = buildMenuPanel();
         shellRoot.addView(menuPanel, panelLayoutParams());
-
-        bridgeStatus = new TextView(getContext());
-        bridgeStatus.setBackgroundColor(BrowserShellStyle.BLACK);
-        bridgeStatus.setTextColor(BrowserShellStyle.WHITE);
-        bridgeStatus.setTextSize(14);
-        bridgeStatus.setGravity(Gravity.CENTER_VERTICAL);
-        bridgeStatus.setPadding(12, 0, 12, 0);
-        bridgeStatus.setSingleLine(true);
-        bridgeStatus.setClickable(false);
-        bridgeStatus.setFocusable(false);
-        bridgeStatus.setVisibility(View.GONE);
-        FrameLayout.LayoutParams statusLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, BrowserShellStyle.STATUS_HEIGHT, Gravity.TOP);
-        statusLp.topMargin = BrowserShellStyle.OMNIBOX_HEIGHT;
-        shellRoot.addView(bridgeStatus, statusLp);
+        installBridgeStatus(BrowserShellStyle.OMNIBOX_HEIGHT);
 
         setContentView(shellRoot);
         syncOmnibox(initialUrl);
@@ -159,6 +205,14 @@ final class BrowserPresentation extends Presentation {
         omnibox.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         omnibox.setImeOptions(EditorInfo.IME_ACTION_GO | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         omnibox.setShowSoftInputOnFocus(false);
+        omnibox.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) return;
+            omnibox.selectAll();
+            showKeyboardForOmnibox();
+        });
+        omnibox.setOnClickListener(view -> {
+            if (omnibox.hasFocus()) showKeyboardForOmnibox();
+        });
         omnibox.setOnEditorActionListener((view, actionId, event) -> {
             boolean enter = event != null && event.getAction() == KeyEvent.ACTION_UP
                     && event.getKeyCode() == KeyEvent.KEYCODE_ENTER;
@@ -177,18 +231,18 @@ final class BrowserPresentation extends Presentation {
         return row;
     }
 
-    private View buildToolbar() {
-        LinearLayout toolbar = new LinearLayout(getContext());
-        toolbar.setOrientation(LinearLayout.HORIZONTAL);
-        toolbar.setBackgroundColor(BrowserShellStyle.BLACK);
+    private LinearLayout buildToolbar() {
+        LinearLayout result = new LinearLayout(getContext());
+        result.setOrientation(LinearLayout.HORIZONTAL);
+        result.setBackgroundColor(BrowserShellStyle.BLACK);
 
-        addToolbarAction(toolbar, "←", this::goBackInBrowser);
-        addToolbarAction(toolbar, "→", this::goForwardInBrowser);
-        addToolbarAction(toolbar, "⌂", this::goHomeInBrowser);
-        addToolbarAction(toolbar, "Tabs", this::toggleTabsPanel);
-        addToolbarAction(toolbar, "↻", this::reloadBrowser);
-        addToolbarAction(toolbar, "⋮", this::toggleMenuPanel);
-        return toolbar;
+        addToolbarAction(result, "←", this::goBackInBrowser);
+        addToolbarAction(result, "→", this::goForwardInBrowser);
+        addToolbarAction(result, "⌂", this::goHomeInBrowser);
+        addToolbarAction(result, "Tabs", this::toggleTabsPanel);
+        addToolbarAction(result, "↻", this::reloadBrowser);
+        addToolbarAction(result, "⋮", this::toggleMenuPanel);
+        return result;
     }
 
     private LinearLayout buildTabsPanel() {
@@ -266,9 +320,9 @@ final class BrowserPresentation extends Presentation {
         return button;
     }
 
-    private void addToolbarAction(LinearLayout toolbar, String text, Runnable action) {
+    private void addToolbarAction(LinearLayout target, String text, Runnable action) {
         TextView button = makeAction(text, action);
-        toolbar.addView(button, new LinearLayout.LayoutParams(0,
+        target.addView(button, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.MATCH_PARENT, 1f));
     }
 
@@ -320,10 +374,27 @@ final class BrowserPresentation extends Presentation {
         webView.addJavascriptInterface(jsProbe, "M4Input");
     }
 
+    private void installBridgeStatus(int topMargin) {
+        bridgeStatus = new TextView(getContext());
+        bridgeStatus.setBackgroundColor(BrowserShellStyle.BLACK);
+        bridgeStatus.setTextColor(BrowserShellStyle.WHITE);
+        bridgeStatus.setTextSize(14);
+        bridgeStatus.setGravity(Gravity.CENTER_VERTICAL);
+        bridgeStatus.setPadding(12, 0, 12, 0);
+        bridgeStatus.setSingleLine(true);
+        bridgeStatus.setClickable(false);
+        bridgeStatus.setFocusable(false);
+        bridgeStatus.setVisibility(View.GONE);
+        FrameLayout.LayoutParams statusLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, BrowserShellStyle.STATUS_HEIGHT, Gravity.TOP);
+        statusLp.topMargin = topMargin;
+        shellRoot.addView(bridgeStatus, statusLp);
+    }
+
     private void submitOmnibox() {
         if (omnibox == null || webView == null) return;
         String resolved = BrowserAddressResolver.resolve(omnibox.getText().toString(), searchTemplate);
-        omnibox.clearFocus();
+        hideKeyboard(true);
         hidePanels();
         currentPageUrl = resolved;
         syncOmnibox(resolved);
@@ -337,9 +408,26 @@ final class BrowserPresentation extends Presentation {
         if (!clean.equals(field.getText().toString())) field.setText(clean);
     }
 
+    private void showKeyboardForOmnibox() {
+        if (keyboard == null || omnibox == null) return;
+        hidePanels();
+        if (toolbar != null) toolbar.setVisibility(View.GONE);
+        keyboard.showForText(omnibox.getText().toString());
+        keyboard.requestLayout();
+        if (shellRoot != null) shellRoot.requestLayout();
+    }
+
+    private void hideKeyboard(boolean clearOmniboxFocus) {
+        if (keyboard != null) keyboard.hideKeyboard();
+        if (toolbar != null) toolbar.setVisibility(View.VISIBLE);
+        if (clearOmniboxFocus && omnibox != null) omnibox.clearFocus();
+        if (shellRoot != null) shellRoot.requestLayout();
+    }
+
     private void toggleTabsPanel() {
         if (tabsPanel == null) return;
         boolean show = tabsPanel.getVisibility() != View.VISIBLE;
+        hideKeyboard(true);
         hidePanels();
         if (!show) return;
         if (tabsCurrent != null) {
@@ -354,6 +442,7 @@ final class BrowserPresentation extends Presentation {
     private void toggleMenuPanel() {
         if (menuPanel == null) return;
         boolean show = menuPanel.getVisibility() != View.VISIBLE;
+        hideKeyboard(true);
         hidePanels();
         if (!show) return;
         menuPanel.setVisibility(View.VISIBLE);
@@ -399,10 +488,11 @@ final class BrowserPresentation extends Presentation {
         if (omnibox == null) return;
         omnibox.requestFocus();
         omnibox.selectAll();
+        showKeyboardForOmnibox();
     }
 
     boolean dispatchBrowserTouch(MotionEvent event) {
-        return webView != null && event != null && webView.dispatchTouchEvent(event);
+        return shellRoot != null && event != null && shellRoot.dispatchTouchEvent(event);
     }
 
     boolean goBackInBrowser() {
@@ -419,6 +509,7 @@ final class BrowserPresentation extends Presentation {
 
     boolean goHomeInBrowser() {
         if (webView == null) return false;
+        hideKeyboard(true);
         hidePanels();
         webView.loadUrl(homepage);
         return true;
@@ -440,6 +531,8 @@ final class BrowserPresentation extends Presentation {
         webView = null;
         bridgeStatus = null;
         omnibox = null;
+        toolbar = null;
+        keyboard = null;
         tabsPanel = null;
         menuPanel = null;
         tabsCurrent = null;
@@ -456,6 +549,11 @@ final class BrowserPresentation extends Presentation {
         ViewParentDetach.detach(oldWebView);
         oldWebView.removeAllViews();
         oldWebView.destroy();
+    }
+
+    private static boolean isBareLabUrl(String value) {
+        if (value == null) return false;
+        return value.trim().toLowerCase(Locale.ROOT).startsWith("data:");
     }
 
     /** Keeps WebView lifecycle cleanup explicit without exposing the view tree outside this class. */
