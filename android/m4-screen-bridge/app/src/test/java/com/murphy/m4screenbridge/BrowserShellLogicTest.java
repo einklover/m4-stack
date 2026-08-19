@@ -14,6 +14,7 @@ public final class BrowserShellLogicTest {
         keyboardEditing();
         keyboardTargetRouting();
         webEditorProbePolicy();
+        webEditorProbeRetryLifecycle();
         System.out.println("BrowserShellLogicTest PASS");
     }
 
@@ -118,6 +119,52 @@ public final class BrowserShellLogicTest {
             throw new AssertionError("web editor probe policy is missing", expectedRed);
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("web editor probe policy API mismatch", e);
+        }
+    }
+
+    private static void webEditorProbeRetryLifecycle() {
+        try {
+            Class<?> retryClass = Class.forName(
+                    "com.murphy.m4screenbridge.browser.shell.BrowserWebEditorProbeRetry");
+            Object retry = retryClass.getConstructor().newInstance();
+            Method begin = retryClass.getMethod("begin");
+            Method invalidate = retryClass.getMethod("invalidate");
+            Method isCurrent = retryClass.getMethod("isCurrent", long.class);
+            Method delayMs = retryClass.getMethod("delayMs", int.class);
+            Method hasNext = retryClass.getMethod("hasNext", int.class);
+
+            long first = (Long) begin.invoke(retry);
+            yes((Boolean) isCurrent.invoke(retry, first));
+            eq(0L, delayMs.invoke(null, 0));
+            yes((Boolean) hasNext.invoke(null, 0));
+
+            long second = (Long) begin.invoke(retry);
+            no((Boolean) isCurrent.invoke(retry, first));
+            yes((Boolean) isCurrent.invoke(retry, second));
+            long retryDelay = (Long) delayMs.invoke(null, 1);
+            yes(retryDelay > 0L);
+            yes((Boolean) hasNext.invoke(null, 1));
+
+            invalidate.invoke(retry);
+            no((Boolean) isCurrent.invoke(retry, second));
+
+            int attempt = 0;
+            long lastDelay = -1L;
+            while (true) {
+                long delay = (Long) delayMs.invoke(null, attempt);
+                yes(delay >= 0L);
+                yes(delay >= lastDelay);
+                lastDelay = delay;
+                boolean next = (Boolean) hasNext.invoke(null, attempt);
+                if (!next) break;
+                attempt++;
+                if (attempt > 8) throw new AssertionError("web editor retry schedule is unbounded");
+            }
+            yes(attempt >= 2);
+        } catch (ClassNotFoundException expectedRed) {
+            throw new AssertionError("web editor probe retry lifecycle is missing", expectedRed);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("web editor probe retry API mismatch", e);
         }
     }
 
