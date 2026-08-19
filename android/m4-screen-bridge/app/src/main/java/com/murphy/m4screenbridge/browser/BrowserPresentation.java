@@ -36,6 +36,7 @@ import android.widget.TextView;
 import com.murphy.m4screenbridge.browser.shell.BrowserAddressResolver;
 import com.murphy.m4screenbridge.browser.shell.BrowserKeyboardRouter;
 import com.murphy.m4screenbridge.browser.shell.BrowserShellStyle;
+import com.murphy.m4screenbridge.browser.shell.BrowserWebEditorProbePolicy;
 import com.murphy.m4screenbridge.browser.shell.M4KeyboardView;
 
 import java.util.Locale;
@@ -657,14 +658,22 @@ final class BrowserPresentation extends Presentation {
     boolean dispatchBrowserTouch(MotionEvent event) {
         FrameLayout root = shellRoot;
         if (root == null || event == null) return false;
+        boolean panelsVisibleBeforeDispatch =
+                (tabsPanel != null && tabsPanel.getVisibility() == View.VISIBLE)
+                || (menuPanel != null && menuPanel.getVisibility() == View.VISIBLE);
         boolean handled = root.dispatchTouchEvent(event);
-        if (handled && shellEnabled && event.getActionMasked() == MotionEvent.ACTION_UP) {
-            FrameLayout host = webHost;
-            WebView view = webView;
-            float y = event.getY();
-            if (host != null && view != null && y >= host.getTop() && y < host.getBottom()) {
-                view.post(this::inspectWebEditorAfterTouch);
-            }
+        FrameLayout host = webHost;
+        WebView view = webView;
+        if (host != null && view != null
+                && BrowserWebEditorProbePolicy.shouldProbe(
+                        shellEnabled,
+                        handled,
+                        event.getActionMasked() == MotionEvent.ACTION_UP,
+                        panelsVisibleBeforeDispatch,
+                        event.getY(),
+                        host.getTop(),
+                        host.getBottom())) {
+            view.post(this::inspectWebEditorAfterTouch);
         }
         return handled;
     }
