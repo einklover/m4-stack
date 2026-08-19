@@ -179,3 +179,35 @@ Root cause: n/a.
 Reuse: run exactly once from the isolated task worktree. Intended production change is: touch-queue empty `return` -> `break` in `flushInput()`, and Browser Back/Confirm enqueue moved before the touch-only early return in `captureFromGpio()`.
 Caution: if the script does not report exactly two replacements, STOP. Do not invent a replacement.
 Evidence: #42 `m5-key-return-device-005`.
+
+### 2026-08-19 — debug APK signature mismatch — m5-key-return-device-005
+Context: Motorola `ZY22KN7WSK` already had `com.murphy.m4screenbridge` from a prior worktree debug keystore.
+Observed: `adb install -r` failed `INSTALL_FAILED_UPDATE_INCOMPATIBLE` (signatures do not match).
+Root cause: isolated worktrees sign with different local debug keystores.
+Reuse: `adb -s ZY22KN7WSK uninstall com.murphy.m4screenbridge` then `adb install` the just-built `android/m4-screen-bridge/m4-screen-bridge-debug.apk`. This is not a factory reset.
+Caution: uninstall clears that app's prefs (`m4b3_host` becomes empty AUTO). Do not `pm clear` unrelated packages or wipe device data.
+Evidence: #42 `m5-key-return-device-005`; lastUpdateTime 2026-08-19 09:43:17 after reinstall.
+
+### 2026-08-19 — empty am extra swallows next flag as m4_host — m5-key-return-device-005
+Context: launching Browser Bridge with `am start ... --es m4_host "" --ei m4_port 48624`.
+Observed: session became `M4B3 manual --ei:48624` / `UnknownHostException: --ei`.
+Root cause: empty `--es` value is not a safe empty string; `am` treats the next token as the extra value.
+Reuse: omit host extras for AUTO (fresh install default is empty host). For manual: `--es m4_host 192.168.0.152 --ei m4_port 48624`. Diagnose with `dumpsys activity service ...BrowserBridgeService`.
+Caution: a bad extra also writes SharedPreferences via `handleLabIntent`/`saveM4Host`; STOP then relaunch with a real host to overwrite.
+Evidence: #42 `m5-key-return-device-005` first INPUT_TEST launch.
+
+### 2026-08-19 — m4b3_status empty object vs panel — m5-key-return-device-005
+Context: post-flash M4 with hello-ok Browser session.
+Observed: `m4adb m4b3_status` printed `{}` while `m4b3_panel` and Android dumpsys showed accepted CRC `0xE1009E63` / presenter `full_ok=2`.
+Root cause: likely client JSON parse of a truncated `m4b3_status` snprintf (`out[1728]` in `M4SerialDebugBridge.cpp`) rather than a dead receiver. Key counters are not in that JSON yet; they live in Serial `logSnapshot` `key(back=... txerr=...)`.
+Reuse: treat `m4b3_panel` + Android `dumpsys activity service com.murphy.m4screenbridge/.browser.BrowserBridgeService` as the reliable hello-ok/ACK/presenter/key-dispatch evidence. Do not start `m4adb logs` in parallel with `status` (`listen(1)`).
+Caution: a leftover `m4adb logs` client plus a second `daemon --socket /tmp/m4adb-*.sock` can both hold `/dev/cu.usbmodem101`. Kill only the extra logs/daemon PIDs; keep the earliest healthy daemon.
+Evidence: #42 `m5-key-return-device-005`; panel accepted_crc 3774914147 == Android crc 0xE1009E63.
+
+### 2026-08-19 — flash_app1_once cwd and wifi_prepare — m5-key-return-device-005
+Context: APP1 flash from an isolated task worktree.
+Observed: `firmware/scripts/flash_app1_once.sh` writes APP1, hash-verifies, switches OTA slot 1, and restarts one daemon. Device comes up `wifi_connected=false`.
+Root cause: helper default firmware path is `.pio/build/murphy_m4/firmware.bin` relative to cwd; saved STA is not auto-joined after reboot.
+Reuse: `cd firmware && bash scripts/flash_app1_once.sh /dev/cu.usbmodem101`. Then `m4adb wifi_prepare` before Browser TCP. Confirm hash `Hash of data verified` and `OTA slot 1 selected`.
+Caution: flash script stops all m4adb first (required). After reboot, first `status` may race; retry, do not re-flash.
+Evidence: #42 `m5-key-return-device-005`; firmware sha256 `30c404b043f4f51341f649d45cf94520d070b73f3f7f73072ff80a241d84f71b`; STA `192.168.0.152`.
