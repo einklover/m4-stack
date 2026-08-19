@@ -15,6 +15,7 @@ public final class BrowserShellLogicTest {
         keyboardTargetRouting();
         webEditorProbePolicy();
         webEditorProbeRetryLifecycle();
+        webEditorSessionLifecycle();
         System.out.println("BrowserShellLogicTest PASS");
     }
 
@@ -165,6 +166,56 @@ public final class BrowserShellLogicTest {
             throw new AssertionError("web editor probe retry lifecycle is missing", expectedRed);
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("web editor probe retry API mismatch", e);
+        }
+    }
+
+
+    private static void webEditorSessionLifecycle() {
+        try {
+            Class<?> sessionClass = Class.forName(
+                    "com.murphy.m4screenbridge.browser.shell.BrowserWebEditorSession");
+            Object session = sessionClass.getConstructor().newInstance();
+            Method begin = sessionClass.getMethod("begin");
+            Method capture = sessionClass.getMethod(
+                    "capture", long.class, Object.class, Object.class);
+            Method invalidate = sessionClass.getMethod("invalidate");
+            Method connection = sessionClass.getMethod("connection");
+            Method metadata = sessionClass.getMethod("metadata");
+            Method isCurrent = sessionClass.getMethod("isCurrent", long.class);
+
+            long first = (Long) begin.invoke(session);
+            Object staleConnection = new Object();
+            Object staleMetadata = new Object();
+            yes((Boolean) capture.invoke(
+                    session, first, staleConnection, staleMetadata));
+            eq(staleConnection, connection.invoke(session));
+            eq(staleMetadata, metadata.invoke(session));
+
+            long second = (Long) begin.invoke(session);
+            no((Boolean) isCurrent.invoke(session, first));
+            yes((Boolean) isCurrent.invoke(session, second));
+            eq(null, connection.invoke(session));
+            eq(null, metadata.invoke(session));
+            no((Boolean) capture.invoke(
+                    session, first, new Object(), new Object()));
+            eq(null, connection.invoke(session));
+
+            Object activeConnection = new Object();
+            Object activeMetadata = new Object();
+            yes((Boolean) capture.invoke(
+                    session, second, activeConnection, activeMetadata));
+            eq(activeConnection, connection.invoke(session));
+            eq(activeMetadata, metadata.invoke(session));
+
+            invalidate.invoke(session);
+            no((Boolean) isCurrent.invoke(session, second));
+            eq(null, connection.invoke(session));
+            eq(null, metadata.invoke(session));
+        } catch (ClassNotFoundException expectedRed) {
+            throw new AssertionError(
+                    "framework-captured web editor session is missing", expectedRed);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("web editor session API mismatch", e);
         }
     }
 
