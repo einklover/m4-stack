@@ -64,7 +64,6 @@ public final class M4KeyboardView extends LinearLayout {
 
         LinearLayout row3 = newRow();
         row3.addView(key("⇧", () -> {
-            replaceOnNextTextKey = false;
             state.toggleShift();
             rebuild();
         }), weightedKey(1.2f));
@@ -76,7 +75,6 @@ public final class M4KeyboardView extends LinearLayout {
 
         LinearLayout row4 = newRow();
         row4.addView(key("123", () -> {
-            replaceOnNextTextKey = false;
             state.toggleMode();
             rebuild();
         }), weightedKey(1.2f));
@@ -99,7 +97,6 @@ public final class M4KeyboardView extends LinearLayout {
 
         LinearLayout row4 = newRow();
         row4.addView(key("ABC", () -> {
-            replaceOnNextTextKey = false;
             state.toggleMode();
             rebuild();
         }), weightedKey(1.2f));
