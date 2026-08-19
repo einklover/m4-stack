@@ -246,7 +246,9 @@ void flushInput() {
     portENTER_CRITICAL(&gRt.inputMux);
     const bool have = gRt.input.pop(ev);
     portEXIT_CRITICAL(&gRt.inputMux);
-    if (!have) return;
+    // Touch and key are independent bounded queues. Exhausting touch must not
+    // return from the function, otherwise the key queue below is unreachable.
+    if (!have) break;
     const size_t n = M4B3::encodeTouch(gRt.touchTx, sizeof(gRt.touchTx), gRt.touchEnvSeq++, ev.action,
                                        ev.flags, ev.x, ev.y, ev.tMs, ev.seq, ev.session);
     if (n == 0) {
@@ -494,6 +496,21 @@ bool inputCaptureActive() {
 
 void captureFromGpio(HalGPIO& gpio, uint32_t nowMs) {
   if (!inputCaptureActive()) return;
+
+  // Browser hardware keys do not depend on touch state. Capture them first so
+  // a fresh session with no prior panel coordinate cannot drop Back/Confirm.
+  // Emit on release so one physical click produces exactly one Browser action.
+  const uint8_t backHw = SETTINGS.frontButtonBack;
+  const uint8_t reloadHw = SETTINGS.frontButtonConfirm;
+  portENTER_CRITICAL(&gRt.inputMux);
+  if (gpio.wasReleased(backHw)) {
+    (void)gRt.keys.push(M4B3::kInputKeyBack, nowMs);
+  }
+  if (reloadHw != backHw && gpio.wasReleased(reloadHw)) {
+    (void)gRt.keys.push(M4B3::kInputKeyReload, nowMs);
+  }
+  portEXIT_CRITICAL(&gRt.inputMux);
+
   int px = 0;
   int py = 0;
   if (gpio.getTouchPanelPoint(px, py)) {
@@ -521,21 +538,6 @@ void captureFromGpio(HalGPIO& gpio, uint32_t nowMs) {
   }
   if (gpio.wasTouchReleased()) {
     (void)gRt.input.push(M4B3::kTouchUp, x, y, nowMs);
-  }
-  portEXIT_CRITICAL(&gRt.inputMux);
-
-  // Logical Browser controls follow the user's front-button remapping. Emit on
-  // release so one physical click produces exactly one Browser action. The
-  // MappedInputManager suppresses these same physical Back/Confirm events from
-  // the hidden local Activity while Browser Bridge owns input.
-  const uint8_t backHw = SETTINGS.frontButtonBack;
-  const uint8_t reloadHw = SETTINGS.frontButtonConfirm;
-  portENTER_CRITICAL(&gRt.inputMux);
-  if (gpio.wasReleased(backHw)) {
-    (void)gRt.keys.push(M4B3::kInputKeyBack, nowMs);
-  }
-  if (reloadHw != backHw && gpio.wasReleased(reloadHw)) {
-    (void)gRt.keys.push(M4B3::kInputKeyReload, nowMs);
   }
   portEXIT_CRITICAL(&gRt.inputMux);
 }
