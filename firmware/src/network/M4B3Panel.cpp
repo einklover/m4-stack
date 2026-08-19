@@ -339,12 +339,16 @@ void tick(HalDisplay& display, uint32_t nowMs) {
           break;
         }
       }
-    } else if (dec.mode == M4PanelDirty::Mode::Hygiene) {
-      // Stock HALF from the frozen snapshot. Not live HAL fb (white-glass).
-      display.waveformLabHygiene(gRt.presentBuf);
     } else {
-      // Absolute FULL from the frozen snapshot, not the live HAL framebuffer.
-      display.waveformLabBaseline(gRt.presentBuf);
+      // First / dense-overflow / fragmented / recover / hygiene: FAST only.
+      // Never waveformLabBaseline (OTP FULL ~4s) or waveformLabHygiene (HALF).
+      // presentBuf was already copied into the live HAL framebuffer above.
+      if (!display.displayWindow(0, 0, HalDisplay::DISPLAY_WIDTH, HalDisplay::DISPLAY_HEIGHT, false)) {
+        ok = false;
+        Serial.printf("[%lu] [M4B3-PANEL] fast-full-fail %ux%u\n", millis(),
+                      static_cast<unsigned>(HalDisplay::DISPLAY_WIDTH),
+                      static_cast<unsigned>(HalDisplay::DISPLAY_HEIGHT));
+      }
     }
   }
   const uint32_t doneMs = millis();

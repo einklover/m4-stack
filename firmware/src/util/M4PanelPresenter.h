@@ -108,7 +108,8 @@ class Scheduler {
     if (st_.owner == Owner::BrowserBridge) return true;
     st_.owner = Owner::BrowserBridge;
     st_.wantRelease = false;
-    // Physical baseline is untrusted after a new acquire. First present is FULL.
+    // Physical baseline is untrusted after a new acquire. First present is a
+    // full-panel FAST (never OTP FULL).
     st_.baselineTrusted = false;
     st_.everPresented = false;
     resetHygieneLocked();

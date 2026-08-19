@@ -148,7 +148,7 @@ int main() {
     assert(p.windows[0].h == 32);
   }
 
-  // Dense area fallback.
+  // Dense area with a compact window stays Partial (FAST), not full-panel.
   {
     auto prev = whitePhys();
     auto next = whitePhys();
@@ -156,8 +156,9 @@ int main() {
     Plan p{};
     assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
     assert(p.changedPixels == 120000u);
+    assert(p.windowCount >= 1 && p.windowCount <= M4PanelDirty::kMaxWindows);
     Decision d = M4PanelDirty::decide(true, true, p, 0, 0);
-    assert(d.mode == Mode::Full);
+    assert(d.mode == Mode::Partial);
     assert(d.reason == Reason::DenseArea);
   }
 

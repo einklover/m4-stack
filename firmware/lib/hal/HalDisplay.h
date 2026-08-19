@@ -70,9 +70,10 @@ class HalDisplay {
   uint32_t waveformLabRefresh(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                               bool turnOff = false);
   // Waveform Lab: absolute FULL refresh to the given frame (baseline setup).
+  // Browser Bridge no longer calls this — all M4B3 presents are FAST.
   void waveformLabBaseline(const uint8_t* frame);
-  // Snapshot-absolute stock HALF (0xD7 both-plane clean). Hygiene only —
-  // FirstBaseline / Untrusted / Recover stay waveformLabBaseline FULL.
+  // Snapshot-absolute stock HALF (0xD7 both-plane clean). Hygiene only.
+  // Browser Bridge no longer calls this — all M4B3 presents are FAST.
   void waveformLabHygiene(const uint8_t* frame);
   // Waveform Lab: windowed diff refresh (strip-by-strip page-turn animation).
   uint32_t waveformLabRefreshWindow(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,

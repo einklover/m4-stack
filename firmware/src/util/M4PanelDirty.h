@@ -29,9 +29,9 @@ constexpr uint16_t kTilesY = kHeight / kTileH;  // 30
 constexpr uint16_t kMaxWindows = 4;
 constexpr uint32_t kMaxPartialChangedPixels = (kPanelPixels * 28u) / 100u;  // 107520
 // Content-aware hygiene: a fixed count of tiny Partials must not force a
-// heavy FULL. Cleaning is based on unique tile coverage since the last
-// true clean plus accumulated transition churn. A hard count ceiling exists
-// only as a safety backstop and still requires measured evidence.
+// heavy full-panel update. Browser Bridge presents every non-Skip frame as
+// FAST (never OTP FULL / stock HALF). Cleaning is based on unique tile
+// coverage since the last true clean plus accumulated transition churn.
 constexpr uint32_t kTilePixels = static_cast<uint32_t>(kTileW) * kTileH;  // 512
 constexpr uint32_t kTileCount = static_cast<uint32_t>(kTilesX) * kTilesY;  // 750
 constexpr uint16_t kCoverageWords = static_cast<uint16_t>((kTileCount + 31u) / 32u);  // 24
@@ -419,8 +419,16 @@ inline Decision decide(bool baselineTrusted, bool everPresented, const Plan& pla
     d.reason = Reason::NoChange;
     return d;
   }
-  // Content-driven safety FULLs stay absolute. Hygiene is separate.
+  // Dense content is still FAST. A compact window plan stays Partial so a
+  // real webpage (wiki load / scroll) does not pay a full-panel update.
+  // Overflow / first / recover still request a full-panel update; the
+  // presenter drives those as FAST, never OTP FULL (~4s) or stock HALF.
   if (plan.changedPixels > kMaxPartialChangedPixels) {
+    if (plan.windowCount >= 1 && plan.windowCount <= kMaxWindows) {
+      d.mode = Mode::Partial;
+      d.reason = Reason::DenseArea;
+      return d;
+    }
     d.mode = Mode::Full;
     d.reason = Reason::DenseArea;
     return d;

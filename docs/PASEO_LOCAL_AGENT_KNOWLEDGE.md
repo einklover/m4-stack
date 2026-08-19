@@ -211,3 +211,19 @@ Root cause: helper default firmware path is `.pio/build/murphy_m4/firmware.bin` 
 Reuse: `cd firmware && bash scripts/flash_app1_once.sh /dev/cu.usbmodem101`. Then `m4adb wifi_prepare` before Browser TCP. Confirm hash `Hash of data verified` and `OTA slot 1 selected`.
 Caution: flash script stops all m4adb first (required). After reboot, first `status` may race; retry, do not re-flash.
 Evidence: #42 `m5-key-return-device-005`; firmware sha256 `30c404b043f4f51341f649d45cf94520d070b73f3f7f73072ff80a241d84f71b`; STA `192.168.0.152`.
+
+### 2026-08-19 — wiki DenseArea used to force OTP FULL ~4s — m5-touch-realweb-008
+Context: `agent/eink-browser-bridge-m5-productization` at `b5825cf` on Motorola `ZY22KN7WSK` + M4 STA `192.168.0.152:48624`, URL `https://zh.m.wikipedia.org/wiki/电子纸`.
+Observed: every large page load/scroll felt like a 4s full refresh.
+Root cause: dirty planner treated `changedPixels > 28%` (`kMaxPartialChangedPixels=107520`) as `Mode::Full`/`DenseArea`, and `M4B3Panel::tick` drove Full/Hygiene through `waveformLabBaseline` (SSD1677 OTP FULL ~4s) / `waveformLabHygiene` (stock HALF). Extra Dim wiki frames routinely exceed 28%.
+Reuse: superseded by FAST-only present policy below. Diagnose 4s stalls with `m4b3_panel` `full_ms` (~4000 = OTP FULL, hundreds = FAST) plus Serial `present-start`; do not use OCR.
+Caution: `full_ok` / `Mode::Full` are policy labels, not physical waveform proof.
+Evidence: #42 user report + pre-change `M4B3Panel.cpp` Full branch.
+
+### 2026-08-19 — Browser Bridge presents are FAST-only — m5-touch-realweb-008
+Context: same branch after user request to forbid full refresh.
+Observed: post-flash hello-ok on the same wiki session: first present `full_ms=630`, later fragmented Full still `full_ms=631`, Partial `part_ms=517..2031`, `hyg_ok=0`. No ~4000ms OTP FULL.
+Root cause: presenter now always uses stock `displayWindow` FAST/DU. Dense with 1–4 windows stays Partial; first/recover/fragmented/hygiene still request a full-panel update but physically `displayWindow(0,0,800,480)`.
+Reuse: do not restore `waveformLabBaseline` / `waveformLabHygiene` on the Browser Bridge path. Host check: `g++-14 -std=c++14 -Wall -Wextra -Werror -I firmware/src firmware/tests/native_app/test_m4_panel_dirty.cpp` (dense 400×300 expects Partial+DenseArea). Device check: `m4adb wifi_prepare` then `m4b3_panel`; existing Android FGS with saved MANUAL host reconnects without a new `am start`.
+Caution: ghosting will increase; `kMinIntervalMs` is still 2000. `full_ms≈600` is a full-panel FAST, not OTP. Firmware sha256 `1c3a17cb37bbcf28807c188c4c72f5f844a34356af266abd8f44fcbd1ed8e192` flashed APP1 @ `0x6e0000` / OTA slot 1.
+Evidence: #42 `m5-touch-realweb-008`; `test_m4_panel_dirty` / `test_m4_panel_presenter` PASS; panel samples in `build/m5-touch-realweb-008/panel-*.json`.
