@@ -176,7 +176,9 @@ public final class M4KeyboardView extends LinearLayout {
         view.setTextSize(15);
         view.setGravity(Gravity.CENTER);
         view.setClickable(true);
-        view.setFocusable(true);
+        // Keyboard keys must not steal focus from the omnibox. Keeping focus on the editor prevents
+        // page callbacks from overwriting in-progress text while the user taps the app-owned keys.
+        view.setFocusable(false);
         view.setOnClickListener(v -> action.run());
         return view;
     }
