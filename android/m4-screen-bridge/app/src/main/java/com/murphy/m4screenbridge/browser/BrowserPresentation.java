@@ -8,6 +8,7 @@ import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
 import android.text.InputType;
 import android.view.Display;
 import android.view.Gravity;
@@ -18,6 +19,8 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -31,6 +34,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.murphy.m4screenbridge.browser.shell.BrowserAddressResolver;
+import com.murphy.m4screenbridge.browser.shell.BrowserKeyboardRouter;
 import com.murphy.m4screenbridge.browser.shell.BrowserShellStyle;
 import com.murphy.m4screenbridge.browser.shell.M4KeyboardView;
 
@@ -46,10 +50,13 @@ final class BrowserPresentation extends Presentation {
         void onPageError(String url, String description);
     }
 
+    private enum KeyboardTargetKind { NONE, OMNIBOX, WEB }
+
     private final String initialUrl;
     private final Listener listener;
     private final boolean shellEnabled;
     private final JsProbe jsProbe = new JsProbe();
+    private final BrowserKeyboardRouter keyboardRouter = new BrowserKeyboardRouter();
     private final Handler statusHandler = new Handler(Looper.getMainLooper());
     private final Runnable statusTick = new Runnable() {
         @Override
@@ -60,7 +67,49 @@ final class BrowserPresentation extends Presentation {
         }
     };
 
+    private final BrowserKeyboardRouter.Target omniboxKeyboardTarget =
+            new BrowserKeyboardRouter.Target() {
+                @Override
+                public void commitText(String text) {
+                    commitTextToOmnibox(text);
+                }
+
+                @Override
+                public void backspace() {
+                    backspaceOmnibox();
+                }
+
+                @Override
+                public void submit() {
+                    submitOmnibox();
+                }
+            };
+
+    private final BrowserKeyboardRouter.Target webKeyboardTarget =
+            new BrowserKeyboardRouter.Target() {
+                @Override
+                public void commitText(String text) {
+                    InputConnection connection = webEditorConnection;
+                    if (connection != null) connection.commitText(text == null ? "" : text, 1);
+                }
+
+                @Override
+                public void backspace() {
+                    InputConnection connection = webEditorConnection;
+                    if (connection == null) return;
+                    if (connection.deleteSurroundingTextInCodePoints(1, 0)) return;
+                    connection.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
+                    connection.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
+                }
+
+                @Override
+                public void submit() {
+                    submitWebEditor();
+                }
+            };
+
     private FrameLayout shellRoot;
+    private FrameLayout webHost;
     private WebView webView;
     private EditText omnibox;
     private TextView bridgeStatus;
@@ -69,6 +118,9 @@ final class BrowserPresentation extends Presentation {
     private LinearLayout tabsPanel;
     private LinearLayout menuPanel;
     private TextView tabsCurrent;
+    private InputConnection webEditorConnection;
+    private EditorInfo webEditorInfo;
+    private KeyboardTargetKind keyboardTargetKind = KeyboardTargetKind.NONE;
     private String bridgeStatusText = "";
     private String currentPageUrl = "";
     private String homepage = "about:blank";
@@ -93,6 +145,8 @@ final class BrowserPresentation extends Presentation {
             lp.screenBrightness = 1.0f;
             lp.dimAmount = 0f;
             window.setAttributes(lp);
+            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+                    | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
         }
 
         if (!shellEnabled) {
@@ -131,7 +185,7 @@ final class BrowserPresentation extends Presentation {
         column.addView(buildOmniboxRow(), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, BrowserShellStyle.OMNIBOX_HEIGHT));
 
-        FrameLayout webHost = new FrameLayout(getContext());
+        webHost = new FrameLayout(getContext());
         webHost.setBackgroundColor(BrowserShellStyle.WHITE);
         column.addView(webHost, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -153,23 +207,23 @@ final class BrowserPresentation extends Presentation {
 
         keyboard = new M4KeyboardView(getContext(), new M4KeyboardView.Listener() {
             @Override
-            public void onTextChanged(String text) {
-                if (omnibox == null) return;
-                omnibox.setText(text);
-                omnibox.setSelection(omnibox.length());
+            public void onTextCommitted(String text) {
+                keyboardRouter.commitText(text);
             }
 
             @Override
-            public void onSubmit(String text) {
-                if (omnibox == null) return;
-                omnibox.setText(text);
-                omnibox.setSelection(omnibox.length());
-                submitOmnibox();
+            public void onBackspace() {
+                keyboardRouter.backspace();
+            }
+
+            @Override
+            public void onSubmit() {
+                keyboardRouter.submit();
             }
 
             @Override
             public void onHideRequested() {
-                hideKeyboard(true);
+                hideKeyboard(keyboardTargetKind == KeyboardTargetKind.OMNIBOX);
             }
         });
         bottomHost.addView(keyboard, new FrameLayout.LayoutParams(
@@ -340,6 +394,7 @@ final class BrowserPresentation extends Presentation {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                if (keyboardTargetKind == KeyboardTargetKind.WEB) hideKeyboard(false);
                 currentPageUrl = url == null ? "" : url;
                 syncOmnibox(currentPageUrl);
                 if (listener != null) listener.onPageStarted(currentPageUrl);
@@ -401,6 +456,43 @@ final class BrowserPresentation extends Presentation {
         webView.loadUrl(resolved);
     }
 
+    private void commitTextToOmnibox(String text) {
+        EditText field = omnibox;
+        if (field == null) return;
+        Editable editable = field.getText();
+        int a = Math.max(0, field.getSelectionStart());
+        int b = Math.max(0, field.getSelectionEnd());
+        int start = Math.min(a, b);
+        int end = Math.max(a, b);
+        if (start > editable.length()) start = editable.length();
+        if (end > editable.length()) end = editable.length();
+        String clean = text == null ? "" : text;
+        editable.replace(start, end, clean);
+        field.setSelection(Math.min(editable.length(), start + clean.length()));
+    }
+
+    private void backspaceOmnibox() {
+        EditText field = omnibox;
+        if (field == null) return;
+        Editable editable = field.getText();
+        int a = Math.max(0, field.getSelectionStart());
+        int b = Math.max(0, field.getSelectionEnd());
+        int start = Math.min(a, b);
+        int end = Math.max(a, b);
+        if (start > editable.length()) start = editable.length();
+        if (end > editable.length()) end = editable.length();
+        if (start != end) {
+            editable.delete(start, end);
+            field.setSelection(start);
+            return;
+        }
+        if (start == 0) return;
+        int codePoint = Character.codePointBefore(editable, start);
+        int deleteFrom = start - Character.charCount(codePoint);
+        editable.delete(deleteFrom, start);
+        field.setSelection(deleteFrom);
+    }
+
     private void syncOmnibox(String url) {
         EditText field = omnibox;
         if (field == null || field.hasFocus()) return;
@@ -411,17 +503,88 @@ final class BrowserPresentation extends Presentation {
     private void showKeyboardForOmnibox() {
         if (keyboard == null || omnibox == null) return;
         hidePanels();
+        webEditorConnection = null;
+        webEditorInfo = null;
+        keyboardTargetKind = KeyboardTargetKind.OMNIBOX;
+        keyboardRouter.setTarget(omniboxKeyboardTarget);
         if (toolbar != null) toolbar.setVisibility(View.GONE);
         keyboard.showForText(omnibox.getText().toString());
         keyboard.requestLayout();
         if (shellRoot != null) shellRoot.requestLayout();
     }
 
+    private void showKeyboardForWebEditor(InputConnection connection, EditorInfo info) {
+        if (keyboard == null || connection == null || info == null) return;
+        hidePanels();
+        webEditorConnection = connection;
+        webEditorInfo = info;
+        keyboardTargetKind = KeyboardTargetKind.WEB;
+        keyboardRouter.setTarget(webKeyboardTarget);
+        if (toolbar != null) toolbar.setVisibility(View.GONE);
+        keyboard.showForText("");
+        keyboard.requestLayout();
+        if (shellRoot != null) shellRoot.requestLayout();
+        hideSystemSoftInput();
+    }
+
     private void hideKeyboard(boolean clearOmniboxFocus) {
+        keyboardRouter.clearTarget();
+        keyboardTargetKind = KeyboardTargetKind.NONE;
+        webEditorConnection = null;
+        webEditorInfo = null;
         if (keyboard != null) keyboard.hideKeyboard();
         if (toolbar != null) toolbar.setVisibility(View.VISIBLE);
         if (clearOmniboxFocus && omnibox != null) omnibox.clearFocus();
         if (shellRoot != null) shellRoot.requestLayout();
+    }
+
+    private void inspectWebEditorAfterTouch() {
+        WebView view = webView;
+        if (!shellEnabled || view == null) return;
+        if (omnibox != null && omnibox.hasFocus()) return;
+        if (!view.hasFocus()) {
+            if (keyboardTargetKind == KeyboardTargetKind.WEB) hideKeyboard(false);
+            return;
+        }
+
+        EditorInfo info = new EditorInfo();
+        InputConnection connection;
+        try {
+            connection = view.onCreateInputConnection(info);
+        } catch (RuntimeException ignored) {
+            connection = null;
+        }
+        if (connection == null || info.inputType == InputType.TYPE_NULL) {
+            if (keyboardTargetKind == KeyboardTargetKind.WEB) hideKeyboard(false);
+            return;
+        }
+        showKeyboardForWebEditor(connection, info);
+    }
+
+    private void submitWebEditor() {
+        InputConnection connection = webEditorConnection;
+        EditorInfo info = webEditorInfo;
+        if (connection == null || info == null) return;
+        if ((info.inputType & InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0) {
+            connection.commitText("\n", 1);
+            return;
+        }
+        int action = info.imeOptions & EditorInfo.IME_MASK_ACTION;
+        if (action != EditorInfo.IME_ACTION_NONE
+                && action != EditorInfo.IME_ACTION_UNSPECIFIED
+                && connection.performEditorAction(action)) {
+            return;
+        }
+        connection.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
+        connection.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+    }
+
+    private void hideSystemSoftInput() {
+        WebView view = webView;
+        if (view == null) return;
+        Object service = getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (!(service instanceof InputMethodManager)) return;
+        ((InputMethodManager) service).hideSoftInputFromWindow(view.getWindowToken(), 0);
     }
 
     private void toggleTabsPanel() {
@@ -492,7 +655,18 @@ final class BrowserPresentation extends Presentation {
     }
 
     boolean dispatchBrowserTouch(MotionEvent event) {
-        return shellRoot != null && event != null && shellRoot.dispatchTouchEvent(event);
+        FrameLayout root = shellRoot;
+        if (root == null || event == null) return false;
+        boolean handled = root.dispatchTouchEvent(event);
+        if (handled && shellEnabled && event.getActionMasked() == MotionEvent.ACTION_UP) {
+            FrameLayout host = webHost;
+            WebView view = webView;
+            float y = event.getY();
+            if (host != null && view != null && y >= host.getTop() && y < host.getBottom()) {
+                view.post(this::inspectWebEditorAfterTouch);
+            }
+        }
+        return handled;
     }
 
     boolean goBackInBrowser() {
@@ -527,8 +701,13 @@ final class BrowserPresentation extends Presentation {
 
     void destroyBrowser() {
         statusHandler.removeCallbacks(statusTick);
+        keyboardRouter.clearTarget();
+        keyboardTargetKind = KeyboardTargetKind.NONE;
+        webEditorConnection = null;
+        webEditorInfo = null;
         WebView oldWebView = webView;
         webView = null;
+        webHost = null;
         bridgeStatus = null;
         omnibox = null;
         toolbar = null;
