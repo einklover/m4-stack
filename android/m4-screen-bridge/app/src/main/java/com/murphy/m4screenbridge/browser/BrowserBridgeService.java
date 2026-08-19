@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
@@ -14,13 +15,15 @@ import android.os.PowerManager;
 import android.os.Process;
 
 import com.murphy.m4screenbridge.MainActivity;
+import com.murphy.m4screenbridge.Prefs;
 import com.murphy.m4screenbridge.R;
+import com.murphy.m4screenbridge.ScreenBridgeService;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 
 /**
- * M1 owner for the virtual browser lifecycle. MainActivity is intentionally only a controller;
+ * Product owner for the virtual browser lifecycle. MainActivity is intentionally only a controller;
  * closing/recreating the activity must not tear down the WebView/VirtualDisplay session.
  */
 public final class BrowserBridgeService extends Service {
@@ -53,7 +56,7 @@ public final class BrowserBridgeService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? null : intent.getAction();
         if (ACTION_STOP.equals(action)) {
-            stopSessionAndSelf();
+            stopSessionAndSelf(true);
             return START_NOT_STICKY;
         }
 
@@ -73,11 +76,16 @@ public final class BrowserBridgeService extends Service {
             session.startInputTest();
             acquireWakeLock();
         } else if (ACTION_START_URL.equals(action)) {
+            SharedPreferences sp = prefs();
+            Prefs.setBrowserResumeEnabled(sp, true);
             session.start(intent == null ? null : intent.getStringExtra(EXTRA_URL));
+            Prefs.storeBrowserLastUrl(sp, session.currentUrl());
             acquireWakeLock();
+        } else if (action == null) {
+            restoreProductSessionIfConfigured();
         }
         updateNotification();
-        return START_STICKY;
+        return Prefs.browserResumeEnabled(prefs()) ? START_STICKY : START_NOT_STICKY;
     }
 
     @Override
@@ -139,6 +147,9 @@ public final class BrowserBridgeService extends Service {
             i.setAction(ACTION_STOP);
             context.startService(i);
         } else {
+            SharedPreferences sp = context.getSharedPreferences(
+                    ScreenBridgeService.PREFS, Context.MODE_PRIVATE);
+            Prefs.setBrowserResumeEnabled(sp, false);
             context.stopService(new Intent(context, BrowserBridgeService.class));
         }
     }
@@ -150,7 +161,7 @@ public final class BrowserBridgeService extends Service {
 
     public static String snapshot() {
         BrowserBridgeService s = instance;
-        if (s == null || s.session == null) return "虚拟浏览器 M1：前台服务未启动";
+        if (s == null || s.session == null) return "虚拟浏览器 M5：前台服务未启动";
         return "FGS：运行中 pid=" + Process.myPid() + "\n" + s.session.snapshot();
     }
 
@@ -182,6 +193,8 @@ public final class BrowserBridgeService extends Service {
                 }
             }
         }
+        writer.println("resumeEnabled=" + Prefs.browserResumeEnabled(prefs()));
+        writer.println("lastUrl=" + Prefs.browserLastUrl(prefs()));
         writer.println(snapshot());
     }
 
@@ -190,6 +203,23 @@ public final class BrowserBridgeService extends Service {
         String host = intent.getStringExtra(EXTRA_HOST);
         int port = intent.getIntExtra(EXTRA_PORT, -1);
         if (host != null || port > 0) session.applyHostOverride(host, port);
+    }
+
+    private void restoreProductSessionIfConfigured() {
+        if (session == null || session.isActive()) return;
+        SharedPreferences sp = prefs();
+        if (!Prefs.browserResumeEnabled(sp)) return;
+        String lastUrl = Prefs.browserLastUrl(sp);
+        if (lastUrl.isEmpty()) {
+            Prefs.setBrowserResumeEnabled(sp, false);
+            return;
+        }
+        session.start(lastUrl);
+        if (session.isActive()) acquireWakeLock();
+    }
+
+    private SharedPreferences prefs() {
+        return getSharedPreferences(ScreenBridgeService.PREFS, MODE_PRIVATE);
     }
 
     private void acquireWakeLock() {
@@ -206,7 +236,8 @@ public final class BrowserBridgeService extends Service {
         wakeLock = null;
     }
 
-    private void stopSessionAndSelf() {
+    private void stopSessionAndSelf(boolean disableResume) {
+        if (disableResume) Prefs.setBrowserResumeEnabled(prefs(), false);
         releaseWakeLock();
         if (session != null) session.stop();
         stopForeground(STOP_FOREGROUND_REMOVE);
@@ -232,9 +263,11 @@ public final class BrowserBridgeService extends Service {
         PendingIntent stopIntent = PendingIntent.getService(this, 1, stop,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        String text = session != null && session.isActive()
-                ? "480×800 virtual browser is running"
-                : "Browser bridge service is ready";
+        String text = "Browser bridge service is ready";
+        if (session != null && session.isActive()) {
+            text = session.productStatusLine();
+            if (text.length() > 160) text = text.substring(0, 157) + "...";
+        }
         return new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_launcher)
                 .setContentTitle("M4 E-ink Browser")

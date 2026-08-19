@@ -2,29 +2,42 @@ package com.murphy.m4screenbridge.browser;
 
 import android.app.Presentation;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.view.Display;
+import android.view.MotionEvent;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.MotionEvent;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 /** Minimal Chromium/WebView surface hosted entirely on the M4 virtual display. */
 final class BrowserPresentation extends Presentation {
+    interface Listener {
+        void onPageStarted(String url);
+        void onPageFinished(String url);
+        void onPageProgress(int progress);
+        void onPageTitle(String title);
+        void onPageError(String url, String description);
+    }
+
     private final String initialUrl;
+    private final Listener listener;
     private final JsProbe jsProbe = new JsProbe();
     private WebView webView;
 
-    BrowserPresentation(Context context, Display display, String initialUrl) {
+    BrowserPresentation(Context context, Display display, String initialUrl, Listener listener) {
         super(context, display);
         this.initialUrl = initialUrl;
+        this.listener = listener;
     }
 
     @Override
@@ -56,8 +69,36 @@ final class BrowserPresentation extends Presentation {
         settings.setDisplayZoomControls(false);
         settings.setSupportZoom(true);
 
-        webView.setWebViewClient(new WebViewClient());
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                if (listener != null) listener.onPageStarted(url == null ? "" : url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (listener != null) listener.onPageFinished(url == null ? "" : url);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request == null || !request.isForMainFrame() || listener == null) return;
+                String url = request.getUrl() == null ? "" : request.getUrl().toString();
+                CharSequence description = error == null ? null : error.getDescription();
+                listener.onPageError(url, description == null ? "" : description.toString());
+            }
+        });
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onProgressChanged(WebView view, int newProgress) {
+                if (listener != null) listener.onPageProgress(Math.max(0, Math.min(100, newProgress)));
+            }
+
+            @Override
+            public void onReceivedTitle(WebView view, String title) {
+                if (listener != null) listener.onPageTitle(title == null ? "" : title);
+            }
+        });
         webView.addJavascriptInterface(jsProbe, "M4Input");
         setContentView(webView);
         webView.loadUrl(initialUrl);
@@ -89,8 +130,12 @@ final class BrowserPresentation extends Presentation {
 
     void destroyBrowser() {
         if (webView == null) return;
+        // Do not navigate to about:blank during teardown: navigation callbacks are product state
+        // and must not overwrite the last real URL that BrowserBridgeService will restore.
         webView.stopLoading();
-        webView.loadUrl("about:blank");
+        webView.removeJavascriptInterface("M4Input");
+        webView.setWebViewClient(new WebViewClient());
+        webView.setWebChromeClient(new WebChromeClient());
         webView.clearHistory();
         webView.removeAllViews();
         webView.destroy();

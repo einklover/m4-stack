@@ -1,6 +1,7 @@
 package com.murphy.m4screenbridge.browser;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -25,6 +26,7 @@ import com.murphy.m4screenbridge.browser.patch.LogicalMonoFrame;
 import com.murphy.m4screenbridge.browser.patch.RgbaFrameProbe;
 import com.murphy.m4screenbridge.Prefs;
 import com.murphy.m4screenbridge.ScreenBridgeService;
+import com.murphy.m4screenbridge.browser.session.BrowserConnectionState;
 import com.murphy.m4screenbridge.browser.stream.M4B3;
 import com.murphy.m4screenbridge.browser.stream.M4B3Codec;
 import com.murphy.m4screenbridge.browser.stream.M4B3InputState;
@@ -44,6 +46,10 @@ import java.util.Locale;
  * App-owned 480x800 WebView VirtualDisplay session. Owned by BrowserBridgeService.
  * ImageReader produces logical MONO1 frames; the M4B3 sender owns ACK/diff state
  * and never performs socket I/O on the capture callback.
+ *
+ * <p>The WebView/VirtualDisplay lifecycle is intentionally independent from the M4 TCP lifecycle:
+ * transport loss must not blank or destroy the browser. Reconnect starts a fresh M4B3 session and
+ * sends the newest captured page as a keyframe.</p>
  */
 public final class VirtualBrowserSession {
     public static final int WIDTH = 480;
@@ -55,6 +61,7 @@ public final class VirtualBrowserSession {
 
     private final Context host;
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final BrowserConnectionState connectionState = new BrowserConnectionState();
 
     private HandlerThread frameThread;
     private Handler frameHandler;
@@ -66,6 +73,7 @@ public final class VirtualBrowserSession {
     private M4B3Sender sender;
     private M4B3ReferenceReceiver localReceiver;
     private M4B3TcpTransport tcpTransport;
+    private volatile long transportGeneration;
     private String transportMode = "none";
     private String transportEndpoint = "";
     private volatile boolean transportConnected;
@@ -95,6 +103,10 @@ public final class VirtualBrowserSession {
     private volatile int lastRgbGain256 = ExtraDimCompensation.UNITY_GAIN;
     private volatile long applyErrors;
     private volatile String currentUrl = "";
+    private volatile String pageTitle = "";
+    private volatile int pageProgress;
+    private volatile boolean pageLoading;
+    private volatile String pageError = "";
     private volatile String error = "";
 
     private volatile long logicalFrameId = -1;
@@ -129,6 +141,10 @@ public final class VirtualBrowserSession {
         stop();
         String url = normalizeUrl(rawUrl);
         currentUrl = url;
+        pageTitle = "";
+        pageProgress = 0;
+        pageLoading = true;
+        pageError = "";
         error = "";
         frameCount = 0;
         imageWidth = 0;
@@ -215,11 +231,50 @@ public final class VirtualBrowserSession {
             Display display = virtualDisplay.getDisplay();
             if (display == null) throw new IllegalStateException("virtual display has no Display");
 
-            presentation = new BrowserPresentation(host, display, url);
+            presentation = new BrowserPresentation(host, display, url, new BrowserPresentation.Listener() {
+                @Override
+                public void onPageStarted(String pageUrl) {
+                    if (!pageUrl.isEmpty()) currentUrl = pageUrl;
+                    pageLoading = true;
+                    pageProgress = 0;
+                    pageError = "";
+                    persistCurrentUrl();
+                }
+
+                @Override
+                public void onPageFinished(String pageUrl) {
+                    if (!pageUrl.isEmpty()) currentUrl = pageUrl;
+                    pageLoading = false;
+                    pageProgress = 100;
+                    persistCurrentUrl();
+                }
+
+                @Override
+                public void onPageProgress(int progress) {
+                    pageProgress = progress;
+                    if (progress >= 100) pageLoading = false;
+                }
+
+                @Override
+                public void onPageTitle(String title) {
+                    pageTitle = title == null ? "" : title;
+                }
+
+                @Override
+                public void onPageError(String pageUrl, String description) {
+                    if (!pageUrl.isEmpty()) currentUrl = pageUrl;
+                    pageError = description == null ? "" : description;
+                    pageLoading = false;
+                }
+            });
             presentation.show();
             active = true;
         } catch (Throwable t) {
             error = t.getClass().getSimpleName() + ": " + safeMessage(t);
+            try {
+                connectionState.fatal(error);
+            } catch (IllegalStateException ignored) {
+            }
             stopInternal(false);
         }
     }
@@ -357,19 +412,37 @@ public final class VirtualBrowserSession {
         return active;
     }
 
+    public BrowserConnectionState.Snapshot connectionSnapshot() {
+        return connectionState.snapshot();
+    }
+
+    public String currentUrl() {
+        return currentUrl;
+    }
+
+    public String productStatusLine() {
+        BrowserConnectionState.Snapshot state = connectionState.snapshot();
+        StringBuilder out = new StringBuilder(state.summary());
+        if (!currentUrl.isEmpty()) out.append(" | ").append(currentUrl);
+        if (pageLoading) out.append(" | loading ").append(pageProgress).append('%');
+        return out.toString();
+    }
+
     public String snapshot() {
         if (!active) {
-            return error.isEmpty() ? "虚拟浏览器 M1：未启动" : "虚拟浏览器 M1：启动失败 | " + error;
+            return error.isEmpty() ? "虚拟浏览器 M5：未启动" : "虚拟浏览器 M5：启动失败 | " + error;
         }
         long age = lastFrameElapsedMs == 0 ? -1
                 : Math.max(0, SystemClock.elapsedRealtime() - lastFrameElapsedMs);
+        BrowserConnectionState.Snapshot connection = connectionState.snapshot();
         StringBuilder sb = new StringBuilder();
-        sb.append("虚拟浏览器 M1：运行中 | display ")
+        sb.append("虚拟浏览器 M5：运行中 | display ")
                 .append(WIDTH).append('x').append(HEIGHT)
                 .append('@').append(DENSITY_DPI).append("dpi")
-                .append(" | frames ").append(frameCount);
+                .append(" | frames ").append(frameCount)
+                .append("\nstate ").append(connection.summary());
         if (imageWidth > 0) {
-            sb.append(" | image ").append(imageWidth).append('x').append(imageHeight)
+            sb.append("\nimage ").append(imageWidth).append('x').append(imageHeight)
                     .append(" stride ").append(rowStride).append('/').append(pixelStride)
                     .append(" | rgbSig ").append(Long.toHexString(lastRgbSignature))
                     .append(" | rgbaSig ").append(Long.toHexString(lastRgbaSignature));
@@ -393,7 +466,7 @@ public final class VirtualBrowserSession {
                 .append(String.format(Locale.ROOT, " dirty %.2f%%", lastDirtyRatio * 100.0))
                 .append(" | total bytes ").append(patchPayloadBytes)
                 .append(" | applyErr ").append(applyErrors)
-                .append("\nM4B3 ").append(transportMode).append(' ').append(transportEndpoint)
+                .append("\nM4B3 legacy ").append(transportMode).append(' ').append(transportEndpoint)
                 .append(transportConnected ? " connected" : " disconnected")
                 .append(protocolInFlight ? " in-flight" : " idle")
                 .append(protocolPending ? " pending" : "")
@@ -423,6 +496,10 @@ public final class VirtualBrowserSession {
             if (!probe.lastLog.isEmpty()) sb.append("\njs ").append(probe.lastLog);
         }
         if (!currentUrl.isEmpty()) sb.append("\nURL: ").append(currentUrl);
+        if (!pageTitle.isEmpty()) sb.append("\n标题: ").append(pageTitle);
+        sb.append(" | load ").append(pageProgress).append('%')
+                .append(pageLoading ? " loading" : " idle");
+        if (!pageError.isEmpty()) sb.append("\n页面错误: ").append(pageError);
         if (!error.isEmpty()) sb.append("\n错误: ").append(error);
         return sb.toString();
     }
@@ -514,38 +591,42 @@ public final class VirtualBrowserSession {
     }
 
     public void applyHostOverride(String host, int port) {
-        android.content.SharedPreferences sp =
-                hostCtx().getSharedPreferences(ScreenBridgeService.PREFS, android.content.Context.MODE_PRIVATE);
-        android.content.SharedPreferences.Editor e = sp.edit();
+        SharedPreferences sp = hostCtx().getSharedPreferences(
+                ScreenBridgeService.PREFS, Context.MODE_PRIVATE);
+        SharedPreferences.Editor e = sp.edit();
         if (host != null) e.putString(Prefs.KEY_M4B3_HOST, host.trim());
         if (port > 0) e.putInt(Prefs.KEY_M4B3_PORT, port);
         e.apply();
     }
 
-    private android.content.Context hostCtx() {
+    private Context hostCtx() {
         return host;
     }
 
     private void startTransport() {
-        android.content.SharedPreferences sp =
-                host.getSharedPreferences(ScreenBridgeService.PREFS, android.content.Context.MODE_PRIVATE);
+        SharedPreferences sp = host.getSharedPreferences(
+                ScreenBridgeService.PREFS, Context.MODE_PRIVATE);
         String rawHost = Prefs.m4b3HostRaw(sp);
         int port = Prefs.m4b3Port(sp);
         M4LanDiscovery.HostMode mode = M4LanDiscovery.classify(rawHost);
         discoveryEngine = new M4LanDiscovery.Engine();
         if (mode == M4LanDiscovery.HostMode.MANUAL) {
+            connectionState.startManual(rawHost, port);
             discoveryEngine.setManual(rawHost, port);
             applyDiscoveryDecision(discoveryEngine.decision(), false);
             return;
         }
         if (mode == M4LanDiscovery.HostMode.LOOPBACK) {
+            connectionState.startLoopback();
             discoveryEngine.setLoopback();
             applyDiscoveryDecision(discoveryEngine.decision(), false);
             return;
         }
+        connectionState.startAuto();
         String cachedHost = Prefs.cachedHost(sp);
         int cachedPort = Prefs.cachedPort(sp);
-        M4LanDiscovery.Endpoint cached = M4LanDiscovery.validHost(cachedHost) && M4LanDiscovery.validPort(cachedPort)
+        M4LanDiscovery.Endpoint cached = M4LanDiscovery.validHost(cachedHost)
+                && M4LanDiscovery.validPort(cachedPort)
                 ? new M4LanDiscovery.Endpoint("cached", cachedHost, cachedPort) : null;
         discoveryEngine.startAuto(cached, SystemClock.elapsedRealtime());
         applyDiscoveryDecision(discoveryEngine.decision(), false);
@@ -574,6 +655,7 @@ public final class VirtualBrowserSession {
                 if (eng == null) return;
                 eng.onError(message, SystemClock.elapsedRealtime());
                 discoverySnap = eng.snapshot();
+                connectionState.discoveryError(message);
             }
         });
         nsdDiscovery.start();
@@ -598,25 +680,32 @@ public final class VirtualBrowserSession {
             startLoopbackTransport();
             return;
         }
-        if (d.source == M4LanDiscovery.Source.NONE) {
+        if (d.source == M4LanDiscovery.Source.NONE || !d.hasEndpoint()) {
             stopTcpOnly();
-            transportMode = "none";
+            transportMode = "auto";
             transportEndpoint = "";
             transportConnected = false;
-            return;
-        }
-        if (!d.hasEndpoint()) {
-            stopTcpOnly();
-            transportMode = "none";
-            transportEndpoint = "";
+            if (connectionState.snapshot().mode == BrowserConnectionState.Mode.AUTO) {
+                connectionState.clearAutoEndpoint("waiting for M4 discovery");
+            }
             return;
         }
         if (persistCache && d.source == M4LanDiscovery.Source.DISCOVERED) {
-            android.content.SharedPreferences sp =
-                    host.getSharedPreferences(ScreenBridgeService.PREFS, android.content.Context.MODE_PRIVATE);
+            SharedPreferences sp = host.getSharedPreferences(
+                    ScreenBridgeService.PREFS, Context.MODE_PRIVATE);
             Prefs.storeCachedEndpoint(sp, d.endpoint.host, d.endpoint.port);
         }
-        startTcpTransport(d.endpoint.host, d.endpoint.port, d.source.name().toLowerCase(Locale.ROOT));
+        BrowserConnectionState.Snapshot cs = connectionState.snapshot();
+        if (cs.mode == BrowserConnectionState.Mode.AUTO) {
+            BrowserConnectionState.Source source = d.source == M4LanDiscovery.Source.DISCOVERED
+                    ? BrowserConnectionState.Source.DISCOVERED
+                    : BrowserConnectionState.Source.CACHED;
+            boolean same = cs.source == source && d.endpoint.host.equals(cs.host)
+                    && d.endpoint.port == cs.port;
+            if (!same) connectionState.selectAutoEndpoint(source, d.endpoint.host, d.endpoint.port);
+        }
+        startTcpTransport(d.endpoint.host, d.endpoint.port,
+                d.source.name().toLowerCase(Locale.ROOT));
     }
 
     private void startLoopbackTransport() {
@@ -632,6 +721,7 @@ public final class VirtualBrowserSession {
         });
         sender.connect();
         helloStarted = true;
+        connectionState.connected();
     }
 
     private void startTcpTransport(String hostName, int port, String modeLabel) {
@@ -643,13 +733,19 @@ public final class VirtualBrowserSession {
         stopTcpOnly();
         transportMode = modeLabel;
         transportEndpoint = ep;
-        tcpTransport = new M4B3TcpTransport(protocolHandler, new M4B3TcpTransport.Listener() {
+        transportConnected = false;
+        connectionState.connecting();
+        final long generation = transportGeneration;
+        M4B3TcpTransport next = new M4B3TcpTransport(protocolHandler, new M4B3TcpTransport.Listener() {
             @Override
             public void onConnected(String endpoint) {
+                if (!isCurrentTransport(generation)) return;
                 transportEndpoint = endpoint;
                 transportConnected = true;
-                transportReconnects = tcpTransport == null ? transportReconnects : tcpTransport.reconnects();
+                transportReconnects = tcpTransport == null
+                        ? transportReconnects : tcpTransport.reconnects();
                 transportError = "";
+                connectionState.connected();
                 M4B3Sender s = sender;
                 if (s == null) return;
                 if (!helloStarted) {
@@ -663,11 +759,14 @@ public final class VirtualBrowserSession {
 
             @Override
             public void onDisconnected(String reason) {
+                if (!isCurrentTransport(generation)) return;
                 transportConnected = false;
                 if (!reason.isEmpty()) transportError = reason;
+                connectionState.disconnected(reason, true);
                 M4B3Sender s = sender;
                 if (s != null) s.noteTransportLost();
                 main.post(() -> {
+                    if (!isCurrentTransport(generation)) return;
                     cancelActivePointer("tcp-disconnect");
                     keyState.onTransportLost();
                 });
@@ -676,23 +775,30 @@ public final class VirtualBrowserSession {
 
             @Override
             public void onReply(byte[] packet) {
+                if (!isCurrentTransport(generation)) return;
                 handleInbound(packet);
             }
 
             @Override
             public void onError(String message) {
+                if (!isCurrentTransport(generation)) return;
                 transportError = message == null ? "" : message;
+                connectionState.disconnected(transportError, true);
             }
         });
-        sender = new M4B3Sender(tcpTransport);
-        tcpTransport.start(hostName, port);
+        tcpTransport = next;
+        next.start(hostName, port);
+    }
+
+    private boolean isCurrentTransport(long generation) {
+        return generation == transportGeneration && tcpTransport != null;
     }
 
     private void stopTcpOnly() {
-        if (tcpTransport != null) {
-            tcpTransport.stop();
-            tcpTransport = null;
-        }
+        transportGeneration++;
+        M4B3TcpTransport oldTransport = tcpTransport;
+        tcpTransport = null;
+        if (oldTransport != null) oldTransport.stop();
         if (sender != null) {
             sender.disconnect();
             sender = null;
@@ -782,11 +888,6 @@ public final class VirtualBrowserSession {
             frameThread = null;
             frameHandler = null;
         }
-        if (protocolThread != null) {
-            protocolThread.quitSafely();
-            protocolThread = null;
-            protocolHandler = null;
-        }
         main.removeCallbacks(discoveryTick);
         if (nsdDiscovery != null) {
             nsdDiscovery.stop();
@@ -798,13 +899,25 @@ public final class VirtualBrowserSession {
             discoveryEngine = null;
         }
         stopTcpOnly();
+        if (protocolThread != null) {
+            protocolThread.quitSafely();
+            protocolThread = null;
+            protocolHandler = null;
+        }
+        connectionState.stop();
         logicalFrameId = -1;
         if (clearError) error = "";
     }
 
+    private void persistCurrentUrl() {
+        SharedPreferences sp = host.getSharedPreferences(
+                ScreenBridgeService.PREFS, Context.MODE_PRIVATE);
+        Prefs.storeBrowserLastUrl(sp, currentUrl);
+    }
+
     private static String normalizeUrl(String raw) {
         String url = raw == null ? "" : raw.trim();
-        if (url.isEmpty()) return "https://example.com/";
+        if (url.isEmpty()) return "about:blank";
         String lower = url.toLowerCase(Locale.ROOT);
         if (lower.startsWith("http://") || lower.startsWith("https://")
                 || lower.startsWith("data:") || lower.startsWith("about:")) {

@@ -2,7 +2,7 @@ package com.murphy.m4screenbridge;
 
 import android.content.SharedPreferences;
 
-/** Tunables read from SharedPreferences with safe clamping. */
+/** Tunables and Browser Bridge product state read from SharedPreferences with safe clamping. */
 public final class Prefs {
     public static final String KEY_THRESHOLD = "threshold";
     public static final String KEY_DITHER = "dither";
@@ -14,6 +14,8 @@ public final class Prefs {
     public static final String KEY_M4B3_PORT = "m4b3_port";
     public static final String KEY_M4B3_CACHED_HOST = "m4b3_cached_host";
     public static final String KEY_M4B3_CACHED_PORT = "m4b3_cached_port";
+    public static final String KEY_BROWSER_RESUME_ENABLED = "browser_resume_enabled";
+    public static final String KEY_BROWSER_LAST_URL = "browser_last_url";
     public static final int DEF_M4B3_PORT = 48624;
 
     public static final int DEF_THRESHOLD = 128;
@@ -73,6 +75,33 @@ public final class Prefs {
     public static void clearCachedEndpoint(SharedPreferences sp) {
         if (sp == null) return;
         sp.edit().remove(KEY_M4B3_CACHED_HOST).remove(KEY_M4B3_CACHED_PORT).apply();
+    }
+
+    public static boolean browserResumeEnabled(SharedPreferences sp) {
+        return sp != null && sp.getBoolean(KEY_BROWSER_RESUME_ENABLED, false);
+    }
+
+    public static String browserLastUrl(SharedPreferences sp) {
+        if (sp == null) return "";
+        String url = sp.getString(KEY_BROWSER_LAST_URL, "");
+        return url == null ? "" : url.trim();
+    }
+
+    public static void setBrowserResumeEnabled(SharedPreferences sp, boolean enabled) {
+        if (sp == null) return;
+        sp.edit().putBoolean(KEY_BROWSER_RESUME_ENABLED, enabled).apply();
+    }
+
+    /** Persist only real browser destinations; lab data: pages must never replace product state. */
+    public static void storeBrowserLastUrl(SharedPreferences sp, String rawUrl) {
+        if (sp == null || rawUrl == null) return;
+        String url = rawUrl.trim();
+        String lower = url.toLowerCase(java.util.Locale.ROOT);
+        if (!(lower.startsWith("http://") || lower.startsWith("https://")
+                || "about:blank".equals(lower))) {
+            return;
+        }
+        sp.edit().putString(KEY_BROWSER_LAST_URL, url).apply();
     }
 
     private static int clamp(int v, int lo, int hi) {

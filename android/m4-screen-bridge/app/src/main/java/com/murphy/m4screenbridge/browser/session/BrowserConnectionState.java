@@ -1,36 +1,16 @@
 package com.murphy.m4screenbridge.browser.session;
 
 /**
- * Product-facing Browser Bridge connection state.
+ * Thread-safe product-facing Browser Bridge connection state.
  *
  * <p>This class deliberately contains no Android or socket code. Discovery and transport remain
  * responsible for doing work; they report deterministic events here so UI/notification/dumpsys do
  * not have to infer state from a collection of booleans and free-form strings.</p>
  */
 public final class BrowserConnectionState {
-    public enum State {
-        DISABLED,
-        DISCOVERING,
-        CONNECTING,
-        CONNECTED,
-        RECONNECTING,
-        ERROR
-    }
-
-    public enum Mode {
-        NONE,
-        AUTO,
-        MANUAL,
-        LOOPBACK
-    }
-
-    public enum Source {
-        NONE,
-        MANUAL,
-        DISCOVERED,
-        CACHED,
-        LOOPBACK
-    }
+    public enum State { DISABLED, DISCOVERING, CONNECTING, CONNECTED, RECONNECTING, ERROR }
+    public enum Mode { NONE, AUTO, MANUAL, LOOPBACK }
+    public enum Source { NONE, MANUAL, DISCOVERED, CACHED, LOOPBACK }
 
     public static final class Snapshot {
         public final State state;
@@ -85,7 +65,7 @@ public final class BrowserConnectionState {
     private long reconnects;
     private String error = "";
 
-    public void stop() {
+    public synchronized void stop() {
         generation++;
         state = State.DISABLED;
         mode = Mode.NONE;
@@ -96,18 +76,18 @@ public final class BrowserConnectionState {
         error = "";
     }
 
-    public void startAuto() {
+    public synchronized void startAuto() {
         begin(Mode.AUTO);
         state = State.DISCOVERING;
     }
 
-    public void startManual(String host, int port) {
+    public synchronized void startManual(String host, int port) {
         validateTcpEndpoint(host, port);
         begin(Mode.MANUAL);
         selectEndpoint(Source.MANUAL, host, port);
     }
 
-    public void startLoopback() {
+    public synchronized void startLoopback() {
         begin(Mode.LOOPBACK);
         source = Source.LOOPBACK;
         host = "";
@@ -116,16 +96,25 @@ public final class BrowserConnectionState {
     }
 
     /** AUTO discovery selected cached or newly resolved endpoint. */
-    public void selectAutoEndpoint(Source source, String host, int port) {
+    public synchronized void selectAutoEndpoint(Source newSource, String newHost, int newPort) {
         if (mode != Mode.AUTO) throw new IllegalStateException("not in AUTO mode");
-        if (source != Source.CACHED && source != Source.DISCOVERED) {
+        if (newSource != Source.CACHED && newSource != Source.DISCOVERED) {
             throw new IllegalArgumentException("AUTO endpoint source must be cached/discovered");
         }
-        selectEndpoint(source, host, port);
+        validateTcpEndpoint(newHost, newPort);
+        boolean sameEndpoint = newHost.trim().equalsIgnoreCase(host) && newPort == port && hasEndpoint();
+        State previous = state;
+        selectEndpoint(newSource, newHost, newPort);
+        // mDNS commonly promotes an already-connected cached endpoint to DISCOVERED. That is a
+        // metadata improvement, not a new TCP attempt, so preserve the transport state.
+        if (sameEndpoint && (previous == State.CONNECTED || previous == State.RECONNECTING)) {
+            state = previous;
+            if (state == State.CONNECTED) error = "";
+        }
     }
 
     /** AUTO currently has no usable endpoint but discovery remains live. */
-    public void clearAutoEndpoint(String reason) {
+    public synchronized void clearAutoEndpoint(String reason) {
         if (mode != Mode.AUTO) throw new IllegalStateException("not in AUTO mode");
         source = Source.NONE;
         host = "";
@@ -134,8 +123,8 @@ public final class BrowserConnectionState {
         if (reason != null && !reason.trim().isEmpty()) error = reason.trim();
     }
 
-    /** The transport has started/restarted a connect attempt for the selected endpoint. */
-    public void connecting() {
+    /** The transport has started a first connect attempt for the selected endpoint. */
+    public synchronized void connecting() {
         requireStarted();
         if (!hasEndpoint()) {
             if (mode == Mode.AUTO) {
@@ -147,22 +136,20 @@ public final class BrowserConnectionState {
         state = State.CONNECTING;
     }
 
-    public void connected() {
+    public synchronized void connected() {
         requireStarted();
         if (!hasEndpoint()) throw new IllegalStateException("connected without endpoint");
         state = State.CONNECTED;
         error = "";
     }
 
-    /**
-     * Transport loss. A retrying transport exposes RECONNECTING; exhausted/non-retrying failures
-     * become ERROR, except AUTO with no endpoint which returns to DISCOVERING.
-     */
-    public void disconnected(String reason, boolean willRetry) {
+    /** Transport loss or a failed connect attempt. */
+    public synchronized void disconnected(String reason, boolean willRetry) {
         requireStarted();
         if (reason != null && !reason.trim().isEmpty()) error = reason.trim();
         if (willRetry && hasEndpoint()) {
-            reconnects++;
+            // A socket failure can produce both onError and onDisconnected. Count once.
+            if (state != State.RECONNECTING) reconnects++;
             state = State.RECONNECTING;
         } else if (mode == Mode.AUTO && !hasEndpoint()) {
             state = State.DISCOVERING;
@@ -172,19 +159,19 @@ public final class BrowserConnectionState {
     }
 
     /** Discovery problems are diagnostic while AUTO discovery is still allowed to recover. */
-    public void discoveryError(String message) {
+    public synchronized void discoveryError(String message) {
         if (mode != Mode.AUTO) return;
         if (message != null && !message.trim().isEmpty()) error = message.trim();
         if (!hasEndpoint() && state != State.DISABLED) state = State.DISCOVERING;
     }
 
-    public void fatal(String message) {
+    public synchronized void fatal(String message) {
         requireStarted();
         error = message == null ? "" : message.trim();
         state = State.ERROR;
     }
 
-    public Snapshot snapshot() {
+    public synchronized Snapshot snapshot() {
         return new Snapshot(state, mode, source, host, port, generation, reconnects, error);
     }
 
