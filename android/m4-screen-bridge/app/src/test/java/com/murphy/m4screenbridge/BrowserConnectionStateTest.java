@@ -5,6 +5,7 @@ import com.murphy.m4screenbridge.browser.session.BrowserConnectionState;
 public final class BrowserConnectionStateTest {
     public static void main(String[] args) {
         testAutoDiscoveryAndReconnect();
+        testReconnectAttemptStaysReconnectingUntilProtocolReady();
         testSameEndpointPromotionPreservesConnection();
         testDifferentDiscoveredEndpointReconnects();
         testManualFailure();
@@ -38,6 +39,25 @@ public final class BrowserConnectionStateTest {
         eq(BrowserConnectionState.Source.NONE, s.snapshot().source);
         s.stop();
         eq(BrowserConnectionState.State.DISABLED, s.snapshot().state);
+    }
+
+    private static void testReconnectAttemptStaysReconnectingUntilProtocolReady() {
+        BrowserConnectionState s = new BrowserConnectionState();
+        s.startAuto();
+        s.selectAutoEndpoint(BrowserConnectionState.Source.DISCOVERED, "10.0.0.2", 48624);
+        s.connected();
+        s.disconnected("eof", true);
+        eq(BrowserConnectionState.State.RECONNECTING, s.snapshot().state);
+
+        // A replacement TCP socket is only another transport attempt. Product CONNECTED must
+        // remain gated on the M4B3 HELLO handshake, so beginning that attempt must not erase
+        // the reconnecting state or hide the failure strip.
+        s.connecting();
+        eq(BrowserConnectionState.State.RECONNECTING, s.snapshot().state);
+
+        // Protocol readiness is the event that clears the reconnect state.
+        s.connected();
+        eq(BrowserConnectionState.State.CONNECTED, s.snapshot().state);
     }
 
     private static void testSameEndpointPromotionPreservesConnection() {
