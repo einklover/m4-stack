@@ -13,6 +13,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.Process;
+import android.util.Log;
 
 import com.murphy.m4screenbridge.MainActivity;
 import com.murphy.m4screenbridge.Prefs;
@@ -27,7 +28,9 @@ import java.io.PrintWriter;
  * closing/recreating the activity must not tear down the WebView/VirtualDisplay session.
  */
 public final class BrowserBridgeService extends Service {
+    private static final String TAG = "M4BrowserService";
     private static final String ACTION_START_URL = "com.murphy.m4screenbridge.browser.START_URL";
+    private static final String ACTION_RESUME = "com.murphy.m4screenbridge.browser.RESUME";
     private static final String ACTION_SELF_TEST = "com.murphy.m4screenbridge.browser.SELF_TEST";
     private static final String ACTION_LANDMARK = "com.murphy.m4screenbridge.browser.LANDMARK";
     private static final String ACTION_INPUT_TEST = "com.murphy.m4screenbridge.browser.INPUT_TEST";
@@ -60,6 +63,14 @@ public final class BrowserBridgeService extends Service {
             return START_NOT_STICKY;
         }
 
+        // A sticky restart may deliver a null Intent. Do not create an idle foreground service when
+        // the user has explicitly disabled resume or there is no restorable product URL.
+        if ((action == null || ACTION_RESUME.equals(action)) && !hasRestorableProductSession(prefs())) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+
         enterForeground();
         applyHostExtras(intent);
         if (ACTION_INJECT_BASE.equals(action)) {
@@ -81,8 +92,12 @@ public final class BrowserBridgeService extends Service {
             session.start(intent == null ? null : intent.getStringExtra(EXTRA_URL));
             Prefs.storeBrowserLastUrl(sp, session.currentUrl());
             acquireWakeLock();
-        } else if (action == null) {
-            restoreProductSessionIfConfigured();
+        } else if (action == null || ACTION_RESUME.equals(action)) {
+            if (!restoreProductSessionIfConfigured()) {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+                stopSelf(startId);
+                return START_NOT_STICKY;
+            }
         }
         updateNotification();
         return Prefs.browserResumeEnabled(prefs()) ? START_STICKY : START_NOT_STICKY;
@@ -108,6 +123,29 @@ public final class BrowserBridgeService extends Service {
         i.setAction(ACTION_START_URL);
         i.putExtra(EXTRA_URL, url);
         context.startForegroundService(i);
+    }
+
+    /**
+     * Resume only a session the user previously enabled. Safe to call from Activity cold-start,
+     * BOOT_COMPLETED, package replacement, or a controller that does not know whether the FGS lives.
+     */
+    public static boolean resumeIfConfigured(Context context) {
+        if (context == null) return false;
+        BrowserBridgeService running = instance;
+        if (running != null && running.session != null && running.session.isActive()) return true;
+        SharedPreferences sp = context.getSharedPreferences(
+                ScreenBridgeService.PREFS, Context.MODE_PRIVATE);
+        if (!hasRestorableProductSession(sp)) return false;
+        Intent i = new Intent(context, BrowserBridgeService.class);
+        i.setAction(ACTION_RESUME);
+        try {
+            context.startForegroundService(i);
+            return true;
+        } catch (RuntimeException e) {
+            Log.w(TAG, "resume start rejected: " + e.getClass().getSimpleName() + ": "
+                    + (e.getMessage() == null ? "" : e.getMessage()));
+            return false;
+        }
     }
 
     public static void startJavaScriptSelfTest(Context context) {
@@ -205,17 +243,19 @@ public final class BrowserBridgeService extends Service {
         if (host != null || port > 0) session.applyHostOverride(host, port);
     }
 
-    private void restoreProductSessionIfConfigured() {
-        if (session == null || session.isActive()) return;
+    private boolean restoreProductSessionIfConfigured() {
+        if (session == null) return false;
+        if (session.isActive()) return true;
         SharedPreferences sp = prefs();
-        if (!Prefs.browserResumeEnabled(sp)) return;
-        String lastUrl = Prefs.browserLastUrl(sp);
-        if (lastUrl.isEmpty()) {
-            Prefs.setBrowserResumeEnabled(sp, false);
-            return;
-        }
-        session.start(lastUrl);
-        if (session.isActive()) acquireWakeLock();
+        if (!hasRestorableProductSession(sp)) return false;
+        session.start(Prefs.browserLastUrl(sp));
+        if (!session.isActive()) return false;
+        acquireWakeLock();
+        return true;
+    }
+
+    private static boolean hasRestorableProductSession(SharedPreferences sp) {
+        return Prefs.browserResumeEnabled(sp) && !Prefs.browserLastUrl(sp).isEmpty();
     }
 
     private SharedPreferences prefs() {
