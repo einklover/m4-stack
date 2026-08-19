@@ -34,21 +34,11 @@ Do not reconstruct current project state from old chat history.
 |-------|------|--------|--------|
 | **#34** refresh hygiene | `8ff32859cb52dd82a6fdc4990337ff5988a69ee5` | `agent/eink-browser-bridge-refresh-flicker` | **CLOSED.** User optical PASS. Count-8 is not a sole FULL trigger; content-aware unique coverage / transition churn drives stock HALF hygiene. |
 | **#38** host soak | `bd23f7317c132bde937abe7eb0ee2d11970d8af1` | `agent/eink-browser-bridge-host-soak` | `PASS_AUTOMATED_HOST`. Tests only vs `821acd8`. |
-| **#39** discovery | merge of `a7aee33` + `8ff3285` | `agent/eink-browser-bridge-discovery` | Host mDNS/DNS-SD at `f0cfeb3`/`a7aee33`. Real-device AUTO discovery / reconnect is the remaining gate. Do not merge to `main` until that evidence exists. |
+| **#39** discovery | `57527e8919055f6f191d4f46f8a69d34d6746204` | `agent/eink-browser-bridge-discovery` | **CLOSED.** Device AUTO / manual / service-restart / M4-reboot FirstBaseline PASS on Motorola `ZY22KN7WSK` + Murphy APP1. Merge ancestors: `8ff3285` + `a7aee33`. Do not merge to `main` from this file. |
 
-## Device-validate #39 discovery
+## Closed #39 device gate
 
-Install / flash **only** from the integrated discovery head (must contain both `8ff3285` and `a7aee33`). Murphy firmware flashes remain **APP1-only @ 0x6e0000**, hash-verified, OTA **slot 1**. Never APP0 / bootloader / partition table / full erase.
-
-Prove on the real Motorola + M4:
-
-1. no typed IP is required (empty `m4b3_host` / AUTO discovers `_m4b3._tcp`);
-2. explicit manual host override still wins and bypasses discovery;
-3. Android Browser Bridge service restart re-discovers;
-4. M4 reboot / reconnect recovers with FirstBaseline FULL and no white glass;
-5. no display or touch regression vs the optically confirmed #34 hygiene behavior.
-
-Leave #39 open until that device evidence exists. Do not claim discovery device acceptance from host tests.
+Evidence lives on GitHub Issue #39 (`m4-discovery-device-013`). Integrated head `57527e8` was flashed APP1-only @ `0x6e0000` / OTA slot 1 and installed as the debug APK. AUTO discovers `_m4b3._tcp` with empty `m4b3_host`; manual override still wins; service restart re-discovers; M4 hard-reset reconnects on the discovered endpoint with required FirstBaseline FULL and no white glass.
 
 ## Safety invariants (do not regress)
 
@@ -76,7 +66,7 @@ Current execution issues:
 - **#33 — M4 Browser Bridge touch return into the hidden WebView**
 - **#34 — Browser Bridge runtime FULL-refresh flicker / content-aware hygiene** — **CLOSED** at `8ff3285` after user optical PASS.
 - **#38 — Host soak for #34 merge-boundary coverage** — `PASS_AUTOMATED_HOST` at `bd23f73`.
-- **#39 — Browser Bridge LAN discovery / auto-connect** — host mDNS / `NsdManager` at `a7aee33`, integrating closed #34 hygiene `8ff3285`. Real-device AUTO discovery / reconnect is the remaining gate.
+- **#39 — Browser Bridge LAN discovery / auto-connect** — **CLOSED** at `57527e8` after Motorola + M4 AUTO discovery / reconnect PASS. Merge of `a7aee33` + closed #34 `8ff3285`.
 
 Completed Browser Bridge milestones:
 
@@ -123,10 +113,10 @@ agent/eink-browser-bridge-refresh-flicker   @ 8ff3285
 agent/eink-browser-bridge-host-soak         @ bd23f73
 ```
 
-LAN discovery / auto-connect (#39) is the current execution branch. After the no-force merge it contains both `8ff3285` and `a7aee33`:
+Closed #39 discovery head (do not treat as `main`; contains both `8ff3285` and `a7aee33`):
 
 ```text
-agent/eink-browser-bridge-discovery
+agent/eink-browser-bridge-discovery         @ 57527e8
 ```
 
 Stale / alias remotes (do not treat as execution heads; do not delete history):
@@ -135,7 +125,7 @@ Stale / alias remotes (do not treat as execution heads; do not delete history):
 - `origin/agent/eink-browser-bridge-stability-soak` == `821acd8` (flicker alias)
 - `origin/agent/eink-browser-bridge-soak` == `9f611c7` (#35 Phase A checklist only)
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Use `agent/eink-browser-bridge-refresh-flicker` only as the closed #34 hygiene ancestor. Use `agent/eink-browser-bridge-discovery` for #39 LAN discovery device validation. Validated M2 remains on `agent/eink-browser-bridge-m2`.
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Use `agent/eink-browser-bridge-refresh-flicker` only as the closed #34 hygiene ancestor. Use `agent/eink-browser-bridge-discovery` @ `57527e8` as the closed #39 discovery + hygiene integration. Validated M2 remains on `agent/eink-browser-bridge-m2`.
 
 Always inspect HEAD before editing.
 

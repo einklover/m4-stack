@@ -1,7 +1,7 @@
 # E-ink Browser Bridge design
 
-Status: M0–M4 implemented on device; #34 optical PASS CLOSED at `8ff3285`; #39 LAN discovery integrating that hygiene head, real-device AUTO proof remaining  
-Current implementation branch: `agent/eink-browser-bridge-discovery` (merge of `a7aee33` + `8ff3285`)  
+Status: M0–M4 implemented on device; #34 optical PASS CLOSED at `8ff3285`; #39 LAN AUTO discovery CLOSED at `57527e8`  
+Current implementation branch: `agent/eink-browser-bridge-discovery` (`57527e8`, merge of `a7aee33` + `8ff3285`)  
 Target: Murphy M4 + Android `m4-screen-bridge`
 
 ## 1. Goal
