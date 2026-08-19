@@ -6,6 +6,8 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -36,6 +38,15 @@ final class BrowserPresentation extends Presentation {
     private final String initialUrl;
     private final Listener listener;
     private final JsProbe jsProbe = new JsProbe();
+    private final Handler statusHandler = new Handler(Looper.getMainLooper());
+    private final Runnable statusTick = new Runnable() {
+        @Override
+        public void run() {
+            if (webView == null) return;
+            setBridgeStatus(BrowserBridgeService.bridgeOverlayStatus());
+            statusHandler.postDelayed(this, 750);
+        }
+    };
     private WebView webView;
     private TextView bridgeStatus;
     private String bridgeStatusText = "";
@@ -127,6 +138,7 @@ final class BrowserPresentation extends Presentation {
 
         setContentView(root);
         webView.loadUrl(initialUrl);
+        statusHandler.post(statusTick);
     }
 
     void setBridgeStatus(String text) {
@@ -170,6 +182,7 @@ final class BrowserPresentation extends Presentation {
     }
 
     void destroyBrowser() {
+        statusHandler.removeCallbacks(statusTick);
         if (webView == null) return;
         bridgeStatus = null;
         bridgeStatusText = "";
