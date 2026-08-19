@@ -1,7 +1,7 @@
 # E-ink Browser Bridge design
 
-Status: M0–M4 implemented on device; #34 optical gate still OPEN; #39 host-only LAN discovery implemented, real-device validation deferred  
-Current implementation branch: `agent/eink-browser-bridge-discovery` @ `f0cfeb3caf7881c31904a3b8a253918854ac33eb`  
+Status: M0–M4 implemented on device; #34 optical PASS CLOSED at `8ff3285`; #39 LAN discovery integrating that hygiene head, real-device AUTO proof remaining  
+Current implementation branch: `agent/eink-browser-bridge-discovery` (merge of `a7aee33` + `8ff3285`)  
 Target: Murphy M4 + Android `m4-screen-bridge`
 
 ## 1. Goal
@@ -225,6 +225,8 @@ Maintain counters such as:
 
 Trigger a full/cleanup refresh when a threshold is crossed rather than blindly doing a full refresh every N frames.
 
+Browser Bridge production policy (M4PanelDirty): unique tile coverage and transition churn drive a stock HALF hygiene clean from the frozen present snapshot. A fixed tiny-Partial count is not a sole FULL trigger. FirstBaseline / Untrusted / DenseArea / Fragmented / reconnect recovery stay absolute FULL. Do not invent custom LUT/voltage/waveform.
+
 Exact waveform selection must follow the M4's existing display driver capabilities; this design must not invent unsupported grayscale/partial modes.
 
 ## 6. Transport
@@ -274,17 +276,18 @@ Android (`M4LanDiscovery` + `NsdM4Discovery`) classifies `m4b3_host` and selects
 
 Discovery is lifecycle-bounded: one `NsdManager` listener, one in-flight resolve, queue/candidate cap 8, at most 3 discover restarts, 8 s search timeout. `VirtualBrowserSession.stop()` drops the listener, multicast lock, and engine. Status is exposed on the session snapshot (`src=`, `phase=`, `ep=`, retries/errors) without a UI redesign.
 
-### 6.1.2 Staged heads and deferred real-device proof
+### 6.1.2 Staged heads and remaining real-device proof
 
-Host-only implementation landed at `f0cfeb3` (`PASS_AUTOMATED_HOST`, `DEVICE_NOT_TOUCHED`). It is **not** real-device accepted.
+Host-only discovery landed at `f0cfeb3` / `a7aee33`. #34 optical PASS closed at `8ff3285`. Those heads diverged after `821acd8` and must stay ancestors of the discovery branch via a normal merge.
 
 | Stage | Head | Meaning |
 |-------|------|---------|
-| #34 optical-flicker automated | `821acd8b71464032304b1d90e1ca27c29a7d8320` | Nearby HUD/glyph windows merge so sparse taps stay Partial. **OPEN** until a human confirms HUD/BTN_A updates no longer visibly FULL-flash. |
-| #38 host soak | `bd23f7317c132bde937abe7eb0ee2d11970d8af1` | Deterministic merge-boundary / ACK / presentBuf host tests. Device not touched. |
-| #39 discovery host | `f0cfeb3caf7881c31904a3b8a253918854ac33eb` | `_m4b3._tcp` advertise + Android DNS-SD selection. Device not touched. |
+| #34 nearby-window merge | `821acd8b71464032304b1d90e1ca27c29a7d8320` | Sparse HUD/glyph windows stay Partial. Ancestor of both later heads. |
+| #34 hygiene (CLOSED) | `8ff32859cb52dd82a6fdc4990337ff5988a69ee5` | Content-aware unique coverage / transition churn drives stock HALF hygiene. Count-8 is not a sole FULL trigger. User optical PASS. |
+| #38 host soak | `bd23f7317c132bde937abe7eb0ee2d11970d8af1` | Deterministic merge-boundary / ACK / presentBuf host tests. |
+| #39 discovery host | `f0cfeb3caf7881c31904a3b8a253918854ac33eb` / `a7aee3315c129c2d48bf91c03436825b6fc05e21` | `_m4b3._tcp` advertise + Android DNS-SD selection. |
 
-Ancestry: `821acd8` is an ancestor of `bd23f73`, which is an ancestor of `f0cfeb3`. Morning resume order (optical inspect → only then discovery device-validate → else stay on preserved #34 glass) lives in `HANDOFF.md`. Do not install or flash discovery until #34 optical PASS. Firmware flashes stay APP1-only @ `0x6e0000`, hash-verified slot 1.
+Do not merge discovery to `main` until real-device AUTO discovery / reconnect evidence exists. Firmware flashes stay APP1-only @ `0x6e0000`, hash-verified slot 1.
 
 Binary packet envelope proposal:
 
@@ -657,9 +660,9 @@ Later Browser Bridge work, including LAN discovery, must not regress these. They
 - Frozen PSRAM `presentBuf`: Home must not blank an in-flight FULL. FULL uses `waveformLabBaseline(presentBuf)`; lastPresented is copied from presentBuf only on success.
 - Physical `lastPresented` baseline is invalidated on disconnect, UI write, panel reinit, and failed present. Uncertain baselines stay untrusted.
 - `FRAME_ACK` is independent of physical refresh. Session commits accepted CRC even if the presenter is busy or failed.
-- Dense / fragmented / recover / FirstBaseline / cadence FULL fallbacks remain. Do not force every frame Partial.
-- No waveform / LUT / voltage changes in this line of work.
+- Dense / fragmented / recover / FirstBaseline stay absolute FULL. Hygiene is stock HALF from the frozen present snapshot, driven by unique coverage / transition churn — not a fixed tiny-Partial count.
+- No custom LUT / voltage / waveform invention. Hygiene uses the existing stock HALF path.
 - No Accessibility / root / adb / global input as product behavior. Browser input is owned WebView injection via M4B3 TOUCH.
 - Discovery must not change M4B3 framing, ACK, display, or input. Firmware advertises `_m4b3._tcp` only while the STA listener has a valid IPv4 and never calls `MDNS.end()`.
 
-Morning resume (optical inspect of current glass first; discovery device-validate only after #34 optical PASS; otherwise stay on preserved #34 state) is in `HANDOFF.md`. Do not claim optical or real-device discovery acceptance from host tests.
+#34 optical PASS is closed at `8ff3285`. Remaining #39 gate is real-device AUTO discovery / reconnect on the integrated head. Do not claim that from host tests.

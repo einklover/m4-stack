@@ -71,6 +71,9 @@ class HalDisplay {
                               bool turnOff = false);
   // Waveform Lab: absolute FULL refresh to the given frame (baseline setup).
   void waveformLabBaseline(const uint8_t* frame);
+  // Snapshot-absolute stock HALF (0xD7 both-plane clean). Hygiene only —
+  // FirstBaseline / Untrusted / Recover stay waveformLabBaseline FULL.
+  void waveformLabHygiene(const uint8_t* frame);
   // Waveform Lab: windowed diff refresh (strip-by-strip page-turn animation).
   uint32_t waveformLabRefreshWindow(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                                     uint16_t x, uint16_t y, uint16_t w, uint16_t h,

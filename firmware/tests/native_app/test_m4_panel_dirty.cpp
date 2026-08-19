@@ -54,11 +54,18 @@ void assertAligned(const Plan& p) {
 int main() {
   assert(M4PanelDirty::kMaxWindows == 4);
   assert(M4PanelDirty::kMaxPartialChangedPixels == 107520u);
-  assert(M4PanelDirty::kMaxPartialsSinceFull == 8);
-  assert(M4PanelDirty::kMaxCumulativePartialPixels == 384000u);
+  assert(M4PanelDirty::kMaxHygieneCoveragePixels == 96000u);
+  assert(M4PanelDirty::kMaxHygieneChurnPixels == 192000u);
+  assert(M4PanelDirty::kHardSafetyPartials == 64);
+  assert(M4PanelDirty::kHardSafetyMinCoveragePixels == 16384u);
+  assert(M4PanelDirty::kHardSafetyMinChurnPixels == 32768u);
+  assert(M4PanelDirty::kMaxPartialsSinceFull == 64);
+  assert(M4PanelDirty::kMaxCumulativePartialPixels == 192000u);
   assert(M4PanelDirty::kMergeGapX == 96);
   assert(M4PanelDirty::kMergeGapY == 96);
   assert(M4PanelDirty::kMaxMergeUnionArea == 30720u);
+  assert(M4PanelDirty::kCoverageWords == 24);
+  assert(M4PanelDirty::kTilePixels == 512u);
 
   // No-change => skip, no windows.
   {
@@ -289,32 +296,101 @@ int main() {
     assert(rec.reason == Reason::ForcedFullRecovery);
   }
 
-  // Repeated partials => forced full cadence.
+  // Count of 8 (legacy mechanical cadence) is no longer a sole Full/Hygiene trigger.
   {
     auto prev = whitePhys();
     auto next = whitePhys();
     setBlack(next, 40, 40);
     Plan p{};
     assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
-    Decision d = M4PanelDirty::decide(true, true, p, M4PanelDirty::kMaxPartialsSinceFull, 0);
-    assert(d.mode == Mode::Full);
-    assert(d.reason == Reason::CadenceCount);
-    d = M4PanelDirty::decide(true, true, p, M4PanelDirty::kMaxPartialsSinceFull - 1, 0);
+    Decision d = M4PanelDirty::decide(true, true, p, 8, 8, 512);
+    assert(d.mode == Mode::Partial);
+    assert(d.reason == Reason::SparsePartial);
+  }
+
+  // 32 tiny same-tile sparse updates stay Partial (no count-only hygiene).
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    setBlack(next, 40, 40);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    uint32_t churn = 0;
+    for (uint32_t n = 0; n < 32; ++n) {
+      Decision d = M4PanelDirty::decide(true, true, p, n, churn, 512);
+      assert(d.mode == Mode::Partial);
+      assert(d.reason == Reason::SparsePartial);
+      churn = M4PanelDirty::satAdd(churn, p.changedPixels);
+    }
+  }
+
+  // Unique tile coverage since last clean => Hygiene CadenceArea.
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    setBlack(next, 40, 40);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    Decision d = M4PanelDirty::decide(true, true, p, 2, 100,
+                                      M4PanelDirty::kMaxHygieneCoveragePixels);
+    assert(d.mode == Mode::Hygiene);
+    assert(d.reason == Reason::CadenceArea);
+    d = M4PanelDirty::decide(true, true, p, 2, 100, M4PanelDirty::kMaxHygieneCoveragePixels - 1);
     assert(d.mode == Mode::Partial);
   }
 
-  // Cumulative-area forced full.
+  // Transition churn => Hygiene CadenceCount. Toggle of one tile is bounded
+  // until accumulated changed pixels cross the churn ceiling.
   {
     auto prev = whitePhys();
     auto next = whitePhys();
     fill(next, 0, 0, 16, 16);  // 256 px
     Plan p{};
     assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
-    Decision d = M4PanelDirty::decide(true, true, p, 0, M4PanelDirty::kMaxCumulativePartialPixels - 256);
-    assert(d.mode == Mode::Full);
-    assert(d.reason == Reason::CadenceArea);
-    d = M4PanelDirty::decide(true, true, p, 0, 0);
+    Decision d = M4PanelDirty::decide(true, true, p, 5,
+                                      M4PanelDirty::kMaxHygieneChurnPixels - p.changedPixels, 512);
+    assert(d.mode == Mode::Hygiene);
+    assert(d.reason == Reason::CadenceCount);
+    d = M4PanelDirty::decide(true, true, p, 5, 0, 512);
     assert(d.mode == Mode::Partial);
+  }
+
+  // Hard safety ceiling requires evidence. 64 tiny updates with no coverage
+  // or churn stay Partial; 64 + min coverage/churn is Hygiene.
+  {
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    setBlack(next, 8, 8);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    Decision d = M4PanelDirty::decide(true, true, p, M4PanelDirty::kHardSafetyPartials, 100, 100);
+    assert(d.mode == Mode::Partial);
+    d = M4PanelDirty::decide(true, true, p, M4PanelDirty::kHardSafetyPartials, 100,
+                             M4PanelDirty::kHardSafetyMinCoveragePixels);
+    assert(d.mode == Mode::Hygiene);
+    assert(d.reason == Reason::CadenceCount);
+    d = M4PanelDirty::decide(true, true, p, M4PanelDirty::kHardSafetyPartials,
+                             M4PanelDirty::kHardSafetyMinChurnPixels, 100);
+    assert(d.mode == Mode::Hygiene);
+    assert(d.reason == Reason::CadenceCount);
+    d = M4PanelDirty::decide(true, true, p, M4PanelDirty::kHardSafetyPartials - 1, 100,
+                             M4PanelDirty::kHardSafetyMinCoveragePixels);
+    assert(d.mode == Mode::Partial);
+  }
+
+  // Coverage bitmap: marking one 32x16 window is exactly one tile.
+  {
+    uint32_t bits[M4PanelDirty::kCoverageWords];
+    M4PanelDirty::clearCoverage(bits);
+    assert(M4PanelDirty::coveragePixels(bits) == 0);
+    Plan p{};
+    p.windowCount = 1;
+    p.windows[0] = M4PanelDirty::Rect{32, 16, 32, 16};
+    M4PanelDirty::markPlanCoverage(bits, p);
+    assert(M4PanelDirty::coverageTileCount(bits) == 1);
+    assert(M4PanelDirty::coveragePixels(bits) == 512);
+    M4PanelDirty::markPlanCoverage(bits, p);  // idempotent
+    assert(M4PanelDirty::coverageTileCount(bits) == 1);
   }
 
   // Coalesced newest-frame dirty is vs last successful physical, not skipped B.
@@ -523,7 +599,7 @@ int main() {
     assert(d.reason == Reason::FirstBaseline);
   }
 
-  // Cadence counters on scheduler: 8 partials then forced full, then reset.
+  // Scheduler: 32 tiny same-tile Partials never count-only Hygiene/Full.
   {
     M4PanelPresenter::Scheduler s;
     s.setMinIntervalMs(0);
@@ -536,25 +612,115 @@ int main() {
     s.offer(1, 1, 0);
     s.take(0);
     s.complete(true, 1, 1, 0, Mode::Full, 10, 0, 0, 0, Reason::FirstBaseline);
-    for (uint32_t i = 0; i < M4PanelDirty::kMaxPartialsSinceFull; ++i) {
+    for (uint32_t i = 0; i < 32; ++i) {
       s.offer(static_cast<int32_t>(i + 2), i + 2, 10 + i);
       s.take(10 + i);
       Decision d = s.decide(p);
       assert(d.mode == Mode::Partial);
+      assert(d.reason == Reason::SparsePartial);
+      s.notePolicy(d.mode, d.reason, p.changedPixels, p.windowArea, p.windowCount, &p);
       s.complete(true, i + 2, 11 + i, 0, Mode::Partial, 5, p.changedPixels, p.windowArea, p.windowCount,
                  d.reason);
     }
-    assert(s.state().partialOk == M4PanelDirty::kMaxPartialsSinceFull);
+    assert(s.state().partialOk == 32);
+    assert(s.state().hygieneReq == 0);
+    assert(s.state().fullOk == 1);
+    assert(s.state().uniqueCoveragePixels == 512);
     Decision d = s.decide(p);
-    assert(d.mode == Mode::Full);
-    assert(d.reason == Reason::CadenceCount);
-    s.offer(20, 20, 100);
-    s.take(100);
-    s.complete(true, 20, 101, 0, Mode::Full, 12, p.changedPixels, p.windowArea, p.windowCount, d.reason);
-    assert(s.state().partialsSinceFull == 0);
-    assert(s.state().cumulativePartialPixels == 0);
-    d = s.decide(p);
     assert(d.mode == Mode::Partial);
+  }
+
+  // Broad unique coverage eventually Hygienes and resets counters.
+  {
+    M4PanelPresenter::Scheduler s;
+    s.setMinIntervalMs(0);
+    s.acquire(M4PanelPresenter::Owner::BrowserBridge);
+    s.offer(1, 1, 0);
+    s.take(0);
+    s.complete(true, 1, 1, 0, Mode::Full, 10, 0, 0, 0, Reason::FirstBaseline);
+
+    auto presented = whitePhys();
+    auto candidate = whitePhys();
+    // Add 256x16 strips (8 tiles) so unique coverage crosses 25% before the
+    // 64-Partial safety ceiling can fire.
+    uint32_t steps = 0;
+    while (s.state().uniqueCoveragePixels < M4PanelDirty::kMaxHygieneCoveragePixels) {
+      const int y = static_cast<int>(steps * M4PanelDirty::kTileH);
+      assert(y + M4PanelDirty::kTileH <= static_cast<int>(M4PanelDirty::kHeight));
+      fill(candidate, 0, y, 256, M4PanelDirty::kTileH);
+      Plan p{};
+      assert(M4PanelDirty::plan(presented.data(), candidate.data(), presented.size(), p));
+      assert(p.windowCount >= 1);
+      s.offer(static_cast<int32_t>(steps + 2), steps + 2, 20 + steps);
+      s.take(20 + steps);
+      Decision d = s.decide(p);
+      if (d.mode == Mode::Hygiene) {
+        assert(d.reason == Reason::CadenceArea);
+        s.notePolicy(d.mode, d.reason, p.changedPixels, p.windowArea, p.windowCount, &p);
+        s.complete(true, steps + 2, 21 + steps, 0, Mode::Hygiene, 1700, p.changedPixels, p.windowArea,
+                   p.windowCount, d.reason);
+        assert(s.state().hygieneOk == 1);
+        assert(s.state().partialsSinceFull == 0);
+        assert(s.state().cumulativePartialPixels == 0);
+        assert(s.state().uniqueCoveragePixels == 0);
+        presented.swap(candidate);
+        break;
+      }
+      assert(d.mode == Mode::Partial);
+      s.notePolicy(d.mode, d.reason, p.changedPixels, p.windowArea, p.windowCount, &p);
+      s.complete(true, steps + 2, 21 + steps, 0, Mode::Partial, 5, p.changedPixels, p.windowArea,
+                 p.windowCount, d.reason);
+      presented.swap(candidate);
+      candidate = presented;
+      ++steps;
+      assert(steps < 40);
+    }
+    assert(s.state().hygieneOk == 1);
+    auto tiny = presented;
+    setBlack(tiny, 400, 8);
+    Plan p{};
+    assert(M4PanelDirty::plan(presented.data(), tiny.data(), presented.size(), p));
+    s.offer(400, 400, 400);
+    s.take(400);
+    Decision d = s.decide(p);
+    assert(d.mode == Mode::Partial);
+  }
+
+  // Hygiene failure does not reset counters and retries as ForcedFullRecovery.
+  {
+    M4PanelPresenter::Scheduler s;
+    s.setMinIntervalMs(0);
+    s.acquire(M4PanelPresenter::Owner::BrowserBridge);
+    auto prev = whitePhys();
+    auto next = whitePhys();
+    setBlack(next, 24, 24);
+    Plan p{};
+    assert(M4PanelDirty::plan(prev.data(), next.data(), prev.size(), p));
+    s.offer(1, 1, 0);
+    s.take(0);
+    s.complete(true, 1, 1, 0, Mode::Full, 10, 0, 0, 0, Reason::FirstBaseline);
+    Plan wide{};
+    wide.windowCount = 1;
+    wide.windows[0] = M4PanelDirty::Rect{0, 0, M4PanelDirty::kWidth, 240};  // half panel of tiles
+    s.notePolicy(Mode::Partial, Reason::SparsePartial, 1, 1, 1, &wide);
+    assert(s.state().uniqueCoveragePixels >= M4PanelDirty::kMaxHygieneCoveragePixels);
+    s.offer(2, 2, 20);
+    s.take(20);
+    Decision d = s.decide(p);
+    assert(d.mode == Mode::Hygiene);
+    assert(d.reason == Reason::CadenceArea);
+    const uint32_t covBefore = s.state().uniqueCoveragePixels;
+    s.notePolicy(d.mode, d.reason, p.changedPixels, p.windowArea, p.windowCount, &p);
+    s.complete(false, 0, 21, static_cast<uint32_t>(M4PanelPresenter::Error::DisplayFailed), Mode::Hygiene,
+               10, p.changedPixels, p.windowArea, p.windowCount, d.reason);
+    assert(s.state().hygieneErr == 1);
+    assert(s.state().hygieneOk == 0);
+    assert(!s.state().baselineTrusted);
+    assert(s.state().uniqueCoveragePixels == covBefore);
+    assert(s.state().pending);
+    d = s.decide(p);
+    assert(d.mode == Mode::Full);
+    assert(d.reason == Reason::ForcedFullRecovery);
   }
 
   printf("test_m4_panel_dirty: PASS\n");

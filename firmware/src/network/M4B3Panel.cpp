@@ -81,21 +81,21 @@ void logState(const char* why, uint32_t nowMs) {
   snapshot(s, nowMs);
   Serial.printf(
       "[%lu] [M4B3-PANEL] %s owner=%u busy=%d pend=%d trust=%d ever=%d epoch=%u req=%u ok=%u coal=%u drop=%u "
-      "full=%u/%u/%u part=%u/%u/%u nochg=%u n=%u cum=%u dirty=%u area=%u rects=%u reason=%s "
-      "full_ms=%u part_ms=%u src=%ld crc=0x%08x panel=0x%08x err=%u age=%u "
+      "full=%u/%u/%u part=%u/%u/%u hyg=%u/%u/%u nochg=%u n=%u cum=%u cov=%u dirty=%u area=%u rects=%u "
+      "reason=%s full_ms=%u part_ms=%u hyg_ms=%u src=%ld crc=0x%08x panel=0x%08x err=%u age=%u "
       "corners=%02x/%02x/%02x/%02x win=%u,%u %ux%u / %u,%u %ux%u heap=%u psram=%u\n",
       static_cast<unsigned long>(nowMs), why, static_cast<unsigned>(s.owner), s.busy ? 1 : 0,
       s.pending ? 1 : 0, s.baselineTrusted ? 1 : 0, s.everPresented ? 1 : 0, s.baselineEpoch, s.requested,
       s.completed, s.coalesced, s.dropped,
-      s.fullReq, s.fullOk, s.fullErr, s.partialReq, s.partialOk, s.partialErr, s.noChange,
-      s.partialsSinceFull, s.cumulativePartialPixels, s.lastDirtyPixels, s.lastDirtyArea,
-      static_cast<unsigned>(s.lastRectCount),
+      s.fullReq, s.fullOk, s.fullErr, s.partialReq, s.partialOk, s.partialErr, s.hygieneReq, s.hygieneOk,
+      s.hygieneErr, s.noChange, s.partialsSinceFull, s.cumulativePartialPixels, s.uniqueCoveragePixels,
+      s.lastDirtyPixels, s.lastDirtyArea, static_cast<unsigned>(s.lastRectCount),
       M4PanelDirty::reasonName(static_cast<M4PanelDirty::Reason>(s.lastPolicyReason)), s.lastFullMs,
-      s.lastPartialMs, static_cast<long>(s.sourceFrameId), static_cast<unsigned>(s.sourceCrc),
-      static_cast<unsigned>(s.panelCrc), s.lastError, s.ageMs, s.corner[0], s.corner[1], s.corner[2],
-      s.corner[3], s.lastWin[0][0], s.lastWin[0][1], s.lastWin[0][2], s.lastWin[0][3], s.lastWin[1][0],
-      s.lastWin[1][1], s.lastWin[1][2], s.lastWin[1][3], static_cast<unsigned>(ESP.getFreeHeap()),
-      static_cast<unsigned>(ESP.getFreePsram()));
+      s.lastPartialMs, s.lastHygieneMs, static_cast<long>(s.sourceFrameId),
+      static_cast<unsigned>(s.sourceCrc), static_cast<unsigned>(s.panelCrc), s.lastError, s.ageMs,
+      s.corner[0], s.corner[1], s.corner[2], s.corner[3], s.lastWin[0][0], s.lastWin[0][1], s.lastWin[0][2],
+      s.lastWin[0][3], s.lastWin[1][0], s.lastWin[1][1], s.lastWin[1][2], s.lastWin[1][3],
+      static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()));
 }
 
 void finishFailed(uint32_t nowMs, uint32_t err, M4PanelDirty::Mode mode, M4PanelDirty::Reason reason,
@@ -132,11 +132,13 @@ bool begin() {
   gRt.sched.reset();
   gRt.ready.store(true, std::memory_order_release);
   Serial.printf("[%lu] [M4B3-PANEL] ready snapshot=%u minInterval=%u maxPartialPct=28 maxWin=%u "
-                "maxPartialN=%u\n",
+                "hygCov=%u hygChurn=%u hygN=%u\n",
                 millis(), static_cast<unsigned>(kPanelBytes),
                 static_cast<unsigned>(M4PanelPresenter::kMinIntervalMs),
                 static_cast<unsigned>(M4PanelDirty::kMaxWindows),
-                static_cast<unsigned>(M4PanelDirty::kMaxPartialsSinceFull));
+                static_cast<unsigned>(M4PanelDirty::kMaxHygieneCoveragePixels),
+                static_cast<unsigned>(M4PanelDirty::kMaxHygieneChurnPixels),
+                static_cast<unsigned>(M4PanelDirty::kHardSafetyPartials));
   return true;
 }
 
@@ -274,7 +276,8 @@ void tick(HalDisplay& display, uint32_t nowMs) {
     } else {
       dec = gRt.sched.decide(plan);
       storeWindows(plan);
-      gRt.sched.notePolicy(dec.mode, dec.reason, plan.changedPixels, plan.windowArea, plan.windowCount);
+      gRt.sched.notePolicy(dec.mode, dec.reason, plan.changedPixels, plan.windowArea, plan.windowCount,
+                           &plan);
       injectFail = gRt.sched.consumeInjectedFailure();
       // Freeze a presenter-owned copy. Home/UI clearScreen() memsets the live
       // HAL framebuffer on another task; SSD1677 displayImpl re-reads that
@@ -316,7 +319,7 @@ void tick(HalDisplay& display, uint32_t nowMs) {
   Serial.printf("[%lu] [M4B3-PANEL] present-start mode=%s reason=%s src=%ld crc=0x%08x panel=0x%08x "
                 "dirty=%u area=%u rects=%u\n",
                 static_cast<unsigned long>(nowMs),
-                dec.mode == M4PanelDirty::Mode::Partial ? "partial" : "full",
+                M4PanelDirty::modeName(dec.mode),
                 M4PanelDirty::reasonName(dec.reason), static_cast<long>(frameId),
                 static_cast<unsigned>(sourceCrc), static_cast<unsigned>(panelCrc), plan.changedPixels,
                 plan.windowArea, static_cast<unsigned>(plan.windowCount));
@@ -336,6 +339,9 @@ void tick(HalDisplay& display, uint32_t nowMs) {
           break;
         }
       }
+    } else if (dec.mode == M4PanelDirty::Mode::Hygiene) {
+      // Stock HALF from the frozen snapshot. Not live HAL fb (white-glass).
+      display.waveformLabHygiene(gRt.presentBuf);
     } else {
       // Absolute FULL from the frozen snapshot, not the live HAL framebuffer.
       display.waveformLabBaseline(gRt.presentBuf);
@@ -401,15 +407,20 @@ void snapshot(Snapshot& out, uint32_t nowMs) {
   out.partialReq = st.partialReq;
   out.partialOk = st.partialOk;
   out.partialErr = st.partialErr;
+  out.hygieneReq = st.hygieneReq;
+  out.hygieneOk = st.hygieneOk;
+  out.hygieneErr = st.hygieneErr;
   out.noChange = st.noChange;
   out.partialsSinceFull = st.partialsSinceFull;
   out.cumulativePartialPixels = st.cumulativePartialPixels;
+  out.uniqueCoveragePixels = st.uniqueCoveragePixels;
   out.lastDirtyPixels = st.lastDirtyPixels;
   out.lastDirtyArea = st.lastDirtyArea;
   out.lastRectCount = st.lastRectCount;
   out.lastPolicyReason = st.lastPolicyReason;
   out.lastFullMs = st.lastFullMs;
   out.lastPartialMs = st.lastPartialMs;
+  out.lastHygieneMs = st.lastHygieneMs;
   out.sourceFrameId = st.lastSourceFrameId;
   out.sourceCrc = st.lastSourceCrc;
   out.panelCrc = st.lastPanelCrc;

@@ -18,55 +18,37 @@ Do not reconstruct current project state from old chat history.
 
 ## Authoritative staged heads (2026-08-19)
 
-Verified in this worktree and in the independent clone `/Volumes/z/paseo-agent/repos/einklover-m4-stack`. Ancestry is linear:
+#34 optical PASS is closed at `8ff3285`. #39 host discovery and #34 hygiene diverged after `821acd8` and are integrated with a normal no-force merge (both ancestors required):
 
 ```text
 229543e  #33 white-glass / frozen presentBuf
-   └── 821acd8  #34 nearby-window merge (optical-flicker automated head)
+   └── 821acd8  #34 nearby-window merge
+          ├── 8ff3285  #34 content-aware HALF hygiene (optical PASS, CLOSED)
           └── bd23f73  #38 host-soak tests
                  └── f0cfeb3  #39 host-only LAN discovery
+                        └── a7aee33  #39 morning handoff docs
+                               └── MERGE  #39 + #34 hygiene
 ```
 
 | Issue | Head | Branch | Status |
 |-------|------|--------|--------|
-| **#34** optical flicker | `821acd8b71464032304b1d90e1ca27c29a7d8320` | `agent/eink-browser-bridge-refresh-flicker` | **OPEN.** Automated `PASS_AUTOMATED`. Still waiting on **human optical confirmation** that HUD / BTN_A sparse updates no longer visibly FULL-flash. Do not claim optical acceptance. |
-| **#38** host soak | `bd23f7317c132bde937abe7eb0ee2d11970d8af1` | `agent/eink-browser-bridge-host-soak` | `PASS_AUTOMATED_HOST`. `DEVICE_NOT_TOUCHED`. Native / Android / debug-APK-build / `pio run -e murphy_m4` soak clean. Tests only vs `821acd8`; no production behavior change. |
-| **#39** discovery host | `f0cfeb3caf7881c31904a3b8a253918854ac33eb` | `agent/eink-browser-bridge-discovery` | `PASS_AUTOMATED_HOST`. `DEVICE_NOT_TOUCHED`. `_m4b3._tcp` mDNS / DNS-SD groundwork. Precedence **manual > discovered > cached > none**. Real-device discovery / reconnect proof is **deferred**. |
+| **#34** refresh hygiene | `8ff32859cb52dd82a6fdc4990337ff5988a69ee5` | `agent/eink-browser-bridge-refresh-flicker` | **CLOSED.** User optical PASS. Count-8 is not a sole FULL trigger; content-aware unique coverage / transition churn drives stock HALF hygiene. |
+| **#38** host soak | `bd23f7317c132bde937abe7eb0ee2d11970d8af1` | `agent/eink-browser-bridge-host-soak` | `PASS_AUTOMATED_HOST`. Tests only vs `821acd8`. |
+| **#39** discovery | merge of `a7aee33` + `8ff3285` | `agent/eink-browser-bridge-discovery` | Host mDNS/DNS-SD at `f0cfeb3`/`a7aee33`. Real-device AUTO discovery / reconnect is the remaining gate. Do not merge to `main` until that evidence exists. |
 
-Do not merge discovery to `main` until the #34 optical gate **and** a separate real-device discovery task both pass.
+## Device-validate #39 discovery
 
-## Morning resume order
-
-Do this in order. Do not skip A.
-
-### A. Optical gate first — inspect, do not mutate
-
-Look at the **current real M4 glass** without changing device state (no flash, no APK install, no service restart, no reboot, no adb/m4adb/serial contact that can refresh the panel).
-
-Answer #34: during the current HUD / BTN_A sparse updates, are there still visible FULL black/white flashes?
-
-- **PASS** → go to B.
-- **FAIL** → go to C. Do **not** install the discovery build.
-
-Leave #34 open until that human answer is recorded.
-
-### B. Only if optical PASS: device-validate #39 discovery
-
-Install / flash **only** from the chosen combined discovery head (`f0cfeb3` on `agent/eink-browser-bridge-discovery`, or a later commit that still contains `821acd8` + `bd23f73` + `f0cfeb3`). Murphy firmware flashes remain **APP1-only @ 0x6e0000**, hash-verified, OTA **slot 1**. Never APP0 / bootloader / partition table / full erase.
+Install / flash **only** from the integrated discovery head (must contain both `8ff3285` and `a7aee33`). Murphy firmware flashes remain **APP1-only @ 0x6e0000**, hash-verified, OTA **slot 1**. Never APP0 / bootloader / partition table / full erase.
 
 Prove on the real Motorola + M4:
 
 1. no typed IP is required (empty `m4b3_host` / AUTO discovers `_m4b3._tcp`);
 2. explicit manual host override still wins and bypasses discovery;
 3. Android Browser Bridge service restart re-discovers;
-4. M4 reboot / reconnect recovers;
-5. no display or touch regression vs the optically confirmed #34 behavior.
+4. M4 reboot / reconnect recovers with FirstBaseline FULL and no white glass;
+5. no display or touch regression vs the optically confirmed #34 hygiene behavior.
 
 Leave #39 open until that device evidence exists. Do not claim discovery device acceptance from host tests.
-
-### C. If optical FAIL: stay on the preserved #34 device state
-
-Do **not** install the discovery APK or flash the discovery firmware. Resume #34 flicker diagnosis from the current preserved glass / session first. Discovery work waits.
 
 ## Safety invariants (do not regress)
 
@@ -92,9 +74,9 @@ Current execution issues:
 - **#19 — JJWXC live long-catalog progressive-stream E2E**
 - **#32 — M3 Browser Bridge panel framebuffer mapping and display integration**
 - **#33 — M4 Browser Bridge touch return into the hidden WebView**
-- **#34 — Browser Bridge FULL-refresh flicker / nearby-window Partial** — automated host/device counters PASS at `821acd8`; **OPEN** pending human optical confirmation. Do not mutate the live M4 / Motorola / display session until that gate.
+- **#34 — Browser Bridge runtime FULL-refresh flicker / content-aware hygiene** — **CLOSED** at `8ff3285` after user optical PASS.
 - **#38 — Host soak for #34 merge-boundary coverage** — `PASS_AUTOMATED_HOST` at `bd23f73`.
-- **#39 — Browser Bridge LAN discovery / auto-connect groundwork** — host-only mDNS / `NsdManager` implementation on `agent/eink-browser-bridge-discovery` @ `f0cfeb3`. Real-device discovery / reconnect proof waits for the #34 optical gate.
+- **#39 — Browser Bridge LAN discovery / auto-connect** — host mDNS / `NsdManager` at `a7aee33`, integrating closed #34 hygiene `8ff3285`. Real-device AUTO discovery / reconnect is the remaining gate.
 
 Completed Browser Bridge milestones:
 
@@ -129,22 +111,22 @@ M4 touch-return work is on a parallel branch based on current `main` / M4 head, 
 agent/eink-browser-bridge-m4
 ```
 
-#34 optical-flicker automated fix:
+Closed #34 hygiene head:
 
 ```text
-agent/eink-browser-bridge-refresh-flicker   @ 821acd8
+agent/eink-browser-bridge-refresh-flicker   @ 8ff3285
 ```
 
-#38 host-soak (tests only, parent of discovery):
+#38 host-soak (tests only):
 
 ```text
 agent/eink-browser-bridge-host-soak         @ bd23f73
 ```
 
-LAN discovery / auto-connect groundwork (#39) is on a parallel branch based on the #38 host-soak head:
+LAN discovery / auto-connect (#39) is the current execution branch. After the no-force merge it contains both `8ff3285` and `a7aee33`:
 
 ```text
-agent/eink-browser-bridge-discovery         @ f0cfeb3
+agent/eink-browser-bridge-discovery
 ```
 
 Stale / alias remotes (do not treat as execution heads; do not delete history):
@@ -153,7 +135,7 @@ Stale / alias remotes (do not treat as execution heads; do not delete history):
 - `origin/agent/eink-browser-bridge-stability-soak` == `821acd8` (flicker alias)
 - `origin/agent/eink-browser-bridge-soak` == `9f611c7` (#35 Phase A checklist only)
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Use `agent/eink-browser-bridge-refresh-flicker` only if resuming #34 from the optical-fail path. Use `agent/eink-browser-bridge-discovery` for #39 LAN discovery after optical PASS. Validated M2 remains on `agent/eink-browser-bridge-m2`.
+Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, native-provider first-window, and Reader settings IA work lives on `main`. Start firmware work from `main`. Use `agent/eink-browser-bridge-m3` for Browser Bridge panel mapping (#32). Use `agent/eink-browser-bridge-m4` for touch return (#33). Use `agent/eink-browser-bridge-refresh-flicker` only as the closed #34 hygiene ancestor. Use `agent/eink-browser-bridge-discovery` for #39 LAN discovery device validation. Validated M2 remains on `agent/eink-browser-bridge-m2`.
 
 Always inspect HEAD before editing.
 

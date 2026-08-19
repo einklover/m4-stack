@@ -70,7 +70,9 @@ def show(label: str, panel: dict) -> None:
         f"{panel.get('partial_req')}/{panel.get('partial_err')} n={panel.get('n')} "
         f"cum={panel.get('cum')} dirty={panel.get('dirty')} rects={panel.get('rects')} "
         f"reason={reason_name(panel.get('reason', 0))} full_ms={panel.get('full_ms')} "
-        f"part_ms={panel.get('part_ms')} src={panel.get('src_id')} "
+        f"part_ms={panel.get('part_ms')} hyg={panel.get('hyg_ok')}/"
+        f"{panel.get('hyg_req')}/{panel.get('hyg_err')} cov={panel.get('cov')} "
+        f"hyg_ms={panel.get('hyg_ms')} src={panel.get('src_id')} "
         f"src_crc={panel.get('src_crc')} accepted={panel.get('accepted_crc')} "
         f"panel=0x{int(panel.get('panel_crc') or 0):08X} err={panel.get('err')} "
         f"win={panel.get('win')}",
@@ -95,7 +97,7 @@ def main() -> int:
     p.add_argument("--host", required=True)
     p.add_argument("--port", type=int, default=48624)
     p.add_argument("--interval", type=float, default=2.3)
-    p.add_argument("--sparse-count", type=int, default=24)
+    p.add_argument("--sparse-count", type=int, default=32)
     args = p.parse_args()
 
     print("=== baseline snapshot ===", flush=True)

@@ -395,6 +395,37 @@ int main() {
     assert(frozenCrc != M4B3::crc32(liveHal.data(), liveHal.size()));
   }
 
+  // Hygiene is a clean (resets coverage/churn) but is not FirstBaseline FULL.
+  {
+    M4PanelPresenter::Scheduler s;
+    s.setMinIntervalMs(0);
+    assert(s.acquire(M4PanelPresenter::Owner::BrowserBridge));
+    s.offer(1, 0x11, 0);
+    s.take(0);
+    s.complete(true, 0x22, 5, 0, M4PanelDirty::Mode::Full, 10, 0, 0, 0,
+               M4PanelDirty::Reason::FirstBaseline);
+    M4PanelDirty::Plan wide{};
+    wide.windowCount = 1;
+    wide.windows[0] = M4PanelDirty::Rect{0, 0, M4PanelDirty::kWidth, 240};
+    s.notePolicy(M4PanelDirty::Mode::Partial, M4PanelDirty::Reason::SparsePartial, 1, 1, 1, &wide);
+    M4PanelDirty::Plan tiny{};
+    tiny.changedPixels = 1;
+    tiny.windowCount = 1;
+    tiny.windows[0] = M4PanelDirty::Rect{8, 8, 8, 1};
+    s.offer(2, 0x22, 20);
+    s.take(20);
+    auto d = s.decide(tiny);
+    assert(d.mode == M4PanelDirty::Mode::Hygiene);
+    assert(d.reason == M4PanelDirty::Reason::CadenceArea);
+    s.notePolicy(d.mode, d.reason, 1, 8, 1, &tiny);
+    s.complete(true, 0x33, 25, 0, d.mode, 1700, 1, 8, 1, d.reason);
+    assert(s.state().hygieneOk == 1);
+    assert(s.state().fullOk == 1);
+    assert(s.state().uniqueCoveragePixels == 0);
+    assert(s.state().partialsSinceFull == 0);
+    assert(s.state().baselineTrusted);
+  }
+
   printf("test_m4_panel_presenter: PASS\n");
   return 0;
 }

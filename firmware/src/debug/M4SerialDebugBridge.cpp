@@ -587,16 +587,17 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
   if (strcmp(op, "m4b3_panel") == 0) {
     M4B3Tcp::Snapshot s;
     M4B3Tcp::snapshot(s);
-    char out[1088];
+    char out[1408];
     snprintf(out, sizeof(out),
              "{\"op\":\"m4b3_panel\",\"owner\":%u,\"busy\":%s,\"pending\":%s,"
              "\"req\":%u,\"ok\":%u,\"coal\":%u,\"drop\":%u,\"err\":%u,\"map_err\":%u,"
              "\"src_id\":%ld,\"src_crc\":%u,\"panel_crc\":%u,\"last_err\":%u,\"age_ms\":%u,"
              "\"accepted_id\":%ld,\"accepted_crc\":%u,\"corners\":[%u,%u,%u,%u],"
              "\"trusted\":%s,\"ever\":%s,\"epoch\":%u,\"full_req\":%u,\"full_ok\":%u,\"full_err\":%u,"
-             "\"partial_req\":%u,\"partial_ok\":%u,\"partial_err\":%u,\"no_change\":%u,"
-             "\"n\":%u,\"cum\":%u,\"dirty\":%u,\"area\":%u,\"rects\":%u,\"reason\":%u,"
-             "\"full_ms\":%u,\"part_ms\":%u,"
+             "\"partial_req\":%u,\"partial_ok\":%u,\"partial_err\":%u,"
+             "\"hyg_req\":%u,\"hyg_ok\":%u,\"hyg_err\":%u,\"no_change\":%u,"
+             "\"n\":%u,\"cum\":%u,\"cov\":%u,\"dirty\":%u,\"area\":%u,\"rects\":%u,\"reason\":%u,"
+             "\"full_ms\":%u,\"part_ms\":%u,\"hyg_ms\":%u,"
              "\"win\":[[%u,%u,%u,%u],[%u,%u,%u,%u],[%u,%u,%u,%u],[%u,%u,%u,%u]]}",
              static_cast<unsigned>(s.panelOwner), s.panelBusy ? "true" : "false",
              s.panelPending ? "true" : "false", s.presentReq, s.presentOk, s.presentCoal, s.presentDrop,
@@ -607,9 +608,10 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              static_cast<unsigned>(s.panelCorner[2]), static_cast<unsigned>(s.panelCorner[3]),
              s.panelTrusted ? "true" : "false", s.panelEverPresented ? "true" : "false", s.panelEpoch,
              s.fullReq, s.fullOk, s.fullErr, s.partialReq, s.partialOk,
-             s.partialErr, s.noChange, s.partialsSinceFull, s.cumulativePartialPixels, s.lastDirtyPixels,
-             s.lastDirtyArea, static_cast<unsigned>(s.lastRectCount), s.lastPolicyReason, s.lastFullMs,
-             s.lastPartialMs, s.lastWin[0][0], s.lastWin[0][1], s.lastWin[0][2], s.lastWin[0][3],
+             s.partialErr, s.hygieneReq, s.hygieneOk, s.hygieneErr, s.noChange, s.partialsSinceFull,
+             s.cumulativePartialPixels, s.uniqueCoveragePixels, s.lastDirtyPixels, s.lastDirtyArea,
+             static_cast<unsigned>(s.lastRectCount), s.lastPolicyReason, s.lastFullMs, s.lastPartialMs,
+             s.lastHygieneMs, s.lastWin[0][0], s.lastWin[0][1], s.lastWin[0][2], s.lastWin[0][3],
              s.lastWin[1][0], s.lastWin[1][1], s.lastWin[1][2], s.lastWin[1][3], s.lastWin[2][0],
              s.lastWin[2][1], s.lastWin[2][2], s.lastWin[2][3], s.lastWin[3][0], s.lastWin[3][1],
              s.lastWin[3][2], s.lastWin[3][3]);
