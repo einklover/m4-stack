@@ -39,6 +39,7 @@ Upstream component repos still exist (`einklover/m4-firmware` etc.). Prefer comm
 6. **Do not commit** reconstructed `open-m4-sdk` / `builtinFonts` / `.pio` / firmware binaries / plugin `.m4x` binaries.
 7. **m4sim is frozen after the 2026-08-13 Network Manager gate.** Do not expand simulator scope unless a future production firmware change proves a simulator correctness gap.
 8. **Preserve constrained-device design**: large HTTP/font/catalog work must remain bounded-memory, streaming-first, PSRAM-aware, and must not reintroduce full-body/full-font heap loads.
+9. **Local-agent knowledge is durable.** Any dispatched Paseo/local-agent run must read `docs/PASEO_LOCAL_AGENT_KNOWLEDGE.md` (fall back to `origin/main` if the task branch predates it), report `knowledge_delta` in `[PASEO_RESULT v1]`, and commit/push genuinely reusable tool paths, debugging traps, verified root causes, fixes, or safety notes back into that document. Do not store secrets or raw task-log noise there.
 
 ## First-time setup
 
