@@ -7,7 +7,9 @@ import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.view.Display;
+import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
@@ -18,6 +20,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.widget.TextView;
 
 /** Minimal Chromium/WebView surface hosted entirely on the M4 virtual display. */
 final class BrowserPresentation extends Presentation {
@@ -33,6 +37,8 @@ final class BrowserPresentation extends Presentation {
     private final Listener listener;
     private final JsProbe jsProbe = new JsProbe();
     private WebView webView;
+    private TextView bridgeStatus;
+    private String bridgeStatusText = "";
 
     BrowserPresentation(Context context, Display display, String initialUrl, Listener listener) {
         super(context, display);
@@ -53,11 +59,15 @@ final class BrowserPresentation extends Presentation {
             window.setAttributes(lp);
         }
 
+        FrameLayout root = new FrameLayout(getContext());
+        root.setBackgroundColor(Color.WHITE);
+
         webView = new WebView(getContext());
         webView.setBackgroundColor(Color.WHITE);
-        webView.setLayoutParams(new ViewGroup.LayoutParams(
+        FrameLayout.LayoutParams webLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
+                ViewGroup.LayoutParams.MATCH_PARENT);
+        root.addView(webView, webLp);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -100,8 +110,39 @@ final class BrowserPresentation extends Presentation {
             }
         });
         webView.addJavascriptInterface(jsProbe, "M4Input");
-        setContentView(webView);
+
+        bridgeStatus = new TextView(getContext());
+        bridgeStatus.setBackgroundColor(Color.BLACK);
+        bridgeStatus.setTextColor(Color.WHITE);
+        bridgeStatus.setTextSize(14);
+        bridgeStatus.setGravity(Gravity.CENTER_VERTICAL);
+        bridgeStatus.setPadding(12, 0, 12, 0);
+        bridgeStatus.setSingleLine(true);
+        bridgeStatus.setClickable(false);
+        bridgeStatus.setFocusable(false);
+        bridgeStatus.setVisibility(View.GONE);
+        FrameLayout.LayoutParams statusLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 44, Gravity.TOP);
+        root.addView(bridgeStatus, statusLp);
+
+        setContentView(root);
         webView.loadUrl(initialUrl);
+    }
+
+    void setBridgeStatus(String text) {
+        String clean = text == null ? "" : text.trim();
+        if (clean.equals(bridgeStatusText)) return;
+        bridgeStatusText = clean;
+        TextView status = bridgeStatus;
+        if (status == null) return;
+        if (clean.isEmpty()) {
+            status.setText("");
+            status.setVisibility(View.GONE);
+        } else {
+            status.setText(clean);
+            status.setVisibility(View.VISIBLE);
+            status.bringToFront();
+        }
     }
 
     void loadUrl(String url) {
@@ -130,6 +171,8 @@ final class BrowserPresentation extends Presentation {
 
     void destroyBrowser() {
         if (webView == null) return;
+        bridgeStatus = null;
+        bridgeStatusText = "";
         // Do not navigate to about:blank during teardown: navigation callbacks are product state
         // and must not overwrite the last real URL that BrowserBridgeService will restore.
         webView.stopLoading();
