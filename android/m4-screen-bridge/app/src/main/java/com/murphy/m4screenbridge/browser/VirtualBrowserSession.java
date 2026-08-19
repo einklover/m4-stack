@@ -787,6 +787,7 @@ public final class VirtualBrowserSession {
             }
         });
         tcpTransport = next;
+        sender = new M4B3Sender(next);
         next.start(hostName, port);
     }
 
