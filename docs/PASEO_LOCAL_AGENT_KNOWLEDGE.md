@@ -227,3 +227,51 @@ Root cause: presenter now always uses stock `displayWindow` FAST/DU. Dense with 
 Reuse: do not restore `waveformLabBaseline` / `waveformLabHygiene` on the Browser Bridge path. Host check: `g++-14 -std=c++14 -Wall -Wextra -Werror -I firmware/src firmware/tests/native_app/test_m4_panel_dirty.cpp` (dense 400×300 expects Partial+DenseArea). Device check: `m4adb wifi_prepare` then `m4b3_panel`; existing Android FGS with saved MANUAL host reconnects without a new `am start`.
 Caution: ghosting will increase; `kMinIntervalMs` is still 2000. `full_ms≈600` is a full-panel FAST, not OTP. Firmware sha256 `1c3a17cb37bbcf28807c188c4c72f5f844a34356af266abd8f44fcbd1ed8e192` flashed APP1 @ `0x6e0000` / OTA slot 1.
 Evidence: #42 `m5-touch-realweb-008`; `test_m4_panel_dirty` / `test_m4_panel_presenter` PASS; panel samples in `build/m5-touch-realweb-008/panel-*.json`.
+
+### 2026-08-19 — BrowserBridgeService is not exported — m5-product-session-010
+Context: `agent/eink-browser-bridge-m5-productization` on Motorola `ZY22KN7WSK`.
+Observed: `adb start-foreground-service ...BrowserBridgeService` is rejected; service `android:exported="false"`.
+Root cause: product FGS is app-private; lab/control intents are on exported `MainActivity`.
+Reuse: drive start/stop/lab pages with `am start -n com.murphy.m4screenbridge/.MainActivity -a com.murphy.m4screenbridge.browser.{STOP,INPUT_TEST,SELF_TEST,LANDMARK}`. Product URL start is the on-screen `启动/切换网页（自动恢复）` button (or `BrowserBridgeService.startUrl` in-process). Diagnose with `dumpsys activity service com.murphy.m4screenbridge/.browser.BrowserBridgeService`.
+Caution: `onCreate` also calls `resumeIfConfigured` unless the launch action is a lab control intent. Do not treat a missing dumpsys service as a crash if STOP just ran.
+Evidence: #42 `m5-product-session-010`; STOP via MainActivity delivered to running instance and `stopSessionAndSelf` ran.
+
+### 2026-08-19 — am extra spaces split the host token — m5-product-session-010
+Context: invalid-manual-host fail-soft (`Prefs.m4b3HostRaw` / `M4LanDiscovery.validHost`).
+Observed: `--es m4_host 'not a valid host!!!'` became `mode=manual endpoint=not:48624` reconnect storm. `--es m4_host 'badhost!!!'` fail-softed to AUTO `192.168.0.152:48624`.
+Root cause: `am` splits the extra on spaces; only the first token is stored. `not` classifies as a MANUAL host (`validHost` true enough to not fail-soft).
+Reuse: never put spaces in `--es m4_host`. Use a punctuation-only invalid token such as `badhost!!!` to exercise fail-soft. Empty host must omit the extra or use UI clear+`保存 M4 地址` (empty `--es` still swallows the next flag; see prior entry).
+Caution: a bad extra writes SharedPreferences via `handleLabIntent`/`saveM4Host`. Runtime AUTO from fail-soft does not by itself clear the stored raw string.
+Evidence: #42 `m5-product-session-010` dumpsys_J.txt vs dumpsys_J2.txt.
+
+### 2026-08-19 — Motorola DeviceGuard AutoRun kills BOOT_COMPLETED restore — m5-product-session-010
+Context: XT2437-4 / `paros_cn` serial `ZY22KN7WSK`; app already on `dumpsys deviceidle whitelist`.
+Observed: after `adb reboot`, `sys.boot_completed=1` at 2026-08-19T05:33:44Z. Logcat: `Start proc 7875:com.murphy.m4screenbridge ... for broadcast {...BrowserBridgeStartupReceiver}` at 13:34:02.251, then 71ms later `Force stopping com.murphy.m4screenbridge ... from pid 5015 and uid 10267 (com.motorola.deviceguard)` / DeviceGuard `[AutoRunServices]`. Shell cannot send `BOOT_COMPLETED` (`SecurityException`).
+Root cause: OEM AutoRun killer, not missing `RECEIVE_BOOT_COMPLETED` / receiver registration. Product receiver did run.
+Reuse: Gate G must capture ActivityManager start-proc + DeviceGuard force-stop lines. Prefs still survive: later `am start -n com.murphy.m4screenbridge/.MainActivity` restored `lastUrl` + AUTO. Do not treat DeviceGuard kill as an M4 firmware issue.
+Caution: a second phone reboot will not prove `resumeEnabled=false` vs AutoRun; use explicit STOP + cold launch for Stop semantics. Do not disable DeviceGuard unless the user asks.
+Evidence: #42 `m5-product-session-010` `/tmp/m5-product-session-010/G_logcat_boot.txt`.
+
+### 2026-08-19 — M4B3 can stay CONNECTED with CRC 0 until a new process + live listener — m5-product-session-010
+Context: Android-only M5 session against existing FAST firmware; no M4 flash.
+Observed: `svc wifi disable` incremented `reconnects` while dumpsys stayed `state connected`. After Wi-Fi restore and after a non-flash M4 DTR reboot, dumpsys stayed CONNECTED with `crc 0x00000000` / `patch frame -1` / `pending`. Host `TCP 192.168.0.152:48624` still opened. A later `am force-stop` + MainActivity launch (new pid) completed HELLO (`crc 0xE415B746`, panel `owner=2` `full_ms=630`).
+Root cause: transport/session can keep a zombie CONNECTED view when the same process reuses a sender/socket against a wedged or half-open M4 listener; HELLO does not complete until a new Android process talks to a live listener. `startTcpTransport` must construct `sender = new M4B3Sender(next)` before `next.start()` (mechanical fix `3a8a757`).
+Reuse: do not accept `state connected` without a non-zero CRC and advancing `patch frame`/`m4b3_panel` `age_ms`. Optical overlay is not machine-readable here; use dumpsys/logcat. Distinguish synthetic dumpsys taps from physical M4 touch.
+Caution: airplane-mode is not a reliable TCP interrupt on this Motorola (false idle). Prefer `svc wifi disable` or M4 DTR reboot. Never flash M4 for an Android-only recovery task.
+Evidence: #42 `m5-product-session-010`; dumpsys_D3_poll.txt CRC 0 vs dumpsys_F.txt CRC `0xE415B746`.
+
+### 2026-08-19 — M4 DTR reboot without firmware flash — m5-product-session-010
+Context: transport-interrupt recovery when `svc wifi` leaves a zombie TCP.
+Observed: stopping the unique m4adb daemon, toggling DTR/RTS on `/dev/cu.usbmodem101`, then starting one new daemon reset M4 panel counters (`epoch` increment, `trusted` false until a new HELLO) without APP1 write.
+Root cause: USB serial DTR/RTS resets the ESP32; this is not an OTA/APP1 flash.
+Reuse: only when the current daemon is dead or a reset is required: stop m4adb PIDs via `ps -axo pid=,command= | awk '/[m]4adb\.py/ {print $1}'` (never `pkill -f m4adb.py`), `rm -f /tmp/m4adb-*.sock`, DTR pulse, then `nohup ... m4adb.py daemon --ready-timeout 90`. Keep the new unique daemon; do not restart a healthy one.
+Caution: Android FGS can survive the M4 reboot and remain zombie CONNECTED; a new Android process is still required for HELLO. Firmware flash remains forbidden for Android-only tasks.
+Evidence: #42 `m5-product-session-010` DTR path; daemon pid 27186 after reboot.
+
+### 2026-08-19 — dumpsys snapshot can hide MainActivity controls — m5-product-session-010
+Context: uiautomator on `MainActivity` while INPUT_TEST `data:` URL is live.
+Observed: `browserStatusView` snapshot includes the full `data:` URL, so the status TextView fills the screen (`nodes=6`) and URL/host/start buttons are far below. One BACK from an EditText can leave the app to the launcher before Save is tapped.
+Root cause: snapshot string is unbounded.
+Reuse: swipe 5–8 times `input swipe 540 1700 540 700` until `EditText`/`保存 M4 地址` appear. Hide IME by switching to `com.android.inputmethod.latin/.LatinIME` and deleting; do not KEYCODE_BACK until Save/Start is tapped. `run-as` is not available on this installed APK (`package not debuggable` even for the debug-signed artifact).
+Caution: Sogou IME concatenates typed URLs. Prefer LatinIME + DEL-clear + `input text`.
+Evidence: #42 `m5-product-session-010` uidump_preG.xml vs uidump_cleared2.xml.
