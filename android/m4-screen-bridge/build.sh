@@ -72,6 +72,7 @@ if [ "${1:-}" = "--test" ]; then
     "$SHELL_SRC/BrowserKeyboardState.java" \
     "$SHELL_SRC/BrowserKeyboardRouter.java" \
     "$SHELL_SRC/BrowserWebEditorProbePolicy.java" \
+    "$SHELL_SRC/BrowserWebEditorProbeRetry.java" \
     "$SRC/browser/discovery/M4LanDiscovery.java" \
     "$TEST_SRC/TestMain.java" \
     "$TEST_SRC/BrowserPatchTest.java" \

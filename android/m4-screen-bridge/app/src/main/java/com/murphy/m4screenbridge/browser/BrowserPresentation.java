@@ -37,6 +37,7 @@ import com.murphy.m4screenbridge.browser.shell.BrowserAddressResolver;
 import com.murphy.m4screenbridge.browser.shell.BrowserKeyboardRouter;
 import com.murphy.m4screenbridge.browser.shell.BrowserShellStyle;
 import com.murphy.m4screenbridge.browser.shell.BrowserWebEditorProbePolicy;
+import com.murphy.m4screenbridge.browser.shell.BrowserWebEditorProbeRetry;
 import com.murphy.m4screenbridge.browser.shell.M4KeyboardView;
 
 import java.util.Locale;
@@ -58,6 +59,7 @@ final class BrowserPresentation extends Presentation {
     private final boolean shellEnabled;
     private final JsProbe jsProbe = new JsProbe();
     private final BrowserKeyboardRouter keyboardRouter = new BrowserKeyboardRouter();
+    private final BrowserWebEditorProbeRetry webEditorProbeRetry = new BrowserWebEditorProbeRetry();
     private final Handler statusHandler = new Handler(Looper.getMainLooper());
     private final Runnable statusTick = new Runnable() {
         @Override
@@ -502,6 +504,7 @@ final class BrowserPresentation extends Presentation {
     }
 
     private void showKeyboardForOmnibox() {
+        webEditorProbeRetry.invalidate();
         if (keyboard == null || omnibox == null) return;
         hidePanels();
         webEditorConnection = null;
@@ -529,6 +532,7 @@ final class BrowserPresentation extends Presentation {
     }
 
     private void hideKeyboard(boolean clearOmniboxFocus) {
+        webEditorProbeRetry.invalidate();
         keyboardRouter.clearTarget();
         keyboardTargetKind = KeyboardTargetKind.NONE;
         webEditorConnection = null;
@@ -539,27 +543,44 @@ final class BrowserPresentation extends Presentation {
         if (shellRoot != null) shellRoot.requestLayout();
     }
 
-    private void inspectWebEditorAfterTouch() {
+    private void scheduleWebEditorProbe(WebView view, long token, int attempt) {
+        if (view == null || !webEditorProbeRetry.isCurrent(token)) return;
+        long delayMs = BrowserWebEditorProbeRetry.delayMs(attempt);
+        view.postDelayed(() -> inspectWebEditorAfterTouch(view, token, attempt), delayMs);
+    }
+
+    private void inspectWebEditorAfterTouch(WebView expectedView, long token, int attempt) {
+        if (!webEditorProbeRetry.isCurrent(token)) return;
         WebView view = webView;
-        if (!shellEnabled || view == null) return;
-        if (omnibox != null && omnibox.hasFocus()) return;
-        if (!view.hasFocus()) {
-            if (keyboardTargetKind == KeyboardTargetKind.WEB) hideKeyboard(false);
+        if (!shellEnabled || view == null || view != expectedView) {
+            webEditorProbeRetry.invalidate();
+            return;
+        }
+        if (omnibox != null && omnibox.hasFocus()) {
+            webEditorProbeRetry.invalidate();
             return;
         }
 
         EditorInfo info = new EditorInfo();
-        InputConnection connection;
-        try {
-            connection = view.onCreateInputConnection(info);
-        } catch (RuntimeException ignored) {
-            connection = null;
+        InputConnection connection = null;
+        if (view.hasFocus()) {
+            try {
+                connection = view.onCreateInputConnection(info);
+            } catch (RuntimeException ignored) {
+                connection = null;
+            }
         }
-        if (connection == null || info.inputType == InputType.TYPE_NULL) {
-            if (keyboardTargetKind == KeyboardTargetKind.WEB) hideKeyboard(false);
+        if (connection != null && info.inputType != InputType.TYPE_NULL) {
+            webEditorProbeRetry.invalidate();
+            showKeyboardForWebEditor(connection, info);
             return;
         }
-        showKeyboardForWebEditor(connection, info);
+
+        if (BrowserWebEditorProbeRetry.hasNext(attempt)) {
+            scheduleWebEditorProbe(view, token, attempt + 1);
+            return;
+        }
+        if (keyboardTargetKind == KeyboardTargetKind.WEB) hideKeyboard(false);
     }
 
     private void submitWebEditor() {
@@ -658,6 +679,9 @@ final class BrowserPresentation extends Presentation {
     boolean dispatchBrowserTouch(MotionEvent event) {
         FrameLayout root = shellRoot;
         if (root == null || event == null) return false;
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            webEditorProbeRetry.invalidate();
+        }
         boolean panelsVisibleBeforeDispatch =
                 (tabsPanel != null && tabsPanel.getVisibility() == View.VISIBLE)
                 || (menuPanel != null && menuPanel.getVisibility() == View.VISIBLE);
@@ -673,7 +697,8 @@ final class BrowserPresentation extends Presentation {
                         event.getY(),
                         host.getTop(),
                         host.getBottom())) {
-            view.post(this::inspectWebEditorAfterTouch);
+            long token = webEditorProbeRetry.begin();
+            scheduleWebEditorProbe(view, token, 0);
         }
         return handled;
     }
@@ -710,6 +735,7 @@ final class BrowserPresentation extends Presentation {
 
     void destroyBrowser() {
         statusHandler.removeCallbacks(statusTick);
+        webEditorProbeRetry.invalidate();
         keyboardRouter.clearTarget();
         keyboardTargetKind = KeyboardTargetKind.NONE;
         webEditorConnection = null;
