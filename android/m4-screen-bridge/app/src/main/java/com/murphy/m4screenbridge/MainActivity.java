@@ -22,7 +22,7 @@ import android.widget.Toast;
 
 import com.murphy.m4screenbridge.browser.BrowserBridgeService;
 
-/** Control/status UI for both the M1 virtual browser FGS and the legacy accessibility bridge. */
+/** Control/status UI for the product Browser Bridge and the legacy accessibility bridge. */
 public class MainActivity extends Activity {
     private TextView statusView;
     private TextView browserStatusView;
@@ -73,7 +73,8 @@ public class MainActivity extends Activity {
                 m4HostEt.setText(intent.getStringExtra(BrowserBridgeService.EXTRA_HOST));
             }
             if (intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
-                m4PortEt.setText(String.valueOf(intent.getIntExtra(BrowserBridgeService.EXTRA_PORT, Prefs.DEF_M4B3_PORT)));
+                m4PortEt.setText(String.valueOf(intent.getIntExtra(
+                        BrowserBridgeService.EXTRA_PORT, Prefs.DEF_M4B3_PORT)));
             }
             if (intent.hasExtra(BrowserBridgeService.EXTRA_HOST)
                     || intent.hasExtra(BrowserBridgeService.EXTRA_PORT)) {
@@ -135,16 +136,15 @@ public class MainActivity extends Activity {
         statusView.setTextSize(14);
         root.addView(statusView);
 
-        root.addView(label("虚拟浏览器 M1（独立前台服务 + dirty patch）"));
+        root.addView(label("虚拟浏览器 M5（前台服务 + 自动发现/重连/恢复）"));
         browserStatusView = new TextView(this);
-        browserStatusView.setText("虚拟浏览器 M1：前台服务未启动");
+        browserStatusView.setText("虚拟浏览器 M5：前台服务未启动");
         browserStatusView.setTextSize(13);
         root.addView(browserStatusView);
 
         browserUrlEt = new EditText(this);
         browserUrlEt.setSingleLine(true);
-        browserUrlEt.setHint("https://example.com/");
-        browserUrlEt.setText("https://example.com/");
+        browserUrlEt.setHint("输入网页地址；空白为 about:blank");
         root.addView(browserUrlEt);
 
         root.addView(label("M4 主机（空=局域网自动发现；loopback=本机；IP=手动覆盖）"));
@@ -157,12 +157,12 @@ public class MainActivity extends Activity {
         m4PortEt.setHint("48624");
         root.addView(m4PortEt);
 
-        root.addView(button("启动 480×800 虚拟浏览器", new Runnable() {
+        root.addView(button("启动/切换网页（自动恢复）", new Runnable() {
             @Override
             public void run() {
                 saveM4Host();
                 BrowserBridgeService.startUrl(MainActivity.this, browserUrlEt.getText().toString());
-                toast("已请求前台服务启动虚拟浏览器");
+                toast("已启动 Browser Bridge；系统重建服务时会恢复最后网页");
                 ui.postDelayed(() -> refresh(), 300);
             }
         }));
@@ -172,7 +172,7 @@ public class MainActivity extends Activity {
             public void run() {
                 saveM4Host();
                 BrowserBridgeService.startJavaScriptSelfTest(MainActivity.this);
-                toast("自测页每秒翻转 40% 黑白区；关闭本界面或熄屏后服务应继续运行");
+                toast("自测页每秒翻转 40% 黑白区；不会覆盖最后产品网页");
                 ui.postDelayed(() -> refresh(), 300);
             }
         }));
@@ -201,7 +201,7 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 saveM4Host();
-                toast("已保存 M4 主机；下次启动虚拟浏览器生效");
+                toast("已保存 M4 主机；下次 Browser Bridge 会话生效");
             }
         }));
 
@@ -221,7 +221,7 @@ public class MainActivity extends Activity {
             }
         }));
 
-        root.addView(button("停止虚拟浏览器前台服务", new Runnable() {
+        root.addView(button("停止 Browser Bridge（关闭自动恢复）", new Runnable() {
             @Override
             public void run() {
                 BrowserBridgeService.stop(MainActivity.this);
@@ -355,6 +355,8 @@ public class MainActivity extends Activity {
         fitRb.setChecked(!cover);
         m4HostEt.setText(sp.getString(Prefs.KEY_M4B3_HOST, ""));
         m4PortEt.setText(String.valueOf(sp.getInt(Prefs.KEY_M4B3_PORT, Prefs.DEF_M4B3_PORT)));
+        String lastUrl = Prefs.browserLastUrl(sp);
+        browserUrlEt.setText(lastUrl);
     }
 
     private void refresh() {
