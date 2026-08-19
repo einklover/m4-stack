@@ -179,6 +179,7 @@ bool MappedInputManager::wasPressed(const Button button) const {
 #if defined(CROSSPOINT_MURPHY_M4)
   if (synthKind_ == SynthKind::Key && synthKey_ == button) return true;
 #endif
+  if (keysRoutedToBrowser_ && (button == Button::Back || button == Button::Confirm)) return false;
   return mapButton(button, &HalGPIO::wasPressed);
 }
 
@@ -187,6 +188,7 @@ bool MappedInputManager::wasReleased(const Button button) const {
   if (button == Button::Back && syntheticBack) return true;
 #if defined(CROSSPOINT_MURPHY_M4)
   if (synthKind_ == SynthKind::Key && synthKey_ == button) return true;
+  if (keysRoutedToBrowser_ && (button == Button::Back || button == Button::Confirm)) return false;
 
   // Fullscreen provider/login pages draw an activity-owned four-slot footer.
   // When that activity opts in, convert a tap on the painted physical slot back
@@ -235,7 +237,10 @@ bool MappedInputManager::wasReleased(const Button button) const {
   return mapButton(button, &HalGPIO::wasReleased);
 }
 
-bool MappedInputManager::isPressed(const Button button) const { return mapButton(button, &HalGPIO::isPressed); }
+bool MappedInputManager::isPressed(const Button button) const {
+  if (keysRoutedToBrowser_ && (button == Button::Back || button == Button::Confirm)) return false;
+  return mapButton(button, &HalGPIO::isPressed);
+}
 
 bool MappedInputManager::wasAnyPressed() const {
   return gpio.wasAnyPressed() || gpio.wasTouchActivity();

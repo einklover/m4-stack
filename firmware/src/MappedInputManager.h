@@ -43,6 +43,11 @@ class MappedInputManager {
   // idle so Reader/Home input is unchanged unless the session is active.
   void setTouchRoutedToBrowser(bool routed) { touchRoutedToBrowser_ = routed; }
   bool touchRoutedToBrowser() const { return touchRoutedToBrowser_; }
+  // Browser Bridge also owns the logical Back + Confirm hardware controls while
+  // its M4B3 session is hello-ok. This prevents the hidden local Activity from
+  // reacting to the same physical key that is returned to Android.
+  void setKeysRoutedToBrowser(bool routed) { keysRoutedToBrowser_ = routed; }
+  bool keysRoutedToBrowser() const { return keysRoutedToBrowser_; }
   bool wasScreenTapped(int& x, int& y) const;
   bool wasScreenTouchDown(int& x, int& y) const;
   bool isScreenTouchHeld(int& x, int& y) const;
@@ -89,6 +94,7 @@ class MappedInputManager {
   HalGPIO& gpio;
   const GfxRenderer* renderer = nullptr;
   bool touchRoutedToBrowser_ = false;
+  bool keysRoutedToBrowser_ = false;
 
   // Per-frame tap cache. Global navigation checks run before activity loop();
   // caching prevents those checks from consuming an ordinary list/button tap.

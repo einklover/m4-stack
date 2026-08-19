@@ -1107,6 +1107,18 @@ void loop() {
 
   gpio.update();
 
+#ifdef CROSSPOINT_MURPHY_M4
+  // Browser input ownership must be decided before any local/global button
+  // semantics run. Raw HAL edges remain available to M4B3Tcp::captureFromGpio;
+  // MappedInputManager suppresses Browser-owned Back/Confirm from local UI.
+  const bool browserInput = M4B3Tcp::inputCaptureActive();
+  mappedInputManager.setTouchRoutedToBrowser(browserInput);
+  mappedInputManager.setKeysRoutedToBrowser(browserInput);
+  if (browserInput) {
+    M4B3Tcp::captureFromGpio(gpio, millis());
+  }
+#endif
+
 #ifndef CROSSPOINT_X3
   // NTP同步状态机（在主线程中执行，避免WiFi驱动问题）
   static unsigned long ntpStartTime = 0;
@@ -1353,13 +1365,8 @@ void loop() {
 #endif
   gM4DebugBridge.poll();
 
-  // Route the raw FT6x36 pointer into M4B3 only while a Browser session is
-  // hello-ok. Reader/Home gestures stay on the existing path otherwise.
-  const bool browserTouch = M4B3Tcp::inputCaptureActive();
-  mappedInputManager.setTouchRoutedToBrowser(browserTouch);
-  if (browserTouch) {
-    M4B3Tcp::captureFromGpio(gpio, millis());
-  }
+  // Physical Browser input was routed immediately after gpio.update() so
+  // global/local Back semantics cannot race the returned M4B3 key event.
 
   if (mappedInputManager.hasTouch() && currentActivity) {
     if (!currentActivity->isHomeActivity() && mappedInputManager.wasHomeGesture()) {

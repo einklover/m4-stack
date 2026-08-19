@@ -15,9 +15,11 @@
 #include <freertos/portmacro.h>
 
 #include "apps/providers/M4Psram.h"
+#include "CrossPointSettings.h"
 #include "network/M4B3DiscoveryAdvertise.h"
 #include "network/M4B3Panel.h"
 #include "util/M4B3Input.h"
+#include "util/M4B3Key.h"
 #include "util/M4PanelMapper.h"
 
 // Compile the mapper into the production firmware without touching the
@@ -45,6 +47,7 @@ struct Runtime {
   uint8_t* rx = nullptr;
   uint8_t tx[64] = {};
   uint8_t touchTx[M4B3::kEnvelopeSize + M4B3::kTouchHeaderSize] = {};
+  uint8_t keyTx[M4B3::kEnvelopeSize + M4B3::kInputKeyHeaderSize] = {};
   WiFiServer* server = nullptr;
   WiFiClient client;
   TaskHandle_t task = nullptr;
@@ -57,9 +60,13 @@ struct Runtime {
   uint32_t lastDiagMs = 0;
   portMUX_TYPE inputMux = portMUX_INITIALIZER_UNLOCKED;
   M4B3Input::Queue input;
+  M4B3Key::Queue keys;
   uint32_t touchEnvSeq = 0;
   uint32_t touchTxErr = 0;
   uint32_t touchLastLatencyMs = 0;
+  uint32_t keyEnvSeq = 0;
+  uint32_t keyTxErr = 0;
+  uint32_t keyLastLatencyMs = 0;
   int lastPanelX = 0;
   int lastPanelY = 0;
   bool haveLastPanel = false;
@@ -181,6 +188,21 @@ void fillSnapshot(Snapshot& s) {
   s.touchTxErr = gRt.touchTxErr;
   s.touchLastLatencyMs = gRt.touchLastLatencyMs;
   s.touchCapture = gRt.connected.load(std::memory_order_relaxed) && gRt.session.helloOk();
+  portENTER_CRITICAL(&gRt.inputMux);
+  const M4B3Key::Stats key = gRt.keys.stats();
+  s.keyBack = key.back;
+  s.keyReload = key.reload;
+  s.keyRejected = key.rejected;
+  s.keyOverflow = key.overflow;
+  s.keySession = gRt.keys.session();
+  s.keySessionResets = key.sessionResets;
+  s.keyLastSeq = gRt.keys.lastSeq();
+  s.keyLastAction = gRt.keys.lastAction();
+  s.keyQueue = static_cast<uint8_t>(gRt.keys.size());
+  portEXIT_CRITICAL(&gRt.inputMux);
+  s.keyTxErr = gRt.keyTxErr;
+  s.keyLastLatencyMs = gRt.keyLastLatencyMs;
+  s.keyCapture = s.touchCapture;
 }
 
 void logSnapshot(const char* why) {
@@ -192,7 +214,8 @@ void logSnapshot(const char* why) {
       "rxFill=%u heap=%u minHeap=%u psram=%u mdns=%d "
       "panel(owner=%u busy=%d pend=%d req=%u ok=%u coal=%u "
       "drop=%u src=%ld pcrc=0x%08x full=%u/%u part=%u/%u reason=%u "
-      "touch(d=%u m=%u u=%u c=%u coal=%u dropM=%u rej=%u q=%u act=%d sess=%u)\n",
+      "touch(d=%u m=%u u=%u c=%u coal=%u dropM=%u rej=%u q=%u act=%d sess=%u) "
+      "key(back=%u reload=%u rej=%u ovf=%u q=%u sess=%u txerr=%u)\n",
       millis(), why, s.listening ? 1 : 0, s.connected ? 1 : 0, s.peer[0] ? s.peer : "-",
       s.bindIp[0] ? s.bindIp : "-", s.helloOk ? 1 : 0, static_cast<long>(s.acceptedFrameId),
       static_cast<unsigned>(s.acceptedCrc), s.keys, s.patches, s.nacks, s.hellos, s.pings, s.bytesRx, s.bytesTx,
@@ -203,12 +226,14 @@ void logSnapshot(const char* why) {
       static_cast<unsigned>(s.panelCrc), s.fullOk, s.fullErr, s.partialOk, s.partialErr,
       s.lastPolicyReason, s.touchDown, s.touchMove, s.touchUp, s.touchCancel, s.touchCoalesced,
       s.touchDroppedMove, s.touchRejected, static_cast<unsigned>(s.touchQueue), s.touchActive ? 1 : 0,
-      s.touchSession);
+      s.touchSession, s.keyBack, s.keyReload, s.keyRejected, s.keyOverflow,
+      static_cast<unsigned>(s.keyQueue), s.keySession, s.keyTxErr);
 }
 
 void resetInputSession() {
   portENTER_CRITICAL(&gRt.inputMux);
   gRt.input.resetSession();
+  gRt.keys.resetSession();
   gRt.haveLastPanel = false;
   portEXIT_CRITICAL(&gRt.inputMux);
 }
@@ -235,6 +260,26 @@ void flushInput() {
     }
     gRt.session.stats().bytesTx += static_cast<uint32_t>(n);
     gRt.touchLastLatencyMs = now >= ev.tMs ? (now - ev.tMs) : 0;
+  }
+  for (;;) {
+    M4B3Key::Event ev;
+    portENTER_CRITICAL(&gRt.inputMux);
+    const bool have = gRt.keys.pop(ev);
+    portEXIT_CRITICAL(&gRt.inputMux);
+    if (!have) return;
+    const size_t n = M4B3::encodeInputKey(gRt.keyTx, sizeof(gRt.keyTx), gRt.keyEnvSeq++, ev.action,
+                                          ev.flags, ev.tMs, ev.seq, ev.session);
+    if (n == 0) {
+      gRt.keyTxErr++;
+      continue;
+    }
+    const size_t wrote = gRt.client.write(gRt.keyTx, n);
+    if (wrote != n) {
+      gRt.keyTxErr++;
+      return;
+    }
+    gRt.session.stats().bytesTx += static_cast<uint32_t>(n);
+    gRt.keyLastLatencyMs = now >= ev.tMs ? (now - ev.tMs) : 0;
   }
 }
 
@@ -476,6 +521,21 @@ void captureFromGpio(HalGPIO& gpio, uint32_t nowMs) {
   }
   if (gpio.wasTouchReleased()) {
     (void)gRt.input.push(M4B3::kTouchUp, x, y, nowMs);
+  }
+  portEXIT_CRITICAL(&gRt.inputMux);
+
+  // Logical Browser controls follow the user's front-button remapping. Emit on
+  // release so one physical click produces exactly one Browser action. The
+  // MappedInputManager suppresses these same physical Back/Confirm events from
+  // the hidden local Activity while Browser Bridge owns input.
+  const uint8_t backHw = SETTINGS.frontButtonBack;
+  const uint8_t reloadHw = SETTINGS.frontButtonConfirm;
+  portENTER_CRITICAL(&gRt.inputMux);
+  if (gpio.wasReleased(backHw)) {
+    (void)gRt.keys.push(M4B3::kInputKeyBack, nowMs);
+  }
+  if (reloadHw != backHw && gpio.wasReleased(reloadHw)) {
+    (void)gRt.keys.push(M4B3::kInputKeyReload, nowMs);
   }
   portEXIT_CRITICAL(&gRt.inputMux);
 }

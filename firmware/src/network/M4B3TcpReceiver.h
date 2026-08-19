@@ -99,6 +99,18 @@ struct Snapshot {
   uint8_t touchQueue = 0;
   bool touchActive = false;
   bool touchCapture = false;
+  uint32_t keyBack = 0;
+  uint32_t keyReload = 0;
+  uint32_t keyRejected = 0;
+  uint32_t keyOverflow = 0;
+  uint32_t keyTxErr = 0;
+  uint32_t keySession = 0;
+  uint32_t keySessionResets = 0;
+  uint32_t keyLastSeq = 0;
+  uint32_t keyLastLatencyMs = 0;
+  uint8_t keyLastAction = 0;
+  uint8_t keyQueue = 0;
+  bool keyCapture = false;
 };
 
 void begin();

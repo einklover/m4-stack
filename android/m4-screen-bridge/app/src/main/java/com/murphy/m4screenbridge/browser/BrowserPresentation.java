@@ -71,6 +71,18 @@ final class BrowserPresentation extends Presentation {
         return webView != null && event != null && webView.dispatchTouchEvent(event);
     }
 
+    boolean goBackInBrowser() {
+        if (webView == null || !webView.canGoBack()) return false;
+        webView.goBack();
+        return true;
+    }
+
+    boolean reloadBrowser() {
+        if (webView == null) return false;
+        webView.reload();
+        return true;
+    }
+
     JsProbe jsProbe() {
         return jsProbe;
     }

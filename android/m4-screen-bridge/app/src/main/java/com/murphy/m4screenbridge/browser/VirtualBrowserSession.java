@@ -28,6 +28,7 @@ import com.murphy.m4screenbridge.ScreenBridgeService;
 import com.murphy.m4screenbridge.browser.stream.M4B3;
 import com.murphy.m4screenbridge.browser.stream.M4B3Codec;
 import com.murphy.m4screenbridge.browser.stream.M4B3InputState;
+import com.murphy.m4screenbridge.browser.stream.M4B3KeyState;
 import com.murphy.m4screenbridge.browser.stream.M4B3Message;
 import com.murphy.m4screenbridge.browser.stream.M4B3ReferenceReceiver;
 import com.murphy.m4screenbridge.browser.stream.M4B3Sender;
@@ -111,8 +112,11 @@ public final class VirtualBrowserSession {
     private volatile int lastAckedCrc;
 
     private final M4B3InputState inputState = new M4B3InputState();
+    private final M4B3KeyState keyState = new M4B3KeyState();
     private volatile long inputDispatched;
     private volatile String inputSnap = "";
+    private volatile long keyDispatched;
+    private volatile long keyUnhandled;
     private final Runnable discoveryTick = this::tickDiscovery;
 
     public VirtualBrowserSession(Context host) {
@@ -156,8 +160,11 @@ public final class VirtualBrowserSession {
         nackRecoveries = 0;
         lastAckedCrc = 0;
         inputState.reset();
+        keyState.reset();
         inputDispatched = 0;
         inputSnap = "";
+        keyDispatched = 0;
+        keyUnhandled = 0;
         transportConnected = false;
         transportReconnects = 0;
         transportError = "";
@@ -398,6 +405,9 @@ public final class VirtualBrowserSession {
         if (discoveryWaitFrames > 0) sb.append(" waitFrames=").append(discoveryWaitFrames);
         sb.append("\n").append(inputSnap.isEmpty() ? inputState.snapshot() : inputSnap)
                 .append(" dispatched=").append(inputDispatched);
+        sb.append("\n").append(keyState.snapshot())
+                .append(" dispatched=").append(keyDispatched)
+                .append(" unhandled=").append(keyUnhandled);
         BrowserPresentation.JsProbe probe = presentation == null ? null : presentation.jsProbe();
         if (probe != null) {
             sb.append("\njs hit=").append(probe.lastHit)
@@ -657,7 +667,10 @@ public final class VirtualBrowserSession {
                 if (!reason.isEmpty()) transportError = reason;
                 M4B3Sender s = sender;
                 if (s != null) s.noteTransportLost();
-                main.post(() -> cancelActivePointer("tcp-disconnect"));
+                main.post(() -> {
+                    cancelActivePointer("tcp-disconnect");
+                    keyState.onTransportLost();
+                });
                 refreshProtocolStats();
             }
 
@@ -740,6 +753,7 @@ public final class VirtualBrowserSession {
     private void stopInternal(boolean clearError) {
         active = false;
         cancelActivePointer("session-stop");
+        keyState.onTransportLost();
         if (presentation != null) {
             try {
                 presentation.destroyBrowser();
@@ -819,6 +833,10 @@ public final class VirtualBrowserSession {
             main.post(() -> dispatchTouch(msg.touch));
             return;
         }
+        if (msg.type == M4B3.TYPE_INPUT_KEY) {
+            main.post(() -> dispatchInputKey(msg.inputKey));
+            return;
+        }
         M4B3Sender s = sender;
         if (s == null) return;
         try {
@@ -829,6 +847,23 @@ public final class VirtualBrowserSession {
             error = t.getClass().getSimpleName() + ": " + safeMessage(t);
             Log.e(TAG, "M4B3 tcp reply failed: " + error, t);
         }
+    }
+
+    private void dispatchInputKey(M4B3Message.InputKey key) {
+        if (!keyState.accept(key)) return;
+        BrowserPresentation p = presentation;
+        boolean handled = false;
+        if (p != null && key.action == M4B3.INPUT_KEY_BACK) {
+            handled = p.goBackInBrowser();
+        } else if (p != null && key.action == M4B3.INPUT_KEY_RELOAD) {
+            handled = p.reloadBrowser();
+        }
+        if (handled) keyDispatched++;
+        else keyUnhandled++;
+        Log.i(TAG, String.format(Locale.ROOT,
+                "key %s seq=%d sess=%d handled=%d dispatched=%d unhandled=%d",
+                key.action == M4B3.INPUT_KEY_BACK ? "BACK" : "RELOAD",
+                key.inputSeq, key.session, handled ? 1 : 0, keyDispatched, keyUnhandled));
     }
 
     private void dispatchTouch(M4B3Message.Touch touch) {

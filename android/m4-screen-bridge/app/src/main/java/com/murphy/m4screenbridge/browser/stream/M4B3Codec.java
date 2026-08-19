@@ -98,6 +98,21 @@ public final class M4B3Codec {
         return encodePingPong(M4B3.TYPE_PONG, nonce, seq);
     }
 
+    public static byte[] encodeInputKey(M4B3Message.InputKey key, long seq) {
+        if (key == null) throw M4B3Exception.invalid("input key is null");
+        if (!M4B3.validInputKeyAction(key.action)) {
+            throw M4B3Exception.invalid("input key action " + key.action);
+        }
+        ByteBuffer header = le(M4B3.INPUT_KEY_HEADER_SIZE);
+        header.put((byte) key.action);
+        header.put((byte) key.flags);
+        header.putShort((short) 0);
+        putU32(header, key.tMs);
+        putU32(header, key.inputSeq);
+        putU32(header, key.session);
+        return wrap(M4B3.TYPE_INPUT_KEY, 0, header.array(), new byte[0], seq);
+    }
+
     public static byte[] encodeTouch(M4B3Message.Touch touch, long seq) {
         if (touch == null) throw M4B3Exception.invalid("touch is null");
         if (!M4B3.validTouchAction(touch.action)) {
@@ -222,6 +237,8 @@ public final class M4B3Codec {
                 return parsePingPong(type, flags, seq, header, payloadLen);
             case M4B3.TYPE_TOUCH:
                 return M4B3Message.touch(flags, seq, parseTouch(header, payloadLen));
+            case M4B3.TYPE_INPUT_KEY:
+                return M4B3Message.inputKey(flags, seq, parseInputKey(header, payloadLen));
             default:
                 throw M4B3Exception.invalid("unknown type " + type);
         }
@@ -371,6 +388,24 @@ public final class M4B3Codec {
         return type == M4B3.TYPE_PING
                 ? M4B3Message.ping(flags, seq, nonce)
                 : M4B3Message.pong(flags, seq, nonce);
+    }
+
+    private static M4B3Message.InputKey parseInputKey(byte[] header, int payloadLen) {
+        if (payloadLen != 0) throw M4B3Exception.invalid("INPUT_KEY payload must be empty");
+        if (header.length != M4B3.INPUT_KEY_HEADER_SIZE) {
+            throw M4B3Exception.invalid("INPUT_KEY header_len=" + header.length);
+        }
+        ByteBuffer h = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+        int action = h.get() & 0xFF;
+        int flags = h.get() & 0xFF;
+        h.getShort();
+        long tMs = h.getInt() & 0xFFFFFFFFL;
+        long inputSeq = h.getInt() & 0xFFFFFFFFL;
+        long session = h.getInt() & 0xFFFFFFFFL;
+        if (!M4B3.validInputKeyAction(action)) {
+            throw M4B3Exception.invalid("INPUT_KEY action " + action);
+        }
+        return new M4B3Message.InputKey(action, flags, tMs, inputSeq, session);
     }
 
     private static M4B3Message.Touch parseTouch(byte[] header, int payloadLen) {
