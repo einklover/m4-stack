@@ -160,6 +160,22 @@ Evidence: #42 `m5-key-return-build-001`; script stdout ended `M5 Browser Bridge 
 Context: `firmware/src/network/M4B3TcpReceiver.cpp` after `apply_m5_key_return.py`.
 Observed: `flushInput()` still `return`s when the touch queue is empty, then the authored key-drain loop is textually after that return. `captureFromGpio()` can also `return` before the appended Back/Confirm enqueue if `haveLastPanel` is false and there is no touch edge this frame.
 Root cause: exact splice kept the original touch-only early exits.
-Reuse: before any M5 device key test, ChatGPT should change the touch-loop empty exit from `return` to `break` (or equivalent) so the key loop can run, and move key enqueue above the touch-only early return. Local agent must not invent that rewrite unless asked.
+Reuse: superseded by `fix_m5_key_control_flow.py` on `m5-key-return-device-005`. Do not re-diagnose this as still open after that script has been applied.
 Caution: host key/input tests and `pio run` cannot see this; they will PASS with dead key TX. Do not treat compile PASS as proof that physical Back/Confirm will leave the M4.
 Evidence: #42 `m5-key-return-build-001` post-apply inspection of `flushInput()` / `captureFromGpio()`.
+
+### 2026-08-19 — dispatcher unknown workspace_id header — m5-key-return-device-005
+Context: GitHub `issue_comment` `[PASEO_TASK v1]` dispatch on `einklover/m4-stack`.
+Observed: `m5-key-return-device-002` RECEIVE `provider not allowed: grok` with `workspace_id` appended; `device-003`/`004` RECEIVE `invalid timeout: '120m\nworkspace_id: wks_c7bfd8e08671b105'`. `device-005` with no `workspace_id` header reached RUNNING.
+Root cause: dispatcher header parser treats an unknown key as a continuation of the previous header value (`provider`/`timeout`), not as a separate field.
+Reuse: do not put `workspace_id:` in the task header block. Issue-workspace reuse is automatic via the installed issue-workspace logic. Keep the header set to documented keys only (`task_id`, `issue`, `repo`, `branch`, `expected_head`, `mode`, `timeout`, optional `provider`).
+Caution: a GitHub Actions outer FAIL can be RECEIVE-only; no worktree/code work happened. Inspect the structured `[PASEO_RESULT v1]` `failure_stage` before retrying as if the agent ran.
+Evidence: #42 comments 5336308579 / 5336360282 / 5336384209 vs RUNNING 5336441906.
+
+### 2026-08-19 — M5 key control-flow script — m5-key-return-device-005
+Context: `agent/eink-browser-bridge-m5-productization` at `ea3c4bb`.
+Observed: `python3 scripts/browser_bridge/fix_m5_key_control_flow.py` printed `applied M5 key control-flow correction: 2 exact replacements`. Diff was only `firmware/src/network/M4B3TcpReceiver.cpp`.
+Root cause: n/a.
+Reuse: run exactly once from the isolated task worktree. Intended production change is: touch-queue empty `return` -> `break` in `flushInput()`, and Browser Back/Confirm enqueue moved before the touch-only early return in `captureFromGpio()`.
+Caution: if the script does not report exactly two replacements, STOP. Do not invent a replacement.
+Evidence: #42 `m5-key-return-device-005`.
