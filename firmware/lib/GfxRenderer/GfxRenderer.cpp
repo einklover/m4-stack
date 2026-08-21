@@ -50,7 +50,8 @@ bool GfxRenderer::hasTextGlyphs(const int fontId, const char* text,
   const char* p = text;
   uint32_t cp = 0;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&p))) != 0) {
-    if (cp <= 0x20 || cp == '?') continue;
+    // Whitespace and controls are synthetic empty glyphs, not missing coverage
+    if (cp <= 0x20 || cp == '?' || cp == 0x3000 || cp == 0x00A0 || cp == 0x09 || cp == 0x0A || cp == 0x0D) continue;
     const EpdGlyph* glyph = family.getGlyph(cp, style);
     if (!glyph || glyph->width == 0 || glyph->height == 0) return false;
     // SD-backed font implementations intentionally return the question glyph

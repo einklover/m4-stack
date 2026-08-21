@@ -294,6 +294,28 @@ bool TtfEpdFont::backendHMetrics(uint16_t gid, int32_t& advUnits, int32_t& lsbUn
 
 int TtfEpdFont::lookupAdvancePx(uint32_t cp) const {
   if (!valid_) return 0;
+  // Spaces: prefer real hmtx advance (keeps per-font proportional), fallback to em/3 only on failure.
+  if (cp == 0x20 || cp == 0x3000 || cp == 0x00A0) {
+    const uint16_t slot = static_cast<uint16_t>(cp % kAdvanceCache);
+    if (advCp_[slot] == cp && advPx_[slot] != 0) return advPx_[slot];
+    uint16_t gid = 0;
+    int32_t advUnits = 0, lsb = 0;
+    if (backendFindGlyph(cp, gid) && gid != 0 && backendHMetrics(gid, advUnits, lsb)) {
+      const uint16_t upm = backendUnitsPerEm();
+      const int px = upm ? std::max(1, int(std::lround(float(advUnits) * float(sizePx_) / float(upm)))) : 0;
+      if (px > 0) {
+        const int clamped = std::max(1, std::min(255, px));
+        advCp_[slot] = cp;
+        advPx_[slot] = static_cast<uint8_t>(clamped);
+        return clamped;
+      }
+    }
+    const int sp = std::max(1, int(sizePx_) / 3);
+    const int clamped = std::max(1, std::min(255, sp));
+    advCp_[slot] = cp;
+    advPx_[slot] = static_cast<uint8_t>(clamped);
+    return clamped;
+  }
   for (uint16_t i = 0; i < maxSlots_ && entries_; ++i) {
     if (entries_[i].cp == cp) return entries_[i].glyph.advanceX;
   }
@@ -352,8 +374,12 @@ const char* TtfEpdFont::lastError() const {
   return runtimeError_.length() ? runtimeError_.c_str() : backendError();
 }
 bool TtfEpdFont::hasCodepoint(uint32_t cp) const {
+  if (!valid_) return false;
+  // Whitespace codepoints are considered present even if glyf slice is empty;
+  // callers use hasCodepoint to decide fallback to '?' - spaces must not become '?'.
+  if (cp == 0x20 || cp == 0x3000 || cp == 0x00A0 || cp == 0x09 || cp == 0x0A) return true;
   uint16_t gid = 0;
-  return valid_ && backendFindGlyph(cp, gid) && gid != 0;
+  return backendFindGlyph(cp, gid) && gid != 0;
 }
 
 bool TtfEpdFont::allocateEntries() {
@@ -583,6 +609,40 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
     }
   }
 
+  // Spaces and controls: synthesize empty glyph, never fallback to '?'.
+  // Prefer real hmtx advance for proportional layout; fallback to em/3 only if metrics unavailable.
+  if (cp == 0x20 || cp == 0x3000 || cp == 0x00A0 || cp == 0x09 || cp == 0x0A || cp == 0x0D) {
+    int slot = -1;
+    uint32_t minAccess = 0xffffffffu;
+    for (uint16_t i = 0; i < maxSlots_; ++i) {
+      if (entries_[i].cp == 0xffffffffu) { slot = i; break; }
+      if (entries_[i].lastAccess < minAccess) { minAccess = entries_[i].lastAccess; slot = i; }
+    }
+    if (slot < 0) return -1;
+    evictSlot(slot);
+    int adv = 0;
+    uint16_t gid = 0;
+    int32_t advUnits = 0, lsb = 0;
+    if (backendFindGlyph(cp, gid) && gid != 0 && backendHMetrics(gid, advUnits, lsb)) {
+      const uint16_t upm = backendUnitsPerEm();
+      if (upm) adv = int(std::lround(float(advUnits) * float(sizePx_) / float(upm)));
+    }
+    if (adv <= 0) adv = std::max(1, int(sizePx_) / 3);
+    adv = std::max(1, std::min(255, adv));
+    entries_[slot].cp = cp;
+    entries_[slot].lastAccess = ++accessCounter_;
+    entries_[slot].glyph.width = 0;
+    entries_[slot].glyph.height = 0;
+    entries_[slot].glyph.advanceX = uint8_t(adv);
+    entries_[slot].glyph.left = 0;
+    entries_[slot].glyph.top = 0;
+    entries_[slot].glyph.dataLength = 0;
+    entries_[slot].glyph.dataOffset = cp;
+    entries_[slot].bitmap = nullptr;
+    entries_[slot].bitmapSize = 0;
+    return slot;
+  }
+
   uint16_t gid = 0;
   if (!backendFindGlyph(cp, gid)) return -1;
   if (gid == 0 && cp != '?') return ensureGlyph('?');
@@ -665,6 +725,15 @@ const uint8_t* TtfEpdFont::loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffe
                                            const EpdFontStyles::Style style) const {
   (void)style;
   if (!glyph) return nullptr;
+  // Empty glyphs (spaces) have zero dataLength - caller should treat as whitespace, not missing.
+  if (glyph->dataLength == 0 && glyph->width == 0 && glyph->height == 0) {
+    // Return non-null sentinel for explicit spaces so renderer does not fallback to '?'.
+    static const uint8_t kEmptySentinel = 0;
+    if (glyph->dataOffset == 0x20 || glyph->dataOffset == 0x3000 || glyph->dataOffset == 0x00A0) {
+      return &kEmptySentinel;
+    }
+    return nullptr;
+  }
   const uint32_t cp = glyph->dataOffset;
 #if defined(ESP32)
   if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
