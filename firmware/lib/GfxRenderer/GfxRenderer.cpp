@@ -788,8 +788,26 @@ void GfxRenderer::ageEntryAnimation() {
 }
 
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const {
+  // Bounded partial policy: force full refresh every 8 FASTs to avoid ghosting
+  // from font-cache stalls (P1) leaving stale partials. Mirrors M4PanelDirty kMaxPartialsSinceFull=8.
+  // Instance-scoped (not static) so multiple GfxRenderer instances and tests do not share cadence.
+  // HALF is BYPASS_RED single-pass absolute, stronger than FAST differential, so it resets the FAST
+  // counter (matches driver semantics where HALF clears residual). FULL also resets.
+  HalDisplay::RefreshMode effectiveMode = refreshMode;
+  if (effectiveMode == HalDisplay::FAST_REFRESH) {
+    if (++partialsSinceFull_ >= 8) {
+      effectiveMode = HalDisplay::FULL_REFRESH;
+      partialsSinceFull_ = 0;
+      Serial.printf("[%lu] [GFX] auto-promote FAST->FULL (bounded)\n", millis());
+    }
+  } else if (effectiveMode == HalDisplay::FULL_REFRESH) {
+    partialsSinceFull_ = 0;
+  } else {
+    // HALF: stronger waveform clears ghosting, so reset cadence (checked vs driver: HALF is absolute, not differential)
+    partialsSinceFull_ = 0;
+  }
   auto elapsed = millis() - start_ms;
-  Serial.printf("[%lu] [GFX] Time = %lu ms from clearScreen to displayBuffer\n", millis(), elapsed);
+  Serial.printf("[%lu] [GFX] Time = %lu ms from clearScreen to displayBuffer mode=%d eff=%d\n", millis(), elapsed, (int)refreshMode, (int)effectiveMode);
 
 #ifdef CROSSPOINT_MURPHY_M4
   if (pendingEntryFrame && frameBuffer && SETTINGS.systemAnimationEnabled != 0) {
@@ -837,7 +855,7 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   }
 #endif
 
-  display.displayBuffer(refreshMode, fadingFix);
+  display.displayBuffer(effectiveMode, fadingFix);
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,

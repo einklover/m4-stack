@@ -47,6 +47,7 @@ class SdTtfStream : public ttf::TtfStream {
   bool seek(uint32_t pos) override {
     bool ok = file_.isOpen() && file_.seekSet(pos);
     for (uint8_t attempt = 0; !ok && attempt < 3 && file_.isOpen(); ++attempt) {
+      if (m4YieldToDebugBridge) m4YieldToDebugBridge();
       delay(2);
       ok = file_.seekSet(pos);
     }
@@ -56,11 +57,16 @@ class SdTtfStream : public ttf::TtfStream {
       file_.rewind();
       uint8_t discard[512];
       uint32_t remaining = pos;
+      uint32_t chunksSinceYield = 0;
       while (remaining) {
         const uint32_t want = std::min<uint32_t>(remaining, sizeof(discard));
         const int got = file_.read(discard, want);
         if (got <= 0) break;
         remaining -= static_cast<uint32_t>(got);
+        if (++chunksSinceYield >= 8 && m4YieldToDebugBridge) {
+          m4YieldToDebugBridge();
+          chunksSinceYield = 0;
+        }
       }
       ok = remaining == 0;
       sequentialFallback = ok;
@@ -89,11 +95,14 @@ class SdTtfStream : public ttf::TtfStream {
     while (total < n) {
       int got = file_.read(out + total, n - total);
       for (uint8_t attempt = 0; got <= 0 && attempt < 3; ++attempt) {
+        if (m4YieldToDebugBridge) m4YieldToDebugBridge();
         delay(2);
         got = file_.read(out + total, n - total);
       }
       if (got <= 0) break;
       total += static_cast<uint32_t>(got);
+      // Conservative throttle: yield every 8KB (not every 4KB) to avoid excessive context switches
+      if ((total & 0x1FFF) == 0 && m4YieldToDebugBridge) m4YieldToDebugBridge();
     }
     if (traceOps_ < 100) {
       char line[180];
@@ -649,12 +658,16 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
 
   ttf::GlyphBitmap gb;
   if (!backendRasterize(gid, gb)) {
+    char line[120];
+    snprintf(line, sizeof(line), "glyph_raster_fail cp=U+%04lX gid=%u err=%s",
+             static_cast<unsigned long>(cp), static_cast<unsigned>(gid), backendError());
+    m4AppendFontDiagnostic(line);
     if (gid == 0 || !backendRasterize(0, gb)) return -1;
   }
   // Owner-loop TTF first-paint can take hundreds of ms per CJK glyph on QEMU.
   // Yield so m4adb tap/key is ACKed instead of looking frozen until the page
   // finishes. Weak no-op on host tests; firmware overrides on the main task.
-  m4YieldToDebugBridge();
+  if (m4YieldToDebugBridge) m4YieldToDebugBridge();
 
   int slot = -1;
   uint32_t minAccess = 0xffffffffu;
