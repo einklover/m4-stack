@@ -116,6 +116,12 @@ Only rebuild it if missing or if one of these changes:
 
 ## Fast commands
 
+SD image creation (`simulator/qemu/make_sd_image.py`) formats FAT32 fully in
+user space when `mtools` (`mformat`, homebrew) or `dosfstools` (`mkfs.fat`) is
+installed. It only falls back to `newfs_msdos` + `hdiutil attach` otherwise,
+which is denied in sandboxed macOS environments. Install mtools once:
+`brew install mtools` (mcopy/mmd are also used by plugin-debug `--font`).
+
 Bootstrap only when dependency copies are absent:
 
 ```bash

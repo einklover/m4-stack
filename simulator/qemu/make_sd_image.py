@@ -22,6 +22,25 @@ def format_image(path: Path, size_mb: int, label: str) -> None:
     with path.open("wb") as f:
         f.truncate(size)
 
+    # ponytail: mtools first — pure user-space, no hdiutil attach (denied in
+    # sandboxed macOS); explicit geometry because -f only knows preset sizes.
+    mformat = shutil.which("mformat")
+    if mformat:
+        # QEMU requires the raw card file itself to stay an exact power of
+        # two, so pick a CHS geometry that divides the size evenly and
+        # re-truncate afterwards in case mformat resized the file.
+        heads, spt = 64, 32
+        tracks = max(1, (size // 512) // (heads * spt))
+        subprocess.run(
+            [mformat, "-i", str(path), "-C", "-F",
+             "-t", str(tracks), "-h", str(heads), "-n", str(spt),
+             "-v", label[:11], "::"],
+            check=True,
+        )
+        with path.open("rb+") as f:
+            f.truncate(size)
+        return
+
     mkfs = shutil.which("mkfs.fat") or shutil.which("mkfs.vfat")
     if mkfs:
         subprocess.run([mkfs, "-F", "32", "-n", label[:11], str(path)], check=True)
