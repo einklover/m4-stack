@@ -1,6 +1,7 @@
 #include "apps/providers/M4NativeProvider.h"
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderIo.h"
+#include "apps/providers/M4NativeProviderText.h"
 
 #include "apps/providers/M4LegadoBridge.h"
 
@@ -50,9 +51,10 @@ class LegadoProvider final : public M4NativeProvider::Adapter {
       out.error = "sd_open_failed";
       return out;
     }
-    // Legado getBookContent returns {"data":"<plain text>"}; empty path means
-    // the root object, field "data" selects the string value.
-    M4xJsonStream::ScalarStreamExtractor scalar({}, "data", file);
+    // Legado getBookContent returns {"data":"<plain text or XHTML>"}; empty
+    // path means the root object, field "data" selects the string value.
+    M4NativeProviderText::XhtmlStripSink stripped(file);
+    M4xJsonStream::ScalarStreamExtractor scalar({}, "data", stripped);
     M4NativeProviderHttp::ExtractorSink sink(scalar);
 
     M4NativeProviderHttp::Request http;
