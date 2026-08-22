@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Slow-TTF synthetic input burst regression (deferred-input delivery).
+"""Slow-TTF synthetic input busy-reject regression (Phase 4).
 
-Reproduces the Phase 4 defect end to end: while the reader rasterizes a large
-SD-resident TTF, the owner loop re-enters the debug bridge through
-m4YieldToDebugBridge() (yield context). Synthetic taps sent in that window must
-be ACKed with ``deferred:true``, queued FIFO, and delivered at most one per
-regular frame — never silently lost.
+Product contract: while the reader is in the slow loading / first-page index /
+yield-busy window, synthetic page-turn inputs (tap / key / swipe) are rejected
+or ignored and MUST NOT be queued for later replay. Once that window finishes,
+a single normal page-turn works immediately (exactly once).
 
-Evidence contract:
-  * every burst tap ACK carries ``deferred:true``
-  * exactly N taps → exactly N page turns (final page == first page + N)
-  * no tap is dropped by transient busy/rate-limit
+Evidence:
+  1) Burst page-turn inputs during the busy window → zero later page turns
+     (perf max page stays 0 after the window settles).
+  2) One page-turn after the window → final page == 1.
+
+Does not wait on the late-flushed ``first_page_index_begin`` serial line; uses
+an immediate post-open burst plus settle-until-ready for the post-window check.
 """
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 from pathlib import Path
@@ -112,8 +113,6 @@ def _seed_txt(sd: Path, root: Path) -> Path:
     mmd = shutil.which("mmd")
     if not (mcopy and mmd):
         raise m4sim.M4SimError("mtools (mcopy/mmd) required for SD fixture injection")
-    # reader_perf.log is written under apps_data/com.jjwxc.client/logs; the
-    # firmware appends with O_CREAT but never mkdirs — pre-create on the image.
     for d in ("::/apps_data", "::/apps_data/com.jjwxc.client",
               "::/apps_data/com.jjwxc.client/logs"):
         subprocess.run([mmd, "-i", str(sd), d], capture_output=True)
@@ -126,7 +125,7 @@ def _seed_txt(sd: Path, root: Path) -> Path:
     for i in range(1, 241):
         lines.append(
             f"第{i:03d}段  天地玄黄，宇宙洪荒。触控操作采用离散提交，"
-            "避免墨水屏连续重绘；突发点击必须按序送达且不丢失。"
+            "避免墨水屏连续重绘；加载中的翻页输入必须被丢弃且不事后回放。"
         )
     fixture.write_text("\n".join(lines) + "\n", encoding="utf-8")
     cp = subprocess.run(
@@ -138,24 +137,9 @@ def _seed_txt(sd: Path, root: Path) -> Path:
     return fixture
 
 
-def _raw_tap(client: Client, x: int, y: int, *, timeout: float = 25.0, retries: int = 8) -> dict:
-    """Raw tap preserving the full ok payload (deferred evidence). Retries the
-    explicit busy rejection seen on the direct (non-yield) rate-limited path."""
-    last_busy: BridgeError | None = None
-    for attempt in range(retries):
-        try:
-            return _raw_tap_once(client, x, y, timeout=timeout)
-        except BridgeError as exc:
-            if exc.key != "busy":
-                raise
-            last_busy = exc
-            time.sleep(0.06)
-    raise last_busy or BridgeError("busy", "tap retries exhausted")
-
-
-def _raw_tap_once(client: Client, x: int, y: int, *, timeout: float) -> dict:
+def _raw_key(client: Client, name: str, *, timeout: float = 15.0) -> dict:
     rid = client._next_id()
-    client.t.write(build_req(rid, {"op": "tap", "x": int(x), "y": int(y)}))
+    client.t.write(build_req(rid, {"op": "key", "name": name}))
     deadline = time.time() + timeout
     while time.time() < deadline:
         data = client.t.read(timeout=0.1)
@@ -170,14 +154,22 @@ def _raw_tap_once(client: Client, x: int, y: int, *, timeout: float) -> dict:
                 raise BridgeError(j.get("error", "error"), j.get("message", ""))
             if frame.kind == "ok":
                 return frame.json or {}
-    raise BridgeError("timeout", f"tap ({x},{y}) no reply within {timeout}s")
+    raise BridgeError("timeout", f"key {name} no reply within {timeout}s")
+
+
+def _try_page_turn_key(client: Client) -> dict:
+    """One right-key attempt; busy/reject becomes a structured dict."""
+    try:
+        ack = _raw_key(client, "right", timeout=12.0)
+        return {"ok": True, "ack": ack, "deferred": ack.get("deferred") is True}
+    except BridgeError as exc:
+        return {"ok": False, "error": exc.key, "message": exc.message, "deferred": False}
 
 
 def _read_perf_tail(client: Client) -> str:
-    """Read the reader perf log via sd_read (tail). Returns decoded text."""
     import base64 as b64mod
     acc: list[str] = []
-    offset: int | None = -1  # -1 = tail read
+    offset: int | None = -1
     for _ in range(6):
         res = client.sd_read(PERF_LOG, offset=-1 if offset == -1 else offset, max_bytes=400)
         chunk = b64mod.b64decode(res.get("data_b64", "")).decode("utf-8", errors="replace")
@@ -186,6 +178,60 @@ def _read_perf_tail(client: Client) -> str:
             break
         offset = int(res.get("offset", 0)) + int(res.get("n", 0))
     return "".join(acc)
+
+
+def _max_delivered_page(text: str) -> int:
+    best = -1
+    for line in text.splitlines():
+        if "perf step=" not in line:
+            continue
+        page_tok = None
+        ch_ok = False
+        for tok in line.split():
+            if tok.startswith("ch="):
+                ch_ok = tok[3:].isdigit() and int(tok[3:]) == 0
+            elif tok.startswith("page=") and tok[5:].isdigit():
+                page_tok = int(tok[5:])
+        if ch_ok and page_tok is not None:
+            best = max(best, page_tok)
+    return best
+
+
+def _wait_reader_settled(client: Client, proc: Any, qlog: Path, open_at: float, *, seconds: float) -> None:
+    """Wait until TxtReader is up and the first-page index window has ended."""
+    deadline = time.monotonic() + seconds
+    saw_reader = False
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise m4sim.M4SimError(f"QEMU exited waiting for reader settle\n{_qemu_tail(qlog)}")
+        try:
+            path = _activity_path(_ui(client))
+        except BridgeError:
+            time.sleep(0.25)
+            continue
+        if path[: len(READER_PATH)] == READER_PATH:
+            saw_reader = True
+        serial = "\n".join(client.serial_log[-2000:])
+        q = _qemu_tail(qlog, 6000)
+        end_seen = ("first_page_index_end" in serial) or ("first_page_index_end" in q)
+        # Also accept perf evidence of page 0 once the reader exists.
+        try:
+            perf = _read_perf_tail(client)
+            page0 = _max_delivered_page(perf) >= 0 and "page=0" in perf
+        except BridgeError:
+            page0 = False
+        if saw_reader and (end_seen or page0) and (time.monotonic() - open_at) >= 8.0:
+            print(
+                f"reader settled at +{time.monotonic() - open_at:.3f}s "
+                f"path={path!r} end={end_seen} page0={page0}",
+                flush=True,
+            )
+            return
+        time.sleep(0.4)
+    raise m4sim.M4SimError(
+        f"reader never settled within {seconds}s after open; saw_reader={saw_reader}\n"
+        + _qemu_tail(qlog)
+    )
 
 
 def _run(base: Path, qemu: Path, flash: Path, font: Path, ready_seconds: float) -> dict[str, Any]:
@@ -199,15 +245,12 @@ def _run(base: Path, qemu: Path, flash: Path, font: Path, ready_seconds: float) 
     shutil.copy2(flash, journey_flash)
     sd = m4sim.ensure_sd(fresh=True, size_mb=64)
 
-    # Install the slow external TTF at /FONT/M4Qemu.ttf — plugin-debug firmware
-    # selects it at boot (SETTINGS.fontFamily=CUSTOM), so every reader glyph
-    # raster streams from SD with m4YieldToDebugBridge() yields.
     mmd = shutil.which("mmd")
     mcopy = shutil.which("mcopy")
     if not (mmd and mcopy):
         raise m4sim.M4SimError("mtools (mmd/mcopy) required for font install")
     subprocess.run([mmd, "-i", str(sd), "::/FONT"], check=False, capture_output=True)
-    cp = subprocess.run([mcopy, "-o", "-i", str(sd), str(font), f"::/FONT/M4Qemu.ttf"],
+    cp = subprocess.run([mcopy, "-o", "-i", str(sd), str(font), "::/FONT/M4Qemu.ttf"],
                         capture_output=True, text=True)
     if cp.returncode != 0:
         raise m4sim.M4SimError(f"mcopy font failed: {cp.stdout}{cp.stderr}")
@@ -234,136 +277,120 @@ def _run(base: Path, qemu: Path, flash: Path, font: Path, ready_seconds: float) 
             time.sleep(0.15)
         else:
             raise m4sim.M4SimError(f"library selection failed: {_activity_path(ui)!r}")
+
+        # Immediate post-open burst: overlaps yield-busy open and/or the early
+        # first-page index lock window without waiting on a late begin log.
+        open_at = time.monotonic()
         client.key("confirm")
+        print(f"reader open confirm at {open_at:.1f}s host", flush=True)
 
-        # First open runs the known ~14.6 s first_page_index slow window
-        # (SD TTF glyph raster with m4YieldToDebugBridge yields).  The old test
-        # waited for perf step=loadPage, which is emitted AFTER the window has
-        # finished, so every tap was direct and never exercised the deferred
-        # path.  Fix: detect the observable serial marker first_page_index_begin
-        # and burst INSIDE the window, so at least one ACK is deferred:true.
-        # Poll both the QEMU log and the observing client's serial log; the
-        # former captures firmware printfs regardless of m4adb request cadence,
-        # the latter is pumped by lightweight ui polls during the yield window.
-        begin_deadline = time.monotonic() + 90.0
-        begin_seen = False
-        begin_at = 0.0
-        while time.monotonic() < begin_deadline:
-            if proc.poll() is not None:
-                raise m4sim.M4SimError(f"QEMU exited before first_page_index_begin\n{_qemu_tail(qlog)}")
-            try:
-                _ui(client)
-            except BridgeError:
-                pass
-            serial_tail = "\n".join(client.serial_log[-3000:])
-            qtail = _qemu_tail(qlog, 8000)
-            if "first_page_index_begin" in serial_tail or "first_page_index_begin" in qtail:
-                begin_seen = True
-                begin_at = time.monotonic()
-                print(f"first_page_index_begin seen at {begin_at:.1f}s host", flush=True)
-                break
-            time.sleep(0.2)
-        if not begin_seen:
-            serial_tail = "\n".join(client.serial_log[-2000:])
-            raise m4sim.M4SimError(
-                f"first_page_index_begin never appeared within 90s; "
-                f"qtail={_qemu_tail(qlog, 600)!r} serial_tail={serial_tail[-600:]!r}"
-            )
-
-        # Burst INSIDE the slow window: all taps must land while the owner
-        # loop is still inside buildPageIndexFirstPage / TTF raster yields
-        # (m4YieldToDebugBridge yield-context). At least one must ACK
-        # deferred:true; with short spacing the whole burst fits inside the
-        # ~14.6 s window (6 * 0.25 s ≈ 1.5 s).
-        n = 6
-        acks: list[dict] = []
+        n_burst = 8
+        burst_results: list[dict] = []
         burst_start = time.monotonic()
-        print(f"burst start at {burst_start:.1f}s host (delta {burst_start-begin_at:.1f}s after begin)", flush=True)
-        for i in range(n):
+        print(f"busy-window burst start at +{burst_start - open_at:.3f}s", flush=True)
+        for i in range(n_burst):
             t0 = time.monotonic()
-            try:
-                ack = _raw_tap(client, 400, 420, timeout=15.0)
-            except BridgeError as e:
-                ack = {"error": e.key, "message": e.message}
-            acks.append(ack)
-            print(f"tap {i} at {t0:.1f}s defer={ack.get('deferred')} op={ack.get('op')} err={ack.get('error')}", flush=True)
-            if i < n - 1:
-                time.sleep(0.25)
-        print(f"burst done at {time.monotonic():.1f}s host, total {time.monotonic()-burst_start:.1f}s", flush=True)
-        serial_after = "\n".join(client.serial_log[-3000:])
-        if "first_page_index_end" in serial_after:
-            print(f"first_page_index_end seen after burst", flush=True)
-        deferred_acks = [a for a in acks if a.get("deferred") is True]
-        direct_acks = [a for a in acks if a.get("deferred") is not True]
-        if not deferred_acks:
+            result = _try_page_turn_key(client)
+            burst_results.append(result)
+            print(
+                f"burst {i} at +{t0 - open_at:.3f}s ok={result.get('ok')} "
+                f"err={result.get('error')} deferred={result.get('deferred')}",
+                flush=True,
+            )
+            time.sleep(0.2)
+        print(
+            f"busy-window burst done at +{time.monotonic() - open_at:.3f}s "
+            f"({time.monotonic() - burst_start:.1f}s)",
+            flush=True,
+        )
+        if any(r.get("deferred") is True for r in burst_results):
             raise m4sim.M4SimError(
-                f"no deferred:true tap ACK observed; acks={acks!r}\n" + _qemu_tail(qlog)
+                f"deferred:true ACK must not occur under reject-busy policy; "
+                f"burst={burst_results!r}"
             )
 
-        # Exact N-to-N: fresh reader sits on page 0; every tap — direct or
-        # deferred, even when quick-tap coalesced — advances the target by
-        # exactly 1. The reader logs loadPage/renderPage/anim with the page it
-        # actually materialized; the maximum observed page must equal N.
-        # A lost tap undershoots; a duplicated injection overshoots.
-        target_page = n
+        _wait_reader_settled(client, proc, qlog, open_at, seconds=120.0)
 
-        def _max_delivered_page(text: str) -> int:
-            best = -1
-            for line in text.splitlines():
-                if "perf step=" not in line:
-                    continue
-                page_tok = None
-                ch_ok = False
-                for tok in line.split():
-                    if tok.startswith("ch="):
-                        ch_ok = tok[3:].isdigit() and int(tok[3:]) == 0
-                    elif tok.startswith("page=") and tok[5:].isdigit():
-                        page_tok = int(tok[5:])
-                if ch_ok and page_tok is not None:
-                    best = max(best, page_tok)
-            return best
-
-        deadline = time.monotonic() + 90.0
-        final_pages: list[int] = []
-        while time.monotonic() < deadline:
+        # After the window: burst inputs must not have produced later page turns.
+        settle_deadline = time.monotonic() + 25.0
+        max_after_burst = -1
+        perf_text = ""
+        while time.monotonic() < settle_deadline:
             if proc.poll() is not None:
-                raise m4sim.M4SimError(f"QEMU exited during delivery\n{_qemu_tail(qlog)}")
+                raise m4sim.M4SimError(f"QEMU exited during post-burst settle\n{_qemu_tail(qlog)}")
             try:
                 perf_text = _read_perf_tail(client)
+                max_after_burst = max(max_after_burst, _max_delivered_page(perf_text))
             except BridgeError:
                 time.sleep(1.0)
                 continue
-            current_max = _max_delivered_page(perf_text)
-            final_pages.append(current_max)
-            print(f"perf poll max_page={current_max} target={target_page} at {time.monotonic():.1f}s", flush=True)
-            if current_max >= target_page:
+            print(f"post-burst max_page={max_after_burst} at +{time.monotonic() - open_at:.1f}s", flush=True)
+            if max_after_burst > 0:
                 break
-            time.sleep(1.5)
+            time.sleep(1.0)
+        if max_after_burst > 0:
+            raise m4sim.M4SimError(
+                f"busy-window inputs must not replay later: want max page 0, saw {max_after_burst}; "
+                f"perf:\n{perf_text[-800:]}"
+            )
+        # page == -1 (no perf yet) or 0 is acceptable; normalize to 0 for report.
+        if max_after_burst < 0:
+            max_after_burst = 0
+
+        # One normal page-turn after the window → exactly page 1.
+        post = _try_page_turn_key(client)
+        print(f"post-window turn ok={post.get('ok')} err={post.get('error')}", flush=True)
+        if not post.get("ok"):
+            # Brief retry once if the first hit a residual busy.
+            time.sleep(0.5)
+            post = _try_page_turn_key(client)
+            print(f"post-window retry ok={post.get('ok')} err={post.get('error')}", flush=True)
+        if not post.get("ok"):
+            raise m4sim.M4SimError(f"post-window page-turn failed: {post!r}")
+        if post.get("deferred") is True:
+            raise m4sim.M4SimError(f"post-window turn must not be deferred: {post!r}")
+
+        deadline = time.monotonic() + 60.0
+        final_page = max_after_burst
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise m4sim.M4SimError(f"QEMU exited waiting for page 1\n{_qemu_tail(qlog)}")
+            try:
+                perf_text = _read_perf_tail(client)
+                final_page = _max_delivered_page(perf_text)
+            except BridgeError:
+                time.sleep(1.0)
+                continue
+            print(f"post-turn max_page={final_page} target=1", flush=True)
+            if final_page >= 1:
+                break
+            time.sleep(1.0)
         else:
             raise m4sim.M4SimError(
-                f"delivery incomplete: want page {target_page}, max seen {max(final_pages) if final_pages else -1}; "
-                f"perf tail:\n{perf_text[-800:]}"
+                f"post-window turn did not reach page 1; max={final_page}; perf:\n{perf_text[-800:]}"
             )
-        if max(final_pages) != target_page:
+        if final_page != 1:
             raise m4sim.M4SimError(
-                f"exact-once violated: want page {target_page}, saw max {max(final_pages)}"
+                f"exact-once after window violated: want page 1, saw {final_page}"
             )
 
+        busy_rejects = sum(1 for r in burst_results if r.get("error") == "busy")
+        accepted_during_busy = sum(1 for r in burst_results if r.get("ok"))
         result = {
             "ok": True,
-            "burst_taps": n,
-            "ack_count": len(acks),
-            "deferred_ack_count": len(deferred_acks),
-            "direct_ack_count": len(direct_acks),
-            "acks": acks,
-            "final_page": max(final_pages),
-            "expected_final_page": target_page,
+            "burst_inputs": n_burst,
+            "busy_rejects": busy_rejects,
+            "accepted_during_busy_window": accepted_during_busy,
+            "max_page_after_burst": max_after_burst,
+            "final_page": final_page,
+            "burst_results": burst_results,
+            "post_window_turn": post,
             "fixture": fixture.name,
         }
         (root / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(
-            f"SYNTH BURST PASS: taps={n} deferred_acks={len(deferred_acks)} "
-            f"direct_acks={len(direct_acks)} final_page={max(final_pages)}",
+            f"SYNTH BURST PASS: busy_rejects={busy_rejects}/{n_burst} "
+            f"max_after_burst={max_after_burst} final_page={final_page}",
             flush=True,
         )
         print(f"artifacts: {root}", flush=True)
@@ -384,7 +411,7 @@ def _run(base: Path, qemu: Path, flash: Path, font: Path, ready_seconds: float) 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="m4sim test synth-burst",
-        description="Slow-TTF synthetic input burst regression (deferred delivery).",
+        description="Slow-TTF synthetic input busy-reject regression (Phase 4).",
     )
     p.add_argument("--font", help="large TrueType to install as /FONT/M4Qemu.ttf "
                    "(default: kindle round-gothic CJK TTF if present)")

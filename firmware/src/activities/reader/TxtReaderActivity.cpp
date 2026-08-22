@@ -816,7 +816,19 @@ void TxtReaderActivity::pageTurnLocked(int delta) {
   // QEMU can hold that lock for many seconds; waiting here starves m4adb poll
   // and makes every tap look frozen.
   if (!lockState(0)) {
+    // Slow first-page index / loading holds the lock for seconds. Queuing
+    // deltas here would replay as surprise multi-page turns after the window.
+    // Drop while the first page is not ready; once ready, keep the prior
+    // coalesce so mid-refresh taps still catch up.
+    if (!firstPageReady_) return;
     pendingTurnDelta_.fetch_add(delta, std::memory_order_relaxed);
+    return;
+  }
+  // First-page index may briefly release the lock between phases. Ignore
+  // turns and clear any stale pending so nothing replays after the window.
+  if (!firstPageReady_) {
+    pendingTurnDelta_.store(0, std::memory_order_relaxed);
+    unlockState();
     return;
   }
   const int totalDelta = delta + pendingTurnDelta_.exchange(0, std::memory_order_relaxed);

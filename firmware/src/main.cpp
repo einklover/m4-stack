@@ -117,8 +117,9 @@ static std::string gDebugActiveAppId;
 extern "C" void m4YieldToDebugBridge() {
   if (!gM4MainTask || xTaskGetCurrentTaskHandle() != gM4MainTask) return;
   // Yield re-entry happens mid-frame (activity loop owns the task). Synthetic
-  // input received here must be deferred to the next regular poll window,
-  // otherwise beginFrame() erases it before any activity sees it.
+  // page-turn input received here is rejected as busy (not queued): a deferred
+  // FIFO previously replayed taps after the slow first-page index and produced
+  // surprise multi-page turns. Hosts retry on the next regular poll window.
   gM4DebugBridge.setYieldContext(true);
   gM4DebugBridge.poll();
   gM4DebugBridge.setYieldContext(false);

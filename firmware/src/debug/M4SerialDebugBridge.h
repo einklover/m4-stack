@@ -74,12 +74,10 @@ class Bridge {
   void poll();
 
   // Mark poll() as a yield-reentry (m4YieldToDebugBridge from inside an
-  // activity frame). Synthetic tap/swipe/key received in this context are
-  // queued (ACK still immediate) and injected by a later regular poll(),
-  // which runs in the beginFrame() input window — at most one event per
-  // normal frame; the queue head is retained while the input manager reports
-  // transient busy/rate-limit. Without this the one-frame synthetic event is
-  // cleared before any activity sees it.
+  // activity frame). Synthetic tap/swipe/key/back in this context are
+  // rejected as busy and are never queued — delayed replay after a slow
+  // first-page index produced surprise multi-page turns. Hosts retry once
+  // the regular (post-beginFrame) poll window is free again.
   void setYieldContext(bool on) { yieldContext_ = on; }
 
   // Recent host frame activity — used to prevent auto-sleep during scripted sessions.
@@ -131,10 +129,7 @@ class Bridge {
   bool enableRxDrainPending_ = false;
   bool inPoll_ = false;
 
-  // Deferred synthetic input received mid-frame (yield context). Bounded;
-  // overflow rejects with busy so the host retries.
-  static constexpr size_t kMaxDeferredInputs = 6;
-  M4SynthInputGate::Gate<kMaxDeferredInputs> deferredInputs_;
+  // True only while poll() runs under m4YieldToDebugBridge (mid-frame).
   bool yieldContext_ = false;
 
   // Stable copies for status snprintf (Activity::getName() is stable while activity lives;
@@ -173,9 +168,6 @@ class Bridge {
   void resetSessionState(bool removePart);
   void flushRxDiscard();
   void clearIdempotency();
-  // Deliver at most one deferred synthetic input per regular poll window.
-  // Retains the head while the input manager reports transient busy/rate-limit.
-  void deliverDeferredInput();
 
   static bool hexEqSha256(const char* hex64, const uint8_t digest[32]);
 };
