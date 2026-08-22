@@ -72,6 +72,7 @@ constexpr size_t kMaxPageReadBytes = 48 * 1024;  // hard cap for first-page adap
 constexpr size_t kLargeTxtDirectThreshold = 4 * 1024 * 1024;
 constexpr size_t kLegacyProgressDataBytes = 8;
 constexpr size_t kProgressDataBytes = 20;
+constexpr uint32_t kChapterDiscoveryPauseMs = 250;
 
 // PSRAM-first scratch for GBK/UTF-16 decode windows (up to ~144KB). On
 // internal RAM these resizes fail while the TTF face is resident (~70-130KB
@@ -346,6 +347,8 @@ void TxtReaderActivity::onEnter() {
   openHistorySavePending_ = false;
   chapterDiscoveryBatch_ = largeTxtFastOpen_ ? 0 : -1;
   chapterDiscoveryDone_ = !largeTxtFastOpen_;
+  chapterDiscoveryNotBeforeMs_ = largeTxtFastOpen_ ? millis() + kChapterDiscoveryPauseMs : 0;
+  chapterDiscoveryNextMs_ = chapterDiscoveryNotBeforeMs_;
   // Plugin sessions: bridge raw-byte progress is authoritative — do not load
   // library progress.bin (would contradict plugin restore).
   if (!pluginSession_.active) {
@@ -501,7 +504,7 @@ void TxtReaderActivity::onExit() {
   READING_STATS.endSession();
 
   // Stop display task from starting another AA/e-ink pass, then wait so we do
-  // not vTaskDelete mid-displayGrayBuffer (left panel in gray → Home "全刷" flash).
+  // not vTaskDelete mid-displayGrayBuffer (left panel in gray → Home cleanup flash).
   // Chapter switch: Lua paints loading next — short wait so UI feels responsive.
   suppressDisplay_ = true;
   updateRequired = false;
@@ -729,6 +732,8 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
   progressSavePending_ = false;
   chapterDiscoveryBatch_ = -1;
   chapterDiscoveryDone_ = true;
+  chapterDiscoveryNotBeforeMs_ = 0;
+  chapterDiscoveryNextMs_ = 0;
   hasPendingRestore_ = false;
   userMovedPage_ = false;
   pluginNeedsClearRefresh_ = false;
@@ -2075,10 +2080,10 @@ void TxtReaderActivity::displayTaskLoop() {
       updateRequired = false;
       if (suppressDisplay_ || subActivity) continue;
 
-      // --- Entry white seed (before any content layout) ---
-      // From shelf/menu/loading the RED plane still holds foreign UI. Page-turn
-      // anim would wipe from that residual. Keep the absolute HALF seed, but
-      // show an explicit opening/chapter placeholder instead of bare white.
+      // --- Entry seed (before any content layout) ---
+      // Keep the explicit opening/chapter placeholder, but use the same fast
+      // path as every other non-reader-body operation. The panel abstraction
+      // no longer permits a legacy HALF/FULL waveform here.
       if (entryWhiteSeedPending_) {
         physicalEpdBusy_ = true;
         const uint32_t tW = millis();
@@ -2100,9 +2105,9 @@ void TxtReaderActivity::displayTaskLoop() {
           }
           M4UiText::drawCentered(renderer, UI_10_FONT_ID, 365, "请稍候");
         }
-        Serial.printf("[WR05] t=%lu open_refresh phase=entry mode=half\n",
+        Serial.printf("[WR05] t=%lu open_refresh phase=entry mode=fast\n",
                       static_cast<unsigned long>(millis()));
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);  // BYPASS_RED absolute
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         (void)renderer.storeBwBuffer();
         (void)renderer.storeLastShown();  // animation baseline = this clean frame
         entryWhiteSeedPending_ = false;
@@ -2189,8 +2194,8 @@ void TxtReaderActivity::displayTaskLoop() {
         overlayReturnFlush_ = false;
         physicalEpdBusy_ = true;
         const uint32_t tFlush = millis();
-        // Same FAST LUT as the overlay itself. HALF/FULL here is the black
-        // invert flash the user sees when tapping the page to dismiss the bar.
+        // Same FAST LUT as the overlay itself. Strong/full modes are not used
+        // for overlay dismissal, which is outside the page-turn cleanup policy.
         renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         firstPhysicalShown_ = true;
         lastPhysicalBodyPage_ = (pendingPhysicalPage_ >= 0) ? pendingPhysicalPage_ : currentPage;
@@ -2201,29 +2206,18 @@ void TxtReaderActivity::displayTaskLoop() {
                       static_cast<unsigned long>(millis() - tFlush), lastPhysicalBodyPage_);
         physicalEpdBusy_ = false;
       } else if (doHalfFlush) {
-        // One absolute clean after plugin loading residual — not multi-flash FULL.
-        // SSD1677: FAST is differential; HALF is BYPASS_RED single-pass (0xD7);
-        // FULL is multi-inversion OTP (0xF7). Policy: exactly one guarded handoff
-        // HALF; later turns use finishPhysicalDisplay (page-turn anim / FAST).
-        //
-        // Must seed the same PTA baseline as library firstPhysical HALF:
+        // Plugin handoff stays on the fast path. It must seed the same PTA
+        // baseline as the library first content frame:
         // storeLastShown + firstPhysicalShown_. Without that, the first user
         // page-turn re-enters the firstPhysical HALF path (looks like a full
         // flash, no wipe), and lastShown can still hold a previous book's
         // frame → multipass RED≠truth → inverted residual / slow gray ghost.
         physicalEpdBusy_ = true;
         const uint32_t tFlush = millis();
-        Serial.printf("[WR05] t=%lu first_frame_half_refresh gen=%u mode=half\n",
+        Serial.printf("[WR05] t=%lu first_frame_fast gen=%u mode=fast\n",
                       static_cast<unsigned long>(tFlush),
                       static_cast<unsigned>(pluginSession_.generation));
-        const auto handoffMode = M4PluginReaderStatePolicy::pluginFirstHandoffRefreshMode();
-        if (handoffMode == M4PluginReaderStatePolicy::PluginFirstHandoffRefresh::Full) {
-          renderer.displayBuffer(HalDisplay::FULL_REFRESH);
-        } else if (handoffMode == M4PluginReaderStatePolicy::PluginFirstHandoffRefresh::Fast) {
-          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        } else {
-          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-        }
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         // Seed PTA/old-page baseline (library path does this in finishPhysicalDisplay).
         firstPhysicalShown_ = true;
         lastPhysicalBodyPage_ = (pendingPhysicalPage_ >= 0) ? pendingPhysicalPage_ : currentPage;
@@ -3987,8 +3981,8 @@ void TxtReaderActivity::finishPhysicalDisplay() {
       Serial.printf("[%lu] [TRS] BW display: FAST (AA on, counter reset)\n", millis());
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
-      Serial.printf("[%lu] [TRS] BW display: HALF_REFRESH (counter=%d)\n", millis(), pagesUntilFullRefresh);
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      Serial.printf("[%lu] [TRS] BW display: READER_CLEANUP (counter=%d)\n", millis(), pagesUntilFullRefresh);
+      renderer.displayBuffer(HalDisplay::READER_CLEANUP_REFRESH, HalDisplay::READER_BODY_CONTEXT);
     }
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
@@ -4111,7 +4105,7 @@ void TxtReaderActivity::renderDualPage() {
     if (SETTINGS.textAntiAliasing) {
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      renderer.displayBuffer(HalDisplay::READER_CLEANUP_REFRESH, HalDisplay::READER_BODY_CONTEXT);
     }
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
@@ -4694,6 +4688,15 @@ void TxtReaderActivity::libraryIdleDiscoverChapterBatch() {
   // independent from chapter parsing and lets the picker consume cache files
   // progressively instead of waiting for a full TOC copy.
   if (pluginSession_.active || !largeTxtFastOpen_ || !txt || chapterDiscoveryDone_) return;
+  // The first page is intentionally independent from the chapter parser.  A
+  // dense book can require thousands of on-disk batches; never let that work
+  // run while the first physical frame is still pending.
+  if (!firstPhysicalShown_.load(std::memory_order_acquire)) return;
+  const uint32_t now = millis();
+  if (static_cast<int32_t>(now - chapterDiscoveryNotBeforeMs_) < 0 ||
+      static_cast<int32_t>(now - chapterDiscoveryNextMs_) < 0) {
+    return;
+  }
   const int batch = chapterDiscoveryBatch_;
   if (batch < 0 || batch > 50000) {
     chapterDiscoveryDone_ = true;
@@ -4712,12 +4715,14 @@ void TxtReaderActivity::libraryIdleDiscoverChapterBatch() {
   }
   if (!loaded || !any) {
     chapterDiscoveryDone_ = true;
+    chapterDiscoveryNextMs_ = millis() + kChapterDiscoveryPauseMs;
     Serial.printf("[%lu] [WR05] large_txt_chapter_batch_done batch=%d any=%d ms=%lu\n", millis(), batch,
                   any ? 1 : 0, static_cast<unsigned long>(millis() - t0));
     return;
   }
 
   chapterDiscoveryBatch_ = batch + 25;
+  chapterDiscoveryNextMs_ = millis() + kChapterDiscoveryPauseMs;
   Serial.printf("[%lu] [WR05] large_txt_chapter_batch batch=%d cache=%d next=%d ms=%lu\n", millis(), batch,
                 fromCache ? 1 : 0, chapterDiscoveryBatch_, static_cast<unsigned long>(millis() - t0));
 }

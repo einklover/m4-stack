@@ -162,9 +162,10 @@ private:
       panel_->render(tag);
 
       // ── submit to display backend (async BUSY/commit) ────────────────
-      m4platform::RefreshMode mode = knobs_.animEnabled
-                                         ? m4platform::RefreshMode::FULL_REFRESH
-                                         : m4platform::RefreshMode::FAST_REFRESH;
+      // Navigation/page animation never requests the legacy full waveform;
+      // the production reader selects its explicit cleanup mode only after
+      // the configured page-turn cadence.
+      m4platform::RefreshMode mode = m4platform::RefreshMode::FAST_REFRESH;
       bool accepted = panel_->submit(mode, [this, renderedPage]() {
         // Commit callback means the backend now physically presents this frame.
         bool catchup = coord_.onCommitted(sched_->now(), renderedPage);

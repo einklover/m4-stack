@@ -2,8 +2,8 @@
 """Measure first-readable/first-physical open of a large local TXT book.
 
 The optimized run must enter the native TXT reader, expose a first page before
-the progressive index is complete, and keep obvious FULL/HALF refreshes to two
-or fewer.  ``--baseline`` runs the same fixture on a pre-optimization flash
+the progressive index is complete, and use zero legacy FULL/HALF waveforms.
+``--baseline`` runs the same fixture on a pre-optimization flash
 image and records the legacy TXT->EPUB conversion path for before/after data.
 """
 from __future__ import annotations
@@ -34,7 +34,11 @@ from m4adb_lib.transport import make_transport  # noqa: E402
 from m4adb_observing_client import ObservingClient as Client  # noqa: E402
 
 FIXTURE_NAME = "large-open.txt"
-FULL_REFRESH_EFF = {0, 1}  # GfxRenderer FULL/HALF; FAST/UI_FAST are 2/3.
+HIGH_DENSITY_FIXTURE_NAME = "large-high-density.txt"
+HIGH_DENSITY_CHAPTERS = 40416
+HIGH_DENSITY_RECORD_BYTES = 130
+LEGACY_STRONG_EFF = {0, 1}  # Legacy GfxRenderer FULL/HALF; must be normalized away.
+READER_CLEANUP_EFF = 4
 GFX_RE = re.compile(r"\[GFX\].*displayBuffer mode=(\d+) eff=(\d+)")
 
 
@@ -97,7 +101,7 @@ def _fw_time(line: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _seed_large_txt(sd: Path, root: Path, fixture_mb: int) -> Path:
+def _seed_large_txt(sd: Path, root: Path, fixture_mb: int, *, high_chapter_density: bool = False) -> Path:
     mcopy = shutil.which("mcopy")
     mmd = shutil.which("mmd")
     if not (mcopy and mmd):
@@ -106,20 +110,33 @@ def _seed_large_txt(sd: Path, root: Path, fixture_mb: int) -> Path:
     for directory in ("::/.crosspoint",):
         subprocess.run([mmd, "-i", str(sd), directory], capture_output=True)
 
-    fixture = root / FIXTURE_NAME
-    target = fixture_mb * 1024 * 1024
-    block = (
-        "第0001章\n"
-        "This large TXT fixture keeps chapter-like boundaries while making the "
-        "first page cheap to read. The rest must remain lazy and progressive.\n"
-        "A short paragraph is repeated to make conversion/indexing measurable.\n\n"
-    ).encode("utf-8")
-    with fixture.open("wb") as out:
-        while out.tell() < target:
-            out.write(block[: target - out.tell()])
+    fixture_name = HIGH_DENSITY_FIXTURE_NAME if high_chapter_density else FIXTURE_NAME
+    fixture = root / fixture_name
+    if high_chapter_density:
+        # Fixed-size records make the pathological case deterministic: every
+        # record starts a short chapter, so the 5 MiB / 40,416-chapter input
+        # produces roughly 1,617 cached 25-title batches.
+        with fixture.open("wb") as out:
+            for chapter in range(1, HIGH_DENSITY_CHAPTERS + 1):
+                prefix = f"第{chapter:05d}章\n短章内容。\n".encode("utf-8")
+                if len(prefix) >= HIGH_DENSITY_RECORD_BYTES:
+                    raise m4sim.M4SimError("high-density chapter prefix exceeded fixed record size")
+                out.write(prefix)
+                out.write(b"x" * (HIGH_DENSITY_RECORD_BYTES - len(prefix)))
+    else:
+        target = fixture_mb * 1024 * 1024
+        block = (
+            "第0001章\n"
+            "This large TXT fixture keeps chapter-like boundaries while making the "
+            "first page cheap to read. The rest must remain lazy and progressive.\n"
+            "A short paragraph is repeated to make conversion/indexing measurable.\n\n"
+        ).encode("utf-8")
+        with fixture.open("wb") as out:
+            while out.tell() < target:
+                out.write(block[: target - out.tell()])
 
     cp = subprocess.run(
-        [mcopy, "-o", "-i", str(sd), str(fixture), f"::/{FIXTURE_NAME}"],
+        [mcopy, "-o", "-i", str(sd), str(fixture), f"::/{fixture_name}"],
         capture_output=True,
         text=True,
     )
@@ -226,16 +243,24 @@ def _refresh_stats(lines: list[str], start: int, end: int) -> dict[str, Any]:
         if not match:
             continue
         calls.append({"mode": int(match.group(1)), "effective": int(match.group(2)), "line": line})
-    obvious = [call for call in calls if call["effective"] in FULL_REFRESH_EFF]
+    obvious = [call for call in calls if call["effective"] in LEGACY_STRONG_EFF]
+    visible_inversion_phases = sum(
+        2 if call["effective"] == 0 else 1
+        for call in calls
+        if call["effective"] in LEGACY_STRONG_EFF or call["effective"] == READER_CLEANUP_EFF
+    )
+    full_waveform_phases = sum(2 for call in calls if call["effective"] == 0)
     return {
         "display_buffer_calls": len(calls),
         "obvious_full_or_half_calls": len(obvious),
+        "visible_inversion_phases": visible_inversion_phases,
+        "full_waveform_phases": full_waveform_phases,
         "calls": calls,
     }
 
 
 def _run(base: Path, qemu: Path, flash: Path, *, baseline: bool, fixture_mb: int,
-         ready_seconds: float, open_timeout: float) -> dict[str, Any]:
+         high_chapter_density: bool, ready_seconds: float, open_timeout: float) -> dict[str, Any]:
     label = "before" if baseline else "after"
     root = base / label
     if root.exists():
@@ -246,7 +271,7 @@ def _run(base: Path, qemu: Path, flash: Path, *, baseline: bool, fixture_mb: int
     journey_flash = root / "flash-16m.bin"
     shutil.copy2(flash, journey_flash)
     sd = m4sim.ensure_sd(fresh=True, size_mb=64)
-    fixture = _seed_large_txt(sd, root, fixture_mb)
+    fixture = _seed_large_txt(sd, root, fixture_mb, high_chapter_density=high_chapter_density)
 
     proc = None
     client: Client | None = None
@@ -259,7 +284,7 @@ def _run(base: Path, qemu: Path, flash: Path, *, baseline: bool, fixture_mb: int
         reader_ui._wait_top(client, proc, qlog, "Home", seconds=45.0)
         reader_ui._send_key(client, "confirm")
         reader_ui._wait_top(client, proc, qlog, "MyLibrary", seconds=30.0)
-        reader_ui._select_library_entry(client, proc, qlog, FIXTURE_NAME)
+        reader_ui._select_library_entry(client, proc, qlog, fixture.name)
 
         open_log_index = len(_log_lines(client, qlog))
         open_at = time.monotonic()
@@ -272,6 +297,7 @@ def _run(base: Path, qemu: Path, flash: Path, *, baseline: bool, fixture_mb: int
         readable_idx = int(measured["readable_idx"])
         physical_idx = int(measured["physical_idx"])
         refresh = _refresh_stats(lines, int(measured["start_idx"]), physical_idx)
+        chapter_before_physical = _marker(lines, "large_txt_chapter_batch", int(measured["start_idx"]))
 
         chapter_seen = False
         chapter_seen_at: float | None = None
@@ -306,6 +332,7 @@ def _run(base: Path, qemu: Path, flash: Path, *, baseline: bool, fixture_mb: int
             "baseline": baseline,
             "fixture_bytes": fixture.stat().st_size,
             "fixture": fixture.name,
+            "high_chapter_density": high_chapter_density,
             "first_readable_seconds_host": measured["readable_at"] - open_at,
             "first_physical_seconds_host": measured["physical_at"] - open_at,
             "first_readable_firmware_line": first_ready_line,
@@ -318,6 +345,9 @@ def _run(base: Path, qemu: Path, flash: Path, *, baseline: bool, fixture_mb: int
             "first_physical_firmware_delta_ms":
                 (physical_fw_ms - open_fw_ms) if physical_fw_ms is not None and open_fw_ms is not None else None,
             "refresh": refresh,
+            "chapter_discovery_before_first_physical": bool(
+                chapter_before_physical is not None and chapter_before_physical[0] <= physical_idx
+            ),
             "chapter_batch_seen_after_first_physical": chapter_seen,
             "chapter_batch_seconds_after_first_physical":
                 (chapter_seen_at - measured["physical_at"]) if chapter_seen_at is not None else None,
@@ -338,10 +368,23 @@ def _run(base: Path, qemu: Path, flash: Path, *, baseline: bool, fixture_mb: int
                 raise m4sim.M4SimError("TXT->EPUB conversion appeared before optimized first physical page")
             if not result["first_page_index_incomplete"]:
                 raise m4sim.M4SimError("first page was not observed before index completion")
-            if refresh["obvious_full_or_half_calls"] > 2:
+            if refresh["obvious_full_or_half_calls"] != 0:
                 raise m4sim.M4SimError(
-                    f"too many obvious full/half refreshes: {refresh['obvious_full_or_half_calls']}"
+                    f"legacy full/half refresh escaped policy: {refresh['obvious_full_or_half_calls']}"
                 )
+            if refresh["full_waveform_phases"] != 0:
+                raise m4sim.M4SimError("legacy full waveform appeared before first physical page")
+            if refresh["visible_inversion_phases"] != 0:
+                raise m4sim.M4SimError(
+                    "visible inversion phase appeared outside reader-body cleanup before first physical page"
+                )
+            if high_chapter_density:
+                if result["first_physical_seconds_host"] > 3.0:
+                    raise m4sim.M4SimError(
+                        f"high-density first physical page exceeded 3s: {result['first_physical_seconds_host']:.3f}s"
+                    )
+                if result["chapter_discovery_before_first_physical"]:
+                    raise m4sim.M4SimError("chapter discovery ran before high-density first physical page")
             if not chapter_seen:
                 raise m4sim.M4SimError("chapter discovery did not continue in the background")
         return result
@@ -364,6 +407,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--flash", help="explicit 16MiB flash image; skips the current PIO build")
     p.add_argument("--build-dir", help="PIO build dir when --flash is an app-only firmware.bin")
     p.add_argument("--fixture-mb", type=int, default=12)
+    p.add_argument("--high-chapter-density", action="store_true",
+                   help="use the deterministic 5 MiB / 40,416-chapter fixture")
     p.add_argument("--open-timeout", type=float, default=300.0)
     p.add_argument("--qemu")
     p.add_argument("--ready-seconds", type=float, default=150.0)
@@ -388,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         flash = m4sim.resolve_flash(ns)
         result = _run(
             base, qemu, flash, baseline=bool(args.baseline), fixture_mb=max(5, args.fixture_mb),
+            high_chapter_density=bool(args.high_chapter_density),
             ready_seconds=args.ready_seconds, open_timeout=args.open_timeout,
         )
         (base / f"large-txt-{result['label']}-summary.json").write_text(

@@ -1303,12 +1303,14 @@ void loop() {
   if (gpio.wasReleased(HalGPIO::BTN_POWER)) {
     // 检查短按电源键的设置
     if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FULL_REFRESH) {
-      // 全刷功能：在阅读器中跳过（阅读器有自己的刷新管理，避免双重全刷）
+      // Legacy cleanup action: the reader owns its cadence; do not double-refresh.
       if (currentActivity && currentActivity->isReaderActivity()) {
-        Serial.printf("[%lu] [PWR] Full refresh skipped (reader manages its own refresh)\n", millis());
+        Serial.printf("[%lu] [PWR] Legacy refresh skipped (reader manages its own cleanup)\n", millis());
       } else {
-        Serial.printf("[%lu] [PWR] Full refresh triggered by power button\n", millis());
-        renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+        Serial.printf("[%lu] [PWR] Legacy refresh action uses fast path\n", millis());
+        // Legacy "full refresh" setting is now a fast/partial request; the
+        // reader body owns its explicit single-pass cleanup cadence.
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
       }
     } else if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::CONFIRM) {
       // 确认功能：模拟确认键按下和释放

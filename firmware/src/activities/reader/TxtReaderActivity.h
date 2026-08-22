@@ -260,6 +260,12 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool openHistorySavePending_ = false;
   int chapterDiscoveryBatch_ = -1;
   bool chapterDiscoveryDone_ = true;
+  // High-density local TXT files can have tens of thousands of headings.  Do
+  // not let the first idle pass scan a batch before the first content frame is
+  // on the panel, and leave a short gap between SD/cache batches so UI input
+  // and the reader's own page/index work keep their time slices.
+  uint32_t chapterDiscoveryNotBeforeMs_ = 0;
+  uint32_t chapterDiscoveryNextMs_ = 0;
   // Next-chapter prefetch state (library). See libraryIdlePrefetchNextChapter.
   int prefetchChapter_ = -1;
   std::vector<size_t> prefetchOffsets_;
@@ -267,9 +273,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   size_t prefetchRangeEnd_ = 0;
   bool prefetchComplete_ = false;
   bool prefetchSkipped_ = false;
-  // First physical paint after openText handoff: layout under lock, then
-  // HALF_REFRESH outside the lock (absolute both-plane write — FAST is
-  // differential and keeps residual Lua "打开阅读器…" when RED is stale).
+  // First physical paint after openText handoff: layout under lock, then a
+  // fast refresh outside the lock.  Strong/full waveforms are globally
+  // forbidden outside the explicit reader-body cleanup cadence.
   bool pluginNeedsClearRefresh_ = false;
   bool pluginPendingHalfFlush_ = false;
   // Provider next-chapter overlay (footer/status); empty when idle.
@@ -307,7 +313,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   int lastPhysicalBodyPage_ = -1;
   // Decoupled quick page skip: rapid taps advance currentPage (user target)
   // without loading/rendering; the physical refresh catches up once the
-  // in-flight animation finishes and the panel is idle (one full refresh
+  // in-flight animation finishes and the panel is idle (one fast refresh
   // straight to the target, intermediate pages skipped). No debounce — a slow
   // tap (panel idle) starts the animation immediately.
   bool quickMode_ = false;

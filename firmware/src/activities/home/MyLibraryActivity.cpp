@@ -1247,7 +1247,7 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
         renderer.clearScreen();
         renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
         renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         xSemaphoreGive(renderingMutex);
         success = true;
       }
@@ -1286,7 +1286,7 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
       if (hdSuccess) {
         // BW 预览 pass（含提示文字）
         renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
-        renderer.displayBuffer(useHalf ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         if (useHalf) delay(200);
         // GRAYSCALE_LSB pass
         renderer.clearScreen(0x00);
@@ -1324,7 +1324,7 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
         Serial.printf("[%lu] [PRV] Cache hit: %s\n", millis(), imagePath.c_str());
         if (ImageCache::renderFromCache(imagePath, renderer)) {
           renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
-          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
           success = true;
         } else {
           cacheHit = false;  // 缓存损坏，回退到解码
@@ -1345,7 +1345,7 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
 
           if (decoder->decodeToFramebuffer(imagePath, renderer, renderConfig)) {
             renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
-            renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
             success = true;
             grayPreviewActive = false;  // BW 预览，屏幕不在灰阶状态
           }

@@ -977,7 +977,7 @@ void EpubReaderMenuActivity::renderScreen() {
 
   if (forceHalfRefresh_) {
     forceHalfRefresh_ = false;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }

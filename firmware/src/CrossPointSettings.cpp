@@ -962,7 +962,7 @@ unsigned long CrossPointSettings::getSleepTimeoutMs() const {
 }
 
 int CrossPointSettings::getRefreshFrequency() const {
-  // If never full refresh is enabled, return a huge number so the counter never triggers
+  // If reader cleanup is disabled, return a huge number so the counter never triggers.
   if (neverFullRefresh) return INT_MAX;
   // Now stores actual page count directly (1-30)
   return refreshFrequency;

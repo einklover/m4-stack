@@ -117,7 +117,7 @@ class CrossPointSettings {
     SLEEP_TIMEOUT_COUNT
   };
 
-  // E-ink refresh frequency (pages between full refreshes)
+  // E-ink cleanup frequency (pages between reader-body cleanup passes)
   enum REFRESH_FREQUENCY {
     REFRESH_1 = 0,
     REFRESH_5 = 1,
@@ -223,7 +223,7 @@ class CrossPointSettings {
   uint8_t hideBatteryPercentage = HIDE_ALWAYS;
   // Long press to boot (1=require 2s hold to wake from sleep, 0=short press ok)
   uint8_t longPressBoot = 1;
-  // Never trigger full refresh (1=disabled full refresh entirely, 0=use refreshFrequency)
+  // Never trigger reader-body cleanup (1=disabled cleanup, 0=use refreshFrequency)
   uint8_t neverFullRefresh = 0;
 
   // Long-press chapter skip on side buttons

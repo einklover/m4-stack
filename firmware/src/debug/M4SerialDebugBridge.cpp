@@ -52,7 +52,7 @@ bool parseKeyName(const char* name, MappedInputManager::Button& out) {
       {"Down", MappedInputManager::Button::Down},
       {"down", MappedInputManager::Button::Down},
       // Murphy M4 side body: KEY_LOCK / power (GPIO0). Short-press policy is
-      // SETTINGS.shortPwrBtn (full refresh / confirm / ignore / …).
+      // SETTINGS.shortPwrBtn (legacy refresh action / confirm / ignore / …).
       {"Power", MappedInputManager::Button::Power},
       {"power", MappedInputManager::Button::Power},
       {"PageBack", MappedInputManager::Button::PageBack},

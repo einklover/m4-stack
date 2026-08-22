@@ -16,10 +16,18 @@ class HalDisplay {
 
   // Refresh modes
   enum RefreshMode {
-    FULL_REFRESH,     // Full refresh with complete waveform
-    HALF_REFRESH,     // Half refresh (1720ms) - balanced quality and speed
+    FULL_REFRESH,     // Legacy name; normalized to FAST_REFRESH
+    HALF_REFRESH,     // Legacy name; normalized to FAST_REFRESH
     FAST_REFRESH,     // Fast refresh using custom LUT (best for reading)
-    UI_FAST_REFRESH   // UI-optimized fast refresh (reduced flicker for menus)
+    UI_FAST_REFRESH,  // UI-optimized fast refresh (reduced flicker for menus)
+    // Explicit single-pass reader-body cleanup after the configured page-turn
+    // cadence. This is the only stronger refresh mode that may cross the HAL.
+    READER_CLEANUP_REFRESH
+  };
+
+  enum RefreshContext {
+    UI_CONTEXT,
+    READER_BODY_CONTEXT,
   };
 
   // Initialize the display hardware and driver
@@ -44,8 +52,10 @@ class HalDisplay {
   void drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                             bool fromProgmem = false) const;
 
-  void displayBuffer(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
-  void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
+  void displayBuffer(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false,
+                     RefreshContext context = RefreshContext::UI_CONTEXT);
+  void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false,
+                      RefreshContext context = RefreshContext::UI_CONTEXT);
 
   // Power management
   void deepSleep();
@@ -64,7 +74,7 @@ class HalDisplay {
   // 110-byte LUT.  Returns BUSY wait elapsed ms (0 if unsupported).
   uint32_t waveformLabRefresh(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                               bool turnOff = false);
-  // Waveform Lab: absolute FULL refresh to the given frame (baseline setup).
+  // Waveform Lab: establish a baseline without invoking a legacy full waveform.
   void waveformLabBaseline(const uint8_t* frame);
   // Waveform Lab: windowed diff refresh (strip-by-strip page-turn animation).
   uint32_t waveformLabRefreshWindow(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,

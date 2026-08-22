@@ -271,8 +271,7 @@ void EpubReaderSettingsActivity::render() const {
 
   if (firstPaint_) {
     firstPaint_ = false;
-    // HALF clears residual reader AA/gray plane that FAST differential leaves behind.
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }

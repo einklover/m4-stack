@@ -151,8 +151,8 @@ bool baselineFromSd(const char* framePath) {
   if (!gDisplay || gRunning) return false;
   if (!readFrameIntoSlot(framePath, 0)) return false;
   gRunning = true;
-  // Absolute FULL refresh: rewrites both planes from the frame, independent
-  // of what the panel currently shows, so the differential baseline is exact.
+  // Establish the baseline through the policy-guarded fast path. The panel
+  // driver's old absolute/full waveform is not available to the lab.
   gDisplay->waveformLabBaseline(gSlot[0]);
   gRunning = false;
   return true;
@@ -574,7 +574,9 @@ bool startAnimate(const char* prevPath, const char* nextPath, int steps, int fea
   gRunning = true;
   // Lab SD path may still baseline; reader mem path must not (see runAnimateMem*).
   if (windowMode) {
-    gDisplay->setCustomLUT(true, gLut);
+    // Keep the protocol's LUT state for diagnostics, but never arm it in the
+    // display driver: custom LUTs can encode a multi-phase flashing waveform.
+    gDisplay->setCustomLUT(false, nullptr);
   } else {
     gDisplay->waveformLabBaseline(gSlot[0]);
   }
@@ -668,7 +670,8 @@ uint32_t runAnimateMemWindow(const uint8_t* oldFrame, const uint8_t* newFrame, i
   StepCell band[64];
   int bandN = 0;
   gRunning = true;
-  gDisplay->setCustomLUT(true, gLut);
+  // Caller LUTs remain protocol data only; the driver always uses FAST.
+  gDisplay->setCustomLUT(false, nullptr);
   const uint32_t t0 = millis();
 
   auto equalizeCell = [&](const StepCell& s) {
@@ -754,8 +757,7 @@ uint32_t runSettle(const char* prevPath, const char* nextPath) {
   if (!readFrameIntoSlot(nextPath, 1)) return 0;
   gRunning = true;
   const uint32_t t0 = millis();
-  // Full-frame differential: RED=old, BW=new -> drive every changed pixel
-  // one more time with the (stronger) currently loaded SETTLE LUT.
+  // Full-frame differential: RED=old, BW=new -> one policy-guarded FAST pass.
   gDisplay->waveformLabRefresh(gSlot[0], gSlot[1], gLut, /*turnOff=*/false);
   gRunning = false;
   const uint32_t total = millis() - t0;
@@ -799,10 +801,10 @@ uint32_t runRefresh(bool swapAfter) {  if (!gDisplay || gRunning) return 0;
 void clearAll() {
   if (!gDisplay) return;
   if (gRunning) return;
-  // Safe recovery: full refresh of the current framebuffer content via the
-  // standard HAL path, then drop all experiment state.
+  // Safe recovery: fast refresh of the current framebuffer content via the
+  // standard policy path, then drop all experiment state.
   gRunning = true;
-  gDisplay->refreshDisplay(HalDisplay::FULL_REFRESH);
+  gDisplay->refreshDisplay(HalDisplay::FAST_REFRESH);
   gRunning = false;
   gLutSet = false;
   gUploadTarget = false;

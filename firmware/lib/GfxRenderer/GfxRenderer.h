@@ -38,7 +38,6 @@ class GfxRenderer {
   RenderMode renderMode;
   Orientation orientation;
   bool fadingFix;
-  mutable uint32_t partialsSinceFull_ = 0;
   uint8_t* frameBuffer = nullptr;
   uint8_t* bwBufferChunks[BW_BUFFER_NUM_CHUNKS] = {nullptr};
   uint8_t* lastShownFrame = nullptr;  // persistent prev-page copy (PSRAM)
@@ -109,9 +108,12 @@ class GfxRenderer {
   // Screen ops
   int getScreenWidth() const;
   int getScreenHeight() const;
-  void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
-  // Arm a one-shot animated transition for the next frame drawn by any activity.
-  // Only the touch gesture path uses this; button navigation never arms it.
+  void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH,
+                     HalDisplay::RefreshContext context = HalDisplay::UI_CONTEXT) const;
+  // Callers pass HalDisplay::READER_BODY_CONTEXT only for the configured
+  // reader-body cleanup; all UI callers stay in UI_CONTEXT.
+  // Legacy entry-transition hook. Navigation surfaces are fast/partial only;
+  // reader-body pagination owns its separate windowed animation path.
   void armEntryAnimation(int direction);
   void cancelEntryAnimation();
   void ageEntryAnimation();

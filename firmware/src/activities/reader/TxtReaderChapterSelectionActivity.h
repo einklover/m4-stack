@@ -38,7 +38,6 @@ class TxtReaderChapterSelectionActivity final : public Activity {
   int loadedBatchStart_ = -1;
   bool updateRequired = false;
   bool firstPaint_ = true;
-  int prefetchedBatch_ = -1;
   std::atomic<bool> finished_{false};
   std::atomic<bool> displayBusy_{false};
   bool cancelled_ = true;
@@ -54,7 +53,6 @@ class TxtReaderChapterSelectionActivity final : public Activity {
   static int chapterBatchStart(int chapterIndex);
   bool ensureChapterBatch(int chapterIndex, bool* outFromCache = nullptr);
   void skipChapters(int delta);
-  void prefetchNextBatchQuiet();
   void materializePageTitles(int pagebegin, int pageItems, std::vector<std::string>& outTitles,
                              std::vector<uint8_t>& outPresent);
   void drawScreen(const std::vector<std::string>& pageTitles, const std::vector<uint8_t>& pagePresent,

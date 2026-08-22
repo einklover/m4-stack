@@ -90,6 +90,28 @@ target_link_libraries(m4_board_contract PRIVATE m4_board_model)
 add_executable(m4_issue_contracts tests/issue_contracts.cpp)
 target_link_libraries(m4_issue_contracts PRIVATE m4_reader_core m4_deterministic_backend)
 add_test(NAME m4_issue_contracts COMMAND m4_issue_contracts)
+add_executable(m4_gfx_refresh_policy_tests ../firmware/tests/native_app/test_gfx_refresh_policy.cpp)
+add_test(NAME m4_gfx_refresh_policy_tests COMMAND m4_gfx_refresh_policy_tests)
+
+# Replay the production SSD1677 driver against the register-level simulator.
+# The Arduino/SPI/ESP GPIO shims are test-only and keep this target independent
+# of PlatformIO while exercising the real driver command stream.
+add_executable(m4_ssd1677_driver_replay
+  tests/driver_replay/ssd1677_driver_replay.cpp
+  tests/driver_replay/HostEpdBus.cpp
+  ../firmware/open-m4-sdk/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp
+)
+target_compile_definitions(m4_ssd1677_driver_replay PRIVATE FREEINK_DEVICE_MURPHY_M4=1)
+target_include_directories(m4_ssd1677_driver_replay PRIVATE
+  tests/driver_replay/include
+  tests/driver_replay
+  ../firmware/open-m4-sdk/libs/hardware/BoardConfig/include
+  ../firmware/open-m4-sdk/libs/display/FreeInkDisplay/src
+  ../firmware/open-m4-sdk/libs/display/FreeInkDisplay/src/bus
+  ../firmware/open-m4-sdk/libs/display/FreeInkDisplay/src/driver
+)
+target_link_libraries(m4_ssd1677_driver_replay PRIVATE m4_reader_core m4_deterministic_backend)
+add_test(NAME m4_ssd1677_driver_replay COMMAND m4_ssd1677_driver_replay)
 if(M4SIM_BUILD_NATIVE_SMOKE)
   add_executable(m4_native_smoke native/main.cpp)
   target_link_libraries(m4_native_smoke PRIVATE m4_reader_core m4_platform_ports)

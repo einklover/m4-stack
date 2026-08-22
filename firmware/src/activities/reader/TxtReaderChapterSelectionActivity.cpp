@@ -105,40 +105,6 @@ bool TxtReaderChapterSelectionActivity::ensureChapterBatch(int chapterIndex, boo
   return ok;
 }
 
-void TxtReaderChapterSelectionActivity::prefetchNextBatchQuiet() {
-  if (useExternal_ || !txt || loadedBatchStart_ < 0 || finished_) return;
-  // Also rebuild current batch if paint path left it empty (cache purged / miss).
-  const int cur = loadedBatchStart_;
-  if (cur >= 0 && !txt->isChapterExist(cur) && !txt->hasChapterBatchCache(cur)) {
-    Serial.printf("[ChapterPrefetch] rebuild empty current batch %d\n", cur);
-    txt->parseChapterIndexAndOffset(cur, /*allowScan=*/true);
-    loadedBatchStart_ = cur;
-    if (txt->isChapterExist(cur)) {
-      updateRequired = true;  // repaint with real titles
-    }
-  }
-  if (finished_) return;
-  const int next = loadedBatchStart_ + CHAPTER_BATCH;
-  if (next < 0 || next > 50000) return;
-  if (prefetchedBatch_ == next) return;
-  if (txt->hasChapterBatchCache(next)) {
-    prefetchedBatch_ = next;
-    return;
-  }
-  // Scan next batch to SD (clobbers RAM), then restore current batch from cache.
-  // If next is past EOF, parse returns immediately (m_emptyFromBatch_).
-  Serial.printf("[ChapterPrefetch] building batch %d (then restore %d)\n", next, cur);
-  const bool nextOk = txt->parseChapterIndexAndOffset(next, /*allowScan=*/true);
-  if (finished_) return;
-  // Only mark prefetched if we got data or known empty — avoid retry storms.
-  prefetchedBatch_ = next;
-  if (cur >= 0) {
-    txt->parseChapterIndexAndOffset(cur, /*allowScan=*/true);
-    loadedBatchStart_ = cur;
-  }
-  (void)nextOk;
-}
-
 void TxtReaderChapterSelectionActivity::materializePageTitles(int pagebegin, int pageItems,
                                                              std::vector<std::string>& outTitles,
                                                              std::vector<uint8_t>& outPresent) {
@@ -270,7 +236,6 @@ void TxtReaderChapterSelectionActivity::onEnter() {
   renderingMutex = xSemaphoreCreateMutex();
   loadedBatchStart_ = -1;
   firstPaint_ = true;
-  prefetchedBatch_ = -1;
   externalCacheBegin_ = -1;
   externalCacheCount_ = 0;
   externalCacheTitles_.clear();
@@ -525,17 +490,6 @@ void TxtReaderChapterSelectionActivity::displayTaskLoop() {
       // Phase 3: e-ink refresh outside mutex so onExit can proceed.
       firstPaint_ = false;
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-      displayBusy_ = false;
-    } else if (!useExternal_ && txt && loadedBatchStart_ >= 0 && !finished_) {
-      // Idle: rebuild purged batches + prefetch next (may scan seconds).
-      displayBusy_ = true;
-      if (renderingMutex) {
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        if (!finished_) {
-          prefetchNextBatchQuiet();
-        }
-        xSemaphoreGive(renderingMutex);
-      }
       displayBusy_ = false;
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
