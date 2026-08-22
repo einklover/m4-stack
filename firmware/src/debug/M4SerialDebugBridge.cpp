@@ -226,6 +226,26 @@ void Bridge::clearIdempotency() {
   idemNext_ = 0;
 }
 
+void Bridge::deliverDeferredInput() {
+  if (yieldContext_ || !input_ || deferredInputs_.empty()) return;
+  // At most ONE event per regular frame: the manager owns a single one-frame
+  // synthetic slot plus a minimum inject interval, so further same-frame
+  // attempts would only bounce as busy. deliverOne pops the head solely on
+  // success; transient busy/rate-limit keeps it queued for the next frame.
+  (void)deferredInputs_.deliverOne([this](const M4SynthInputGate::Input& in) {
+    bool busy = false;
+    switch (in.kind) {
+      case M4SynthInputGate::Kind::Tap:
+        return input_->injectSyntheticTap(in.a, in.b, busy);
+      case M4SynthInputGate::Kind::Swipe:
+        return input_->injectSyntheticSwipe(in.a, in.b, in.c, in.d, busy);
+      case M4SynthInputGate::Kind::Key:
+        return input_->injectSyntheticKey(static_cast<MappedInputManager::Button>(in.a), busy);
+    }
+    return false;
+  });
+}
+
 void Bridge::resetSessionState(bool removePart) {
   abortUpload(removePart);
   shotActive_ = false;
@@ -237,6 +257,7 @@ void Bridge::resetSessionState(bool removePart) {
     shaReady_ = false;
   }
   clearIdempotency();
+  deferredInputs_.clear();
   intake_.reset();
   intake_.discardUntilNewline = false;
   lastHostActivityMs_ = 0;
@@ -317,6 +338,10 @@ void Bridge::poll() {
     }
     return;
   }
+  // Regular window: beginFrame() already ran, so injections here are visible
+  // to this frame's activity input phase. Deliver anything a yield-context
+  // poll queued mid-frame before draining new RX.
+  deliverDeferredInput();
   int budget = kRxBudget;
   while (budget-- > 0 && Serial.available() > 0) {
     const int b = Serial.read();
@@ -1075,6 +1100,23 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     }
     const int x = doc["x"] | -1;
     const int y = doc["y"] | -1;
+    if (x < 0 || y < 0 || !renderer_ || x >= renderer_->getScreenWidth() ||
+        y >= renderer_->getScreenHeight()) {
+      replyErr(reqId, "tap_oob", "点击坐标越界");
+      return;
+    }
+    // Mid-frame (yield re-entry): injecting now would be erased by the next
+    // beginFrame() before any activity sees it. Queue + ACK immediately; the
+    // next regular poll() injects in the real input window.
+    if (yieldContext_) {
+      if (!deferredInputs_.defer({M4SynthInputGate::Kind::Tap,
+                                  static_cast<int16_t>(x), static_cast<int16_t>(y)})) {
+        replyErr(reqId, "busy", "输入忙，请稍后重试");
+        return;
+      }
+      replyOk(reqId, "{\"op\":\"tap\",\"deferred\":true}", true);
+      return;
+    }
     bool busy = false;
     if (!input_->injectSyntheticTap(x, y, busy)) {
       replyErr(reqId, busy ? "busy" : "tap_oob", busy ? "输入忙，请稍后重试" : "点击坐标越界");
@@ -1095,6 +1137,22 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     const int sy = doc["sy"] | -1;
     const int ex = doc["ex"] | -1;
     const int ey = doc["ey"] | -1;
+    if (!renderer_ || sx < 0 || sy < 0 || ex < 0 || ey < 0 || sx >= renderer_->getScreenWidth() ||
+        ex >= renderer_->getScreenWidth() || sy >= renderer_->getScreenHeight() ||
+        ey >= renderer_->getScreenHeight() || (sx == ex && sy == ey)) {
+      replyErr(reqId, "swipe_oob", "滑动坐标越界或轨迹为空");
+      return;
+    }
+    if (yieldContext_) {
+      if (!deferredInputs_.defer({M4SynthInputGate::Kind::Swipe,
+                                  static_cast<int16_t>(sx), static_cast<int16_t>(sy),
+                                  static_cast<int16_t>(ex), static_cast<int16_t>(ey)})) {
+        replyErr(reqId, "busy", "输入忙，请稍后重试");
+        return;
+      }
+      replyOk(reqId, "{\"op\":\"swipe\",\"deferred\":true}", true);
+      return;
+    }
     bool busy = false;
     if (!input_->injectSyntheticSwipe(sx, sy, ex, ey, busy)) {
       replyErr(reqId, busy ? "busy" : "swipe_oob",
@@ -1119,6 +1177,17 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
       replyErr(reqId, "bad_key", "不支持的按键名");
       return;
     }
+    if (yieldContext_) {
+      if (!deferredInputs_.defer({M4SynthInputGate::Kind::Key,
+                                  static_cast<int16_t>(btn)})) {
+        replyErr(reqId, "busy", "输入忙，请稍后重试");
+        return;
+      }
+      char outd[112];
+      snprintf(outd, sizeof(outd), "{\"op\":\"key\",\"name\":\"%s\",\"deferred\":true}", name);
+      replyOk(reqId, outd, true);
+      return;
+    }
     bool busy = false;
     if (!input_->injectSyntheticKey(btn, busy)) {
       replyErr(reqId, busy ? "busy" : "key_fail", busy ? "输入忙，请稍后重试" : "按键注入失败");
@@ -1133,6 +1202,15 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
   if (strcmp(op, "back") == 0) {
     if (!input_) {
       replyErr(reqId, "no_input", "输入管理器不可用");
+      return;
+    }
+    if (yieldContext_) {
+      if (!deferredInputs_.defer({M4SynthInputGate::Kind::Key,
+                                  static_cast<int16_t>(MappedInputManager::Button::Back)})) {
+        replyErr(reqId, "busy", "输入忙，请稍后重试");
+        return;
+      }
+      replyOk(reqId, "{\"op\":\"back\",\"deferred\":true}", true);
       return;
     }
     bool busy = false;
