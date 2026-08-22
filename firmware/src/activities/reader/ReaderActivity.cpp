@@ -150,6 +150,7 @@ void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc) {
 void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
   const auto txtPath = txt->getPath();
   constexpr auto cacheDir = "/.crosspoint";
+  constexpr size_t kLargeTxtDirectThreshold = 4 * 1024 * 1024;
 
   // Unsupported encoding (e.g. GB18030 4-byte / Unknown): do not open as UTF-8 garbage.
   if (txt && !txt->isEncodingSupported()) {
@@ -172,8 +173,15 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
     return;
   }
 
-  // 根据设置决定是直接读取TXT还是转换为EPUB
-  if (SETTINGS.directTxtRead) {
+  // Large books must not wait for a whole TXT→EPUB conversion. Keep the
+  // setting semantics for smaller books, but make the bounded native reader
+  // the critical path for large local TXT files.
+  const bool largeTxt = txt && txt->getFileSize() >= kLargeTxtDirectThreshold;
+  const bool useDirectTxt = SETTINGS.directTxtRead || largeTxt;
+  if (largeTxt && !SETTINGS.directTxtRead) {
+    Serial.printf("[%lu] [RDR] large_txt_auto_direct size=%zu\n", millis(), txt->getFileSize());
+  }
+  if (useDirectTxt) {
     // 直读TXT模式 — must clear Preparing from onEnter and reach Ready.
     currentBookPath = txtPath;
     indexTerminalReady("direct_txt");
@@ -201,9 +209,6 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
       if (!TxtToEpubConverter::convert(txtPath, cacheDir, [&](int pct) {
             if (pct - lastProgressPct >= 5 || pct >= 100) {
               GUI.fillPopupProgress(renderer, popupRect, pct);
-              if (M4IndexingState::shouldRefreshProgressUi(lastProgressPct, pct)) {
-                renderer.displayBuffer();
-              }
               lastProgressPct = pct;
               idx.reportProgress(pct, static_cast<uint32_t>(pct), millis() - t0, "txt_to_epub");
               Serial.printf("[%lu] %s\n", millis(), M4IndexingState::formatLogLine(idx.snap()).c_str());
@@ -510,7 +515,7 @@ void ReaderActivity::onEnter() {
     } else {
       bookCacheDir = std::string(cacheBase) + "/epub_" + std::to_string(hashVal);
     }
-    if (!SdMan.exists(bookCacheDir.c_str())) {
+    if (!isTxtFile(initialBookPath) && !SdMan.exists(bookCacheDir.c_str())) {
       renderer.clearScreen();
       M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2, "正在加载...章节多的书耗时较长", true,
                                 EpdFontFamily::BOLD);

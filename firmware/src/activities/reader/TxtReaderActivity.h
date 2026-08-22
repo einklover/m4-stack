@@ -146,6 +146,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
 
   void saveProgress() const;
   void loadProgress();
+  void persistOpenHistory();
   int chapternum = 0;
   bool chapter_loadPageIndexCache(int chapternum);
   void chapter_savePageIndexCache(int chapternum) const;
@@ -157,6 +158,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool chapter_pageIndexCacheExists(int ch) const;
   void chapter_savePageIndexCacheOffsets(int ch, const std::vector<size_t>& offsets) const;
   void libraryIdlePrefetchNextChapter();
+  // Large local TXT: discover one 25-chapter metadata batch per idle slice.
+  // The picker remains cache-only while these batches are materialized.
+  void libraryIdleDiscoverChapterBatch();
   // Diagnostic: append a page-load failure reason to the SD debug log (serial
   // channel is unreliable on M4) so "every-other-page refresh" root causes are
   // readable from the host.
@@ -234,6 +238,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   PluginCloseFlag pluginCloseRequested_{&pendingGoBack, &pluginSwitchChapterIndex_};
 
   bool firstPageReady_ = false;
+  bool firstReadableLogged_ = false;
   bool indexComplete_ = true;
   size_t indexRangeEnd_ = 0;   // exclusive file end for progressive index
   size_t indexCursor_ = 0;     // next page-start to discover
@@ -242,6 +247,19 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool hasPendingRestore_ = false;
   bool userMovedPage_ = false;
   bool tidxSaved_ = false;  // save completed .tidx once per layout generation
+  // Large local TXT opens directly into the progressive whole-file index. The
+  // fast path is limited to the chapter that was active at open; later chapter
+  // switches use the normal chapter/cache path.
+  bool largeTxtFastOpen_ = false;
+  int fastOpenChapter_ = -1;
+  size_t activeChapterBegin_ = 0;
+  size_t activeChapterEnd_ = 0;
+  size_t resumeRangeBegin_ = 0;
+  size_t resumeRangeEnd_ = 0;
+  bool progressSavePending_ = false;
+  bool openHistorySavePending_ = false;
+  int chapterDiscoveryBatch_ = -1;
+  bool chapterDiscoveryDone_ = true;
   // Next-chapter prefetch state (library). See libraryIdlePrefetchNextChapter.
   int prefetchChapter_ = -1;
   std::vector<size_t> prefetchOffsets_;
