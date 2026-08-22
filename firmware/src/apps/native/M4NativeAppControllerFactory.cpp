@@ -241,7 +241,7 @@ class ProviderController final : public BaseController {
           // Surface the machine error so LAN/parse failures are diagnosable on-device
           // instead of a generic "network failed" (often not a network problem).
           if (d.error == "legado_endpoint_missing") {
-            out = "未找到阅读服务 · 请用手机打开传书页后刷新";
+            out = "未找到阅读服务 · 请打开连接设置";
           } else if (!d.error.empty() && d.error.size() <= 40) {
             out = std::string("失败 · ") + d.error;
           } else {
@@ -332,6 +332,16 @@ class ProviderController final : public BaseController {
       r.kind = M4NativeUi::ActionKind::OpenLogin;
       r.payload = app_.provider;
       return r;
+    }
+
+    if (action == "provider.endpoint") {
+      if (app_.provider != "legado") {
+        M4NativeUi::ActionResult r;
+        r.kind = M4NativeUi::ActionKind::Error;
+        r.error = "endpoint_not_supported";
+        return r;
+      }
+      return M4NativeUi::ActionResult::openEndpoint();
     }
 
     if (action == "provider.selectCategory") {

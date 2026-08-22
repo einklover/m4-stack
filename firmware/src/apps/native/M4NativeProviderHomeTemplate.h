@@ -20,7 +20,7 @@ inline const char* xmlFor(const std::string& providerId) {
     <text text="书架" class="hero inset"/>
     <text text="@page.status" class="meta inset"/>
     <list id="books" source="provider.recommend" titleField="title" subtitleField="author" onActivate="provider.openBook" class="ranked inset compact"/>
-    <buttons back="返回" primary="详情" right="刷新" onBack="system.back" onPrimary="provider.openSelected" onRight="provider.refresh"/>
+    <buttons back="返回" primary="详情" left="连接设置" right="刷新" onBack="system.back" onPrimary="provider.openSelected" onLeft="provider.endpoint" onRight="provider.refresh"/>
   </screen>
 </m4ui>)XML";
   }

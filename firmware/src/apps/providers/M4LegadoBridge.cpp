@@ -90,17 +90,23 @@ std::string baseUrl() {
   return gBase.empty() ? std::string(kDefaultBase) : gBase;
 }
 
-void setBaseUrl(const std::string& appDataRoot, const std::string& base) {
+void setBaseUrl(const std::string& appDataRoot, const std::string& base, bool persist) {
   const std::string cleaned = trimTrailingSlash(base);
-  if (!baseUrlOk(cleaned)) return;
+  ParsedEndpoint parsed;
+  if (!parseEndpoint(cleaned, {}, parsed)) return;
   {
     std::lock_guard<std::mutex> lock(gMu);
-    gBase = cleaned;
+    gBase = parsed.base;
   }
-  if (!appDataRoot.empty()) {
-    (void)writeFileSmall(endpointPath(appDataRoot), cleaned);
+  if (persist && !appDataRoot.empty()) {
+    (void)writeFileSmall(endpointPath(appDataRoot), parsed.base);
   }
-  Serial.printf("[Legado] endpoint set %s\n", cleaned.c_str());
+  Serial.printf("[Legado] endpoint %s %s\n", persist ? "saved" : "staged", parsed.base.c_str());
+}
+
+void clearBaseUrl() {
+  std::lock_guard<std::mutex> lock(gMu);
+  gBase.clear();
 }
 
 std::string loadSavedBase(const std::string& appDataRoot) {
@@ -108,7 +114,8 @@ std::string loadSavedBase(const std::string& appDataRoot) {
   std::string raw;
   if (!readFileSmall(endpointPath(appDataRoot), raw)) return {};
   raw = trimTrailingSlash(raw);
-  return baseUrlOk(raw) ? raw : std::string();
+  ParsedEndpoint parsed;
+  return parseEndpoint(raw, {}, parsed) ? parsed.base : std::string();
 }
 
 bool ensureEndpoint(const std::string& appDataRoot) {
@@ -121,8 +128,18 @@ bool ensureEndpoint(const std::string& appDataRoot) {
     }
   }
 
-  // 2) Saved endpoint — verify with a short probe.
   const std::string saved = loadSavedBase(appDataRoot);
+
+  // All endpoint probes require a ready Wi-Fi link. Do this before probing a
+  // saved endpoint so a cold launch does not discard a valid endpoint merely
+  // because the network interface was still coming up.
+  const auto wifi = M4NativeWifi::ensureConnected(15000u, {});
+  if (!wifi.ok) {
+    Serial.printf("[Legado] endpoint discover: wifi not ready\n");
+    return false;
+  }
+
+  // 2) Saved endpoint — verify with a short probe.
   if (!saved.empty()) {
     Serial.printf("[Legado] probing saved %s\n", saved.c_str());
     if (probeBase(saved)) {
@@ -132,13 +149,7 @@ bool ensureEndpoint(const std::string& appDataRoot) {
     }
   }
 
-  // 3) Need Wi-Fi for discovery.
-  const auto wifi = M4NativeWifi::ensureConnected(15000u, {});
-  if (!wifi.ok) {
-    Serial.printf("[Legado] endpoint discover: wifi not ready\n");
-    return false;
-  }
-
+  // 3) Discover recent Wi-Fi-transfer visitor IPs.
   const String ssid = WiFi.SSID();
   std::vector<std::string> ips = M4LanVisitorStore::visitorsFor(ssid.c_str());
 

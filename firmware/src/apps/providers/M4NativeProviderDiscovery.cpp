@@ -117,7 +117,15 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
 
   bool commit() {
     close();
-    if (tmpPath_.empty() || finalPath_.empty() || written_ == 0) return false;
+    if (tmpPath_.empty() || finalPath_.empty()) return false;
+    // A valid Legado bookshelf may be empty. Treat the successful JSON
+    // response as a committed empty shelf so manual endpoint verification can
+    // still persist the working service instead of reporting a parse failure.
+    if (written_ == 0) {
+      if (SdMan.exists(finalPath_.c_str())) (void)SdMan.remove(finalPath_.c_str());
+      if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
+      return true;
+    }
     // replacedExtension bak (not final+".bak"): FatFS 8.3 aliases
     // shelf_rows.tsv.bak onto SHELF_ROWS.TSV. already-final is success.
     return M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true);
@@ -382,7 +390,7 @@ void taskMain(void*) {
           [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); });
       const bool finished = net.ok && rows.finish();
       const size_t rowCount = rewrite.written();
-      const bool parsed = finished && rowCount > 0;
+      const bool parsed = finished;
       const bool hadSidecar = rewrite.sidecarOpen();
       rewrite.closeSidecar();
       Serial.printf(

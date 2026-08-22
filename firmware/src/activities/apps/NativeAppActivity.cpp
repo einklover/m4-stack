@@ -1,5 +1,6 @@
 #include "NativeAppActivity.h"
 #include "NativeProviderBookActivity.h"
+#include "NativeProviderEndpointActivity.h"
 #include "NativeProviderLoginActivity.h"
 #include "ScreenBridgeActivity.h"
 
@@ -327,6 +328,18 @@ void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi
                 (void)M4NativeProviderDiscovery::startDefault(providerId, app_.id);
               }
             }
+            requestExitSubActivity();
+            updateRequired_ = true;
+          }));
+      return;
+    }
+    case M4NativeUi::ActionKind::OpenEndpoint: {
+      if (app_.provider != "legado") {
+        setError("endpoint_not_supported");
+        return;
+      }
+      enterNewActivity(new NativeProviderEndpointActivity(
+          renderer, mappedInput, app_.provider, app_.id, [this](bool) {
             requestExitSubActivity();
             updateRequired_ = true;
           }));
@@ -805,8 +818,17 @@ void NativeAppActivity::render() {
 
 std::string NativeAppActivity::debugUiJson() {
   if (subActivity) return subActivity->debugUiJson();
+  std::string status;
+  if (controller_) (void)controller_->scalar("page.status", status);
+  const auto discovery = M4NativeProviderDiscovery::snapshot();
+  const bool matchingDiscovery = discovery.providerId == app_.provider && discovery.appId == app_.id;
   return "{\"kind\":\"native_app\",\"app_id\":\"" + jsonEscape(app_.id) +
          "\",\"provider\":\"" + jsonEscape(app_.provider) + "\",\"screen\":\"" +
          jsonEscape(screenId_) + "\",\"selected\":" + std::to_string(selectedIndex_) +
-         ",\"rows\":" + std::to_string(listCount_) + ",\"error\":\"" + jsonEscape(error_) + "\"}";
+         ",\"rows\":" + std::to_string(listCount_) + ",\"status\":\"" + jsonEscape(status) +
+         "\",\"discovery_phase\":" +
+         std::to_string(matchingDiscovery ? static_cast<int>(discovery.phase) : 0) +
+         ",\"discovery_error\":\"" +
+         jsonEscape(matchingDiscovery ? discovery.error : std::string()) +
+         "\",\"error\":\"" + jsonEscape(error_) + "\"}";
 }

@@ -18,6 +18,7 @@
 // ID/path helpers stay SD-free for host tests. Endpoint probe/load live in the
 // .cpp (SD + HTTP).
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -84,8 +85,13 @@ inline std::string endpointPath(const std::string& appDataRoot) {
 // or discovered. Thread-safe for read after ensureEndpoint.
 std::string baseUrl();
 
-// Persist and adopt a verified base (also used after manual override).
-void setBaseUrl(const std::string& appDataRoot, const std::string& base);
+// Adopt a verified base. Manual entry stages a candidate with persist=false and
+// only persists it after the bookshelf request succeeds.
+void setBaseUrl(const std::string& appDataRoot, const std::string& base, bool persist = true);
+
+// Drop an in-memory candidate after a failed manual request. The last saved
+// successful endpoint remains on SD for the next automatic attempt.
+void clearBaseUrl();
 
 // Load saved base for this app; return empty if missing.
 std::string loadSavedBase(const std::string& appDataRoot);
@@ -97,31 +103,161 @@ std::string loadSavedBase(const std::string& appDataRoot);
 bool ensureEndpoint(const std::string& appDataRoot);
 
 // Host-testable pure helpers (no SD / no network).
-inline bool baseUrlOk(const std::string& base) {
-  if (base.size() < 12 || base.size() > 64) return false;
-  if (base.rfind("http://", 0) != 0) return false;
-  if (base.find('@') != std::string::npos) return false;
-  const std::string rest = base.substr(7);
-  if (rest.find('/') != std::string::npos) return false;
-  const size_t colon = rest.rfind(':');
-  if (colon == std::string::npos || colon == 0 || colon + 1 >= rest.size()) return false;
-  const std::string host = rest.substr(0, colon);
-  const std::string port = rest.substr(colon + 1);
-  // Auto-discovery only trusts IPv4 hosts (visitor store records A.B.C.D).
-  size_t dots = 0;
-  for (char c : host) {
-    if (c == '.') ++dots;
-    else if (c < '0' || c > '9') return false;
-  }
-  if (dots != 3 || host.size() < 7 || host.size() > 15) return false;
-  if (port.empty() || port.size() > 5) return false;
-  for (char c : port) {
-    if (c < '0' || c > '9') return false;
-  }
-  int p = 0;
-  for (char c : port) p = p * 10 + (c - '0');
-  return p > 0 && p <= 65535;
+struct ParsedEndpoint {
+  std::string host;
+  uint16_t port = 0;
+  std::string base;
+};
+
+inline std::string trimEndpointWhitespace(std::string value) {
+  size_t begin = 0;
+  while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin]))) ++begin;
+  size_t end = value.size();
+  while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+  value.erase(end);
+  value.erase(0, begin);
+  return value;
 }
+
+inline bool endpointDigitsPort(const std::string& raw, uint16_t& port) {
+  if (raw.empty() || raw.size() > 5) return false;
+  unsigned value = 0;
+  for (char c : raw) {
+    if (c < '0' || c > '9') return false;
+    value = value * 10u + static_cast<unsigned>(c - '0');
+    if (value > 65535u) return false;
+  }
+  if (value == 0) return false;
+  port = static_cast<uint16_t>(value);
+  return true;
+}
+
+inline bool endpointIpv4Ok(const std::string& host) {
+  size_t start = 0;
+  int parts = 0;
+  while (start < host.size()) {
+    const size_t dot = host.find('.', start);
+    const size_t end = dot == std::string::npos ? host.size() : dot;
+    if (end == start || end - start > 3) return false;
+    unsigned value = 0;
+    for (size_t i = start; i < end; ++i) {
+      const char c = host[i];
+      if (c < '0' || c > '9') return false;
+      value = value * 10u + static_cast<unsigned>(c - '0');
+    }
+    if (value > 255u) return false;
+    ++parts;
+    if (dot == std::string::npos) break;
+    start = dot + 1;
+  }
+  return parts == 4;
+}
+
+inline bool endpointHostnameOk(const std::string& host) {
+  if (host.empty() || host.size() > 253 || host.front() == '.' || host.back() == '.') return false;
+  bool hasNonNumeric = false;
+  size_t labelStart = 0;
+  for (size_t i = 0; i <= host.size(); ++i) {
+    if (i != host.size() && host[i] != '.') continue;
+    if (i == labelStart || i - labelStart > 63) return false;
+    if (host[labelStart] == '-' || host[i - 1] == '-') return false;
+    for (size_t j = labelStart; j < i; ++j) {
+      const unsigned char c = static_cast<unsigned char>(host[j]);
+      if (!(std::isalnum(c) || c == '-')) return false;
+      if (!(c >= '0' && c <= '9') && c != '.') hasNonNumeric = true;
+    }
+    labelStart = i + 1;
+  }
+  return hasNonNumeric || host.find('.') == std::string::npos;
+}
+
+// Accept either a host/IP plus a separate port or a complete http://host:port
+// value. If a complete URL contains a port, that port wins over the separate
+// field; this prevents the common http://host:1122:1122 duplication bug.
+inline bool parseEndpoint(const std::string& hostOrUrl, const std::string& portText,
+                          ParsedEndpoint& out, std::string* error = nullptr) {
+  out = {};
+  auto fail = [&](const char* why) {
+    if (error) *error = why;
+    return false;
+  };
+
+  std::string raw = trimEndpointWhitespace(hostOrUrl);
+  std::string suppliedPort = trimEndpointWhitespace(portText);
+  if (raw.empty()) return fail("host_required");
+  if (raw.find("@") != std::string::npos || raw.find_first_of("?#\\") != std::string::npos) {
+    return fail("invalid_host");
+  }
+
+  if (raw.rfind("http://", 0) == 0) {
+    raw.erase(0, 7);
+  } else if (raw.find("://") != std::string::npos) {
+    return fail("unsupported_scheme");
+  }
+
+  while (!raw.empty() && raw.back() == '/') raw.pop_back();
+  if (raw.empty() || raw.find('/') != std::string::npos) return fail("unsupported_path");
+  if (raw.front() == '[' || raw.back() == ']') return fail("ipv6_not_supported");
+
+  std::string host = raw;
+  std::string embeddedPort;
+  const size_t colon = raw.rfind(':');
+  if (colon != std::string::npos) {
+    if (raw.find(':') != colon || colon == 0 || colon + 1 >= raw.size()) return fail("invalid_host");
+    host = raw.substr(0, colon);
+    embeddedPort = raw.substr(colon + 1);
+  }
+  if (host.empty() || host.find(':') != std::string::npos) return fail("invalid_host");
+
+  uint16_t port = 0;
+  if (!embeddedPort.empty()) {
+    if (!endpointDigitsPort(embeddedPort, port)) return fail("invalid_port");
+  } else {
+    if (!endpointDigitsPort(suppliedPort, port)) return fail("invalid_port");
+  }
+
+  if (!endpointIpv4Ok(host) && !endpointHostnameOk(host)) return fail("invalid_host");
+
+  char portBuf[8];
+  std::snprintf(portBuf, sizeof(portBuf), "%u", static_cast<unsigned>(port));
+  out.host = host;
+  out.port = port;
+  out.base = std::string("http://") + host + ":" + portBuf;
+  if (error) error->clear();
+  return true;
+}
+
+inline bool baseUrlOk(const std::string& base) {
+  ParsedEndpoint parsed;
+  std::string error;
+  return parseEndpoint(base, {}, parsed, &error) && parsed.base == trimEndpointWhitespace(base);
+}
+
+enum class ManualEndpointPhase : uint8_t { Editing = 0, Connecting, Ready, Error };
+
+// Small state seam shared by the endpoint activity and host tests. A failed
+// candidate never replaces lastSuccessful; only a verified response does.
+struct ManualEndpointState {
+  ManualEndpointPhase phase = ManualEndpointPhase::Editing;
+  std::string candidate;
+  std::string lastSuccessful;
+  std::string error;
+
+  void begin(const std::string& value) {
+    candidate = value;
+    error.clear();
+    phase = ManualEndpointPhase::Connecting;
+  }
+  void fail(const std::string& value) {
+    error = value;
+    phase = ManualEndpointPhase::Error;
+  }
+  void succeed() {
+    lastSuccessful = candidate;
+    error.clear();
+    phase = ManualEndpointPhase::Ready;
+  }
+};
 
 inline std::string makeBase(const std::string& ip, uint16_t port) {
   if (ip.empty() || port == 0) return {};
