@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "firmware" / "scripts"))
 
 import m4sim  # noqa: E402
 from m4adb_lib.client import BridgeError  # noqa: E402
-from m4adb_lib.transport import SerialTransport  # noqa: E402
+from m4adb_lib.transport import make_transport  # noqa: E402
 from m4adb_observing_client import ObservingClient as Client  # noqa: E402
 
 T = TypeVar("T")
@@ -272,7 +272,7 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
     try:
         proc, pty, qlog = m4sim.boot_qemu(qemu, journey_flash, sd, open_eth=True, psram_mb=8)
         boot_ping = m4sim.wait_m4adb_ready(pty, proc, seconds=ready_seconds, qemu_log=qlog)
-        client = Client(SerialTransport(pty), default_timeout=10.0)
+        client = Client(make_transport(pty), default_timeout=10.0)
         client.wait_ready(timeout=min(20.0, max(5.0, ready_seconds)))
 
         _wait_top(client, proc, qlog, "Home", seconds=30.0)

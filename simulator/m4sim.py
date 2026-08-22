@@ -323,6 +323,34 @@ def _json_blob(text: str) -> dict[str, Any] | None:
     return None
 
 
+def can_use_pty() -> bool:
+    """True when the host can allocate a PTY for QEMU ``-serial pty``.
+
+    Sandboxed environments often deny ``/dev/ptmx`` / ``os.openpty``. Override
+    with ``M4SIM_SERIAL=pty|pipe`` (force) when testing either backend.
+    """
+    force = os.environ.get("M4SIM_SERIAL", "").strip().lower()
+    if force in ("pipe", "force-pipe"):
+        return False
+    if force in ("pty", "force-pty"):
+        return True
+    try:
+        master, slave = os.openpty()
+        os.close(master)
+        os.close(slave)
+        return True
+    except OSError:
+        return False
+
+
+def resolve_serial_backend(art: Path | None = None) -> tuple[str, str | None]:
+    """Return ``(\"pty\", None)`` or ``(\"pipe\", pipe_base)``. PTY is default."""
+    if can_use_pty():
+        return "pty", None
+    base_dir = art if art is not None else ART
+    return "pipe", str(base_dir / "m4uart.pipe")
+
+
 def boot_qemu(qemu: Path, flash: Path, sd: Path | None, *,
               open_eth: bool = True, psram_mb: int = 8) -> tuple[subprocess.Popen, str, Path]:
     ART.mkdir(parents=True, exist_ok=True)
@@ -330,6 +358,21 @@ def boot_qemu(qemu: Path, flash: Path, sd: Path | None, *,
     frame = ART / "ssd1677-frame.pbm"
     frame.unlink(missing_ok=True)
     (ART / "frame-file.txt").write_text(str(frame) + "\n", encoding="utf-8")
+    mode, pipe_base = resolve_serial_backend(ART)
+    if mode == "pipe":
+        assert pipe_base is not None
+        # This QEMU build opens path.in / path.out and does not create them.
+        for suffix in (".in", ".out"):
+            p = Path(pipe_base + suffix)
+            if p.exists() or p.is_fifo():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+            os.mkfifo(p)
+        serial_arg = f"pipe:{pipe_base}"
+    else:
+        serial_arg = "pty"
     cmd = [
         str(qemu), "-nographic", "-monitor", "none",
         "-machine", "murphy-m4", "-m", f"{psram_mb}M",
@@ -344,7 +387,7 @@ def boot_qemu(qemu: Path, flash: Path, sd: Path | None, *,
         "-global", f"driver=murphy-ssd1677,property=frame-file,value={frame}",
         "-global", "driver=murphy-ssd1677,property=busy-ms,value=20",
         "-global", "driver=timer.esp32c3.timg,property=wdt_disable,value=true",
-        "-serial", "pty",
+        "-serial", serial_arg,
     ]
     if open_eth:
         cmd += ["-nic", "user,model=open_eth,hostfwd=tcp::18080-:80,hostfwd=tcp::18081-:81"]
@@ -352,24 +395,32 @@ def boot_qemu(qemu: Path, flash: Path, sd: Path | None, *,
     with qlog.open("w", encoding="utf-8") as lf:
         proc = subprocess.Popen(cmd, cwd=ROOT, stdout=lf, stderr=subprocess.STDOUT, text=True)
 
-    pty = ""
+    port = ""
     deadline = time.time() + 90
     while time.time() < deadline:
         if proc.poll() is not None:
             text = qlog.read_text(encoding="utf-8", errors="replace")
             raise M4SimError(f"QEMU exited early rc={proc.returncode}\n{text[-2000:]}")
-        text = qlog.read_text(encoding="utf-8", errors="replace")
-        hits = re.findall(r"/dev/(?:pts/\d+|ttys\d+)", text)
-        if hits:
-            pty = hits[-1]
-            break
+        if mode == "pipe":
+            assert pipe_base is not None
+            if Path(pipe_base + ".in").exists() and Path(pipe_base + ".out").exists():
+                port = pipe_base
+                break
+        else:
+            text = qlog.read_text(encoding="utf-8", errors="replace")
+            hits = re.findall(r"/dev/(?:pts/\d+|ttys\d+)", text)
+            if hits:
+                port = hits[-1]
+                break
         time.sleep(0.25)
-    if not pty:
+    if not port:
         proc.send_signal(signal.SIGTERM)
-        raise M4SimError(f"QEMU PTY not announced; see {qlog}")
-    print(f"QEMU PTY: {pty}", flush=True)
-    (ART / "pty.txt").write_text(pty + "\n", encoding="utf-8")
-    return proc, pty, qlog
+        raise M4SimError(f"QEMU serial ({mode}) not ready; see {qlog}")
+    label = "PIPE" if mode == "pipe" else "PTY"
+    print(f"QEMU {label}: {port}", flush=True)
+    (ART / "pty.txt").write_text(port + "\n", encoding="utf-8")
+    (ART / "serial-mode.txt").write_text(mode + "\n", encoding="utf-8")
+    return proc, port, qlog
 
 
 def _session_alive(st: dict[str, Any] | None = None) -> bool:
@@ -457,9 +508,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     proc, pty, qlog = boot_qemu(qemu, flash, sd, open_eth=not args.no_net, psram_mb=int(args.psram_mb))
     try:
         info = wait_m4adb_ready(pty, proc, seconds=float(args.ready_seconds), qemu_log=qlog)
+        serial_mode = "pipe" if str(pty).endswith(".pipe") else "pty"
         save_state({
             "pid": proc.pid,
             "pty": pty,
+            "serial_mode": serial_mode,
             "qemu": str(qemu),
             "flash": str(flash),
             "sd": str(sd) if sd else None,
@@ -470,7 +523,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         })
         print(
             f"\n=== m4sim session ===\n"
-            f"PTY:   {pty}\n"
+            f"{serial_mode.upper()}: {pty}\n"
             f"PID:   {proc.pid}\n"
             f"ART:   {ART}\n"
             f"frame: {ART / 'ssd1677-frame.pbm'}\n"

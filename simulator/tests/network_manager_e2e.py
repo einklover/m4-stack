@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT / "firmware" / "scripts"))
 
 import m4sim  # noqa: E402
 from m4adb_lib.client import BridgeError  # noqa: E402
-from m4adb_lib.transport import SerialTransport  # noqa: E402
+from m4adb_lib.transport import make_transport  # noqa: E402
 from m4adb_observing_client import ObservingClient as Client  # noqa: E402
 
 
@@ -249,7 +249,7 @@ def _run_mode(base: Path, qemu: Path, flash: Path, ready_seconds: float,
         # First prove the bridge is up using the same public readiness path as
         # m4sim smoke, then keep one direct client open for the whole journey.
         ping = m4sim.wait_m4adb_ready(pty, proc, seconds=ready_seconds, qemu_log=qlog)
-        client = Client(SerialTransport(pty), default_timeout=10.0)
+        client = Client(make_transport(pty), default_timeout=10.0)
         client.wait_ready(timeout=min(20.0, max(5.0, ready_seconds)))
         _enter_real_mode_selection(client, proc, qlog)
 

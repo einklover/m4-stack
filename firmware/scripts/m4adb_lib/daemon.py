@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .transport import SerialTransport
+from .transport import make_transport
 
 
 def socket_path_for_port(port: str) -> Path:
@@ -39,10 +39,11 @@ def serial_port_alive(transport) -> bool:
     empty); a removed/unplugged device raises immediately."""
     try:
         ser = getattr(transport, "_ser", None)
-        if ser is None:
-            return False
-        _ = ser.in_waiting
-        return True
+        if ser is not None:
+            _ = ser.in_waiting
+            return True
+        # PipeTransport: open FIFOs are enough; there is no pyserial handle.
+        return getattr(transport, "_fd_in", None) is not None
     except Exception:  # noqa: BLE001
         return False
 
@@ -166,7 +167,7 @@ class BridgeDaemon:
         ready.  Returns True only when the device is usable."""
         try:
             self._close_serial()
-            self.serial = SerialTransport(self.port, self.baud)
+            self.serial = make_transport(self.port, self.baud)
             from .client import Client
 
             Client(self.serial, default_timeout=3).wait_ready(timeout=ready_timeout)

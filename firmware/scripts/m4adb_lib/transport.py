@@ -19,6 +19,24 @@ class Transport(ABC):
     def close(self) -> None: ...
 
 
+def is_pipe_port(port: str) -> bool:
+    """QEMU pipe base ends with .pipe (FIFOs are <base>.in/.out)."""
+    return port.endswith(".pipe") or port.endswith(".pipe.in") or port.endswith(".pipe.out")
+
+
+def make_transport(port: str, baud: int = 115200):
+    """Factory: SerialTransport for PTY/USB, PipeTransport for QEMU ``pipe:`` backends."""
+    if is_pipe_port(port):
+        # Normalize to base without .in/.out suffix
+        base = port
+        if base.endswith(".in"):
+            base = base[:-3]
+        elif base.endswith(".out"):
+            base = base[:-4]
+        return PipeTransport(base)
+    return SerialTransport(port, baud)
+
+
 def is_pty_port(port: str) -> bool:
     """QEMU exposes the guest UART as a host PTY (/dev/ttysNNN or /dev/pts/N)."""
     path = port.replace("\\", "/")
@@ -100,6 +118,122 @@ class SerialTransport(Transport):
             self._ser.close()
         except Exception:
             pass
+
+
+class PipeTransport(Transport):
+    """QEMU pipe transport for sandboxed environments where PTY is blocked.
+
+    QEMU is started with ``-serial pipe:<base>`` where <base>.in and <base>.out
+    are FIFOs.  This transport opens them with O_NONBLOCK and implements the
+    same pacing semantics as SerialTransport.
+    """
+
+    def __init__(self, pipe_base: str) -> None:
+        import errno
+        import os
+
+        self.base = pipe_base
+        self._in_path = pipe_base + ".in"
+        self._out_path = pipe_base + ".out"
+        # Host writes to .in (guest reads), reads from .out (guest writes).
+        # Open non-blocking; retry a few times while QEMU creates the FIFOs.
+        for _ in range(20):
+            try:
+                self._fd_in = os.open(self._in_path, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as e:
+                if e.errno in (errno.ENXIO, errno.ENOENT):
+                    time.sleep(0.1)
+                    continue
+                raise
+        else:
+            raise RuntimeError(f"pipe .in not ready: {self._in_path}")
+        for _ in range(20):
+            try:
+                self._fd_out = os.open(self._out_path, os.O_RDONLY | os.O_NONBLOCK)
+                break
+            except OSError as e:
+                if e.errno in (errno.ENOENT,):
+                    time.sleep(0.1)
+                    continue
+                raise
+        else:
+            try:
+                os.close(self._fd_in)
+            except Exception:
+                pass
+            raise RuntimeError(f"pipe .out not ready: {self._out_path}")
+
+    def _write_all(self, payload: bytes) -> None:
+        import errno
+        import os
+
+        off = 0
+        while off < len(payload):
+            try:
+                n = os.write(self._fd_in, payload[off:])
+                if n:
+                    off += n
+                    continue
+            except OSError as e:
+                if e.errno != errno.EAGAIN:
+                    raise
+            time.sleep(0.01)
+
+    def write(self, data: str) -> None:
+        if not data.endswith("\n"):
+            data += "\n"
+        payload = data.encode("utf-8", errors="replace")
+        # Pace long frames like SerialTransport to avoid RX overflow.
+        if len(payload) <= 192:
+            self._write_all(payload)
+            return
+        for off in range(0, len(payload), 64):
+            self._write_all(payload[off : off + 64])
+            if off + 64 < len(payload):
+                time.sleep(0.025)
+
+    def read(self, timeout: float = 0.05) -> str:
+        import errno
+        import os
+
+        end = time.time() + timeout
+        chunks: list[bytes] = []
+        while time.time() < end:
+            try:
+                data = os.read(self._fd_out, 4096)
+                if data:
+                    chunks.append(data)
+                    # small settle: check if more immediately available
+                    time.sleep(0.005)
+                    continue
+            except OSError as e:
+                if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    raise
+            time.sleep(0.01)
+            if chunks:
+                # if we have data and no more pending, return
+                try:
+                    extra = os.read(self._fd_out, 4096)
+                    if extra:
+                        chunks.append(extra)
+                        continue
+                except OSError:
+                    pass
+                break
+        if not chunks:
+            return ""
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+    def close(self) -> None:
+        import os
+
+        for fd in (getattr(self, "_fd_in", None), getattr(self, "_fd_out", None)):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
 
 
 class MockTransport(Transport):
