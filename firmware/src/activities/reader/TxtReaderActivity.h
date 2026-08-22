@@ -293,7 +293,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // True while finishPhysicalDisplay / plugin half is on the panel (SPI busy).
   // Display task vs UI task: atomic, not volatile (ordering + visibility).
   std::atomic<bool> physicalEpdBusy_{false};
-  bool firstPhysicalShown_ = false;  // first content page has been driven to panel
+  std::atomic<bool> firstPhysicalShown_{false};  // first content page has been driven to panel
   // Enter/return to reader: flush pure white first so page-turn anim and FAST
   // never diff against the previous activity (shelf/menu/loading residual).
   bool entryWhiteSeedPending_ = false;

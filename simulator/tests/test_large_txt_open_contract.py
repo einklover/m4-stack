@@ -85,6 +85,12 @@ class LargeTxtOpenContracts(unittest.TestCase):
         self.assertIn("persistOpenHistory();", src)
         self.assertIn("first_physical_done kind=library", src)
 
+    def test_page_turns_wait_for_first_physical_frame(self) -> None:
+        src = text("firmware/src/activities/reader/TxtReaderActivity.cpp")
+        body = function_body(src, "void TxtReaderActivity::pageTurnLocked(")
+        self.assertIn("!firstPhysicalShown_.load", body)
+        self.assertIn("pendingTurnDelta_.store(0", body)
+
     def test_chapter_discovery_runs_in_background_batches(self) -> None:
         hdr = text("firmware/src/activities/reader/TxtReaderActivity.h")
         src = text("firmware/src/activities/reader/TxtReaderActivity.cpp")

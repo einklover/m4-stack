@@ -850,6 +850,14 @@ bool TxtReaderActivity::tryProviderNextChapterAdvance() {
 }
 
 void TxtReaderActivity::pageTurnLocked(int delta) {
+  // Layout readiness is earlier than physical readiness: the first page can
+  // already be in the framebuffer while the entry refresh still owns the
+  // panel. Drop taps in that gap so they cannot replay as page 2 before page 1
+  // is visible.
+  if (!firstPhysicalShown_.load(std::memory_order_acquire)) {
+    pendingTurnDelta_.store(0, std::memory_order_relaxed);
+    return;
+  }
   // Never block the owner loop on the display-task lock. TTF first-paint on
   // QEMU can hold that lock for many seconds; waiting here starves m4adb poll
   // and makes every tap look frozen.
