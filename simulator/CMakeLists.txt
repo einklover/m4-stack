@@ -95,6 +95,14 @@ add_test(NAME m4_gfx_refresh_policy_tests COMMAND m4_gfx_refresh_policy_tests)
 add_executable(m4_compact_cjk_font_tests tests/compact_cjk_font.cpp)
 target_include_directories(m4_compact_cjk_font_tests PRIVATE ../firmware/src ../firmware/lib/EpdFont)
 add_test(NAME m4_compact_cjk_font_tests COMMAND m4_compact_cjk_font_tests)
+# Runtime-scaled compact/system reader faces must honor arbitrary practical
+# pixel sizes (14/15/17/20/22) instead of snapping to the 12/16/18 artifacts.
+# Host build avoids EpdFont.cpp (Arduino/Utf8) by overriding glyphAdvanceX and
+# compiling without RTTI, matching murphy_m4's -fno-rtti firmware setting.
+add_executable(m4_scaled_epd_font_tests tests/scaled_epd_font.cpp)
+target_include_directories(m4_scaled_epd_font_tests PRIVATE ../firmware/src ../firmware/lib/EpdFont)
+target_compile_options(m4_scaled_epd_font_tests PRIVATE -fno-rtti)
+add_test(NAME m4_scaled_epd_font_tests COMMAND m4_scaled_epd_font_tests)
 
 # Replay the production SSD1677 driver against the register-level simulator.
 # The Arduino/SPI/ESP GPIO shims are test-only and keep this target independent

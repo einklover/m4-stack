@@ -64,8 +64,9 @@ class ReaderRegressionContracts(unittest.TestCase):
         self.assertIn("pendingTurnDelta_.exchange(0", handoff)
         self.assertIn("quickMode_ = false", handoff)
         self.assertIn("cancelPendingPageTurnForChild();", txt[txt.index("void TxtReaderActivity::openMenu(") :])
-        self.assertIn("touchHandoffFrames_ = 1", settings)
-        self.assertIn("!ignoreTouchHandoff && mappedInput.hasTouch()", settings_loop)
+        self.assertIn("touchHandoffFrames_ = 2", settings)
+        self.assertIn("touchHandoffFrames_ > 0", settings_loop)
+        self.assertIn("else if (mappedInput.hasTouch()", settings_loop)
         # The touch guard is deliberately narrower than the button path.
         self.assertIn("wasReleased(MappedInputManager::Button::Confirm)", settings_loop)
         self.assertIn("tap(activate) → touchDown(select)", touch_policy)
@@ -102,8 +103,25 @@ class ReaderRegressionContracts(unittest.TestCase):
         self.assertIn("ScaledEpdFont scaledSystemReader", loader)
         self.assertNotIn("customFontSize", loader)
         self.assertNotIn("if (scale > 1.0f)", scaled)
+        # Upscale must not early-return on scale >= 0.999; only exact unity
+        # may reuse the source glyph. Otherwise 17/20/22 snap to the 16px face.
+        self.assertIn("isUnityScale()", scaled)
+        self.assertIn("scale_ >= 0.999f && scale_ <= 1.001f", scaled)
+        self.assertNotRegex(scaled, r"if \(scale_ >= 0\.999f\) return")
         self.assertIn("scaledCodepoint_", scaled)
         self.assertIn("source_->getGlyph(scaledCodepoint_, style)", scaled)
+
+    def test_settings_handoff_drains_opener_touch_edges(self) -> None:
+        settings = text("firmware/src/activities/reader/EpubReaderSettingsActivity.cpp")
+        settings_loop = function_body(settings, "void EpubReaderSettingsActivity::loop(")
+        self.assertIn("touchHandoffFrames_ = 2", settings)
+        self.assertIn("wasScreenTouchDown(dx, dy)", settings_loop)
+        self.assertIn("wasScreenTapped(tx, ty)", settings_loop)
+        # The drain path must run while handoff frames remain, not only after.
+        drain = settings_loop[: settings_loop.index("else if (mappedInput.hasTouch()")]
+        self.assertIn("touchHandoffFrames_ > 0", drain)
+        self.assertIn("wasScreenTapped(tx, ty)", drain)
+        self.assertIn("wasScreenTouchDown(dx, dy)", drain)
 
 
 if __name__ == "__main__":

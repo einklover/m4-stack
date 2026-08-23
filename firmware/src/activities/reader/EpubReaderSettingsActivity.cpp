@@ -20,7 +20,7 @@ EpubReaderSettingsActivity::EpubReaderSettingsActivity(GfxRenderer& renderer, Ma
 void EpubReaderSettingsActivity::onEnter() {
   Activity::onEnter();
   firstPaint_ = true;
-  touchHandoffFrames_ = 1;
+  touchHandoffFrames_ = 2;
   renderingMutex = xSemaphoreCreateMutex();
 
   // Load only "Reader" category settings
@@ -80,9 +80,16 @@ void EpubReaderSettingsActivity::loop() {
   const int count = static_cast<int>(settings.size());
 
   // Touch: same list geometry as render() drawList
-  const bool ignoreTouchHandoff = touchHandoffFrames_ > 0;
-  if (ignoreTouchHandoff) --touchHandoffFrames_;
-  if (!ignoreTouchHandoff && mappedInput.hasTouch() && count > 0) {
+  if (touchHandoffFrames_ > 0) {
+    --touchHandoffFrames_;
+    // Drain edge-triggered touch from the opener frame. Ignoring without
+    // consuming leaves the page-turn/menu tap pending for the next loop and
+    // can activate the first settings row immediately.
+    int dx = 0, dy = 0, tx = 0, ty = 0;
+    (void)mappedInput.wasSwipe();
+    (void)mappedInput.wasScreenTouchDown(dx, dy);
+    (void)mappedInput.wasScreenTapped(tx, ty);
+  } else if (mappedInput.hasTouch() && count > 0) {
     auto metrics = UITheme::getInstance().getMetrics();
     const int pageHeight = renderer.getScreenHeight();
     const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;

@@ -1,10 +1,13 @@
 #pragma once
 
-#include <Arduino.h>
-
-#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
+
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+#include <Arduino.h>  // psramFound / ps_malloc
+#endif
 
 #include "EpdFont.h"
 
@@ -16,7 +19,8 @@
 // resamples the already-cached source bitmap into one reusable PSRAM scratch
 // buffer. It never parses/rasterizes the source font itself and never owns a
 // second glyph cache. The source may be a streamed TTF/CFF face or the compact
-// built-in 2-bit CJK face.
+// built-in 2-bit CJK face. Scale may be below or above 1.0 so system reader
+// sizes such as 14/15/17/20/22 are exact rather than snapped to 12/16/18.
 class ScaledEpdFont final : public EpdFont {
  public:
   ScaledEpdFont() : EpdFont(&scaledData_) {}
@@ -46,13 +50,14 @@ class ScaledEpdFont final : public EpdFont {
 
   const EpdFont* source() const { return source_; }
   float scale() const { return scale_; }
+  bool isUnityScale() const { return scale_ >= 0.999f && scale_ <= 1.001f; }
 
   const EpdGlyph* getGlyph(uint32_t cp,
                            const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override {
     if (!source_) return nullptr;
     const EpdGlyph* src = source_->getGlyph(cp, style);
     if (!src) return nullptr;
-    if (scale_ >= 0.999f) return src;
+    if (isUnityScale()) return src;
 
     scaledGlyph_ = {};
     scaledGlyph_.width = scaledDim(src->width);
@@ -70,10 +75,17 @@ class ScaledEpdFont final : public EpdFont {
     return &scaledGlyph_;
   }
 
+  int glyphAdvanceX(uint32_t cp,
+                    const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override {
+    const EpdGlyph* glyph = getGlyph(cp, style);
+    if (!glyph) glyph = getGlyph('?', style);
+    return glyph ? glyph->advanceX : 0;
+  }
+
   const uint8_t* loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffer,
                                  const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override {
     if (!source_ || !glyph) return nullptr;
-    if (scale_ >= 0.999f) return source_->loadGlyphBitmap(glyph, buffer, style);
+    if (isUnityScale()) return source_->loadGlyphBitmap(glyph, buffer, style);
 
     // Re-resolve without retaining a source glyph pointer across cache
     // accesses. This works for both compact bitmap offsets and runtime TTF.
@@ -123,16 +135,22 @@ class ScaledEpdFont final : public EpdFont {
   }
 
  private:
+  static int clampInt(int n, int lo, int hi) {
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+  }
+
   uint8_t scaledDim(uint8_t v) const {
     if (v == 0) return 0;
-    const int n = std::max(1, static_cast<int>(std::lround(v * scale_)));
-    return static_cast<uint8_t>(std::min(255, n));
+    const int n = clampInt(static_cast<int>(std::lround(v * scale_)), 1, 255);
+    return static_cast<uint8_t>(n);
   }
 
   uint8_t scaledU8(uint8_t v) const {
     if (v == 0) return 0;
-    const int n = std::max(1, static_cast<int>(std::lround(v * scale_)));
-    return static_cast<uint8_t>(std::min(255, n));
+    const int n = clampInt(static_cast<int>(std::lround(v * scale_)), 1, 255);
+    return static_cast<uint8_t>(n);
   }
 
   int scaledSigned(int v) const { return static_cast<int>(std::lround(v * scale_)); }
@@ -143,16 +161,16 @@ class ScaledEpdFont final : public EpdFont {
 #if defined(ESP32) && defined(BOARD_HAS_PSRAM)
     if (psramFound()) p = static_cast<uint8_t*>(ps_malloc(n));
 #endif
-    if (!p) p = static_cast<uint8_t*>(malloc(n));
+    if (!p) p = static_cast<uint8_t*>(std::malloc(n));
     if (!p) return false;
-    free(scratch_);
+    std::free(scratch_);
     scratch_ = p;
     scratchBytes_ = n;
     return true;
   }
 
   void freeScratch() {
-    free(scratch_);
+    std::free(scratch_);
     scratch_ = nullptr;
     scratchBytes_ = 0;
   }
