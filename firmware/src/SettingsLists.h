@@ -97,10 +97,11 @@ inline std::vector<SettingInfo> getSettingsList() {
             "fontSize", "Reader"),
 #endif  // 字号设置项隐藏结束
     SettingInfo::Toggle(L(Str::kFirstLineIndent), &CrossPointSettings::firstlineintented, "firstlineintented","Reader"),
-    // Runtime TTF reader font size (0 = follow the built-in 12/14/16/18 enum).
-    // Shown only for the reader; system/UI faces keep their fixed metrics.
-    // 0 = automatic; explicit TTF reader size is 12..48 px.
-    SettingInfo::Value(L(Str::kFontSize), &CrossPointSettings::customFontSize, 0, 48, 1, "customFontSize", "Reader"),
+    // One family-independent reader body size. System fonts are scaled at
+    // runtime, while TTF/CFF/variable faces are rasterized at this exact px.
+    SettingInfo::Value(L(Str::kFontSize), &CrossPointSettings::readerPixelSize,
+                       CrossPointSettings::READER_PIXEL_SIZE_MIN,
+                       CrossPointSettings::READER_PIXEL_SIZE_MAX, 1, "readerPixelSize", "Reader"),
     SettingInfo::Value(L(Str::kLineSpacing), &CrossPointSettings::customLineSpacing, 5, 20, 1, "lineSpacing", "Reader"),
     SettingInfo::SignedValue(L(Str::kWordSpacing), &CrossPointSettings::wordSpacing, -20, 20, 1, "wordSpacing", "Reader"),
     SettingInfo::Value(L(Str::kTopMargin), &CrossPointSettings::screenMargin_Top, 0,60,1, "screenMarginTop", "Reader"),

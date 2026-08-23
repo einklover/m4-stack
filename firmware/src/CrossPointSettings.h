@@ -96,6 +96,15 @@ class CrossPointSettings {
   enum FONT_FAMILY { SYSTEM_FONT = 0, FONT_CUSTOM = 1, FONT_FAMILY_COUNT };
   // Font size options
   enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
+  // Reader body size is one family-independent pixel setting. The old enum is
+  // retained only for binary/settings migration compatibility.
+  static constexpr uint8_t READER_PIXEL_SIZE_MIN = 12;
+  static constexpr uint8_t READER_PIXEL_SIZE_MAX = 48;
+  static uint8_t clampReaderPixelSize(int px) {
+    if (px < READER_PIXEL_SIZE_MIN) return READER_PIXEL_SIZE_MIN;
+    if (px > READER_PIXEL_SIZE_MAX) return READER_PIXEL_SIZE_MAX;
+    return static_cast<uint8_t>(px);
+  }
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
   enum WORDS_COMPRESSION { WORD_TIGHT = 0, WORD_NORMAL = 1, WORD_WIDE = 2, WORD_COMPRESSION_COUNT };
   enum PARAGRAPH_ALIGNMENT {
@@ -166,7 +175,8 @@ class CrossPointSettings {
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
   // Reader font settings
   uint8_t fontFamily = SYSTEM_FONT;
-  uint8_t customFontSize = 0;  // 0 means use enum mapping
+  uint8_t readerPixelSize = 18;  // canonical reader body size, independent of family
+  uint8_t customFontSize = 0;  // legacy JSON/binary alias; runtime never uses this
   char customFontFamily[64] = "";
   uint8_t fontSize = LARGE;
   uint8_t lineSpacing = NORMAL;   // Legacy: 0=TIGHT, 1=NORMAL, 2=WIDE
@@ -360,6 +370,9 @@ class CrossPointSettings {
   uint8_t developerSerialDebugEnabled = 0;
 
   ~CrossPointSettings() = default;
+
+  uint8_t getReaderPixelSize() const { return clampReaderPixelSize(readerPixelSize); }
+  void setReaderPixelSize(uint8_t px) { readerPixelSize = clampReaderPixelSize(px); }
 
   // Get singleton instance
   static CrossPointSettings& getInstance() { return instance; }

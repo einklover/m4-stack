@@ -18,6 +18,7 @@
 #include "../../src/managers/FontManager.h"
 #include "../../src/util/M4FontPolicy.h"
 #ifdef CROSSPOINT_MURPHY_M4
+#include "../EpdFont/ScaledEpdFont.h"
 #include "../../src/util/M4FixedRuntimeUiFonts.h"
 #endif
 
@@ -31,21 +32,6 @@ int hashFontId(const char* familyName, int size) {
   uint32_t hash = 5381;
   for (char c : key) hash = ((hash << 5) + hash) + static_cast<uint8_t>(c);
   return static_cast<int>(hash);
-}
-
-int sizeForEnum(uint8_t fontSizeEnum) {
-  switch (fontSizeEnum) {
-    case CrossPointSettings::SMALL:
-      return 12;
-    case CrossPointSettings::MEDIUM:
-      return 14;
-    case CrossPointSettings::LARGE:
-      return 16;
-    case CrossPointSettings::EXTRA_LARGE:
-      return 18;
-    default:
-      return 16;
-  }
 }
 
 bool isRuntimeTtfFamily(const std::string& familyName) {
@@ -78,6 +64,19 @@ void logFontHeap(const char* stage) {
 // it whenever orientation or a non-font setting invalidates pagination.
 std::string activeRuntimeTtfFamily;
 int activeRuntimeTtfSize = -1;
+
+#ifdef CROSSPOINT_MURPHY_M4
+// One borrowed source face plus one reusable scaler gives system reader text
+// exact arbitrary pixel sizes without creating a 12/16/18 artifact matrix.
+ScaledEpdFont scaledSystemReader;
+const EpdFont* compactSystemReader = nullptr;
+
+void captureCompactSystemReader(const GfxRenderer& renderer) {
+  if (compactSystemReader) return;
+  const EpdFont* candidate = renderer.getFontPtr(NOTOSANS_16_FONT_ID);
+  if (candidate && candidate != &scaledSystemReader) compactSystemReader = candidate;
+}
+#endif
 
 bool insertCustomFamily(GfxRenderer& renderer, const char* familyName, int size) {
   EpdFontFamily* family = FontManager::getInstance().getCustomFontFamily(familyName, size);
@@ -119,6 +118,22 @@ void promoteToReaderIds(GfxRenderer& renderer, const char* familyName, int size)
                 "(fixed generated pixel size ~%dpt)\n",
                 familyName, M4FontPolicy::kCanonicalEpdfontPixelSize);
 }
+
+#ifdef CROSSPOINT_MURPHY_M4
+void bindSystemReader(GfxRenderer& renderer, int targetPx) {
+  const EpdFont* source = renderer.getFontPtr(NOTOSANS_16_FONT_ID);
+  if (!source || source == &scaledSystemReader) source = compactSystemReader;
+  if (!source) {
+    Serial.println("[M4-FONT] DIAG: no system reader source to scale");
+    return;
+  }
+  scaledSystemReader.bind(source, static_cast<float>(targetPx) /
+                                      static_cast<float>(M4FontPolicy::kCanonicalEpdfontPixelSize));
+  renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&scaledSystemReader));
+  Serial.printf("[M4-FONT] System reader=%dpx scale=%.3f source=%s\n", targetPx, scaledSystemReader.scale(),
+                source == compactSystemReader ? "compact-2bit" : "canonical-epdfont");
+}
+#endif
 }  // namespace
 
 void EpdFontLoader::ensureFontsFromSd(GfxRenderer& renderer) {
@@ -133,6 +148,9 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
   const std::vector<int> previousCustomIds = loadedCustomIds;
   loadedCustomIds.clear();
   lastCanonicalResult = M4FontPolicy::LoadResult::NotAttempted;
+#ifdef CROSSPOINT_MURPHY_M4
+  captureCompactSystemReader(renderer);
+#endif
   FontManager::getInstance().invalidateScan();
   const auto& families = FontManager::getInstance().getAvailableFamilies();
 
@@ -147,9 +165,9 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
 
   const M4FontPolicy::Decision d = M4FontPolicy::decide(in);
   char decision[256];
-  snprintf(decision, sizeof(decision), "decision setting=%s selected=%s load=%s font_size=%d custom_size=%d",
+  snprintf(decision, sizeof(decision), "decision setting=%s selected=%s load=%s reader_px=%d legacy_font_size=%d",
            SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM ? "custom" : "system",
-           SETTINGS.customFontFamily, d.loadCustomFamily.c_str(), SETTINGS.fontSize, SETTINGS.customFontSize);
+           SETTINGS.customFontFamily, d.loadCustomFamily.c_str(), SETTINGS.getReaderPixelSize(), SETTINGS.fontSize);
   FontManager::appendFontDiagnostic(decision);
   if (d.mutateSettingsToCustom) {
     SETTINGS.fontFamily = CrossPointSettings::FONT_CUSTOM;
@@ -168,9 +186,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
   int runtimeReaderSize = -1;
   bool reuseRuntimeTtf = false;
   if (runtimeTtf) {
-    runtimeReaderSize = SETTINGS.customFontSize == 0
-                            ? sizeForEnum(SETTINGS.fontSize)
-                            : std::max<int>(12, std::min<int>(48, SETTINGS.customFontSize));
+    runtimeReaderSize = SETTINGS.getReaderPixelSize();
     const int runtimeId = hashFontId(d.loadCustomFamily.c_str(), runtimeReaderSize);
     reuseRuntimeTtf = activeRuntimeTtfFamily == d.loadCustomFamily && activeRuntimeTtfSize == runtimeReaderSize &&
                       renderer.hasFont(runtimeId);
@@ -205,10 +221,8 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
       // Preserve legacy epdfont behavior; its fixed bitmap artifact is cheap
       // compared with the runtime sfnt rasterizer and existing IDs depend on it.
       sizes = {12, 14, 16, 18, 20, 24};
-      const uint8_t explicitSize = SETTINGS.customFontSize == 0
-                                       ? 0
-                                       : std::max<uint8_t>(12, std::min<uint8_t>(48, SETTINGS.customFontSize));
-      if (explicitSize != 0 && std::find(sizes.begin(), sizes.end(), explicitSize) == sizes.end()) {
+      const uint8_t explicitSize = SETTINGS.getReaderPixelSize();
+      if (std::find(sizes.begin(), sizes.end(), explicitSize) == sizes.end()) {
         sizes.push_back(explicitSize);
       }
     }
@@ -267,6 +281,12 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
                   "Other epdfonts are never auto-promoted.\n",
                   M4FontPolicy::kCanonicalSdPath);
   }
+#ifdef CROSSPOINT_MURPHY_M4
+  // The selected custom face uses its hash ID above. NOTOSANS_16 remains the
+  // canonical system fallback (and is also used for system mode); bind that
+  // one stable ID to the exact requested pixel size in either case.
+  bindSystemReader(renderer, SETTINGS.getReaderPixelSize());
+#endif
   sdFontsLoaded_ = true;
   return customLoadSucceeded;
 #endif
@@ -278,10 +298,10 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
   bool legacyCustomLoadSucceeded = SETTINGS.fontFamily != CrossPointSettings::FONT_CUSTOM;
   if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM) {
     if (strlen(SETTINGS.customFontFamily) > 0) {
-      Serial.printf("Loading custom font: %s size %d\n", SETTINGS.customFontFamily, SETTINGS.fontSize);
+      Serial.printf("Loading custom font: %s size %d\n", SETTINGS.customFontFamily,
+                    SETTINGS.getReaderPixelSize());
       Serial.flush();
-      int size = sizeForEnum(SETTINGS.fontSize);
-      if (SETTINGS.customFontSize != 0) size = SETTINGS.customFontSize;
+      const int size = SETTINGS.getReaderPixelSize();
       legacyCustomLoadSucceeded = loadAndInsertCustom(renderer, SETTINGS.customFontFamily, size, loadedCustomIds) >= 0;
     }
   }

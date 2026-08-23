@@ -423,11 +423,6 @@ void SettingsActivity::toggleCurrentSetting() {
       config.displayFormatter = [](int v) -> std::string {
         return std::to_string(v / 10) + "." + std::to_string(v % 10) + L(Str::kValTimes);
       };
-    } else if (setting.key && strcmp(setting.key, "customFontSize") == 0) {
-      // TTF reader size: 0 = auto, 12-48 = explicit px.
-      config.displayFormatter = [](int v) -> std::string {
-        return v == 0 ? std::string(L(Str::kValAuto)) : std::to_string(v);
-      };
     }
     
     auto valuePtr = setting.valuePtr;
@@ -646,8 +641,6 @@ void SettingsActivity::render() const {
             valueText = std::to_string(v / 10) + "." + std::to_string(v % 10) + L(Str::kValTimes);
           } else if (settings[i].key && strcmp(settings[i].key, "refreshFrequency") == 0) {
             valueText = std::to_string(v) + L(Str::kValPagesFullRefresh);
-          } else if (settings[i].key && strcmp(settings[i].key, "customFontSize") == 0) {
-            valueText = (v == 0) ? L(Str::kValAuto) : std::to_string(v);
           } else {
             valueText = std::to_string(v);
           }

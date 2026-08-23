@@ -81,6 +81,26 @@ void applyLegacyFrontButtonLayout(CrossPointSettings& settings) {
       break;
   }
 }
+
+uint8_t legacyReaderPixelSize(uint8_t family, uint8_t size, uint8_t legacyCustomSize) {
+  if (legacyCustomSize != 0) return CrossPointSettings::clampReaderPixelSize(legacyCustomSize);
+  if (family == CrossPointSettings::FONT_CUSTOM) {
+    switch (size) {
+      case CrossPointSettings::SMALL: return 12;
+      case CrossPointSettings::MEDIUM: return 14;
+      case CrossPointSettings::LARGE: return 16;
+      case CrossPointSettings::EXTRA_LARGE: return 18;
+      default: return 16;
+    }
+  }
+  switch (size) {
+    case CrossPointSettings::SMALL: return 12;
+    case CrossPointSettings::MEDIUM: return 16;
+    case CrossPointSettings::LARGE:
+    case CrossPointSettings::EXTRA_LARGE:
+    default: return 18;
+  }
+}
 }  // namespace
 
 bool CrossPointSettings::saveToFile() const {
@@ -134,7 +154,10 @@ bool CrossPointSettings::saveToFile() const {
   doc["fontFamily"]                = fontFamily;
   doc["fontSize"]                  = fontSize;
   doc["customFontFamily"]          = customFontFamily;
-  doc["customFontSize"]            = customFontSize;
+  doc["readerPixelSize"]            = getReaderPixelSize();
+  // Keep the old key for one release so older firmware sees a sensible size;
+  // all current runtime decisions use readerPixelSize.
+  doc["customFontSize"]            = getReaderPixelSize();
   doc["lineSpacing"]               = lineSpacing;
   doc["customLineSpacing"]         = customLineSpacing;
   doc["wordSpacing"]               = (int)wordSpacing;
@@ -249,6 +272,7 @@ void CrossPointSettings::resetToDefaults() {
   frontButtonLeft = FRONT_HW_LEFT;
   frontButtonRight = FRONT_HW_RIGHT;
   fontFamily = SYSTEM_FONT;
+  readerPixelSize = 18;
   customFontSize = 0;
   customFontFamily[0] = '\0';
   fontSize = LARGE;
@@ -712,6 +736,11 @@ bool CrossPointSettings::loadFromBinaryFile() {
     applyLegacyFrontButtonLayout(*this);
   }
 
+  // The binary format has no canonical pixel field. Migrate its old family /
+  // enum / custom-size combination once, before it is rewritten as JSON.
+  readerPixelSize = legacyReaderPixelSize(fontFamily, fontSize, customFontSize);
+  customFontSize = readerPixelSize;
+
   inputFile.close();
   Serial.printf("[%lu] [CPS] Binary settings loaded (for migration)\n", millis());
   return true;
@@ -800,6 +829,12 @@ bool CrossPointSettings::loadFromFile() {
           fontSize                 = doc["fontSize"]                 | (uint8_t)LARGE;
           getString("customFontFamily", customFontFamily, sizeof(customFontFamily));
           customFontSize           = doc["customFontSize"]           | (uint8_t)0;
+          if (doc["readerPixelSize"].isNull()) {
+            readerPixelSize = legacyReaderPixelSize(fontFamily, fontSize, customFontSize);
+          } else {
+            readerPixelSize = clampReaderPixelSize(doc["readerPixelSize"] | (uint8_t)18);
+          }
+          customFontSize = readerPixelSize;
           lineSpacing              = doc["lineSpacing"]              | (uint8_t)NORMAL;
           customLineSpacing        = doc["customLineSpacing"]        | (uint8_t)10;
           wordSpacing              = static_cast<int8_t>(doc["wordSpacing"] | 0);
@@ -971,29 +1006,7 @@ int CrossPointSettings::getRefreshFrequency() const {
 int CrossPointSettings::getReaderFontId() const {
 
   if (fontFamily == FONT_CUSTOM) {
-    uint8_t targetSize = customFontSize;
-    // 0 is automatic; reject values below the supported TTF rasterizer size.
-    // This also protects settings written through the web API or old files.
-    if (targetSize != 0) {
-      targetSize = std::max<uint8_t>(12, std::min<uint8_t>(48, targetSize));
-    }
-    if (targetSize == 0) {
-      switch (fontSize) {
-        case SMALL:
-          targetSize = 12;
-          break;
-        case MEDIUM:
-        default:
-          targetSize = 14;
-          break;
-        case LARGE:
-          targetSize = 16;
-          break;
-        case EXTRA_LARGE:
-          targetSize = 18;
-          break;
-      }
-    }
+    const uint8_t targetSize = getReaderPixelSize();
     int id = EpdFontLoader::getBestFontId(customFontFamily, targetSize);
     if (id != -1) return id;
     static char lastFallbackFamily[sizeof(customFontFamily)] = {};
@@ -1014,7 +1027,13 @@ int CrossPointSettings::getReaderFontId() const {
   switch (fontFamily) {
     case SYSTEM_FONT:
     default:
-      // 系统内置字体：NotoSans
+#ifdef CROSSPOINT_MURPHY_M4
+      // M4 binds NOTOSANS_16 to a runtime-scaled view of the compact or
+      // canonical system face, so arbitrary readerPixelSize values remain
+      // exact without making extra system font artifacts.
+      return NOTOSANS_16_FONT_ID;
+#else
+      // Other targets retain their generated fixed-size system faces.
       switch (fontSize) {
         case SMALL:
           return NOTOSANS_12_FONT_ID;
@@ -1026,6 +1045,7 @@ int CrossPointSettings::getReaderFontId() const {
         case EXTRA_LARGE:
           return NOTOSANS_18_FONT_ID;
       }
+#endif
     case FONT_CUSTOM:
       // 外置字体逻辑已在上面处理，这里不应该到达
       return NOTOSANS_16_FONT_ID;

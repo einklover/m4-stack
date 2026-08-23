@@ -11,11 +11,12 @@
 // Lightweight metric/bitmap view over an existing EpdFont.
 //
 // Murphy M4 runtime TTF uses this for compact UI/status font IDs: there is
-// still exactly one real TtfEpdFont (the reader size) with one cmap, one SD
-// stream and one glyph LRU. A ScaledEpdFont only borrows that face, scales the
-// EpdGlyph metrics, and downsamples the already-cached source bitmap into one
-// reusable PSRAM scratch buffer. It never parses/rasterizes the TTF itself and
-// never owns a second glyph cache.
+// still exactly one source face with one cmap, one SD stream and one glyph LRU.
+// A ScaledEpdFont only borrows that face, scales the EpdGlyph metrics, and
+// resamples the already-cached source bitmap into one reusable PSRAM scratch
+// buffer. It never parses/rasterizes the source font itself and never owns a
+// second glyph cache. The source may be a streamed TTF/CFF face or the compact
+// built-in 2-bit CJK face.
 class ScaledEpdFont final : public EpdFont {
  public:
   ScaledEpdFont() : EpdFont(&scaledData_) {}
@@ -27,8 +28,8 @@ class ScaledEpdFont final : public EpdFont {
   void bind(const EpdFont* source, float scale) {
     source_ = source;
     if (scale <= 0.0f) scale = 1.0f;
-    if (scale > 1.0f) scale = 1.0f;  // UI views shrink only; never enlarge reader glyphs.
     scale_ = scale;
+    scaledCodepoint_ = 0;
 
     const EpdFontData* src = source_ ? source_->getData(EpdFontStyles::REGULAR) : nullptr;
     scaledData_ = {};
@@ -61,10 +62,11 @@ class ScaledEpdFont final : public EpdFont {
     scaledGlyph_.top = static_cast<int16_t>(scaledSigned(src->top));
     const uint32_t pixels = static_cast<uint32_t>(scaledGlyph_.width) * scaledGlyph_.height;
     scaledGlyph_.dataLength = scaledData_.is2Bit ? ((pixels + 3u) / 4u) : ((pixels + 7u) / 8u);
-    // Runtime TTF stores the codepoint in dataOffset. Preserve the source key;
-    // a missing codepoint therefore remains '?' and hasTextGlyphs still detects
-    // fallback tofu correctly through this scaled view.
-    scaledGlyph_.dataOffset = src->dataOffset;
+    // Keep the codepoint, not the source bitmap offset. Built-in compact faces
+    // use dataOffset as a bitmap offset while runtime TTF uses it as a cache
+    // key, so the codepoint is the only stable resampling identity.
+    scaledCodepoint_ = cp;
+    scaledGlyph_.dataOffset = 0;
     return &scaledGlyph_;
   }
 
@@ -73,10 +75,9 @@ class ScaledEpdFont final : public EpdFont {
     if (!source_ || !glyph) return nullptr;
     if (scale_ >= 0.999f) return source_->loadGlyphBitmap(glyph, buffer, style);
 
-    // Scaled views are bound only to runtime TTF while scale < 1. TtfEpdFont's
-    // EpdGlyph::dataOffset is the codepoint/cache key, so re-resolve the source
-    // glyph without retaining a pointer across other cache accesses.
-    const EpdGlyph* srcGlyph = source_->getGlyph(glyph->dataOffset, style);
+    // Re-resolve without retaining a source glyph pointer across cache
+    // accesses. This works for both compact bitmap offsets and runtime TTF.
+    const EpdGlyph* srcGlyph = source_->getGlyph(scaledCodepoint_, style);
     if (!srcGlyph) return nullptr;
     const uint8_t* srcBitmap = source_->loadGlyphBitmap(srcGlyph, nullptr, style);
     if (!srcBitmap || glyph->dataLength == 0) return nullptr;
@@ -160,6 +161,7 @@ class ScaledEpdFont final : public EpdFont {
   float scale_ = 1.0f;
   EpdFontData scaledData_{};
   mutable EpdGlyph scaledGlyph_{};
+  mutable uint32_t scaledCodepoint_ = 0;
   mutable uint8_t* scratch_ = nullptr;
   mutable size_t scratchBytes_ = 0;
 };

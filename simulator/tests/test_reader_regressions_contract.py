@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Focused source contracts for the integrated real-device reader regressions."""
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def text(rel: str) -> str:
+    return (ROOT / rel).read_text(encoding="utf-8")
+
+
+def function_body(src: str, signature: str) -> str:
+    start = src.index(signature)
+    brace = src.index("{", start)
+    depth = 0
+    for i in range(brace, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[brace + 1 : i]
+    raise AssertionError(f"unterminated function: {signature}")
+
+
+class ReaderRegressionContracts(unittest.TestCase):
+    def test_reader_animation_keeps_direction_and_custom_lut_to_driver(self) -> None:
+        hal = text("firmware/lib/hal/HalDisplay.cpp")
+        lab = text("firmware/src/debug/M4WaveformLab.cpp")
+        reader = text("firmware/src/activities/reader/TxtReaderActivity.cpp")
+        animation = function_body(lab, "uint32_t runAnimateMemWindow(")
+        finish = function_body(reader, "void TxtReaderActivity::finishPhysicalDisplay(")
+
+        for call in (
+            "einkDisplay.waveformLabRefresh(prev, next, lut, turnOff)",
+            "einkDisplay.waveformLabRefreshWindow(prev, next, lut",
+            "einkDisplay.waveformLabRefreshWindowBufs(redWin, bwWin, lut",
+            "einkDisplay.waveformLabActivate(lut)",
+            "einkDisplay.waveformLabActivateWindow(x, y, w, h, lut)",
+            "einkDisplay.setCustomLUT(enabled, lutData)",
+        ):
+            self.assertIn(call, hal)
+        self.assertIn("setCustomLUT(true, gLut)", animation)
+        self.assertIn("stepCell(i, steps, dir, cell)", animation)
+        self.assertIn("setCustomLUT(false, nullptr)", animation)
+        self.assertIn("waveformLabRefresh(newFrame, newFrame, /*lut=*/nullptr", animation)
+        self.assertNotRegex(animation, r"displayBuffer\s*\([^;]*(?:FULL_REFRESH|HALF_REFRESH)")
+        self.assertIn("logicalToPhysicalAnimationDirection", finish)
+        self.assertRegex(finish, r"runAnimateMemWindow\(oldCopy, newFrame, steps, mult, dir\)")
+
+    def test_reader_child_handoff_drops_queued_touch_turn_without_breaking_buttons(self) -> None:
+        txt = text("firmware/src/activities/reader/TxtReaderActivity.cpp")
+        settings = text("firmware/src/activities/reader/EpubReaderSettingsActivity.cpp")
+        settings_header = text("firmware/src/activities/reader/EpubReaderSettingsActivity.h")
+        touch_policy = text("firmware/src/util/M4ListTouchPolicy.h")
+        handoff = function_body(txt, "void TxtReaderActivity::cancelPendingPageTurnForChild(")
+        settings_loop = function_body(settings, "void EpubReaderSettingsActivity::loop(")
+
+        self.assertIn("pendingTurnDelta_.exchange(0", handoff)
+        self.assertIn("quickMode_ = false", handoff)
+        self.assertIn("cancelPendingPageTurnForChild();", txt[txt.index("void TxtReaderActivity::openMenu(") :])
+        self.assertIn("touchHandoffFrames_ = 1", settings)
+        self.assertIn("!ignoreTouchHandoff && mappedInput.hasTouch()", settings_loop)
+        # The touch guard is deliberately narrower than the button path.
+        self.assertIn("wasReleased(MappedInputManager::Button::Confirm)", settings_loop)
+        self.assertIn("tap(activate) → touchDown(select)", touch_policy)
+        self.assertLess(settings_loop.index("Action::Activate"),
+                        settings_loop.index("Button::Confirm"))
+        self.assertIn("return Action::Activate", touch_policy)
+
+    def test_reader_size_is_canonical_and_system_face_is_runtime_scaled(self) -> None:
+        settings = text("firmware/src/CrossPointSettings.h")
+        persistence = text("firmware/src/CrossPointSettings.cpp")
+        lists = text("firmware/src/SettingsLists.h")
+        menu = text("firmware/src/activities/reader/EpubReaderMenuActivity.cpp")
+        loader = text("firmware/lib/EpdFontLoader/EpdFontLoader.cpp")
+        scaled = text("firmware/lib/EpdFont/ScaledEpdFont.h")
+
+        self.assertIn("readerPixelSize = 18", settings)
+        self.assertIn('doc["readerPixelSize"]', persistence)
+        self.assertIn('doc["readerPixelSize"].isNull()', persistence)
+        self.assertIn("legacyReaderPixelSize", persistence)
+        self.assertIn("getReaderPixelSize()", persistence)
+        self.assertIn("&CrossPointSettings::readerPixelSize", lists)
+        self.assertIn('"readerPixelSize"', lists)
+        self.assertIn("SETTINGS.getReaderPixelSize()", menu)
+        self.assertNotIn("customFontSize", menu)
+
+        # 14/15/17/20 are all in the canonical range and must flow as the
+        # selected value, not through an enum or a 12/16/18 switch.
+        self.assertIn("READER_PIXEL_SIZE_MIN = 12", settings)
+        self.assertIn("READER_PIXEL_SIZE_MAX = 48", settings)
+        for px in (14, 15, 17, 20):
+            self.assertNotIn(f"== {px} ?", loader)
+        self.assertIn("runtimeReaderSize = SETTINGS.getReaderPixelSize()", loader)
+        self.assertIn("bindSystemReader(renderer, SETTINGS.getReaderPixelSize())", loader)
+        self.assertIn("ScaledEpdFont scaledSystemReader", loader)
+        self.assertNotIn("customFontSize", loader)
+        self.assertNotIn("if (scale > 1.0f)", scaled)
+        self.assertIn("scaledCodepoint_", scaled)
+        self.assertIn("source_->getGlyph(scaledCodepoint_, style)", scaled)
+
+
+if __name__ == "__main__":
+    unittest.main()
