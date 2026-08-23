@@ -25,10 +25,7 @@ void NativeProviderLoginActivity::onEnter() {
   delivered_ = false;
   lastSignature_.clear();
   lastPaintMs_ = 0;
-  if (!M4NativeProviderLogin::start(providerId_, appDataRoot_)) {
-    // A previous worker may still be unwinding after cancel. The activity can
-    // still render its snapshot; retry is offered after it becomes idle.
-  }
+  startFailed_ = !M4NativeProviderLogin::start(providerId_, appDataRoot_);
   render(true);
 }
 
@@ -40,6 +37,23 @@ void NativeProviderLoginActivity::onExit() {
 void NativeProviderLoginActivity::loop() {
   const auto snap = M4NativeProviderLogin::snapshot();
   render(false);
+
+  if (startFailed_) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
+      if (!delivered_) {
+        delivered_ = true;
+        onFinished_(false);
+      }
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) &&
+        !M4NativeProviderLogin::busy()) {
+      startFailed_ = !M4NativeProviderLogin::start(providerId_, appDataRoot_);
+      lastSignature_.clear();
+      render(true);
+    }
+    return;
+  }
 
   if (!delivered_ && snap.phase == M4NativeProviderLogin::Phase::Success) {
     delivered_ = true;
@@ -80,7 +94,13 @@ void NativeProviderLoginActivity::render(bool force) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, w, metrics.headerHeight},
                  providerId_ == "weread" ? "微信读书登录" : "晋江登录");
 
-  if (snap.phase == M4NativeProviderLogin::Phase::WaitingScan && !snap.qrUrl.empty()) {
+  if (startFailed_) {
+    const char* message = M4NativeProviderLogin::busy() ? "上一项登录仍在结束，请稍后重试"
+                                                        : "登录任务启动失败，请重试";
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, 220, "登录暂时不可用", true, EpdFontFamily::BOLD);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 285, message);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 340, "确认键重试");
+  } else if (snap.phase == M4NativeProviderLogin::Phase::WaitingScan && !snap.qrUrl.empty()) {
     constexpr uint8_t px = 5;  // V10 worst case 57*5 = 285 px, safe on 480-wide M4.
     constexpr int maxQr = 57 * px;
     const int x = std::max(12, (w - maxQr) / 2);
@@ -105,7 +125,7 @@ void NativeProviderLoginActivity::render(bool force) {
     M4UiText::drawCentered(renderer, UI_12_FONT_ID, 245, status, true, EpdFontFamily::BOLD);
   }
 
-  const bool retry = snap.phase == M4NativeProviderLogin::Phase::Error ||
+  const bool retry = startFailed_ || snap.phase == M4NativeProviderLogin::Phase::Error ||
                      snap.phase == M4NativeProviderLogin::Phase::Cancelled;
   const auto labels = mappedInput.mapLabels("« 返回", retry ? "重试" : "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -116,5 +136,6 @@ std::string NativeProviderLoginActivity::debugUiJson() {
   const auto s = M4NativeProviderLogin::snapshot();
   return std::string("{\"kind\":\"native_provider_login\",\"provider\":\"") + providerId_ +
          "\",\"phase\":" + std::to_string(static_cast<int>(s.phase)) +
-         ",\"has_qr\":" + (s.qrUrl.empty() ? "false" : "true") + "}";
+         ",\"has_qr\":" + (s.qrUrl.empty() ? "false" : "true") +
+         ",\"start_failed\":" + (startFailed_ ? "true" : "false") + "}";
 }

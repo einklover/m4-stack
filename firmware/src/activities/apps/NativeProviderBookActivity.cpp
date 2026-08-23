@@ -9,6 +9,7 @@
 #include "apps/M4PluginReaderSession.h"
 #include "apps/providers/M4NativeLoadUi.h"
 #include "apps/providers/M4NativeProviderBookDetail.h"
+#include "apps/providers/M4NativeProviderBookDetailAsync.h"
 #include "apps/providers/M4NativeProviderCatalog.h"
 #include "apps/providers/M4NativeProviderManager.h"
 #include "components/UITheme.h"
@@ -59,6 +60,23 @@ std::string chapterErrorText(const std::string& code) {
   if (code == "provider_not_supported") return "内容源不支持此章节";
   if (code == "cancelled") return "加载已取消";
   return code.empty() ? "未知错误" : code;
+}
+
+std::string detailErrorText(const std::string& code) {
+  if (code == "login_required" || code == "http_401" || code == "http_403") {
+    return "简介需要登录，可继续阅读";
+  }
+  if (code == "detail_task_create" || code == "detail_busy") {
+    return "简介任务繁忙，可稍后重试";
+  }
+  if (code == "detail_json" || code == "detail_empty") {
+    return "简介数据无效，可继续阅读";
+  }
+  if (code == "http_request_failed" || code == "http_begin_failed" || code == "detail_http") {
+    return "简介请求失败，可继续阅读";
+  }
+  if (code == "cancelled") return "简介加载已取消";
+  return "简介加载失败，可继续阅读";
 }
 
 std::string catalogErrorText(const std::string& code) {
@@ -194,7 +212,10 @@ void NativeProviderBookActivity::onEnter() {
 }
 
 void NativeProviderBookActivity::onExit() {
+  catalogStartPending_ = false;
+  chapterStartPending_ = false;
   if (state_ == State::CatalogLoading) M4NativeProviderCatalog::cancel();
+  cancelDetailLoading();
   ActivityWithSubactivity::onExit();
   titles_.reset();
 }
@@ -228,6 +249,7 @@ bool NativeProviderBookActivity::prepareCatalog() {
 }
 
 bool NativeProviderBookActivity::startCatalogBootstrap(PendingCatalogAction action) {
+  catalogStartPending_ = false;
   titles_.reset();
   chapterCount_ = 0;
   loadingIndex_ = -1;
@@ -250,11 +272,10 @@ bool NativeProviderBookActivity::startCatalogBootstrap(PendingCatalogAction acti
   // in ~1s; starting HTTPS while the panel still owns the shared SPI bus is
   // the usual catalog_commit_failed after a successful parse.
   renderCatalogLoading(true);
-  delay(600);
-  if (!M4NativeProviderCatalog::start(providerId_, bookId_, appId_, title_, currentIndex_)) {
-    error_ = "目录任务启动失败";
-    return false;
-  }
+  // Defer the task start without blocking the activity loop. This lets Back
+  // cancel the handoff while the first FAST frame settles on the panel.
+  catalogStartAtMs_ = millis() + 600u;
+  catalogStartPending_ = true;
   return true;
 }
 
@@ -283,21 +304,45 @@ void NativeProviderBookActivity::loadBookDetail() {
   req.author = author_;
   req.maxBytes = 96u * 1024u;
   detail_ = M4NativeProviderBookDetail::seed(req);
+  detailError_.clear();
 
   // Paint the immediately available discovery/history model first (FAST only).
   // Legado detail is local-only (shelf row + seed) and must not block on a
   // whole-shelf HTTP refetch or endpoint probe when the phone is unreachable.
   detailLoading_ = true;
   renderDetail();
+  if (!M4NativeProviderBookDetailAsync::start(req)) {
+    detailLoading_ = false;
+    detailError_ = "detail_busy";
+    renderDetail();
+  }
+}
 
-  const auto fetched = M4NativeProviderBookDetail::fetch(req);
+void NativeProviderBookActivity::pollDetailLoading() {
+  if (!detailLoading_) return;
+  const auto snap = M4NativeProviderBookDetailAsync::snapshot();
+  if (snap.providerId != providerId_ || snap.appId != appId_ || snap.bookId != bookId_) return;
+  if (snap.phase == M4NativeProviderBookDetailAsync::Phase::Idle ||
+      snap.phase == M4NativeProviderBookDetailAsync::Phase::Loading) {
+    return;
+  }
+
   detailLoading_ = false;
-  if (fetched.ok) {
-    detail_ = fetched.detail;
+  if (snap.phase == M4NativeProviderBookDetailAsync::Phase::Ready && snap.result.ok) {
+    detail_ = snap.result.detail;
+    detailError_.clear();
     if (!detail_.title.empty()) title_ = detail_.title;
     if (!detail_.author.empty()) author_ = detail_.author;
+  } else {
+    detailError_ = snap.result.error.empty() ? "detail_http" : snap.result.error;
   }
   renderDetail();
+}
+
+void NativeProviderBookActivity::cancelDetailLoading() {
+  if (!detailLoading_) return;
+  M4NativeProviderBookDetailAsync::cancel();
+  detailLoading_ = false;
 }
 
 void NativeProviderBookActivity::renderDetail() {
@@ -428,8 +473,10 @@ void NativeProviderBookActivity::renderDetail() {
         y += lineStep;
       }
     } else if (y < contentBottom) {
-      const char* placeholder = detailLoading_ ? "正在获取作品简介…" : "暂无可用简介";
-      M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, placeholder);
+      const std::string placeholder = detailLoading_
+                                          ? "正在获取作品简介…"
+                                          : (detailError_.empty() ? "暂无可用简介" : detailErrorText(detailError_));
+      M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, placeholder.c_str());
     }
   }
 
@@ -440,6 +487,7 @@ void NativeProviderBookActivity::renderDetail() {
 }
 
 void NativeProviderBookActivity::openToc() {
+  cancelDetailLoading();
   pendingCatalogAction_ = PendingCatalogAction::OpenToc;
   if (!titles_ && !prepareCatalog()) {
     error_.clear();
@@ -475,6 +523,7 @@ void NativeProviderBookActivity::openToc() {
 }
 
 void NativeProviderBookActivity::startReading() {
+  cancelDetailLoading();
   pendingCatalogAction_ = PendingCatalogAction::StartReading;
   if (!titles_ && !prepareCatalog()) {
     error_.clear();
@@ -533,18 +582,10 @@ void NativeProviderBookActivity::requestChapter(int index0, bool fromToc) {
   // bus. Starting TLS/HTTPS while the panel is still refreshing aborts the
   // handshake as ESP_ERR_HTTP_CONNECT (~100ms, 0 bytes). Paint first.
   renderLoading(true);
-  delay(600);
-  const bool queued = M4NativeProviderManager::requestChapter(
-      providerId_, bookId_, index0, M4NativeProviderManager::LoadIntent::Foreground);
-  if (!queued) {
-    const auto st = M4ContentProviderSession::chapterAt(providerId_, bookId_, index0);
-    if (st.state != M4ContentProvider::ChapterReady::Ready) {
-      error_ = chapterErrorText(st.error.empty() ? "chapter_queue_failed" : st.error);
-      state_ = State::Error;
-      renderError();
-      return;
-    }
-  }
+  // Defer the queue operation so the activity remains able to handle Back
+  // during the panel-settle window instead of sleeping on the UI task.
+  chapterStartAtMs_ = millis() + 600u;
+  chapterStartPending_ = true;
 }
 
 void NativeProviderBookActivity::openLogin() {
@@ -826,6 +867,7 @@ void NativeProviderBookActivity::loop() {
   }
 
   if (state_ == State::Detail) {
+    pollDetailLoading();
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
       onExitBook_();
       return;
@@ -859,6 +901,24 @@ void NativeProviderBookActivity::loop() {
   }
 
   if (state_ == State::CatalogLoading) {
+    if (catalogStartPending_) {
+      renderCatalogLoading(false);
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
+        catalogStartPending_ = false;
+        pendingCatalogAction_ = PendingCatalogAction::None;
+        state_ = State::Detail;
+        renderDetail();
+        return;
+      }
+      if (static_cast<int32_t>(millis() - catalogStartAtMs_) < 0) return;
+      catalogStartPending_ = false;
+      if (!M4NativeProviderCatalog::start(providerId_, bookId_, appId_, title_, currentIndex_)) {
+        error_ = "目录任务启动失败";
+        state_ = State::Error;
+        renderError();
+        return;
+      }
+    }
     const auto c = M4NativeProviderCatalog::snapshot();
     const bool mine = c.providerId == providerId_ && c.bookId == bookId_ && c.appId == appId_;
     if (mine && c.phase == M4NativeProviderCatalog::Phase::Ready) {
@@ -899,6 +959,31 @@ void NativeProviderBookActivity::loop() {
   }
 
   if (state_ == State::Loading) {
+    if (chapterStartPending_) {
+      renderLoading(false);
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
+        chapterStartPending_ = false;
+        if (loadingFromToc_) openToc();
+        else {
+          state_ = State::Detail;
+          renderDetail();
+        }
+        return;
+      }
+      if (static_cast<int32_t>(millis() - chapterStartAtMs_) < 0) return;
+      chapterStartPending_ = false;
+      const bool queued = M4NativeProviderManager::requestChapter(
+          providerId_, bookId_, loadingIndex_, M4NativeProviderManager::LoadIntent::Foreground);
+      if (!queued) {
+        const auto queuedState = M4ContentProviderSession::chapterAt(providerId_, bookId_, loadingIndex_);
+        if (queuedState.state != M4ContentProvider::ChapterReady::Ready) {
+          error_ = chapterErrorText(queuedState.error.empty() ? "chapter_queue_failed" : queuedState.error);
+          state_ = State::Error;
+          renderError();
+          return;
+        }
+      }
+    }
     const auto st = M4ContentProviderSession::chapterAt(providerId_, bookId_, loadingIndex_);
     const auto p = M4NativeProviderManager::progress();
     const bool authRequired = isAuthError(st.error) ||
@@ -963,5 +1048,7 @@ std::string NativeProviderBookActivity::debugUiJson() {
   return std::string("{\"kind\":\"native_provider_book\",\"provider\":\"") + providerId_ +
          "\",\"book\":\"" + bookId_ + "\",\"chapter\":" + std::to_string(currentIndex_) +
          ",\"state\":" + std::to_string(static_cast<int>(state_)) +
-         ",\"detail_loaded\":" + (detail_.intro.empty() ? "false" : "true") + "}";
+         ",\"detail_loaded\":" + (detail_.intro.empty() ? "false" : "true") +
+         ",\"detail_loading\":" + (detailLoading_ ? "true" : "false") +
+         ",\"detail_error\":\"" + detailError_ + "\"}";
 }

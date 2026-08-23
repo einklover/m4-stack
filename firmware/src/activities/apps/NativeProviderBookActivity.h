@@ -49,6 +49,8 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   bool startCatalogBootstrap(PendingCatalogAction action);
   void continueAfterCatalogReady();
   void loadBookDetail();
+  void pollDetailLoading();
+  void cancelDetailLoading();
   void renderDetail();
   void openToc();
   void startReading();
@@ -89,12 +91,17 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   bool loginSucceeded_ = false;
   uint32_t lastCatalogPaintMs_ = 0;
   uint32_t lastLoadingPaintMs_ = 0;
+  uint32_t catalogStartAtMs_ = 0;
+  uint32_t chapterStartAtMs_ = 0;
+  bool catalogStartPending_ = false;
+  bool chapterStartPending_ = false;
   std::string lastCatalogSignature_;
   std::string lastLoadingSignature_;
 
   M4NovelProvider::BookDetail detail_;
   bool detailLoading_ = false;
   bool detailAttempted_ = false;
+  std::string detailError_;
   int detailReadButtonTop_ = 0;
   int detailReadButtonHeight_ = 0;
 };

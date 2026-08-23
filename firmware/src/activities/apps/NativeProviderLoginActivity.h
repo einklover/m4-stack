@@ -29,4 +29,5 @@ class NativeProviderLoginActivity final : public Activity {
   std::string lastSignature_;
   uint32_t lastPaintMs_ = 0;
   bool delivered_ = false;
+  bool startFailed_ = false;
 };
