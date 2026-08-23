@@ -5,10 +5,14 @@
 #include <cstddef>
 #include <cstdint>
 
-// Runtime outline fonts use different em proportions.  The compact CJK
-// fallback is the stable visual contract: its `口` ink box is 12px in the
-// canonical 16px artifact.  Keep this policy independent of Arduino so the
-// host font matrix can exercise the exact same calculation.
+// Host/research helpers for comparing outline faces against the compact CJK
+// fallback ink box. Production TtfEpdFont deliberately does NOT rewrite raster
+// size from these ratios: over-normalizing CJK bbox height made many Reader
+// faces look wrong on hardware. Runtime keeps the configured nominal px and
+// only applies baseline/centering corrections.
+//
+// System chrome never instantiates selected-reader TTF faces, so these helpers
+// also must not be used to size SMALL/UI_10/UI_12.
 namespace M4TtfVisualNormalization {
 
 constexpr uint16_t kCanonicalReferencePx = 16;

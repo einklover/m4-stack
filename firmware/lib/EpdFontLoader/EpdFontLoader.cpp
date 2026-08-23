@@ -193,9 +193,9 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
   }
 
   if (!reuseRuntimeTtf) {
-    // Fixed runtime UI faces borrow their own SD TTF streams. Restore the
-    // firmware's built-in CJK chrome before tearing down/replacing the reader
-    // face, so a failed/partial next font can never leave UI IDs dangling.
+    // Always restore builtin chrome before tearing down reader faces so a
+    // failed/partial next font (or a stale custom-chrome mapping from older
+    // builds) can never leave SMALL/UI_10/UI_12 dangling or custom-backed.
     M4FixedRuntimeUiFonts::restore(renderer);
     for (int id : previousCustomIds) renderer.removeFont(id);
     FontManager::getInstance().releaseRuntimeTtfFaces();
@@ -208,11 +208,10 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
                   d.loadCustomFamily.c_str(), runtimeReaderSize);
   }
 
-  // 1) Explicit CUSTOM family -> reader hash IDs. Runtime sfnt deliberately
-  // owns only one Reader rasterizer at the selected body size. System/plugin
-  // chrome is owned exclusively by M4FixedRuntimeUiFonts (18/22/26px) so there
-  // is no intermediate bitmap-scaled reader face that can leak missing glyphs
-  // or oversized metrics into settings pages.
+  // 1) Explicit CUSTOM family -> reader hash IDs only. Runtime sfnt owns one
+  // Reader rasterizer at the selected body size. System/plugin chrome stays on
+  // the builtin faces permanently; custom Reader fonts must never replace
+  // SMALL/UI_10/UI_12 (that leak made settings UI tiny/overlapped).
   if (!d.loadCustomFamily.empty()) {
     std::vector<int> sizes;
     if (runtimeTtf) {
@@ -243,21 +242,22 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
       customLoadSucceeded = true;
       activeRuntimeTtfFamily = d.loadCustomFamily;
       activeRuntimeTtfSize = runtimeReaderSize;
-      const bool uiPromoted = M4FixedRuntimeUiFonts::ensure(renderer, d.loadCustomFamily.c_str());
-      Serial.printf("[M4-FONT] Runtime sfnt '%s' reader=%dpx; fixed UI chrome=%s\n",
-                    d.loadCustomFamily.c_str(), runtimeReaderSize, uiPromoted ? "custom" : "builtin_cjk");
+      // ensure() is a restore-only no-op for chrome promotion.
+      (void)M4FixedRuntimeUiFonts::ensure(renderer, d.loadCustomFamily.c_str());
+      Serial.printf("[M4-FONT] Runtime sfnt '%s' reader=%dpx; UI chrome=builtin (no custom promotion)\n",
+                    d.loadCustomFamily.c_str(), runtimeReaderSize);
       logFontHeap("runtime_ttf_ready");
     } else {
       customLoadSucceeded = true;
       FontManager::appendFontDiagnostic("custom_result=ok");
       Serial.printf("[M4-FONT] Loaded explicit CUSTOM family '%s' for reader\n", d.loadCustomFamily.c_str());
+      (void)M4FixedRuntimeUiFonts::ensure(renderer, d.loadCustomFamily.c_str());
     }
   }
 
   if (runtimeTtf && reuseRuntimeTtf) {
-    const bool uiPromoted = M4FixedRuntimeUiFonts::ensure(renderer, d.loadCustomFamily.c_str());
-    Serial.printf("[M4-FONT] Reused runtime sfnt fixed UI chrome=%s\n",
-                  uiPromoted ? "custom" : "builtin_cjk");
+    (void)M4FixedRuntimeUiFonts::ensure(renderer, d.loadCustomFamily.c_str());
+    Serial.printf("[M4-FONT] Reused runtime sfnt; UI chrome remains builtin\n");
     logFontHeap("runtime_ttf_reused");
   }
 

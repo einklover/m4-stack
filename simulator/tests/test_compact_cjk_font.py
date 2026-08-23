@@ -41,17 +41,16 @@ class CompactCjkFontTests(unittest.TestCase):
         self.assertIn("promoteToReaderIds", loader)
         self.assertIn("isRuntimeTtfFamily", loader)
         self.assertIn("M4FixedRuntimeUiFonts::ensure", loader)
+        self.assertIn("UI chrome=builtin (no custom promotion)", loader)
 
-    def test_missing_custom_glyph_keeps_builtin_then_external_fallback(self) -> None:
+    def test_missing_custom_glyph_keeps_builtin_chrome(self) -> None:
         ui_text = UI_TEXT.read_text(encoding="utf-8")
-        # resolveForText changes the selected face only after the candidate
-        # explicitly proves coverage. A missing glyph therefore keeps the
-        # compact builtin face (or the already-selected runtime reader face)
-        # instead of turning into a '?' from an incomplete custom font.
-        self.assertIn("EpdFontLoader::getBestFontId", ui_text)
-        self.assertIn("renderer.hasTextGlyphs(uiFont, safeText, style)", ui_text)
-        self.assertIn("f.fontId = uiFont", ui_text)
-        self.assertIn("return f;", ui_text)
+        # Chrome layout IDs never adopt a custom face. Reader/content IDs may
+        # switch only after the candidate proves coverage via hasTextGlyphs.
+        self.assertIn("!isReaderFontId(f.layoutFontId)", ui_text)
+        self.assertIn("SETTINGS.getReaderFontId()", ui_text)
+        self.assertIn("renderer.hasTextGlyphs(readerFont, safeText, style)", ui_text)
+        self.assertIn("f.fontId = readerFont", ui_text)
 
 
 if __name__ == "__main__":

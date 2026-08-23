@@ -2,10 +2,10 @@
 
 // Unified UI text helpers for Murphy M4.
 //
-// Runtime TTF chrome uses three real, fixed raster sizes shared by the whole
-// system and Native plugins (SMALL/UI_10/UI_12). Reader typography remains a
-// separate independently-sized TTF face. This avoids bitmap-downscaling Reader
-// glyphs for UI and keeps CJK strokes crisp at small sizes.
+// System chrome (SMALL/UI_10/UI_12) always stays on the builtin faces registered
+// at boot. A user-selected Reader font may remap ONLY reader/content IDs
+// (NOTOSANS_12/14/16/18 → runtime hash ID). Custom TTF must never replace or
+// scale chrome IDs; that leak made Reader Settings tiny/overlapped.
 //
 // Pure policy: M4UiTextPolicy.h (host-testable).
 // Drawing helpers: this header (device / sim with GfxRenderer).
@@ -92,11 +92,10 @@ inline std::string normalizeDisplayBreaks(const char* text) {
   return out;
 }
 
-// SMALL/UI_10/UI_12 are authoritative chrome IDs. For runtime TTF, ensure they
-// map to fixed native raster sizes (18/22/26px) shared by every system/plugin
-// surface. Activity uiScale is intentionally NOT applied to runtime TTF text:
-// arbitrary bitmap scaling is exactly what caused the poor small-font quality.
-// Legacy epdfont keeps its historical bounded draw-time scaling behavior.
+// SMALL/UI_10/UI_12 are authoritative chrome IDs and never leave the builtin
+// faces. Only NOTOSANS_* reader/content IDs may resolve to the selected custom
+// Reader face. Activity uiScale applies only to legacy (non-runtime-TTF)
+// drawing; runtime Reader text keeps native raster size.
 inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
   Face f;
   f.layoutFontId = (layoutFontId == 0) ? UI_12_FONT_ID : layoutFontId;
@@ -104,24 +103,14 @@ inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
   f.scale = 1.0f;
 
   if (selectedRuntimeTtf()) {
+    // Keep chrome on builtins even if an older build had promoted a custom face.
     auto& mutableRenderer = const_cast<GfxRenderer&>(renderer);
-    if (M4FixedRuntimeUiFonts::ensure(mutableRenderer, SETTINGS.customFontFamily)) {
-      if (isReaderFontId(f.layoutFontId)) {
-        const int readerFontId = SETTINGS.getReaderFontId();
-        if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
-          f.fontId = readerFontId;
-          return f;
-        }
+    M4FixedRuntimeUiFonts::ensure(mutableRenderer, SETTINGS.customFontFamily);
+    if (isReaderFontId(f.layoutFontId)) {
+      const int readerFontId = SETTINGS.getReaderFontId();
+      if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
+        f.fontId = readerFontId;
       }
-      return f;
-    }
-
-    // Defensive fallback if a fixed UI face cannot be opened. Only reader
-    // content IDs may use the runtime TTF; SMALL/UI_10/UI_12 must remain on
-    // their existing system mappings even for a partial-cmap reader font.
-    const int readerFontId = SETTINGS.getReaderFontId();
-    if (isReaderFontId(f.layoutFontId) && readerFontId != -1 && renderer.hasFont(readerFontId)) {
-      f.fontId = readerFontId;
     }
     return f;
   }
@@ -139,17 +128,17 @@ inline Face resolveForText(const GfxRenderer& renderer, int layoutFontId, const 
     return f;
   }
 
-  if (selectedRuntimeTtf()) {
-    // Fixed runtime TTF chrome faces have full selected-font coverage.
+  // Chrome layout IDs stay on builtins. Only reader/content IDs may adopt a
+  // legacy custom epdfont with proven glyph coverage.
+  if (!isReaderFontId(f.layoutFontId) || selectedRuntimeTtf()) {
     return f;
   }
 
   const char* safeText = text ? text : "";
-  const int uiFont = EpdFontLoader::getBestFontId(
-      SETTINGS.customFontFamily, uiTtfSizeForLayout(f.layoutFontId));
-  if (uiFont != -1 && renderer.hasFont(uiFont) &&
-      renderer.hasTextGlyphs(uiFont, safeText, style)) {
-    f.fontId = uiFont;
+  const int readerFont = SETTINGS.getReaderFontId();
+  if (readerFont != -1 && renderer.hasFont(readerFont) &&
+      renderer.hasTextGlyphs(readerFont, safeText, style)) {
+    f.fontId = readerFont;
   }
   return f;
 }

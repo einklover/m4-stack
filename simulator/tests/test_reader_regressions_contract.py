@@ -123,6 +123,16 @@ class ReaderRegressionContracts(unittest.TestCase):
         self.assertIn("wasScreenTapped(tx, ty)", drain)
         self.assertIn("wasScreenTouchDown(dx, dy)", drain)
 
+    def test_reader_settings_geometry_independent_of_custom_font(self) -> None:
+        settings = text("firmware/src/activities/reader/EpubReaderSettingsActivity.cpp")
+        fixed = text("firmware/src/util/M4FixedRuntimeUiFonts.h")
+        # List row step comes from theme chrome metrics, not reader face metrics.
+        self.assertIn("layout.rowStep = metrics.listRowHeight", settings)
+        self.assertNotIn("listLineHeight", settings)
+        self.assertNotIn("getReaderFontId()", settings)
+        self.assertNotIn("getReaderPixelSize()", settings)
+        self.assertIn("kAllowCustomChromePromotion = false", fixed)
+
 
 if __name__ == "__main__":
     unittest.main()
