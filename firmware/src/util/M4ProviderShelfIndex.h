@@ -13,6 +13,10 @@ struct Builder {
   uint32_t offset = 0;
   bool any = false;
   uint8_t last = '\n';
+  // Zero keeps the historical unbounded host-test behavior. Native provider
+  // controllers set a finite cap before pumping an external shelf file.
+  size_t maxRows = 0;
+  bool overflow = false;
   std::vector<uint32_t> anchors{0};
 
   void feed(const uint8_t* data, size_t len) {
@@ -23,6 +27,10 @@ struct Builder {
       ++offset;
       if (data[i] == '\n') {
         ++rows;
+        if (maxRows != 0 && rows > maxRows) {
+          overflow = true;
+          return;
+        }
         if (rows % kStride == 0) anchors.push_back(offset);
       }
     }
