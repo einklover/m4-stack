@@ -15,6 +15,10 @@ class EpubReaderSettingsActivity final : public ActivityWithSubactivity {
   SemaphoreHandle_t renderingMutex = nullptr;
   bool updateRequired = false;
   mutable bool firstPaint_ = true;  // HALF after reader AA residual
+  // A tap/release that opened this activity must not be reinterpreted as the
+  // first list touch after a busy reader page-turn/menu handoff. Buttons are
+  // intentionally handled independently in loop().
+  uint8_t touchHandoffFrames_ = 0;
   int selectedIndex = 0;
   std::vector<SettingInfo> settings;
   const std::function<void()> onGoBack;

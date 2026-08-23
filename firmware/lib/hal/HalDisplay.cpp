@@ -235,10 +235,10 @@ void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
 
 uint32_t HalDisplay::waveformLabRefresh(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                                         bool turnOff) {
-  (void)lut;
-  // The SDK facade can otherwise arm a caller-supplied LUT internally. LUTs
-  // are diagnostic data only; the global policy permits the fast waveform.
-  return einkDisplay.waveformLabRefresh(prev, next, nullptr, turnOff);
+  // The reader page-turn path owns this explicit differential waveform. The
+  // normal displayBuffer/refreshDisplay policy still normalizes generic UI to
+  // FAST; do not discard the reader's bounded window LUT here.
+  return einkDisplay.waveformLabRefresh(prev, next, lut, turnOff);
 }
 
 void HalDisplay::waveformLabBaseline(const uint8_t* frame) {
@@ -251,15 +251,13 @@ void HalDisplay::waveformLabBaseline(const uint8_t* frame) {
 uint32_t HalDisplay::waveformLabRefreshWindow(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                                               uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                                               bool syncAfter) {
-  (void)lut;
-  return einkDisplay.waveformLabRefreshWindow(prev, next, nullptr, x, y, w, h, syncAfter);
+  return einkDisplay.waveformLabRefreshWindow(prev, next, lut, x, y, w, h, syncAfter);
 }
 
 uint32_t HalDisplay::waveformLabRefreshWindowBufs(const uint8_t* redWin, const uint8_t* bwWin,
                                                   const uint8_t* lut, uint16_t x, uint16_t y, uint16_t w,
                                                   uint16_t h) {
-  (void)lut;
-  return einkDisplay.waveformLabRefreshWindowBufs(redWin, bwWin, nullptr, x, y, w, h);
+  return einkDisplay.waveformLabRefreshWindowBufs(redWin, bwWin, lut, x, y, w, h);
 }
 
 void HalDisplay::waveformLabWriteDiffWindow(const uint8_t* prev, const uint8_t* next, uint16_t x, uint16_t y,
@@ -268,14 +266,12 @@ void HalDisplay::waveformLabWriteDiffWindow(const uint8_t* prev, const uint8_t* 
 }
 
 uint32_t HalDisplay::waveformLabActivate(const uint8_t* lut) {
-  (void)lut;
-  return einkDisplay.waveformLabActivate(nullptr);
+  return einkDisplay.waveformLabActivate(lut);
 }
 
 uint32_t HalDisplay::waveformLabActivateWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                                                const uint8_t* lut) {
-  (void)lut;
-  return einkDisplay.waveformLabActivateWindow(x, y, w, h, nullptr);
+  return einkDisplay.waveformLabActivateWindow(x, y, w, h, lut);
 }
 
 void HalDisplay::waveformLabEqualizeWindow(const uint8_t* frame, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
@@ -283,8 +279,7 @@ void HalDisplay::waveformLabEqualizeWindow(const uint8_t* frame, uint16_t x, uin
 }
 
 void HalDisplay::setCustomLUT(bool enabled, const unsigned char* lutData) {
-  (void)enabled;
-  (void)lutData;
-  // Prevent the legacy SDK escape hatch even for old debug-bridge commands.
-  einkDisplay.setCustomLUT(false, nullptr);
+  // This is intentionally only called by the bounded reader page-turn lab
+  // path. Generic UI continues to use displayBuffer/refreshDisplay policy.
+  einkDisplay.setCustomLUT(enabled, lutData);
 }

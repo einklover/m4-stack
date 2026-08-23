@@ -180,6 +180,10 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   int8_t wordSpacing = SETTINGS.wordSpacing;
 
   void openMenu(EpubReaderMenuActivity::MenuLayer layer = EpubReaderMenuActivity::MenuLayer::QUICK);
+  // A menu/settings handoff must not replay page taps that arrived while the
+  // physical page-turn animation was busy. Completed page progress remains;
+  // only unapplied input/quick-turn scheduling is discarded.
+  void cancelPendingPageTurnForChild();
   void enterChapterPicker();
   void handleMenuAction(EpubReaderMenuActivity::MenuAction action);
   void onSettingsChanged();

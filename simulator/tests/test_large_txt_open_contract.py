@@ -161,15 +161,24 @@ class LargeTxtOpenContracts(unittest.TestCase):
         x3 = text("firmware/open-m4-sdk/libs/display/FreeInkDisplay/src/driver/Uc8253X3Driver.cpp")
         it8951 = text("firmware/open-m4-sdk/libs/display/FreeInkDisplay/src/driver/It8951Driver.cpp")
 
-        # Debug/LUT APIs remain source-compatible but cannot install an analog
-        # multi-phase waveform behind the global refresh policy.
-        self.assertNotIn("setCustomLut(_bus, true", facade)
+        # The explicit reader page-turn path is the one deliberate custom-LUT
+        # exception. It is windowed and ends with a stock same-frame seed;
+        # generic displayBuffer/refreshDisplay policy remains FAST-only.
+        self.assertIn("setCustomLut(_bus, true", facade)
         self.assertIn("setCustomLUT(bool enabled", facade)
-        self.assertIn("every lab activation uses the", facade)
-        self.assertNotIn("setCustomLUT(true", lab)
-        self.assertIn("waveformLabRefresh(prev, next, nullptr, turnOff)", hal)
+        self.assertIn("einkDisplay.waveformLabRefresh(prev, next, lut, turnOff)", hal)
+        self.assertIn("einkDisplay.waveformLabRefreshWindow(prev, next, lut", hal)
+        self.assertIn("einkDisplay.waveformLabRefreshWindowBufs(redWin, bwWin, lut", hal)
+        self.assertIn("einkDisplay.waveformLabActivate(lut)", hal)
+        self.assertIn("einkDisplay.waveformLabActivateWindow(x, y, w, h, lut)", hal)
+        self.assertIn("einkDisplay.setCustomLUT(enabled, lutData)", hal)
         self.assertIn("waveformLabRefresh(frame, frame, nullptr, false)", hal)
-        self.assertIn("einkDisplay.setCustomLUT(false, nullptr)", hal)
+        animation = function_body(lab, "uint32_t runAnimateMemWindow(")
+        self.assertIn("setCustomLUT(true, gLut)", animation)
+        self.assertIn("waveformLabActivate(gLut)", animation)
+        self.assertIn("setCustomLUT(false, nullptr)", animation)
+        self.assertIn("waveformLabRefresh(newFrame, newFrame, /*lut=*/nullptr", animation)
+        self.assertNotRegex(animation, r"displayBuffer\s*\([^;]*(?:FULL_REFRESH|HALF_REFRESH)")
 
         if "READER_CLEANUP_REFRESH" not in freeink_header:
             self.skipTest("generated SDK is the legacy fast-only copy")

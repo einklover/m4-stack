@@ -29,6 +29,7 @@ MENU_PATH = ("Reader", "TxtReader", "EpubReaderMenu")
 CHAPTER_PATH = ("Reader", "TxtReader", "TxtReaderChapterSelection")
 PROGRESS_PATH = ("Reader", "TxtReader", "EpubReaderPercentSelection")
 BOOKMARK_PATH = ("Reader", "TxtReader", "BookmarkManager")
+READER_SETTINGS_PATH = ("Reader", "TxtReader", "EpubReaderSettings")
 
 
 def _set_session(root: Path) -> None:
@@ -244,6 +245,30 @@ def _seed_txt(sd: Path, root: Path) -> Path:
     )
     if cp.returncode != 0:
         raise m4sim.M4SimError(f"mcopy fixture failed ({cp.returncode}):\n{cp.stdout}")
+    settings = root / "settings.json"
+    settings.write_text(
+        '{"v":1,"directTxtRead":1,"libraryLongPressMenu":1,'
+        '"pageTurnAnimationEnabled":1,'
+        '"pageTurnAnimationSteps":4,"pageTurnAnimationMult":2,'
+        '"pageTurnAnimationDir":0}\n',
+        encoding="utf-8",
+    )
+    cp = subprocess.run(
+        ["mmd", "-i", str(sd), "::/.crosspoint"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if cp.returncode != 0:
+        raise m4sim.M4SimError(f"mmd settings directory failed ({cp.returncode}):\n{cp.stdout}")
+    cp = subprocess.run(
+        [mcopy, "-o", "-i", str(sd), str(settings), "::/.crosspoint/settings.json"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if cp.returncode != 0:
+        raise m4sim.M4SimError(f"mcopy settings failed ({cp.returncode}):\n{cp.stdout}")
     return fixture
 
 
@@ -291,6 +316,31 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
         _tap(client, 400, 420)
         reader_turned = _settle_reader(client, proc, qlog, root, "03b-reader-page-turn")
         _assert_changed(reader, reader_turned, "reader page-turn tap")
+        # Exercise the opposite page direction through the same windowed LUT
+        # path before entering More/settings.
+        _tap(client, 80, 420)
+        reader_prev = _settle_reader(client, proc, qlog, root, "03b-reader-previous-page")
+        _assert_changed(reader_turned, reader_prev, "reader previous-page tap")
+        _tap(client, 400, 420)
+        reader_next_again = _settle_reader(client, proc, qlog, root, "03b-reader-next-page-again")
+        _assert_changed(reader_prev, reader_next_again, "reader next-page tap after previous")
+
+        # A settings-row tap immediately after both page directions must open
+        # Reader Settings, not merely select a row or replay the page tap.
+        _tap(client, 240, 400)
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        _tap(client, 420, 756)
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        _send_key(client, "confirm")
+        _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
+        _tap(client, 240, 143)
+        reader_settings_ui = _wait_path(client, proc, qlog, READER_SETTINGS_PATH, seconds=20.0)
+        reader_settings = _capture(client, root, "03c-reader-settings-touch")
+        if _activity_path(reader_settings_ui) != READER_SETTINGS_PATH:
+            raise m4sim.M4SimError(f"Reader Settings touch activation failed: {reader_settings_ui!r}")
+        _send_key(client, "back")
+        _settle_reader(client, proc, qlog, root, "03d-reader-after-settings-touch")
+
         _tap(client, 240, 400)
         menu_from_body = _wait_path(client, proc, qlog, MENU_PATH, seconds=20.0)
         menu_from_body_body = _deepest_body(menu_from_body)
@@ -461,6 +511,8 @@ def _run(base: Path, qemu: Path, flash: Path, ready_seconds: float) -> dict[str,
             "Entering activity: TxtReaderChapterSelection",
             "Entering activity: EpubReaderPercentSelection",
             "Entering activity: BookmarkManager",
+            "[PTA] anim start mode=window",
+            "[PTA] anim done",
         )
         missing = [needle for needle in required_logs if needle not in serial]
         if missing:

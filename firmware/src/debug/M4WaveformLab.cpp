@@ -670,8 +670,10 @@ uint32_t runAnimateMemWindow(const uint8_t* oldFrame, const uint8_t* newFrame, i
   StepCell band[64];
   int bandN = 0;
   gRunning = true;
-  // Caller LUTs remain protocol data only; the driver always uses FAST.
-  gDisplay->setCustomLUT(false, nullptr);
+  // This is the dedicated reader page-turn path: arm the custom LUT once for
+  // the bounded differential window, then clear it before the stock final
+  // same-frame seed. Generic UI never enters this path.
+  gDisplay->setCustomLUT(true, gLut);
   const uint32_t t0 = millis();
 
   auto equalizeCell = [&](const StepCell& s) {

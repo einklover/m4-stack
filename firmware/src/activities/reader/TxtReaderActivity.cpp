@@ -497,6 +497,17 @@ void TxtReaderActivity::waitPhysicalEpdIdle(uint32_t maxMs) {
   }
 }
 
+void TxtReaderActivity::cancelPendingPageTurnForChild() {
+  const int pending = pendingTurnDelta_.exchange(0, std::memory_order_relaxed);
+  const bool wasQuick = quickMode_;
+  quickMode_ = false;
+  lastPageTurnMs_ = 0;
+  if (pending != 0 || wasQuick) {
+    Serial.printf("[TRS] child handoff cleared page-turn delta=%d quick=%d\n", pending,
+                  wasQuick ? 1 : 0);
+  }
+}
+
 void TxtReaderActivity::onExit() {
   ActivityWithSubactivity::onExit();
 
@@ -508,6 +519,7 @@ void TxtReaderActivity::onExit() {
   // Chapter switch: Lua paints loading next — short wait so UI feels responsive.
   suppressDisplay_ = true;
   updateRequired = false;
+  cancelPendingPageTurnForChild();
   const uint32_t epdWaitMs =
       (pluginSession_.active && pluginSwitchChapterIndex_ >= 0) ? 400u : 2500u;
   waitPhysicalEpdIdle(epdWaitMs);
@@ -1494,6 +1506,7 @@ void TxtReaderActivity::openMenu(EpubReaderMenuActivity::MenuLayer layer) {
   // Do not let reader AA/e-ink race menu/settings paints (residual overlay).
   suppressDisplay_ = true;
   updateRequired = false;
+  cancelPendingPageTurnForChild();
   waitPhysicalEpdIdle(2500);
   renderer.setRenderMode(GfxRenderer::BW);
 
