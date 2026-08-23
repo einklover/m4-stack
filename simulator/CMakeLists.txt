@@ -102,6 +102,33 @@ if(M4_FONT_SAMPLE_DIR)
   add_test(NAME m4_font_visual_normalization_tests
            COMMAND m4_font_visual_normalization_tests "${M4_FONT_SAMPLE_DIR}")
 endif()
+
+# Exercise the actual streamed runtime-font cache/render path across a face
+# switch. Host shims provide only Arduino/SD types; TtfEpdFont and both outline
+# backends are the production sources.
+add_executable(m4_runtime_ttf_switch_tests
+  tests/runtime_ttf_switch.cpp
+  ../firmware/lib/EpdFont/TtfEpdFont.cpp
+  ../firmware/lib/EpdFont/EpdFont.cpp
+  ../firmware/lib/Utf8/Utf8.cpp
+  ../firmware/lib/TtfReader/src/TtfReader.cpp
+  ../firmware/lib/TtfReader/src/TtfReaderFace.cpp
+  ../firmware/lib/TtfReader/src/CffReader.cpp
+  ../firmware/lib/TtfReader/src/CffType2.cpp
+  ../firmware/lib/TtfReader/src/CffRaster.cpp
+)
+target_include_directories(m4_runtime_ttf_switch_tests PRIVATE
+  tests/runtime_font_shims
+  ../firmware/src
+  ../firmware/lib/EpdFont
+  ../firmware/lib/Utf8
+  ../firmware/lib/TtfReader/src)
+if(M4_FONT_SAMPLE_DIR)
+  add_test(NAME m4_runtime_ttf_switch_tests
+           COMMAND m4_runtime_ttf_switch_tests
+             "${M4_FONT_SAMPLE_DIR}/FZYTJW.TTF"
+             "${M4_FONT_SAMPLE_DIR}/思源宋体SC-VF.ttf")
+endif()
 add_executable(m4_board_contract tools/board_contract.cpp)
 target_link_libraries(m4_board_contract PRIVATE m4_board_model)
 add_executable(m4_issue_contracts tests/issue_contracts.cpp)

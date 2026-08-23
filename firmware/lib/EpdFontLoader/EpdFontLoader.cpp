@@ -76,6 +76,15 @@ void captureCompactSystemReader(const GfxRenderer& renderer) {
   const EpdFont* candidate = renderer.getFontPtr(NOTOSANS_16_FONT_ID);
   if (candidate && candidate != &scaledSystemReader) compactSystemReader = candidate;
 }
+
+void logFontMap(const GfxRenderer& renderer, const char* stage, int readerId) {
+  Serial.printf("[M4-FONT-MAP] stage=%s reader_id=%d reader=%p small_id=%d small=%p ui10_id=%d ui10=%p ui12_id=%d ui12=%p\n",
+                stage ? stage : "?", readerId,
+                static_cast<const void*>(readerId == -1 ? nullptr : renderer.getFontPtr(readerId)),
+                SMALL_FONT_ID, static_cast<const void*>(renderer.getFontPtr(SMALL_FONT_ID)),
+                UI_10_FONT_ID, static_cast<const void*>(renderer.getFontPtr(UI_10_FONT_ID)),
+                UI_12_FONT_ID, static_cast<const void*>(renderer.getFontPtr(UI_12_FONT_ID)));
+}
 #endif
 
 bool insertCustomFamily(GfxRenderer& renderer, const char* familyName, int size) {
@@ -197,6 +206,12 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
     // failed/partial next font (or a stale custom-chrome mapping from older
     // builds) can never leave SMALL/UI_10/UI_12 dangling or custom-backed.
     M4FixedRuntimeUiFonts::restore(renderer);
+#ifdef CROSSPOINT_MURPHY_M4
+    const int oldReaderId = activeRuntimeTtfSize > 0
+        ? hashFontId(activeRuntimeTtfFamily.c_str(), activeRuntimeTtfSize)
+        : -1;
+    logFontMap(renderer, "before_reader_release", oldReaderId);
+#endif
     for (int id : previousCustomIds) renderer.removeFont(id);
     FontManager::getInstance().releaseRuntimeTtfFaces();
     FontManager::getInstance().clearLoadedFonts();
@@ -246,6 +261,8 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
       (void)M4FixedRuntimeUiFonts::ensure(renderer, d.loadCustomFamily.c_str());
       Serial.printf("[M4-FONT] Runtime sfnt '%s' reader=%dpx; UI chrome=builtin (no custom promotion)\n",
                     d.loadCustomFamily.c_str(), runtimeReaderSize);
+      logFontMap(renderer, "runtime_reader_ready",
+                 hashFontId(d.loadCustomFamily.c_str(), runtimeReaderSize));
       logFontHeap("runtime_ttf_ready");
     } else {
       customLoadSucceeded = true;
@@ -286,6 +303,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
   // canonical system fallback (and is also used for system mode); bind that
   // one stable ID to the exact requested pixel size in either case.
   bindSystemReader(renderer, SETTINGS.getReaderPixelSize());
+  logFontMap(renderer, "load_complete", SETTINGS.getReaderFontId());
 #endif
   sdFontsLoaded_ = true;
   return customLoadSucceeded;

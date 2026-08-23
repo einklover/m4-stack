@@ -96,6 +96,7 @@ class TtfEpdFont : public EpdFont {
 
   mutable Entry* entries_ = nullptr;
   mutable uint32_t accessCounter_ = 0;
+  mutable uint8_t glyphDiagnosticsLogged_ = 0;
   mutable size_t cacheBytes_ = 0;
   // Advance-only cache: wrapping/index hit this and never touch glyf/CFF.
   static constexpr uint16_t kAdvanceCache = 256;

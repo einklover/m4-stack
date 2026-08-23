@@ -502,9 +502,9 @@ bool TtfEpdFont::finishInit(const char* label) {
   data_.is2Bit = true;
   valid_ = true;
 
-  Serial.printf("[TTF] Loaded %s backend=%s face=%lu @%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X dx=%d slots=%u budget=%u\n",
-                label ? label : "?", backendName(),
-                static_cast<unsigned long>(faceOffset_), sizePx_, upm,
+  Serial.printf("[TTF] Loaded ptr=%p %s backend=%s face=%lu nominal=%upx raster=%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X dx=%d slots=%u budget=%u\n",
+                static_cast<void*>(this), label ? label : "?", backendName(),
+                static_cast<unsigned long>(faceOffset_), sizePx_, renderSizePx_, upm,
                 data_.advanceY, data_.ascender, data_.descender, bboxTop,
                 static_cast<unsigned>(visualReferenceCodepoint_),
                 static_cast<int>(visualOriginX_),
@@ -717,13 +717,17 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
     std::memcpy(bitmap, gb.data, len);
   }
 
+  // Resolve hmtx before publishing this cache slot. lookupAdvancePx() first
+  // checks resident entries; publishing cp while advanceX is still zero makes
+  // it read this half-built entry and collapses every rendered glyph onto one x.
+  const int advance = std::max(0, std::min(255, lookupAdvancePx(cp)));
   entries_[slot].cp = cp;
   entries_[slot].lastAccess = ++accessCounter_;
   entries_[slot].glyph.width = uint8_t(gb.width);
   entries_[slot].glyph.height = uint8_t(gb.height);
   // Advances stay on source hmtx at the configured reader px. visualOriginX_
   // is a bearing-only centering compensation and must not rewrite advances.
-  entries_[slot].glyph.advanceX = uint8_t(std::max(0, std::min(255, lookupAdvancePx(cp))));
+  entries_[slot].glyph.advanceX = static_cast<uint8_t>(advance);
   entries_[slot].glyph.left = static_cast<int16_t>(gb.xoff + visualOriginX_);
   entries_[slot].glyph.top = gb.yoff;
   entries_[slot].glyph.dataLength = len;
@@ -731,6 +735,15 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   entries_[slot].bitmap = bitmap;
   entries_[slot].bitmapSize = len;
   cacheBytes_ += len;
+
+  if (glyphDiagnosticsLogged_ < 12) {
+    Serial.printf("[TTF-GLYPH] ptr=%p cp=U+%04lX advance=%d bitmap=%ux%u left=%d top=%d nominal=%u raster=%u lineH=%u asc=%d desc=%d\n",
+                  static_cast<const void*>(this), static_cast<unsigned long>(cp), advance,
+                  static_cast<unsigned>(gb.width), static_cast<unsigned>(gb.height),
+                  static_cast<int>(entries_[slot].glyph.left), static_cast<int>(gb.yoff),
+                  sizePx_, renderSizePx_, data_.advanceY, data_.ascender, data_.descender);
+    ++glyphDiagnosticsLogged_;
+  }
 
   while (cacheBytes_ > cacheBudget_) {
     int victim = -1;
