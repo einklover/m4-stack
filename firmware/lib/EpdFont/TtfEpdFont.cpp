@@ -363,13 +363,13 @@ int TtfEpdFont::glyphAdvanceX(uint32_t cp, const EpdFontStyles::Style style) con
   return adv;
 }
 bool TtfEpdFont::backendRasterize(uint16_t gid, ttf::GlyphBitmap& out) const {
-  return usesCffBackend() ? cffFont_.rasterize(gid, sizePx_, out)
-                          : font_.rasterize(gid, sizePx_, out);
+  return usesCffBackend() ? cffFont_.rasterize(gid, renderSizePx_, out)
+                          : font_.rasterize(gid, renderSizePx_, out);
 }
 bool TtfEpdFont::backendPixelBox(uint16_t gid, int& x0, int& y0, int& x1, int& y1) const {
   return usesCffBackend()
-      ? cffFont_.glyphPixelBox(gid, sizePx_, x0, y0, x1, y1)
-      : font_.glyphPixelBox(gid, sizePx_, x0, y0, x1, y1);
+      ? cffFont_.glyphPixelBox(gid, renderSizePx_, x0, y0, x1, y1)
+      : font_.glyphPixelBox(gid, renderSizePx_, x0, y0, x1, y1);
 }
 void TtfEpdFont::backendVMetrics(int32_t& asc, int32_t& desc, int32_t& gap) const {
   if (usesCffBackend()) cffFont_.fontVMetrics(asc, desc, gap);
@@ -423,7 +423,79 @@ bool TtfEpdFont::finishInit(const char* label) {
 
   const uint16_t upm = backendUnitsPerEm();
   if (!upm) return false;
-  const float scale = float(sizePx_) / float(upm);
+  const int nominal = std::max(1, int(sizePx_));
+  renderSizePx_ = static_cast<uint16_t>(nominal);
+  visualScale_ = 1.0f;
+  visualReferenceCodepoint_ = 0;
+  visualOriginX_ = 0;
+
+  bool refValid = false;
+  uint16_t refGid = 0;
+  int nominalRefWidth = 0;
+  int nominalRefHeight = 0;
+  int referenceHeights[6] = {};
+  size_t referenceHeightCount = 0;
+  uint16_t fallbackGid = 0;
+  uint32_t fallbackCp = 0;
+  int fallbackWidth = 0;
+  int fallbackHeight = 0;
+  float robustReferenceHeight = 0.0f;
+  // Measure the actual outline at the configured size first.  This catches
+  // fonts whose em box is nominally correct but whose CJK ink is unusually
+  // tall/small; no font metadata heuristic can replace this bbox.
+  for (size_t i = 0; i < M4TtfVisualNormalization::kReferenceCodepointCount; ++i) {
+    const uint32_t cp = M4TtfVisualNormalization::kReferenceCodepoints[i];
+    uint16_t gid = 0;
+    if (!backendFindGlyph(cp, gid) || gid == 0) continue;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (!backendPixelBox(gid, x0, y0, x1, y1)) continue;
+    const int width = x1 - x0;
+    const int height = y1 - y0;
+    if (width <= 0 || height <= 0 || width > 255 || height > 255) continue;
+
+    // Keep `口` (or the first available candidate) as the horizontal anchor,
+    // but use a median of the CJK sample heights for scale. A few decorative
+    // fonts make one reference glyph unusually short/tall; the median keeps
+    // that single design quirk from making every other Hanzi oversized.
+    if (i < 6) {
+      if (referenceHeightCount < 6) referenceHeights[referenceHeightCount++] = height;
+      if (!refValid) {
+        refValid = true;
+        refGid = gid;
+        visualReferenceCodepoint_ = cp;
+        nominalRefWidth = width;
+        nominalRefHeight = height;
+      }
+    } else if (fallbackGid == 0) {
+      fallbackGid = gid;
+      fallbackCp = cp;
+      fallbackWidth = width;
+      fallbackHeight = height;
+    }
+  }
+
+  if (!refValid && fallbackGid != 0) {
+    refValid = true;
+    refGid = fallbackGid;
+    visualReferenceCodepoint_ = fallbackCp;
+    nominalRefWidth = fallbackWidth;
+    nominalRefHeight = fallbackHeight;
+    referenceHeights[referenceHeightCount++] = fallbackHeight;
+  }
+  if (refValid) {
+    std::sort(referenceHeights, referenceHeights + referenceHeightCount);
+    const size_t mid = referenceHeightCount / 2;
+    const float robustHeight = (referenceHeightCount & 1u)
+        ? static_cast<float>(referenceHeights[mid])
+        : 0.5f * static_cast<float>(referenceHeights[mid - 1] + referenceHeights[mid]);
+    robustReferenceHeight = robustHeight;
+    visualScale_ = M4TtfVisualNormalization::scaleForReference(
+        static_cast<uint16_t>(nominal), robustHeight);
+    renderSizePx_ = M4TtfVisualNormalization::renderPixelSize(
+        static_cast<uint16_t>(nominal), visualScale_);
+  }
+
+  const float scale = float(renderSizePx_) / float(upm);
   int32_t asc = 0, desc = 0, gap = 0;
   backendVMetrics(asc, desc, gap);
   const int rawAsc = int(std::lround(asc * scale));
@@ -431,38 +503,32 @@ bool TtfEpdFont::finishInit(const char* label) {
   const int gapPx = std::max(0, int(std::lround(gap * scale)));
   const int bboxTop = std::max(0, int(std::lround(backendBBoxYMax() * scale)));
 
-  bool refValid = false;
-  uint32_t refCp = 0;
   int refTop = 0, refBottom = 0;
-  // Prefer a box-like visual reference. `口` is deliberately first because it
-  // gives a stable ink box without changing the font's advances.
-  static constexpr uint32_t samples[] = {0x53E3, 0x56FD, 0x7530, 0x4E2D, 0x6C38, 0x76EE, 'H', 'M'};
-  for (uint32_t cp : samples) {
-    uint16_t gid = 0;
-    if (!backendFindGlyph(cp, gid) || gid == 0) continue;
+  int renderedRefWidth = 0;
+  int renderedRefHeight = 0;
+  int renderedRefAdvance = 0;
+  if (refValid) {
     int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-    if (!backendPixelBox(gid, x0, y0, x1, y1)) continue;
-    const int top = std::max(0, -y0);
-    const int bottom = std::max(0, y1);
-    const int height = top + bottom;
-    if (height < std::max(2, int(sizePx_) / 2) || height > 255) continue;
-    refValid = true;
-    refCp = cp;
-    refTop = top;
-    refBottom = bottom;
+    if (backendPixelBox(refGid, x0, y0, x1, y1)) {
+      refTop = std::max(0, -y0);
+      refBottom = std::max(0, y1);
+      renderedRefWidth = x1 - x0;
+      renderedRefHeight = y1 - y0;
+    }
     ttf::GlyphBitmap referenceBitmap;
-    if (backendRasterize(gid, referenceBitmap) && referenceBitmap.width > 0 &&
+    if (backendRasterize(refGid, referenceBitmap) && referenceBitmap.width > 0 &&
         referenceBitmap.height > 0) {
+      renderedRefWidth = referenceBitmap.width;
+      renderedRefHeight = referenceBitmap.height;
+      renderedRefAdvance = lookupAdvancePx(visualReferenceCodepoint_);
       visualOriginX_ = static_cast<int16_t>(std::lround(
-          (static_cast<int>(referenceBitmap.advance) -
+          (static_cast<int>(renderedRefAdvance) -
            2.0f * static_cast<float>(referenceBitmap.xoff) -
            static_cast<float>(referenceBitmap.width)) *
           0.5f));
     }
-    break;
   }
 
-  const int nominal = std::max(1, int(sizePx_));
   int ascPx = refValid
       ? clampMetric(refTop,
                     std::max(1, int(std::lround(nominal * .55f))),
@@ -489,11 +555,13 @@ bool TtfEpdFont::finishInit(const char* label) {
   data_.is2Bit = true;
   valid_ = true;
 
-  Serial.printf("[TTF] Loaded %s backend=%s face=%lu @%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X dx=%d slots=%u budget=%u\n",
+  Serial.printf("[TTF] Loaded %s backend=%s face=%lu @%upx raster=%upx scale=%.3f refH=%.1f upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X nominal=%dx%d rendered=%dx%d adv=%d dx=%d slots=%u budget=%u\n",
                 label ? label : "?", backendName(),
-                static_cast<unsigned long>(faceOffset_), sizePx_, upm,
+                static_cast<unsigned long>(faceOffset_), sizePx_, renderSizePx_, visualScale_,
+                robustReferenceHeight, upm,
                 data_.advanceY, data_.ascender, data_.descender, bboxTop,
-                static_cast<unsigned>(refValid ? refCp : 0),
+                static_cast<unsigned>(visualReferenceCodepoint_), nominalRefWidth, nominalRefHeight,
+                renderedRefWidth, renderedRefHeight, renderedRefAdvance,
                 static_cast<int>(visualOriginX_),
                 static_cast<unsigned>(maxSlots_), static_cast<unsigned>(cacheBudget_));
   return true;
@@ -708,7 +776,10 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   entries_[slot].lastAccess = ++accessCounter_;
   entries_[slot].glyph.width = uint8_t(gb.width);
   entries_[slot].glyph.height = uint8_t(gb.height);
-  entries_[slot].glyph.advanceX = uint8_t(std::max(0, std::min(255, int(gb.advance))));
+  // Rasterize at the normalized visual size, but keep wrapping tied to the
+  // configured reader px and the source hmetrics. Visual centering remains a
+  // bearing-only compensation; it must not rewrite advances.
+  entries_[slot].glyph.advanceX = uint8_t(std::max(0, std::min(255, lookupAdvancePx(cp))));
   entries_[slot].glyph.left = static_cast<int16_t>(gb.xoff + visualOriginX_);
   entries_[slot].glyph.top = gb.yoff;
   entries_[slot].glyph.dataLength = len;

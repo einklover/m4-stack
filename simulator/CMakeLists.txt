@@ -85,6 +85,23 @@ add_executable(m4_web_chinese_font_tests
   ../firmware/lib/TtfReader/src/CffRaster.cpp
 )
 target_include_directories(m4_web_chinese_font_tests PRIVATE ../firmware/lib/TtfReader/src)
+# Uses the same reference-bbox scale policy as TtfEpdFont.  The Downloads
+# folder is intentionally an external fixture; pass M4_FONT_SAMPLE_DIR to
+# register this matrix as a CTest when it is available.
+add_executable(m4_font_visual_normalization_tests
+  tests/font_visual_normalization.cpp
+  ../firmware/lib/TtfReader/src/TtfReader.cpp
+  ../firmware/lib/TtfReader/src/TtfReaderFace.cpp
+  ../firmware/lib/TtfReader/src/CffReader.cpp
+  ../firmware/lib/TtfReader/src/CffType2.cpp
+  ../firmware/lib/TtfReader/src/CffRaster.cpp
+)
+target_include_directories(m4_font_visual_normalization_tests PRIVATE
+  ../firmware/lib/TtfReader/src ../firmware/lib/EpdFont)
+if(M4_FONT_SAMPLE_DIR)
+  add_test(NAME m4_font_visual_normalization_tests
+           COMMAND m4_font_visual_normalization_tests "${M4_FONT_SAMPLE_DIR}")
+endif()
 add_executable(m4_board_contract tools/board_contract.cpp)
 target_link_libraries(m4_board_contract PRIVATE m4_board_model)
 add_executable(m4_issue_contracts tests/issue_contracts.cpp)

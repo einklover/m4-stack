@@ -48,6 +48,11 @@ inline bool selectedRuntimeTtf() {
   return ext == ".ttf" || ext == ".ttc" || ext == ".otf" || ext == ".otc";
 }
 
+inline bool isReaderFontId(int fontId) {
+  return fontId == NOTOSANS_12_FONT_ID || fontId == NOTOSANS_14_FONT_ID ||
+         fontId == NOTOSANS_16_FONT_ID || fontId == NOTOSANS_18_FONT_ID;
+}
+
 inline bool startsWithNoCase(const std::string& s, size_t pos, const char* literal) {
   if (!literal || pos > s.size()) return false;
   const size_t n = std::strlen(literal);
@@ -101,11 +106,7 @@ inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
   if (selectedRuntimeTtf()) {
     auto& mutableRenderer = const_cast<GfxRenderer&>(renderer);
     if (M4FixedRuntimeUiFonts::ensure(mutableRenderer, SETTINGS.customFontFamily)) {
-      const bool readerSized = layoutFontId == NOTOSANS_12_FONT_ID ||
-                               layoutFontId == NOTOSANS_14_FONT_ID ||
-                               layoutFontId == NOTOSANS_16_FONT_ID ||
-                               layoutFontId == NOTOSANS_18_FONT_ID;
-      if (readerSized) {
+      if (isReaderFontId(f.layoutFontId)) {
         const int readerFontId = SETTINGS.getReaderFontId();
         if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
           f.fontId = readerFontId;
@@ -115,18 +116,12 @@ inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
       return f;
     }
 
-    // Defensive fallback if a fixed UI face cannot be opened. Reader-sized
-    // IDs still use the runtime TTF so CJK body text does not become '?'.
+    // Defensive fallback if a fixed UI face cannot be opened. Only reader
+    // content IDs may use the runtime TTF; SMALL/UI_10/UI_12 must remain on
+    // their existing system mappings even for a partial-cmap reader font.
     const int readerFontId = SETTINGS.getReaderFontId();
-    if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
+    if (isReaderFontId(f.layoutFontId) && readerFontId != -1 && renderer.hasFont(readerFontId)) {
       f.fontId = readerFontId;
-      if (layoutFontId != readerFontId &&
-          (layoutFontId == NOTOSANS_12_FONT_ID || layoutFontId == NOTOSANS_14_FONT_ID ||
-           layoutFontId == NOTOSANS_16_FONT_ID || layoutFontId == NOTOSANS_18_FONT_ID ||
-           layoutFontId == SMALL_FONT_ID || layoutFontId == UI_10_FONT_ID ||
-           layoutFontId == UI_12_FONT_ID)) {
-        f.scale = renderer.scaleFontToMatch(readerFontId, f.layoutFontId);
-      }
     }
     return f;
   }
