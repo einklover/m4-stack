@@ -462,7 +462,7 @@ Recommended transient windows:
 | UI document | bounded node/string counts |
 | HTTP read | 4–8 KiB |
 | JSON token/record | bounded extractor, <= 24 KiB internal |
-| GB18030 conversion | ~4 KiB window + 47,760-byte table (PSRAM first) |
+| GB18030 conversion | ~4 KiB window + 47,880-byte table (PSRAM first) |
 | file write | 4–16 KiB |
 | list row | one row, <= ~2 KiB |
 | runtime TTF glyph cache | PSRAM first, separately bounded |

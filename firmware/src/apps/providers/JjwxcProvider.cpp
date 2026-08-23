@@ -31,7 +31,7 @@ constexpr const char* kAppRef = "http://android.jjwxc.net?v=206";
 constexpr const char* kWapUa =
     "Mozilla/5.0 (Linux; Android 10.0; wv) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Version/4.0 Chrome/78.0.3904.108 Mobile Safari/537.36";
-constexpr size_t kGbkTableBytes = 47760;
+constexpr size_t kGbkTableBytes = 126u * 190u * 2u;
 
 bool vipFlag(const std::string& rawLine) {
   std::string flag;

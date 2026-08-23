@@ -1,5 +1,5 @@
 -- GB18030 (双字节区) → UTF-8 转换。仅 WAP VIP 章正文需要, 按需加载后释放。
--- 表: gbk_table.bin, 126 lead x 190 trail x 2B (uint16 BE), 47760 字节。
+-- 表: gbk_table.bin, 126 lead x 190 trail x 2B (uint16 BE), 47880 字节。
 -- trail_ord = trail < 0x80 ? trail - 0x40 : trail - 0x41
 --
 -- 内存要点: 绝不能按「一字一 string」拼表 (万级小串会直接 lua_mem_limit)。
@@ -15,7 +15,7 @@ function Gbk.load()
     return false
   end
   local ok, data = pcall(fs.readAppFile, "gbk_table.bin")
-  if not ok or type(data) ~= "string" or #data < 47760 then
+  if not ok or type(data) ~= "string" or #data < 47880 then
     return false
   end
   raw = data
