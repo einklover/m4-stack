@@ -76,6 +76,8 @@ class TtfEpdFont : public EpdFont {
   size_t cacheBudget_ = kDefaultRuntimeBudget;
   bool valid_ = false;
   Backend backend_ = Backend::Glyf;
+  // Applied to glyph bearings only; advanceX remains the source hmtx metric.
+  int16_t visualOriginX_ = 0;
   // Absolute sfnt directory offset in the original stream. Zero for standalone
   // fonts; non-zero for glyf/CFF1/CFF2 faces inside TTC/OTC collections.
   uint32_t faceOffset_ = 0;

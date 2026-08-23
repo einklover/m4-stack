@@ -21,9 +21,15 @@ parser.add_argument("--format", dest="fmt", choices=["v0", "v1"], default="v0", 
 parser.add_argument("--codepoints-file", dest="codepoints_file", default=None, help="UTF-8 file whose unique characters define the export set (overrides --charset base set).")
 parser.add_argument("--charset", dest="charset", choices=["all", "gb2312", "gb2312-plus", "traditional", "cjk-extended", "empty"], default="gb2312-plus", help="Character set to include: 'gb2312' (~7700 chars: ASCII + GB2312 + CJK punctuation + fullwidth), 'gb2312-plus' (gb2312 + extra symbols), 'traditional' (gb2312-plus + full CJK Unified Ideographs for traditional Chinese), 'cjk-extended' (traditional + Extension A + Compatibility, includes rare chars), or 'all' (entire Unicode).")
 parser.add_argument("--baseline-offset", dest="baseline_offset", type=int, default=0, metavar="N", help="Shift glyphs vertically within the line box. Positive = move DOWN (fix glyphs appearing too high), negative = move UP. Adjusts the stored ascender value by N pixels.")
+parser.add_argument("--pixel-size", dest="pixel_size", type=int, default=None, metavar="PX", help="Render at an exact pixel height instead of the legacy 150-DPI point-size path.")
+parser.add_argument("--interval-merge-gap", dest="interval_merge_gap", type=int, default=None, metavar="N", help="Merge validated intervals separated by at most N missing code points.")
 args = parser.parse_args()
 
 GlyphProps = namedtuple("GlyphProps", ["width", "height", "advance_x", "left", "top", "data_length", "data_offset", "code_point"])
+
+# Keep generated bitmaps aligned with the runtime TTF visual policy. Bearings
+# may move to center a stable reference glyph; advance_x must never change.
+VISUAL_REFERENCE_CODEPOINTS = (0x53E3, 0x56FD, 0x7530, 0x4E2D, 0x6C38, 0x76EE, ord('H'), ord('M'))
 
 font_stack = [freetype.Face(f) for f in args.fontstack]
 is2Bit = args.is2Bit
@@ -242,13 +248,23 @@ for i_start, i_end in unvalidated_intervals:
 # Merging with gap<=20 reduces them to tens of intervals (saves ~40KB RAM)
 # while only adding a handful of empty placeholder glyphs in the gaps.
 _default_merge_gap = 20 if args.charset in ('gb2312', 'gb2312-plus') else (5 if args.codepoints_file else 0)
+if args.interval_merge_gap is not None:
+    if args.interval_merge_gap < 0:
+        raise ValueError("interval merge gap must be non-negative")
+    _default_merge_gap = args.interval_merge_gap
 _merge_gap = _default_merge_gap
 intervals, gap_codepoints = merge_intervals(intervals, _merge_gap)
 intervals = split_bidi_controls(intervals)
 print(f"Intervals after validation + merge(gap<={_merge_gap}): {len(intervals)}", file=sys.stderr)
 
+render_size = args.pixel_size if args.pixel_size is not None else size
+if render_size <= 0:
+    raise ValueError("pixel size must be positive")
 for face in font_stack:
-    face.set_char_size(size << 6, size << 6, 150, 150)
+    if args.pixel_size is not None:
+        face.set_pixel_sizes(0, render_size)
+    else:
+        face.set_char_size(size << 6, size << 6, 150, 150)
 
 total_size = 0
 all_glyphs = []
@@ -368,26 +384,61 @@ for i_start, i_end in intervals:
 
 # pipe seems to be a good heuristic for the "real" descender
 face = load_glyph(ord('|'))
+advanceY = norm_ceil(face.size.height)
 
 glyph_data = []
 glyph_props = []
+
+# Recover the same visual-reference compensation used by the runtime path.
+# This is a bearing/baseline normalization only: advanceY and advanceX remain
+# independent source metrics so wrapping does not change.
+visual_reference = None
+visual_reference_ascender = None
+for candidate in VISUAL_REFERENCE_CODEPOINTS:
+    for glyph, _ in all_glyphs:
+        if glyph.code_point != candidate or glyph.width <= 0 or glyph.height <= 0:
+            continue
+        if glyph.height < max(2, render_size // 2):
+            continue
+        visual_reference = glyph
+        break
+    if visual_reference is not None:
+        break
+
+if visual_reference is not None:
+    reference_bottom = max(0, visual_reference.height - visual_reference.top)
+    reference_center_y = (reference_bottom - visual_reference.top) * 0.5
+    visual_reference_ascender = int(round(advanceY * 0.5 - reference_center_y))
+    horizontal_offset = int(round(
+        (visual_reference.advance_x - 2 * visual_reference.left - visual_reference.width) * 0.5))
+    if horizontal_offset != 0:
+        all_glyphs = [
+            (glyph._replace(left=glyph.left + horizontal_offset), packed)
+            for glyph, packed in all_glyphs
+        ]
+    print(
+        f"Visual reference U+{visual_reference.code_point:04X}: "
+        f"top={visual_reference.top} bottom={reference_bottom} "
+        f"ascender={visual_reference_ascender} x_offset={horizontal_offset}",
+        file=sys.stderr,
+    )
+
 for index, glyph in enumerate(all_glyphs):
     props, packed = glyph
     glyph_data.extend([b for b in packed])
     glyph_props.append(props)
 
 # Compute font metrics
-advanceY = norm_ceil(face.size.height)
 # Use the larger of typographic ascender and the actual maximum bitmap_top
 # across all rendered glyphs.  CJK fonts often have bitmap_top > face.size.ascender,
 # which would make glyphs draw above the line box and appear shifted upward.
 typographic_ascender = norm_ceil(face.size.ascender)
 actual_max_top = max((g.top for g, _ in all_glyphs if g.top > 0), default=typographic_ascender)
-ascender = max(typographic_ascender, actual_max_top)
+ascender = visual_reference_ascender if visual_reference_ascender is not None else max(typographic_ascender, actual_max_top)
 if args.baseline_offset != 0:
     ascender += args.baseline_offset
     print(f"Baseline offset applied: {args.baseline_offset:+d}px, final ascender={ascender}", file=sys.stderr)
-elif actual_max_top > typographic_ascender:
+elif visual_reference is None and actual_max_top > typographic_ascender:
     print(f"Ascender auto-corrected: typographic={typographic_ascender} → actual_max_top={actual_max_top}, stored ascender={ascender}", file=sys.stderr)
 descender = norm_floor(face.size.descender)
 total_glyphs = sum(i_end - i_start + 1 for i_start, i_end in intervals)

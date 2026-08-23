@@ -434,7 +434,9 @@ bool TtfEpdFont::finishInit(const char* label) {
   bool refValid = false;
   uint32_t refCp = 0;
   int refTop = 0, refBottom = 0;
-  static constexpr uint32_t samples[] = {0x56FD, 0x7530, 0x4E2D, 0x6C38, 0x4E00, 'H', 'M'};
+  // Prefer a box-like visual reference. `口` is deliberately first because it
+  // gives a stable ink box without changing the font's advances.
+  static constexpr uint32_t samples[] = {0x53E3, 0x56FD, 0x7530, 0x4E2D, 0x6C38, 0x76EE, 'H', 'M'};
   for (uint32_t cp : samples) {
     uint16_t gid = 0;
     if (!backendFindGlyph(cp, gid) || gid == 0) continue;
@@ -448,6 +450,15 @@ bool TtfEpdFont::finishInit(const char* label) {
     refCp = cp;
     refTop = top;
     refBottom = bottom;
+    ttf::GlyphBitmap referenceBitmap;
+    if (backendRasterize(gid, referenceBitmap) && referenceBitmap.width > 0 &&
+        referenceBitmap.height > 0) {
+      visualOriginX_ = static_cast<int16_t>(std::lround(
+          (static_cast<int>(referenceBitmap.advance) -
+           2.0f * static_cast<float>(referenceBitmap.xoff) -
+           static_cast<float>(referenceBitmap.width)) *
+          0.5f));
+    }
     break;
   }
 
@@ -478,11 +489,12 @@ bool TtfEpdFont::finishInit(const char* label) {
   data_.is2Bit = true;
   valid_ = true;
 
-  Serial.printf("[TTF] Loaded %s backend=%s face=%lu @%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X slots=%u budget=%u\n",
+  Serial.printf("[TTF] Loaded %s backend=%s face=%lu @%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X dx=%d slots=%u budget=%u\n",
                 label ? label : "?", backendName(),
                 static_cast<unsigned long>(faceOffset_), sizePx_, upm,
                 data_.advanceY, data_.ascender, data_.descender, bboxTop,
                 static_cast<unsigned>(refValid ? refCp : 0),
+                static_cast<int>(visualOriginX_),
                 static_cast<unsigned>(maxSlots_), static_cast<unsigned>(cacheBudget_));
   return true;
 }
@@ -697,7 +709,7 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   entries_[slot].glyph.width = uint8_t(gb.width);
   entries_[slot].glyph.height = uint8_t(gb.height);
   entries_[slot].glyph.advanceX = uint8_t(std::max(0, std::min(255, int(gb.advance))));
-  entries_[slot].glyph.left = gb.xoff;
+  entries_[slot].glyph.left = static_cast<int16_t>(gb.xoff + visualOriginX_);
   entries_[slot].glyph.top = gb.yoff;
   entries_[slot].glyph.dataLength = len;
   entries_[slot].glyph.dataOffset = cp;
