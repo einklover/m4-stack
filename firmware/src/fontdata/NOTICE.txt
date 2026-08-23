@@ -1,0 +1,7 @@
+The tracked m4_compact_cjk_16.h derivative is generated from the static
+Noto Sans SC Medium font with the reproducible script
+firmware/scripts/generate_m4_compact_cjk.py.
+
+The source font and this derivative are distributed under the SIL Open Font
+License, Version 1.1. See LICENSE-OFL.txt. The source font is not vendored;
+pass its local path with --font when regenerating the header.

@@ -92,6 +92,9 @@ target_link_libraries(m4_issue_contracts PRIVATE m4_reader_core m4_deterministic
 add_test(NAME m4_issue_contracts COMMAND m4_issue_contracts)
 add_executable(m4_gfx_refresh_policy_tests ../firmware/tests/native_app/test_gfx_refresh_policy.cpp)
 add_test(NAME m4_gfx_refresh_policy_tests COMMAND m4_gfx_refresh_policy_tests)
+add_executable(m4_compact_cjk_font_tests tests/compact_cjk_font.cpp)
+target_include_directories(m4_compact_cjk_font_tests PRIVATE ../firmware/src ../firmware/lib/EpdFont)
+add_test(NAME m4_compact_cjk_font_tests COMMAND m4_compact_cjk_font_tests)
 
 # Replay the production SSD1677 driver against the register-level simulator.
 # The Arduino/SPI/ESP GPIO shims are test-only and keep this target independent

@@ -7,11 +7,10 @@
 #include <SDCardManager.h>
 #include <SPI.h>
 #ifdef OMIT_FONTS
-// Murphy M4: APP1 is 7.14 MiB — full notosans_13_bold CJK tables do not fit.
-// Built-in UI subset covers all shipped zh-CN/zh-TW I18n strings + ASCII.
-// Full-book CJK still uses SD /fonts/*.epdfont via EpdFontLoader (not .cpfont).
-#include <builtinFonts/m4_ui_cjk_13.h>
-#include <builtinFonts/m4_ui_cjk_16.h>
+// Murphy M4: keep a compact common-CJK fallback in the tracked application
+// source. Full-book CJK still uses SD /fonts/*.epdfont via EpdFontLoader, and
+// runtime sfnt/variable/CFF faces remain available through /FONT.
+#include "fontdata/m4_compact_cjk_16.h"
 #else
 #include <builtinFonts/all.h>
 #endif
@@ -344,37 +343,38 @@ EpdFont ui10BoldFont(&notosans_13_bold);
 EpdFont ui12RegularFont(&notosans_13_bold);
 EpdFont ui12BoldFont(&notosans_13_bold);
 #else
-// Size-safe Chinese UI subset (I18n charset). Reader full-CJK needs SD epdfont.
-EpdFont notosans12RegularFont(&m4_ui_cjk_13);
-EpdFont notosans12BoldFont(&m4_ui_cjk_13);
-EpdFont notosans12ItalicFont(&m4_ui_cjk_13);
-EpdFont notosans12BoldItalicFont(&m4_ui_cjk_13);
+// Compact common-CJK fallback (2-bit cropped glyphs). Reader/full-book
+// coverage is promoted from SD EPDF or runtime sfnt when available.
+EpdFont notosans12RegularFont(&m4_compact_cjk_16);
+EpdFont notosans12BoldFont(&m4_compact_cjk_16);
+EpdFont notosans12ItalicFont(&m4_compact_cjk_16);
+EpdFont notosans12BoldItalicFont(&m4_compact_cjk_16);
 EpdFontFamily notosans12FontFamily(&notosans12RegularFont, &notosans12BoldFont, &notosans12ItalicFont,
                                    &notosans12BoldItalicFont);
-EpdFont notosans14RegularFont(&m4_ui_cjk_13);
-EpdFont notosans14BoldFont(&m4_ui_cjk_13);
-EpdFont notosans14ItalicFont(&m4_ui_cjk_13);
-EpdFont notosans14BoldItalicFont(&m4_ui_cjk_13);
+EpdFont notosans14RegularFont(&m4_compact_cjk_16);
+EpdFont notosans14BoldFont(&m4_compact_cjk_16);
+EpdFont notosans14ItalicFont(&m4_compact_cjk_16);
+EpdFont notosans14BoldItalicFont(&m4_compact_cjk_16);
 EpdFontFamily notosans14FontFamily(&notosans14RegularFont, &notosans14BoldFont, &notosans14ItalicFont,
                                    &notosans14BoldItalicFont);
-EpdFont notosans16RegularFont(&m4_ui_cjk_16);
-EpdFont notosans16BoldFont(&m4_ui_cjk_16);
-EpdFont notosans16ItalicFont(&m4_ui_cjk_16);
-EpdFont notosans16BoldItalicFont(&m4_ui_cjk_16);
+EpdFont notosans16RegularFont(&m4_compact_cjk_16);
+EpdFont notosans16BoldFont(&m4_compact_cjk_16);
+EpdFont notosans16ItalicFont(&m4_compact_cjk_16);
+EpdFont notosans16BoldItalicFont(&m4_compact_cjk_16);
 EpdFontFamily notosans16FontFamily(&notosans16RegularFont, &notosans16BoldFont, &notosans16ItalicFont,
                                    &notosans16BoldItalicFont);
-EpdFont notosans18RegularFont(&m4_ui_cjk_16);
-EpdFont notosans18BoldFont(&m4_ui_cjk_16);
-EpdFont notosans18ItalicFont(&m4_ui_cjk_16);
-EpdFont notosans18BoldItalicFont(&m4_ui_cjk_16);
+EpdFont notosans18RegularFont(&m4_compact_cjk_16);
+EpdFont notosans18BoldFont(&m4_compact_cjk_16);
+EpdFont notosans18ItalicFont(&m4_compact_cjk_16);
+EpdFont notosans18BoldItalicFont(&m4_compact_cjk_16);
 EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
                                    &notosans18BoldItalicFont);
 
-EpdFont smallFont(&m4_ui_cjk_13);
-EpdFont ui10RegularFont(&m4_ui_cjk_13);
-EpdFont ui10BoldFont(&m4_ui_cjk_13);
-EpdFont ui12RegularFont(&m4_ui_cjk_13);
-EpdFont ui12BoldFont(&m4_ui_cjk_13);
+EpdFont smallFont(&m4_compact_cjk_16);
+EpdFont ui10RegularFont(&m4_compact_cjk_16);
+EpdFont ui10BoldFont(&m4_compact_cjk_16);
+EpdFont ui12RegularFont(&m4_compact_cjk_16);
+EpdFont ui12BoldFont(&m4_compact_cjk_16);
 #endif  // OMIT_FONTS
 
 EpdFontFamily smallFontFamily(&smallFont);
@@ -619,8 +619,8 @@ void setupDisplayAndFonts() {
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 #ifdef OMIT_FONTS
-  Serial.printf("[%lu] [M4-FONT] Registered mandatory IDs with m4_ui_cjk subset "
-                "(UI strings offline; full-book CJK needs SD /fonts/*.epdfont)\n",
+  Serial.printf("[%lu] [M4-FONT] Registered mandatory IDs with compact 2-bit CJK fallback "
+                "(common CJK offline; full-book CJK uses SD/runtime font when available)\n",
                 millis());
 #else
   Serial.printf("[%lu] [FONT] Builtin NotoSans full CJK registered\n", millis());
@@ -910,7 +910,7 @@ void setup() {
 #ifdef OMIT_FONTS
     Serial.printf("[%lu] [M4-FONT] SD custom fonts are optional. Format: /fonts/*.epdfont "
                   "(Fengyan EpdFontLoader V0/V1). .cpfont is NOT supported in this tree. "
-                  "Builtin m4_ui_cjk covers UI strings; full-book CJK requires SD epdfont.\n",
+                  "Compact common-CJK fallback is built in; full-book CJK uses SD/runtime font when available.\n",
                   millis());
 #endif
 #ifdef CROSSPOINT_MURPHY_M4
