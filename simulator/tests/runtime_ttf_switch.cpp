@@ -83,10 +83,12 @@ RenderResult renderSentence(TtfEpdFont& font, const char* label) {
     assert(width > 0 && width <= kSizePx * 2);
     assert(height > 0 && height <= kSizePx * 2);
     assert(advance > 0 && advance <= kSizePx * 2);
+    assert(left >= -static_cast<int>(kSizePx) / 4 && left <= kSizePx);
     if (previousPenX >= 0) assert(penX > previousPenX);
 
     const int inkLeft = penX + left;
     const int inkRight = inkLeft + width;
+    if (previousPenX < 0) assert(inkLeft >= 0);
     if (previousInkRight >= 0) assert(inkLeft >= previousInkRight - 2);
 
     for (int y = 0; y < height; ++y) {

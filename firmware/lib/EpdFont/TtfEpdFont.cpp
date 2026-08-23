@@ -424,14 +424,13 @@ bool TtfEpdFont::finishInit(const char* label) {
   const uint16_t upm = backendUnitsPerEm();
   if (!upm) return false;
   // Preserve the configured nominal reader size. Do not rewrite raster size from
-  // a CJK bbox heuristic: that over-normalized many faces on hardware. Only
-  // baseline/centering corrections (ascender from a box reference + visualOriginX_)
-  // are applied below. renderSizePx_ tracks sizePx_ for API compatibility.
+  // a CJK bbox heuristic: that over-normalized many faces on hardware. Only the
+  // baseline is derived from a box reference; horizontal bearings stay native.
+  // renderSizePx_ tracks sizePx_ for API compatibility.
   const int nominal = std::max(1, int(sizePx_));
   renderSizePx_ = static_cast<uint16_t>(nominal);
   visualScale_ = 1.0f;
   visualReferenceCodepoint_ = 0;
-  visualOriginX_ = 0;
 
   const float scale = float(renderSizePx_) / float(upm);
   int32_t asc = 0, desc = 0, gap = 0;
@@ -442,11 +441,10 @@ bool TtfEpdFont::finishInit(const char* label) {
   const int bboxTop = std::max(0, int(std::lround(backendBBoxYMax() * scale)));
 
   bool refValid = false;
-  uint16_t refGid = 0;
   int refTop = 0, refBottom = 0;
-  // Prefer a box-like visual reference for baseline metrics and horizontal
-  // centering only. `口` is first because it gives a stable ink box without
-  // changing the font's advances or nominal raster size.
+  // Prefer a box-like visual reference for baseline metrics only. `口` is first
+  // because it gives a stable vertical ink box without changing the font's
+  // advances, bearings, or nominal raster size.
   for (size_t i = 0; i < M4TtfVisualNormalization::kReferenceCodepointCount; ++i) {
     const uint32_t cp = M4TtfVisualNormalization::kReferenceCodepoints[i];
     uint16_t gid = 0;
@@ -458,23 +456,11 @@ bool TtfEpdFont::finishInit(const char* label) {
     const int height = top + bottom;
     if (height < std::max(2, nominal / 2) || height > 255) continue;
     refValid = true;
-    refGid = gid;
     visualReferenceCodepoint_ = cp;
     refTop = top;
     refBottom = bottom;
-    ttf::GlyphBitmap referenceBitmap;
-    if (backendRasterize(gid, referenceBitmap) && referenceBitmap.width > 0 &&
-        referenceBitmap.height > 0) {
-      const int refAdvance = lookupAdvancePx(cp);
-      visualOriginX_ = static_cast<int16_t>(std::lround(
-          (static_cast<int>(refAdvance) -
-           2.0f * static_cast<float>(referenceBitmap.xoff) -
-           static_cast<float>(referenceBitmap.width)) *
-          0.5f));
-    }
     break;
   }
-  (void)refGid;
 
   int ascPx = refValid
       ? clampMetric(refTop,
@@ -502,12 +488,11 @@ bool TtfEpdFont::finishInit(const char* label) {
   data_.is2Bit = true;
   valid_ = true;
 
-  Serial.printf("[TTF] Loaded ptr=%p %s backend=%s face=%lu nominal=%upx raster=%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X dx=%d slots=%u budget=%u\n",
+  Serial.printf("[TTF] Loaded ptr=%p %s backend=%s face=%lu nominal=%upx raster=%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X bearing=native slots=%u budget=%u\n",
                 static_cast<void*>(this), label ? label : "?", backendName(),
                 static_cast<unsigned long>(faceOffset_), sizePx_, renderSizePx_, upm,
                 data_.advanceY, data_.ascender, data_.descender, bboxTop,
                 static_cast<unsigned>(visualReferenceCodepoint_),
-                static_cast<int>(visualOriginX_),
                 static_cast<unsigned>(maxSlots_), static_cast<unsigned>(cacheBudget_));
   return true;
 }
@@ -725,10 +710,10 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   entries_[slot].lastAccess = ++accessCounter_;
   entries_[slot].glyph.width = uint8_t(gb.width);
   entries_[slot].glyph.height = uint8_t(gb.height);
-  // Advances stay on source hmtx at the configured reader px. visualOriginX_
-  // is a bearing-only centering compensation and must not rewrite advances.
+  // Advances and bearings both stay on the source font metrics at the
+  // configured reader px.
   entries_[slot].glyph.advanceX = static_cast<uint8_t>(advance);
-  entries_[slot].glyph.left = static_cast<int16_t>(gb.xoff + visualOriginX_);
+  entries_[slot].glyph.left = gb.xoff;
   entries_[slot].glyph.top = gb.yoff;
   entries_[slot].glyph.dataLength = len;
   entries_[slot].glyph.dataOffset = cp;

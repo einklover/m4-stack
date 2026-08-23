@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression contracts for reader visual centering (not UI chrome remapping)."""
+"""Regression contracts for reader metrics (not UI chrome remapping)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ CONVERTER = ROOT / "firmware/lib/EpdFont/scripts/fontconvert.py"
 
 
 class VisualMetricTests(unittest.TestCase):
-    def test_box_reference_centers_without_rewriting_raster_size_or_advance(self) -> None:
+    def test_box_reference_preserves_native_horizontal_metrics(self) -> None:
         runtime = TTF.read_text(encoding="utf-8")
         normalization = NORMALIZATION.read_text(encoding="utf-8")
         converter = CONVERTER.read_text(encoding="utf-8")
@@ -29,7 +29,8 @@ class VisualMetricTests(unittest.TestCase):
         self.assertNotIn("renderPixelSize(", runtime)
         self.assertIn("scaleForReference", normalization)
         self.assertIn("(0x53E3, 0x56FD, 0x7530", converter)
-        self.assertIn("gb.xoff + visualOriginX_", runtime)
+        self.assertIn("glyph.left = gb.xoff;", runtime)
+        self.assertNotIn("visualOriginX_", runtime)
         self.assertIn("lookupAdvancePx(cp)", runtime)
         self.assertIn("advance_x", converter)
         self.assertNotIn("gb.advance + visualOriginX_", runtime)
