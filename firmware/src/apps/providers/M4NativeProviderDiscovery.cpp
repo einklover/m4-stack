@@ -71,31 +71,20 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
  public:
   ~AtomicRowsSink() override { close(); }
 
-  bool open(const std::string& finalPath) {
+  bool open(const std::string& finalPath, bool deferFileOpen = false) {
     close();
     finalPath_ = finalPath;
     tmpPath_ = M4NativeProviderIo::replacedExtension(finalPath_, "part");
     written_ = 0;
-    if (!M4NativeProviderIo::ensureParentDirs(finalPath_)) return false;
-    // Stale zero-byte sibling from a previous aborted discovery can block FatFS
-    // open-for-write on some cards; force-remove then retry once.
-    if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
-    open_ = SdMan.openFileForWrite("NP-DISC", tmpPath_.c_str(), f_);
-    if (!open_) {
-      if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
-      open_ = SdMan.openFileForWrite("NP-DISC", tmpPath_.c_str(), f_);
-    }
-    if (open_) {
-      // FatFS open-for-write does not always truncate; leftover first-cluster
-      // slack then prefixes the next TSV with NULs and idOk() rejects book IDs.
-      (void)f_.truncate(0);
-      (void)f_.seekSet(0);
-    }
-    return open_;
+    // Fanqie can be launched while the preceding app/install path is still
+    // finishing an SD transaction. Let its DNS/TLS request get underway and
+    // take the first response chunk before touching the card.
+    if (deferFileOpen) return true;
+    return ensureFile();
   }
 
   bool write(const uint8_t* data, size_t len) override {
-    if (!open_ || !data) return false;
+    if (!data || !ensureFile()) return false;
     const int n = f_.write(data, len);
     if (n != static_cast<int>(len)) return false;
     written_ += len;
@@ -137,6 +126,25 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
   }
 
  private:
+  bool ensureFile() {
+    if (open_) return true;
+    if (!M4NativeProviderIo::ensureParentDirs(finalPath_)) return false;
+    // Stale zero-byte sibling from a previous aborted discovery can block FatFS
+    // open-for-write on some cards; force-remove then retry once.
+    if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
+    open_ = SdMan.openFileForWrite("NP-DISC", tmpPath_.c_str(), f_);
+    if (!open_) {
+      if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
+      open_ = SdMan.openFileForWrite("NP-DISC", tmpPath_.c_str(), f_);
+    }
+    if (open_) {
+      // FatFS open-for-write does not always truncate; leftover first-cluster
+      // slack then prefixes the next TSV with NULs and idOk() rejects book IDs.
+      (void)f_.truncate(0);
+      (void)f_.seekSet(0);
+    }
+    return open_;
+  }
   FsFile f_;
   std::string finalPath_;
   std::string tmpPath_;
@@ -377,7 +385,7 @@ void taskMain(void*) {
     publish(Phase::Error, 0, 0, spec.error);
   } else {
     AtomicRowsSink file;
-    if (!file.open(rowsPath(job.appId))) {
+    if (!file.open(rowsPath(job.appId), job.providerId == "fanqie")) {
       writeDiscoveryDiag(job.appId, "sd_open_failed", false, 0, "sd_open_failed", 0, 0, false);
       publish(Phase::Error, 0, 0, "sd_open_failed");
     } else if (job.providerId == "legado") {
@@ -431,15 +439,19 @@ void taskMain(void*) {
       publish(Phase::Connecting);
       M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
       bool sawBody = false;
-      writeDiscoveryDiag(job.appId, "http_started", false, 0, "-", 0, 0, false);
+      if (job.providerId != "fanqie") {
+        writeDiscoveryDiag(job.appId, "http_started", false, 0, "-", 0, 0, false);
+      }
       const auto net = M4NativeProviderHttp::requestToSink(
           spec.request, jsonSink,
           [&](size_t bytes) {
             publish(Phase::Receiving, bytes, rows.recordCount());
             if (!sawBody) {
               sawBody = true;
-              writeDiscoveryDiag(job.appId, "http_progress", false, bytes, "-",
-                                 rows.recordCount(), 0, false);
+              if (job.providerId != "fanqie") {
+                writeDiscoveryDiag(job.appId, "http_progress", false, bytes, "-",
+                                   rows.recordCount(), 0, false);
+              }
             }
           },
           [&]() { return rows.recordCount() >= spec.maxRows; });
