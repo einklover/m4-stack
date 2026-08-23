@@ -142,6 +142,11 @@ jobs:
             -o /tmp/test_legado_endpoint
           /tmp/test_legado_endpoint
 
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc \
+            tests/native_app/test_legado_detail.cpp \
+            -o /tmp/test_legado_detail
+          /tmp/test_legado_detail
+
       - name: Run existing host tests when available
         shell: bash
         run: |

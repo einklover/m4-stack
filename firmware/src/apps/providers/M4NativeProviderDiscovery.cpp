@@ -330,7 +330,9 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.request.maxBytes = 4u * 1024u * 1024u;
     s.path = {"data"};
     // totalChapterNum powers progressive catalog placeholders (fast open).
-    s.fields = {"bookUrl", "name", "author", "totalChapterNum"};
+    // latestChapterTitle is reused by the detail page so opening a book never
+    // re-fetches / parses the whole bookshelf on the UI thread.
+    s.fields = {"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle"};
     s.maxRows = 64;
     return s;
   }

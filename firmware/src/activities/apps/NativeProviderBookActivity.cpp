@@ -284,9 +284,9 @@ void NativeProviderBookActivity::loadBookDetail() {
   req.maxBytes = 96u * 1024u;
   detail_ = M4NativeProviderBookDetail::seed(req);
 
-  // Paint the immediately available discovery/history model first. The
-  // following bounded metadata request may need Wi-Fi/TLS, but the user never
-  // stares at a blank screen while it is in flight.
+  // Paint the immediately available discovery/history model first (FAST only).
+  // Legado detail is local-only (shelf row + seed) and must not block on a
+  // whole-shelf HTTP refetch or endpoint probe when the phone is unreachable.
   detailLoading_ = true;
   renderDetail();
 
