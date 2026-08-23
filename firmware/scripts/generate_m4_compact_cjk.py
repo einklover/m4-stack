@@ -78,6 +78,7 @@ def main() -> int:
         rendered,
         count=1,
     )
+    rendered = "\n".join(line.rstrip(" \t") for line in rendered.replace("\r\n", "\n").splitlines()) + "\n"
     output.write_text(rendered, encoding="utf-8", newline="\n")
     print(f"generated {output} from {len(codepoints)} charset code points", file=sys.stderr)
     return 0
