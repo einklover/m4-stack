@@ -1,6 +1,6 @@
 # OX supervisor status
 
-Last updated: 2026-08-24T09:11:00Z (inspect cycle)
+Last updated: 2026-08-24T09:16:00Z (inspect cycle)
 
 Supervisor worktree: `/Volumes/z/paseo/workspaces/paseo/worktrees/0xdf4ldr/m4-ox-supervisor`
 Supervisor branch: `agent/m4-ox-supervisor-integration`
@@ -38,8 +38,8 @@ Do not merge experimental TTF compression / Luna work (`agent/m4-font-visual-nor
 
 ## Remaining (not yet mergeable)
 
-- **D Fanqie**: still HEAD `2cdc112`, no git. Earlier turn spent ~20 min planning Date-header-free `http_2xx_empty` + one GET retry + nt log, then stalled. Supervisor sent implement-now at 09:10Z. Do not merge until committed and independently reviewed.
-- **E Legado**: first claimed finish was planning-only (WeRead SD-stub archaeology, zero code). Supervisor sent implement-now at 09:08Z: detect count>rows and clamp/re-bootstrap; never placeholder-overwrite a good cached TOC; Legado-only `legado_shelf_stale`; optional catalog `followRedirects`. Still clean at `2cdc112` as of 09:10Z.
+- **D Fanqie**: still HEAD `2cdc112`, no git. Hit `outputTokens=8192` twice (08:30Z and 09:14Z) finishing mid-plan with a clean tree. Supervisor sent a write-first exact-patch prompt at 09:16Z. Do not merge until committed and independently reviewed.
+- **E Legado**: first claimed finish was planning-only (zero code). 09:08Z implement-now turn was still designing at 09:15Z with a clean tree. Supervisor sent write-first at 09:16Z. Still `2cdc112` as of 09:15Z.
 - **F plugin**: dirty `plugins/m4-weread-plugin/main.lua` + `plugins/m4-fanqie-plugin/main.lua` (+469/−91). Direction matches audit F (JJWXC-style `advance_network_job`, WeRead `chapter_fetch_begin/step`, Fanqie `ensure_network` on its own tick; JJWXC untouched). Agent started a Python/lupa-style `tools/tests/` harness — supervisor told it to drop `tools/`, keep production Lua, UTF-8 Fanqie strings, commit. Do not merge uncommitted / harness commits.
 
 ## Direction notes / follow-ups (non-blockers)
