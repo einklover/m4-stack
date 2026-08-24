@@ -41,6 +41,15 @@ inline constexpr const char* kDefaultBase = "http://192.168.0.118:1122";
 inline constexpr uint16_t kProbePorts[] = {1122, 8080, 4396, 2060, 8081, 9080, 80, 1234};
 inline constexpr size_t kProbePortCount = sizeof(kProbePorts) / sizeof(kProbePorts[0]);
 
+// Endpoint discovery runs on the provider worker while the loading page is
+// visible. Keep a dead/stale phone address from turning one chapter tap into
+// an unbounded sequence of connect timeouts.
+inline constexpr uint32_t kEndpointProbeBudgetMs = 8000;
+
+inline bool endpointProbeWithinBudget(uint32_t startedMs, uint32_t nowMs) {
+  return static_cast<uint32_t>(nowMs - startedMs) < kEndpointProbeBudgetMs;
+}
+
 // API path probes (relative to base). First match wins for that host:port.
 inline constexpr const char* kProbePaths[] = {
     "/getBookshelf",          // official app web service

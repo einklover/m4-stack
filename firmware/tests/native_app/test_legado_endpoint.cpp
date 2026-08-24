@@ -81,6 +81,15 @@ int main() {
   assert(M4LegadoBridge::kProbePortCount >= 4);
   assert(M4LegadoBridge::kProbePorts[0] == 1122);
 
+  // A dead saved phone address must not make every chapter tap probe forever.
+  // The firmware discovery loop uses this same bounded predicate between
+  // endpoint/port attempts.
+  assert(M4LegadoBridge::endpointProbeWithinBudget(1000, 1000));
+  assert(M4LegadoBridge::endpointProbeWithinBudget(
+      1000, 1000 + M4LegadoBridge::kEndpointProbeBudgetMs - 1));
+  assert(!M4LegadoBridge::endpointProbeWithinBudget(
+      1000, 1000 + M4LegadoBridge::kEndpointProbeBudgetMs));
+
   printf("legado endpoint + lan visitor helpers: PASS\n");
   return 0;
 }

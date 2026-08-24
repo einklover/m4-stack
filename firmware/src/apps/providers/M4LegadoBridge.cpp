@@ -60,7 +60,10 @@ bool probeUrl(const std::string& url) {
   M4NativeProviderHttp::Request req;
   req.method = "GET";
   req.url = url;
-  req.timeoutMs = 2500;
+  // Discovery is a LAN health check, not the chapter request itself. A dead
+  // saved phone address must fail quickly so the foreground can show a useful
+  // endpoint error instead of looking frozen for minutes.
+  req.timeoutMs = 1000;
   req.maxBytes = 8u * 1024u;
   req.headers = {{"User-Agent", "Mozilla/5.0 Murphy-M4 LegadoProbe/1"}, {"Connection", "close"}};
   std::string body;
@@ -75,9 +78,10 @@ bool probeUrl(const std::string& url) {
   return probeBodyLooksLikeLegado(body, net.status, net.error);
 }
 
-bool probeBase(const std::string& base) {
+bool probeBase(const std::string& base, uint32_t startedMs) {
   if (!baseUrlOk(base)) return false;
   for (size_t i = 0; i < kProbePathCount; ++i) {
+    if (!endpointProbeWithinBudget(startedMs, millis())) return false;
     if (probeUrl(base + kProbePaths[i])) return true;
   }
   return false;
@@ -119,6 +123,10 @@ std::string loadSavedBase(const std::string& appDataRoot) {
 }
 
 bool ensureEndpoint(const std::string& appDataRoot) {
+  const uint32_t probeStartedMs = millis();
+  const auto probeBudgetAvailable = [&]() {
+    return endpointProbeWithinBudget(probeStartedMs, millis());
+  };
   // 1) In-memory base still good?
   {
     std::lock_guard<std::mutex> lock(gMu);
@@ -142,7 +150,7 @@ bool ensureEndpoint(const std::string& appDataRoot) {
   // 2) Saved endpoint — verify with a short probe.
   if (!saved.empty()) {
     Serial.printf("[Legado] probing saved %s\n", saved.c_str());
-    if (probeBase(saved)) {
+    if (probeBudgetAvailable() && probeBase(saved, probeStartedMs)) {
       std::lock_guard<std::mutex> lock(gMu);
       gBase = saved;
       return true;
@@ -171,7 +179,7 @@ bool ensureEndpoint(const std::string& appDataRoot) {
     Serial.printf("[Legado] endpoint discover: no visitor IPs for SSID '%s'\n",
                   ssid.c_str());
     // Last resort: keep compile-time default if it answers (dev bench).
-    if (probeBase(kDefaultBase)) {
+    if (saved != kDefaultBase && probeBudgetAvailable() && probeBase(kDefaultBase, probeStartedMs)) {
       setBaseUrl(appDataRoot, kDefaultBase);
       return true;
     }
@@ -183,10 +191,14 @@ bool ensureEndpoint(const std::string& appDataRoot) {
 
   for (const auto& ip : ips) {
     for (size_t pi = 0; pi < kProbePortCount; ++pi) {
+      if (!probeBudgetAvailable()) {
+        Serial.printf("[Legado] endpoint discover: probe budget exhausted\n");
+        return false;
+      }
       const std::string base = makeBase(ip, kProbePorts[pi]);
       if (base.empty()) continue;
       Serial.printf("[Legado] probe %s\n", base.c_str());
-      if (probeBase(base)) {
+      if (probeBase(base, probeStartedMs)) {
         setBaseUrl(appDataRoot, base);
         return true;
       }
