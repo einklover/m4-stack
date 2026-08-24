@@ -45,6 +45,13 @@ class FanqieNetworkContractTests(unittest.TestCase):
         self.assertIn("http_ESP_ERR_HTTP_FETCH_HEADER", source)
         self.assertIn("removeIncomplete(req.cacheAbsPath)", source)
 
+    def test_discovery_shelf_coalesces_tsv_writes(self):
+        source = self.source
+        sink = source[source.index("class AtomicRowsSink"):source.index("class RecordExtractorSink")]
+        self.assertIn("kBufferBytes", sink)
+        self.assertIn("flushBuffer", sink)
+        self.assertIn("used_", sink)
+
 
 
 if __name__ == "__main__":

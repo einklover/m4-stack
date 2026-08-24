@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -76,6 +77,8 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     finalPath_ = finalPath;
     tmpPath_ = M4NativeProviderIo::replacedExtension(finalPath_, "part");
     written_ = 0;
+    used_ = 0;
+    writeFailed_ = false;
     // Fanqie can be launched while the preceding app/install path is still
     // finishing an SD transaction. Let its DNS/TLS request get underway and
     // take the first response chunk before touching the card.
@@ -85,9 +88,18 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
 
   bool write(const uint8_t* data, size_t len) override {
     if (!data || !ensureFile()) return false;
-    const int n = f_.write(data, len);
-    if (n != static_cast<int>(len)) return false;
     written_ += len;
+    while (len > 0) {
+      const size_t take = std::min(len, kBufferBytes - used_);
+      std::memcpy(buffer_ + used_, data, take);
+      used_ += take;
+      data += take;
+      len -= take;
+      if (used_ == kBufferBytes && !flushBuffer()) {
+        writeFailed_ = true;
+        return false;
+      }
+    }
     return true;
   }
 
@@ -97,15 +109,19 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     return write(reinterpret_cast<const uint8_t*>(data), len);
   }
 
-  void close() {
+  bool close() {
+    bool ok = true;
     if (open_) {
+      ok = flushBuffer();
       f_.close();
       open_ = false;
     }
+    used_ = 0;
+    return ok && !writeFailed_;
   }
 
   bool commit() {
-    close();
+    if (!close()) return false;
     if (tmpPath_.empty() || finalPath_.empty()) return false;
     // A valid Legado bookshelf may be empty. Treat the successful JSON
     // response as a committed empty shelf so manual endpoint verification can
@@ -126,6 +142,16 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
   }
 
  private:
+  static constexpr size_t kBufferBytes = 4096;
+
+  bool flushBuffer() {
+    if (!open_ || used_ == 0) return true;
+    const int n = f_.write(buffer_, used_);
+    if (n != static_cast<int>(used_)) return false;
+    used_ = 0;
+    return true;
+  }
+
   bool ensureFile() {
     if (open_) return true;
     if (!M4NativeProviderIo::ensureParentDirs(finalPath_)) return false;
@@ -148,7 +174,10 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
   FsFile f_;
   std::string finalPath_;
   std::string tmpPath_;
+  uint8_t buffer_[kBufferBytes] = {};
+  size_t used_ = 0;
   size_t written_ = 0;
+  bool writeFailed_ = false;
   bool open_ = false;
 };
 
