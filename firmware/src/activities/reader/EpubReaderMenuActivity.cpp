@@ -363,7 +363,8 @@ void EpubReaderMenuActivity::closeToReader() {
 
 void EpubReaderMenuActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    // Deferred pump: never destroy a nested picker while its loop is on the stack.
+    pumpSubActivityFrame();
     return;
   }
 

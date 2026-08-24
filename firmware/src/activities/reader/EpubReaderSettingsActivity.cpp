@@ -66,7 +66,8 @@ void EpubReaderSettingsActivity::taskTrampoline(void* param) {
 
 void EpubReaderSettingsActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    // Deferred pump: never destroy a nested picker while its loop is on the stack.
+    pumpSubActivityFrame();
     return;
   }
 
