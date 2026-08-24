@@ -96,15 +96,78 @@ function cancel_network_job()
   return true
 end
 
+-- Phased like JJWXC advance_network_job: each draw advances at most one
+-- phase so a slow Wi-Fi/TLS/TOC hop can never freeze the loading frame for
+-- tens of seconds. TOC phases: paint -> cache -> download -> connect -> open.
 function advance_network_job()
   local job = network_job
   if type(job) ~= "table" then return end
-  network_job = nil
+
   if job.kind == "toc" then
-    load_toc_sync(job.data)
-  elseif job.kind == "shelf" then
-    load_shelf_sync()
+    if job.phase == "paint" or job.phase == nil then
+      job.phase = "cache"
+      status_line = font_ok and "检查目录缓存…" or "checking toc cache…"
+      dirty = true
+      return
+    end
+    if job.phase == "cache" then
+      -- Cache-only pass; never touches the network in this tick.
+      begin_toc_load(job.data)
+      if type(network_job) ~= "table" or network_job.kind ~= "toc" then return end
+      if network_job.toc_prefetched then
+        -- Local catalog/TOC is enough: finish (progress/open) next tick.
+        network_job.phase = "open"
+        status_line = font_ok and "打开目录…" or "opening toc…"
+      else
+        -- Needs the network; Wi-Fi bring-up gets its own painted tick below.
+        network_job.phase = "download"
+        status_line = font_ok and "下载目录…" or "downloading toc…"
+      end
+      dirty = true
+      return
+    end
+    if job.phase == "download" then
+      -- connectSaved can block for tens of seconds: isolate it from the TOC
+      -- request so the loading frame stays interactive between the two hops.
+      network_job.phase = "connect"
+      local online, nerr = ensure_network()
+      if not online then
+        network_job = nil
+        set_message(net_error_title(nerr), net_error_body(nerr),
+          font_ok and "点按重试 · 返回书架" or "tap retry / back shelf", "shelf")
+        return
+      end
+      status_line = font_ok and "连接服务器…" or "connecting…"
+      dirty = true
+      return
+    end
+    if job.phase == "connect" then
+      local book = job.data
+      network_job = nil
+      finish_toc_load(book, {})
+      return
+    end
+    if job.phase == "open" then
+      local book = job.data
+      local cached_toc = job.cached_toc
+      network_job = nil
+      finish_toc_load(book, { toc_prefetched = true, cached_toc = cached_toc })
+      return
+    end
+    -- Unknown/legacy state: behave like the old single-shot path.
+    local book = job.data
+    network_job = nil
+    finish_toc_load(book, {})
+    return
   end
+
+  if job.kind == "shelf" then
+    network_job = nil
+    load_shelf_sync()
+    return
+  end
+
+  network_job = nil
 end
 
 -- Set by provider.takeResume during startup; applied before login when cache exists.
@@ -363,6 +426,13 @@ end
 function maybe_history_bg_restore()
   local job = history_bg_restore
   if type(job) ~= "table" or not job.bookId then return end
+  -- Same pump-tick rule as history_bg_restore_toc_step: never start a Wi-Fi
+  -- bring-up or TOC download while a prefetch owns the network this session.
+  if type(prefetch_job) == "table" then return end
+  if type(net) == "table" and type(net.isConnected) == "function"
+      and not net.isConnected() then
+    return
+  end
   if screen == "native_reader" or screen == "loading" or screen == "native_toc" then
     -- Defer until reader closes, or only do non-UI work: register is already done.
     -- Full TOC fetch needs network and would fight native ownership — wait for close.
@@ -1173,21 +1243,26 @@ function load_toc(book)
   return true
 end
 
-function load_toc_sync(book)
+-- Cache-only half of the TOC load. Runs inside an already-painted tick and
+-- never touches the network. Arms a follow-up toc job; when local metadata is
+-- enough the job is flagged toc_prefetched so finish_toc_load skips download.
+function begin_toc_load(book)
+  if type(book) ~= "table" then return false end
   -- Switching book: drop stale native_progress so it cannot be written under another chapter.
-  if not cur_book or not book or cur_book.bookId ~= book.bookId then
+  if not cur_book or cur_book.bookId ~= book.bookId then
     native_progress = nil
   end
   cur_book = book
   chapters = {}
   chapter_catalog = nil
   toc_page = 1
+  toc_wordcount_reliable = false
   status_line = font_ok and "加载目录..." or "loading toc..."
-  local tocRel = Storage.toc_rows_path and Storage.toc_rows_path(book.bookId)
-    or ("cache/" .. tostring(book.bookId) .. "/toc_rows.txt")
-  toc_source = tocRel
-  local list, err, loaded = nil, nil, false
-  local file_mode = type(dl) == "table" and type(dl.jsonToFile) == "function"
+  local function rearm()
+    begin_network_job("toc", book,
+      font_ok and "加载目录…" or "loading table of contents…",
+      font_ok and "正在读取章节目录，请稍候…" or "fetching chapter list…")
+  end
 
   -- Local-first: a TOC is durable metadata, not a session-only view.  Do not
   -- contact the network when a previously downloaded catalog is still valid.
@@ -1214,14 +1289,64 @@ function load_toc_sync(book)
     -- registry.  Register it before handing control to the native TOC;
     -- otherwise the first native row callback can observe a nil Lua row.
     pcall(provider_register_current_book)
-    loaded = true
+    rearm()
+    network_job.toc_prefetched = true
+    return true
   end
-  if not loaded and not stale_catalog and not stale_json then
+  if not stale_catalog and not stale_json then
     if type(cached_toc) == "table" and #cached_toc > 0 then
-      chapters = cached_toc
-      toc_wordcount_reliable = true
-      loaded = true
+      rearm()
+      network_job.toc_prefetched = true
+      network_job.cached_toc = cached_toc
+      return true
     end
+  end
+  -- Needs the network; advance_network_job drives download/connect next.
+  rearm()
+  return true
+end
+
+-- Network half of the TOC load. Called from a phased tick that has already
+-- painted; performs at most one blocking TOC request plus local SD writes.
+function finish_toc_load(book, opts)
+  opts = opts or {}
+  -- Switching book: drop stale native_progress so it cannot be written under another chapter.
+  if not cur_book or not book or cur_book.bookId ~= book.bookId then
+    native_progress = nil
+  end
+  cur_book = book
+  toc_page = 1
+  status_line = font_ok and "加载目录..." or "loading toc..."
+  local tocRel = Storage.toc_rows_path and Storage.toc_rows_path(book.bookId)
+    or ("cache/" .. tostring(book.bookId) .. "/toc_rows.txt")
+
+  -- Honor begin_toc_load BEFORE resetting anything: when it armed
+  -- toc_prefetched, the FileRows catalog + virtual chapters are already live
+  -- and must survive into the progress/open tail below. Wipe only for a real
+  -- network pass.
+  local cached_toc = opts.cached_toc
+  local have_cached_json = type(cached_toc) == "table" and #cached_toc > 0
+  local prefetched = opts.toc_prefetched and true or false
+  if prefetched and have_cached_json then
+    chapters = cached_toc
+    chapter_catalog = nil
+    toc_wordcount_reliable = true
+  elseif not prefetched then
+    chapters = {}
+    chapter_catalog = nil
+    toc_wordcount_reliable = false
+    -- Same single SD read the pre-split path did; still the offline fallback
+    -- if the network hop below fails.
+    cached_toc = Storage.load_toc and Storage.load_toc(book.bookId) or nil
+    have_cached_json = type(cached_toc) == "table" and #cached_toc > 0
+  end
+  toc_source = tocRel
+  local list, err, loaded = nil, nil, false
+  local file_mode = type(dl) == "table" and type(dl.jsonToFile) == "function"
+
+  if prefetched and (have_cached_json or chapter_catalog) then
+    -- Local metadata already decided in begin_toc_load: no fetch on this path.
+    loaded = true
   end
 
   if file_mode
@@ -2076,6 +2201,15 @@ end
 function history_bg_restore_toc_step()
   local job = history_bg_restore
   if type(job) ~= "table" or not job.needToc or not job.bookId then return false end
+  -- Only one heavy network operation per pump tick: a prefetch hop in flight
+  -- owns the TLS/network buffers this tick (same rule as JJWXC pump).
+  if type(prefetch_job) == "table" then return false end
+  -- Wi-Fi bring-up inside a reader-owned pump callback can freeze input for
+  -- tens of seconds; only proceed when the link is already up.
+  if type(net) == "table" and type(net.isConnected) == "function"
+      and not net.isConnected() then
+    return false  -- retry on a later pump once Wi-Fi is connected
+  end
   if not Auth or not Auth.has or not Auth.has() then
     -- Offline / not logged in: leave synthetic TOC; next online session can refresh.
     job.needToc = false
@@ -2135,9 +2269,102 @@ function history_bg_restore_toc_step()
 end
 
 -- Background prefetch while native reader owns the display (cooperative).
+-- One hop per pump tick so a slow TLS/JSON request can never freeze the
+-- reader UI (JJWXC prefetch_job pattern); the whole-chapter multi-hop fetch
+-- reuses the existing Api.chapter_fetch_begin/chapter_fetch_step machine.
+prefetch_job = nil
+
+local function prefetch_set_error(pid, bookId, chapterUid, idx, title, err)
+  if type(provider) ~= "table" or type(provider.setChapter) ~= "function" then return end
+  provider.setChapter({
+    providerId = pid or "weread",
+    bookId = tostring(bookId or ""),
+    chapterUid = tostring(chapterUid or ""),
+    index = tonumber(idx) or -1,
+    title = title,
+    state = "error",
+    error = tostring(err or "prefetch"),
+  })
+end
+
+local function prefetch_advance_fetch()
+  local j = prefetch_job
+  if type(j.fetch) ~= "table" or type(Api.chapter_fetch_step) ~= "function"
+      or type(Api.release_chapter_buffers) ~= "function" then
+    -- Old host without hop API: single blocking call, same as before.
+    local text, err = Api.fetch_chapter_text(j.bookId, { chapterUid = j.chapterUid })
+    if text then
+      prefetch_job.pending_text = text
+      prefetch_job.phase = "write"
+    else
+      err = tostring(err or "fetch")
+      if err == Api.EMPTY_BODY then
+        log(string.format("[WRCP] prefetch_empty book=%s ch=%s idx=%s",
+          j.bookId, j.chapterUid, tostring(j.idx)))
+        prefetch_job = nil
+        return
+      end
+      prefetch_set_error(j.pid, j.bookId, j.chapterUid, j.idx, j.title, err)
+      prefetch_job = nil
+    end
+    return
+  end
+  local st, payload = Api.chapter_fetch_step(j.fetch)
+  if st == "busy" then return end  -- next pump continues the state machine
+  if st == "error" then
+    local err = tostring(payload or "fetch")
+    Api.release_chapter_buffers(j.fetch)
+    if err == "2012" then err = "login_required" end
+    if err == Api.EMPTY_BODY then
+      -- Volume headings have no body: leave silently, no Error churn.
+      log(string.format("[WRCP] prefetch_empty book=%s ch=%s idx=%s",
+        j.bookId, j.chapterUid, tostring(j.idx)))
+    else
+      prefetch_set_error(j.pid, j.bookId, j.chapterUid, j.idx, j.title, err)
+    end
+    prefetch_job = nil
+    if collectgarbage then collectgarbage("collect") end
+    return
+  end
+  prefetch_job.pending_text = payload
+  Api.release_chapter_buffers(j.fetch)
+  j.fetch = nil
+  prefetch_job.phase = "write"
+end
+
 function provider_pump_work()
   -- History cold-open: refresh full TOC to SD so chapter list works mid-read.
+  -- Skipped while a prefetch hop is in flight (one heavy op per tick).
   pcall(history_bg_restore_toc_step)
+
+  -- Advance an in-flight prefetch exactly one hop per pump.
+  if type(prefetch_job) == "table" then
+    local j = prefetch_job
+    if j.phase == "fetch" then
+      prefetch_advance_fetch()
+      return
+    end
+    if j.phase == "write" then
+      local ok_write = Storage.save_chapter_text
+        and Storage.save_chapter_text(j.bookId, j.chapterUid, j.pending_text)
+      j.pending_text = nil
+      prefetch_job = nil
+      if collectgarbage then collectgarbage("collect") end
+      if ok_write then
+        local path = Storage.chapter_path and Storage.chapter_path(j.bookId, j.chapterUid) or nil
+        if path then provider_set_chapter_ready(j.bookId, j.chapterUid, path, j.idx) end
+        log(string.format("[WRCP] prefetch_ok book=%s ch=%s idx=%s",
+          j.bookId, j.chapterUid, tostring(j.idx)))
+      else
+        prefetch_set_error(j.pid, j.bookId, j.chapterUid, j.idx, j.title, "cache")
+      end
+      return
+    end
+    -- Unknown/corrupt job: surface it instead of leaving Fetching forever.
+    prefetch_set_error(j.pid, j.bookId, j.chapterUid, j.idx, j.title, "bad_job")
+    prefetch_job = nil
+    return
+  end
 
   if type(provider) ~= "table" or type(provider.pollWork) ~= "function" then return end
   if type(Storage) ~= "table" or type(Api) ~= "table" then return end
@@ -2173,39 +2400,26 @@ function provider_pump_work()
     end
   end
   if not ensure_network or not ensure_network() then
-    if type(provider.setChapter) == "function" then
-      provider.setChapter({
-        providerId = pid, bookId = bookId, chapterUid = chapterUid, index = idx,
-        title = title, state = "error", error = "net",
-      })
-    end
+    prefetch_set_error(pid, bookId, chapterUid, idx, title, "net")
     return
   end
-  local text, err = Api.fetch_chapter_text(bookId, { chapterUid = chapterUid })
-  if not text then
-    if type(provider.setChapter) == "function" then
-      provider.setChapter({
-        providerId = pid, bookId = bookId, chapterUid = chapterUid, index = idx,
-        title = title, state = "error", error = tostring(err or "fetch"),
-      })
-    end
-    return
+  -- Arm the cooperative fetch; hops advance on later pumps so this callback
+  -- returns immediately (whole-chapter multi-hop never blocks one tick).
+  if Api.chapter_fetch_begin and Api.chapter_fetch_step then
+    prefetch_job = {
+      phase = "fetch",
+      pid = pid,
+      bookId = bookId,
+      chapterUid = chapterUid,
+      title = title,
+      idx = idx,
+      fetch = Api.chapter_fetch_begin(bookId, { chapterUid = chapterUid }),
+    }
+  else
+    -- Legacy host: keep the old blocking behavior via the write phase.
+    prefetch_job = { phase = "fetch", pid = pid, bookId = bookId,
+      chapterUid = chapterUid, title = title, idx = idx, fetch = nil }
   end
-  local ok_write = Storage.save_chapter_text and Storage.save_chapter_text(bookId, chapterUid, text)
-  text = nil
-  if collectgarbage then collectgarbage("collect") end
-  if not ok_write then
-    if type(provider.setChapter) == "function" then
-      provider.setChapter({
-        providerId = pid, bookId = bookId, chapterUid = chapterUid, index = idx,
-        title = title, state = "error", error = "cache",
-      })
-    end
-    return
-  end
-  local path = Storage.chapter_path and Storage.chapter_path(bookId, chapterUid) or nil
-  if path then provider_set_chapter_ready(bookId, chapterUid, path, idx) end
-  log(string.format("[WRCP] prefetch_ok book=%s ch=%s idx=%s", bookId, chapterUid, tostring(idx)))
 end
 
 function open_native_reader(path, title, bookId, chapterUid)
