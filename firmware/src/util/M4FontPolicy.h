@@ -109,6 +109,19 @@ inline Decision decide(const Inputs& in) {
 // are those of the single 16pt epdfont until multi-size artifacts ship.
 constexpr int kCanonicalEpdfontPixelSize = 16;
 
+// Actual raster pixel size of the compact built-in 2-bit CJK face. It is
+// generated at 16pt (@150 DPI), but the em box rounds down to a 14px raster
+// (generated header reports "raster pixel size: 14"; advanceY=20, ascender=15).
+// System-reader binds must divide the requested px by this real raster, not by
+// kCanonicalEpdfontPixelSize, or every compact-sourced size renders ~12% small.
+constexpr int kCompactCjkSourcePx = 14;
+
+// Divisor for ScaledEpdFont::bind when sizing the system reader face: the
+// bound source's actual raster pixels (compact builtin vs canonical SD epdfont).
+inline int systemReaderSourcePx(bool compact2BitSource) {
+  return compact2BitSource ? kCompactCjkSourcePx : kCanonicalEpdfontPixelSize;
+}
+
 // RC1 expected SHA-256 of the release canonical SD artifact (document only;
 // runtime does not require matching hash to boot — invalid header still fails).
 constexpr const char* kCanonicalArtifactSha256 =

@@ -136,11 +136,17 @@ void bindSystemReader(GfxRenderer& renderer, int targetPx) {
     Serial.println("[M4-FONT] DIAG: no system reader source to scale");
     return;
   }
-  scaledSystemReader.bind(source, static_cast<float>(targetPx) /
-                                      static_cast<float>(M4FontPolicy::kCanonicalEpdfontPixelSize));
+  // The compact builtin face is generated at 16pt but rasterizes at only
+  // ~14px (advanceY=20, ascender=15), while the canonical SD epdfont is a real
+  // 16px raster. Divide by the bound source's actual pixels or every
+  // compact-sourced size lands ~12% small relative to custom TTF.
+  const bool compactSource = source == compactSystemReader;
+  const float scale = static_cast<float>(targetPx) /
+                      static_cast<float>(M4FontPolicy::systemReaderSourcePx(compactSource));
+  scaledSystemReader.bind(source, scale);
   renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&scaledSystemReader));
   Serial.printf("[M4-FONT] System reader=%dpx scale=%.3f source=%s\n", targetPx, scaledSystemReader.scale(),
-                source == compactSystemReader ? "compact-2bit" : "canonical-epdfont");
+                compactSource ? "compact-2bit" : "canonical-epdfont");
 }
 #endif
 }  // namespace
