@@ -72,7 +72,7 @@ class GfxRenderer {
   void replaceFont(int fontId, EpdFontFamily font);
   bool hasFont(int fontId) const;
   // Borrow the currently mapped font object. Used by the M4 runtime-TTF loader
-  // to capture the compact builtin UI faces before installing scaled views.
+  // to capture the builtin UI faces before installing scaled reader views.
   // The renderer keeps ownership of the family mapping; callers must not free
   // the returned font.
   const EpdFont* getFontPtr(int fontId,
@@ -160,7 +160,7 @@ class GfxRenderer {
   int getLineHeight(int fontId) const;
   std::string truncatedText(int fontId, const char* text, int maxWidth,
                             EpdFontFamily::Style style = EpdFontFamily::REGULAR, float scale = 1.0f) const;
-  // Scale body/reader face metrics down to match a compact UI face (never upscales).
+  // Scale body/reader face metrics down to match a builtin UI face (never upscales).
   float scaleFontToMatch(int srcFontId, int targetFontId) const;
 
   // Helper for drawing rotated text (90 degrees clockwise, for side buttons)

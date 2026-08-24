@@ -4,7 +4,8 @@
 //
 // Rules:
 //  A) Only the verified canonical family "NotoSansCJKsc" may be auto-promoted
-//     onto NOTOSANS reader/content IDs. UI / SMALL keep compact builtin metrics.
+//     onto NOTOSANS reader/content IDs. UI / SMALL stay on the builtin 15x16
+//     1-bit native-grid system font and never follow a reader TTF/size.
 //     Never use families.front() as fallback.
 //  B) SYSTEM_FONT + canonical present: promote canonical for content without
 //     mutating settings to FONT_CUSTOM.
@@ -38,8 +39,9 @@ struct Decision {
   std::string loadCustomFamily;
 
   // Promote this family onto NOTOSANS reader/content IDs via replaceFont.
-  // UI_10/UI_12/SMALL remain compact. Empty = leave all offline subsets.
-  // Only ever the canonical name, never an arbitrary Latin-only first file.
+  // UI_10/UI_12/SMALL remain the builtin 15x16 1-bit native-grid face.
+  // Empty = leave all offline subsets. Only ever the canonical name, never
+  // an arbitrary Latin-only first file.
   std::string promoteSystemFamily;
 
   // Whether settings should be mutated (should always stay false for auto canonical).
@@ -74,8 +76,8 @@ inline Decision decide(const Inputs& in) {
     d.loadCustomFamily.clear();
     if (!in.hasCanonical) {
       d.diagnostic =
-          "no canonical /fonts/NotoSansCJKsc.epdfont; offline native-grid 15x16 reader "
-          "+ compact UI CJK (other epdfonts are not auto-promoted)";
+          "no canonical /fonts/NotoSansCJKsc.epdfont; offline native-grid 15x16 "
+          "system UI + reader fallback (other epdfonts are not auto-promoted)";
     }
     return d;
   }
@@ -109,21 +111,14 @@ inline Decision decide(const Inputs& in) {
 // are those of the single 16pt epdfont until multi-size artifacts ship.
 constexpr int kCanonicalEpdfontPixelSize = 16;
 
-// Actual raster pixel size of the compact built-in 2-bit CJK face. It is
-// generated at 16pt (@150 DPI), but the em box rounds down to a 14px raster
-// (generated header reports "raster pixel size: 14"; advanceY=20, ascender=15).
-// System-reader binds must divide the requested px by this real raster, not by
-// kCanonicalEpdfontPixelSize, or every compact-sourced size renders ~12% small.
-constexpr int kCompactCjkSourcePx = 14;
-
-// Native-grid builtin reader face is a true 16-row raster (15x16 1-bit cells).
+// Native-grid builtin system face is a true 16-row raster (15x16 1-bit cells).
+// Chrome IDs bind this face at 1:1. Reader NOTOSANS_16 may be ScaledEpdFont
+// wrapped; the divisor is always this raster size (canonical SD epdfont is
+// also a 16px artifact).
 constexpr int kNativeGridSourcePx = 16;
 
-// Divisor for ScaledEpdFont::bind when sizing the system reader face: the
-// bound source's actual raster pixels. Compact 2-bit chrome/legacy sources
-// divide by 14; native-grid and canonical SD epdfont sources divide by 16.
-inline int systemReaderSourcePx(bool compact2BitSource) {
-  return compact2BitSource ? kCompactCjkSourcePx : kCanonicalEpdfontPixelSize;
+inline int systemReaderSourcePx() {
+  return kNativeGridSourcePx;
 }
 
 // RC1 expected SHA-256 of the release canonical SD artifact (document only;

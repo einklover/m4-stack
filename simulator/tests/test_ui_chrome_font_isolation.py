@@ -108,6 +108,36 @@ class UiChromeFontIsolationTests(unittest.TestCase):
         self.assertIn("#define UI_12_FONT_ID (-359249323)", ids)
         self.assertIn("#define SMALL_FONT_ID (1073217904)", ids)
 
+    def test_chrome_binds_builtin_native_grid_not_reader_scaler(self) -> None:
+        main = text("firmware/src/main.cpp")
+        self.assertNotIn("m4_compact_cjk", main)
+        self.assertIn("smallFontFamily(&nativeGridFont)", main)
+        self.assertIn("ui10FontFamily(&nativeGridFont", main)
+        self.assertIn("ui12FontFamily(&nativeGridFont", main)
+        # Chrome families are not ScaledEpdFont wrappers. Reader scaling lives
+        # in EpdFontLoader::bindSystemReader and only remaps NOTOSANS_16.
+        self.assertNotRegex(main, r"EpdFontFamily\s+(small|ui10|ui12)FontFamily\(&scaled")
+        loader = text("firmware/lib/EpdFontLoader/EpdFontLoader.cpp")
+        bind = function_body(loader, "void bindSystemReader(")
+        self.assertIn("replaceFont(NOTOSANS_16_FONT_ID", bind)
+        self.assertNotIn("SMALL_FONT_ID", bind)
+        self.assertNotIn("UI_10_FONT_ID", bind)
+        self.assertNotIn("UI_12_FONT_ID", bind)
+        self.assertNotIn("getReaderPixelSize", bind)
+        # Reader size is the bind argument; chrome IDs must not consume it.
+        self.assertIn("scaledSystemReader.bind(source, scale)", bind)
+
+    def test_missing_custom_glyph_keeps_builtin_chrome(self) -> None:
+        ui_text = text("firmware/src/util/M4UiText.h")
+        self.assertIn("!isReaderFontId(f.layoutFontId)", ui_text)
+        self.assertIn("SETTINGS.getReaderFontId()", ui_text)
+        self.assertIn("renderer.hasTextGlyphs(readerFont, safeText, style)", ui_text)
+        self.assertIn("f.fontId = readerFont", ui_text)
+        resolve = function_body(ui_text, "inline Face resolve(")
+        self.assertIn("isReaderFontId(f.layoutFontId)", resolve)
+        self.assertNotIn("SMALL_FONT_ID", resolve)
+        self.assertNotIn("UI_10_FONT_ID", resolve)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,15 +78,15 @@ class NativeGridFontTests(unittest.TestCase):
         self.assertIn(f"kGlyphCount = {EXPECTED_GLYPHS}", header)
         self.assertIn(manifest["blob_sha256"], header)
 
-    def test_main_keeps_compact_ui_and_native_grid_reader(self) -> None:
+    def test_main_binds_chrome_and_reader_fallback_to_native_grid(self) -> None:
         main = MAIN.read_text(encoding="utf-8")
-        self.assertIn('#include "fontdata/m4_compact_cjk_16.h"', main)
+        self.assertNotIn("m4_compact_cjk", main)
         self.assertIn("NativeGridEpdFont", main)
         self.assertIn("nativeGridFont", main)
         self.assertIn("notosans16FontFamily(&nativeGridFont", main)
-        self.assertIn("EpdFont smallFont(&m4_compact_cjk_16)", main)
-        self.assertIn("EpdFont ui10RegularFont(&m4_compact_cjk_16)", main)
-        self.assertIn("EpdFont ui12RegularFont(&m4_compact_cjk_16)", main)
+        self.assertIn("smallFontFamily(&nativeGridFont)", main)
+        self.assertIn("ui10FontFamily(&nativeGridFont", main)
+        self.assertIn("ui12FontFamily(&nativeGridFont", main)
         pio = PLATFORMIO.read_text(encoding="utf-8")
         self.assertIn("src/fontdata/m4_native_grid_15x16.bin", pio)
         self.assertIn("pre:scripts/verify_m4_native_grid.py", pio)
@@ -94,14 +94,21 @@ class NativeGridFontTests(unittest.TestCase):
         self.assertIn("--verify", generator)
         self.assertNotIn("from fontTools.ttLib import TTFont\n", generator.split("def collect_corpus", 1)[0])
 
-    def test_bind_uses_is2bit_not_boot_pointer(self) -> None:
+    def test_bind_scales_reader_only_from_16px_native_grid(self) -> None:
         loader = LOADER.read_text(encoding="utf-8")
         policy = POLICY.read_text(encoding="utf-8")
         self.assertIn("kNativeGridSourcePx = 16", policy)
+        self.assertIn("inline int systemReaderSourcePx()", policy)
+        self.assertNotIn("kCompactCjkSourcePx", policy)
         bind = loader[loader.index("void bindSystemReader") : loader.index("EpdFontLoader::ensureFontsFromSd")]
-        self.assertIn("srcData->is2Bit", bind)
-        self.assertIn("M4FontPolicy::systemReaderSourcePx(compactSource)", bind)
+        self.assertIn("M4FontPolicy::systemReaderSourcePx()", bind)
         self.assertIn("native-grid-15x16", bind)
+        self.assertIn("replaceFont(NOTOSANS_16_FONT_ID", bind)
+        self.assertNotIn("SMALL_FONT_ID", bind)
+        self.assertNotIn("UI_10_FONT_ID", bind)
+        self.assertNotIn("UI_12_FONT_ID", bind)
+        self.assertNotIn("srcData->is2Bit", bind)
+        self.assertNotIn("compactSource", bind)
         self.assertNotIn("kCanonicalEpdfontPixelSize", bind)
 
     def test_verify_mode_accepts_tracked_blob(self) -> None:

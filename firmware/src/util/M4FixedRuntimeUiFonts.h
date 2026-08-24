@@ -5,14 +5,15 @@
 
 #include "../fontIds.h"
 
-// System chrome fonts are permanently bound to the builtin faces registered at
-// boot (SMALL / UI_10 / UI_12, including the compact 2-bit CJK subset).
+// System chrome fonts are permanently bound to the builtin 15x16 1-bit
+// native-grid face registered at boot (SMALL / UI_10 / UI_12).
 //
 // A user-selected Reader font (runtime TTF/OTF/TTC/OTC or legacy epdfont) must
-// NEVER replace those IDs. Earlier builds promoted complete custom faces onto
-// the chrome IDs via M4FixedRuntimeUiFonts::ensure(); that leaked reader-face
-// metrics into settings/menu/status layout and made Reader Settings tiny and
-// overlapped after a font switch.
+// NEVER replace those IDs, and reader pixel-size scaling must never wrap them.
+// Earlier builds promoted complete custom faces onto the chrome IDs via
+// M4FixedRuntimeUiFonts::ensure(); that leaked reader-face metrics into
+// settings/menu/status layout and made Reader Settings tiny and overlapped
+// after a font switch.
 //
 // Custom faces affect only reader/content hash IDs (and the NOTOSANS_* reader
 // bind path). This header now exists only to restore builtin chrome if a stale

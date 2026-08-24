@@ -1028,9 +1028,10 @@ int CrossPointSettings::getReaderFontId() const {
     case SYSTEM_FONT:
     default:
 #ifdef CROSSPOINT_MURPHY_M4
-      // M4 binds NOTOSANS_16 to a runtime-scaled view of the compact or
-      // canonical system face, so arbitrary readerPixelSize values remain
-      // exact without making extra system font artifacts.
+      // M4 binds NOTOSANS_16 to a runtime-scaled view of the native-grid or
+      // canonical system reader face, so arbitrary readerPixelSize values
+      // remain exact without making extra system font artifacts. Chrome IDs
+      // stay on the unscaled builtin 15x16 face.
       return NOTOSANS_16_FONT_ID;
 #else
       // Other targets retain their generated fixed-size system faces.

@@ -51,8 +51,8 @@ int main(int argc, char** argv) {
   CHECK(M4NativeGridFont::kGridHeight == 16);
   CHECK(M4NativeGridFont::kSourcePx == 16);
   CHECK(M4FontPolicy::kNativeGridSourcePx == 16);
-  CHECK(M4FontPolicy::systemReaderSourcePx(false) == M4NativeGridFont::kSourcePx);
-  CHECK(M4FontPolicy::systemReaderSourcePx(true) == 14);
+  CHECK(M4FontPolicy::systemReaderSourcePx() == M4NativeGridFont::kSourcePx);
+  CHECK(M4FontPolicy::systemReaderSourcePx() == 16);
 
   const char* path = argc > 1 ? argv[1] : "../firmware/src/fontdata/m4_native_grid_15x16.bin";
   const std::vector<uint8_t> blob = readFile(path);

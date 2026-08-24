@@ -116,14 +116,14 @@ void promoteToReaderIds(GfxRenderer& renderer, const char* familyName, int size)
   EpdFontFamily* family = FontManager::getInstance().getCustomFontFamily(familyName, size);
   if (!family) return;
   // The release epdfont is a single fixed ~16 px face. Promote it only to
-  // reader/content IDs. Replacing UI_10/UI_12/SMALL with the same large face
-  // makes system menus overlap because those layouts expect compact metrics.
+  // reader/content IDs. UI_10/UI_12/SMALL stay on the builtin 15x16 1-bit
+  // native-grid system font and must never follow a reader face or size.
   renderer.replaceFont(NOTOSANS_12_FONT_ID, *family);
   renderer.replaceFont(NOTOSANS_14_FONT_ID, *family);
   renderer.replaceFont(NOTOSANS_16_FONT_ID, *family);
   renderer.replaceFont(NOTOSANS_18_FONT_ID, *family);
   Serial.printf("[M4-FONT] Promoted NOTOSANS reader/content IDs to canonical SD epdfont '%s'; "
-                "kept UI_10/UI_12/SMALL on compact builtin subset "
+                "kept UI_10/UI_12/SMALL on builtin native-grid 15x16 "
                 "(fixed generated pixel size ~%dpt)\n",
                 familyName, M4FontPolicy::kCanonicalEpdfontPixelSize);
 }
@@ -136,18 +136,14 @@ void bindSystemReader(GfxRenderer& renderer, int targetPx) {
     Serial.println("[M4-FONT] DIAG: no system reader source to scale");
     return;
   }
-  // Compact 2-bit chrome is a 14px raster; native-grid and canonical SD
-  // epdfonts are 16px. Detect 2-bit from the bound face, not from "is the
-  // boot builtin" — the boot reader source is now the 15x16 native-grid.
-  const EpdFontData* srcData = source->getData();
-  const bool compactSource = srcData && srcData->is2Bit;
+  // Reader-only scaler. Source is the 16px native-grid builtin or a 16px
+  // canonical SD epdfont promoted onto NOTOSANS. Chrome IDs (SMALL/UI_10/
+  // UI_12) stay on the unscaled builtin native-grid face.
   const float scale = static_cast<float>(targetPx) /
-                      static_cast<float>(M4FontPolicy::systemReaderSourcePx(compactSource));
+                      static_cast<float>(M4FontPolicy::systemReaderSourcePx());
   scaledSystemReader.bind(source, scale);
   renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&scaledSystemReader));
-  const char* srcName = "canonical-epdfont";
-  if (compactSource) srcName = "compact-2bit";
-  else if (source == builtinSystemReader) srcName = "native-grid-15x16";
+  const char* srcName = (source == builtinSystemReader) ? "native-grid-15x16" : "canonical-epdfont";
   Serial.printf("[M4-FONT] System reader=%dpx scale=%.3f source=%s\n", targetPx, scaledSystemReader.scale(),
                 srcName);
 }
@@ -304,7 +300,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
       lastCanonicalResult = M4FontPolicy::LoadResult::Missing;
     }
     Serial.printf("[M4-FONT] DIAG: copy %s to SD for canonical reader/app CJK; "
-                  "offline native-grid 15x16 reader + compact UI CJK otherwise. "
+                  "offline native-grid 15x16 system UI + reader fallback otherwise. "
                   "Other epdfonts are never auto-promoted.\n",
                   M4FontPolicy::kCanonicalSdPath);
   }
@@ -347,7 +343,7 @@ int EpdFontLoader::getBestFontId(const char* familyName, int size) {
 #ifdef CROSSPOINT_MURPHY_M4
   // The active runtime face is the source of truth. Bookkeeping is rebuilt on
   // every SD/font refresh, but a successfully retained sfnt face and renderer
-  // mapping must never silently degrade to the compact OMIT_FONTS fallback.
+  // mapping must never silently degrade to the builtin native-grid fallback.
   if (activeRuntimeTtfFamily == familyName) {
     if (activeRuntimeTtfSize == size) return id;
     if (activeRuntimeTtfSize > 0) return hashFontId(activeRuntimeTtfFamily.c_str(), activeRuntimeTtfSize);

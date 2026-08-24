@@ -13,13 +13,15 @@
 
 // Lightweight metric/bitmap view over an existing EpdFont.
 //
-// Murphy M4 runtime TTF uses this for compact UI/status font IDs: there is
-// still exactly one source face with one cmap, one SD stream and one glyph LRU.
-// A ScaledEpdFont only borrows that face, scales the EpdGlyph metrics, and
-// resamples the already-cached source bitmap into one reusable PSRAM scratch
-// buffer. It never parses/rasterizes the source font itself and never owns a
-// second glyph cache. The source may be a streamed TTF/CFF face or the compact
-// built-in 2-bit CJK face. Scale may be below or above 1.0 so system reader
+// Murphy M4 uses this for the system *reader* face (NOTOSANS_16) so one 16px
+// source can honor arbitrary reader pixel sizes. Chrome IDs (SMALL/UI_10/
+// UI_12) must never be wrapped by this scaler. There is still exactly one
+// source face with one cmap, one SD stream and one glyph LRU. A ScaledEpdFont
+// only borrows that face, scales the EpdGlyph metrics, and resamples the
+// already-cached source bitmap into one reusable PSRAM scratch buffer. It
+// never parses/rasterizes the source font itself and never owns a second
+// glyph cache. The source may be a streamed TTF/CFF face or the builtin
+// 15x16 1-bit native-grid face. Scale may be below or above 1.0 so reader
 // sizes such as 14/15/17/20/22 are exact rather than snapped to 12/16/18.
 class ScaledEpdFont final : public EpdFont {
  public:
@@ -67,7 +69,7 @@ class ScaledEpdFont final : public EpdFont {
     scaledGlyph_.top = static_cast<int16_t>(scaledSigned(src->top));
     const uint32_t pixels = static_cast<uint32_t>(scaledGlyph_.width) * scaledGlyph_.height;
     scaledGlyph_.dataLength = scaledData_.is2Bit ? ((pixels + 3u) / 4u) : ((pixels + 7u) / 8u);
-    // Keep the codepoint, not the source bitmap offset. Built-in compact faces
+    // Keep the codepoint, not the source bitmap offset. Built-in bitmap faces
     // use dataOffset as a bitmap offset while runtime TTF uses it as a cache
     // key, so the codepoint is the only stable resampling identity.
     scaledCodepoint_ = cp;
@@ -88,7 +90,7 @@ class ScaledEpdFont final : public EpdFont {
     if (isUnityScale()) return source_->loadGlyphBitmap(glyph, buffer, style);
 
     // Re-resolve without retaining a source glyph pointer across cache
-    // accesses. This works for both compact bitmap offsets and runtime TTF.
+    // accesses. This works for both builtin bitmap offsets and runtime TTF.
     const EpdGlyph* srcGlyph = source_->getGlyph(scaledCodepoint_, style);
     if (!srcGlyph) return nullptr;
     const uint8_t* srcBitmap = source_->loadGlyphBitmap(srcGlyph, nullptr, style);

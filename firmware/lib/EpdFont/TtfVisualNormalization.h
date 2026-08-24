@@ -5,11 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 
-// Host/research helpers for comparing outline faces against the compact CJK
-// fallback ink box. Production TtfEpdFont deliberately does NOT rewrite raster
-// size from these ratios: over-normalizing CJK bbox height made many Reader
-// faces look wrong on hardware. Runtime keeps the configured nominal px and
-// only applies baseline/centering corrections.
+// Host/research helpers for comparing outline faces against the builtin
+// 15x16 1-bit system-font ink box. Production TtfEpdFont deliberately does
+// NOT rewrite raster size from these ratios: over-normalizing CJK bbox
+// height made many Reader faces look wrong on hardware. Runtime keeps the
+// configured nominal px and only applies baseline/centering corrections.
 //
 // System chrome never instantiates selected-reader TTF faces, so these helpers
 // also must not be used to size SMALL/UI_10/UI_12.

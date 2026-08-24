@@ -7,12 +7,12 @@
 #include <SDCardManager.h>
 #include <SPI.h>
 #ifdef OMIT_FONTS
-// Murphy M4: UI chrome stays on the compact 2-bit CJK face (SMALL / UI_10 /
-// UI_12 metrics). Reader/content NOTOSANS_* IDs use the uncompressed 15x16
-// 1-bit native-grid corpus when the canonical SD epdfont is absent. Full-book
-// CJK still promotes SD /fonts/*.epdfont via EpdFontLoader, and runtime
-// sfnt/variable/CFF faces remain available through /FONT.
-#include "fontdata/m4_compact_cjk_16.h"
+// Murphy M4: system UI chrome (SMALL / UI_10 / UI_12) and the default/fallback
+// reader IDs (NOTOSANS_*) share the uncompressed 15x16 1-bit native-grid
+// corpus. Chrome always stays on this builtin face and never follows a
+// reader-selected TTF/OTF or reader pixel size. Reader body may still bind
+// runtime sfnt from /FONT; canonical SD epdfont still promotes onto NOTOSANS_*
+// only.
 #include "fontdata/m4_native_grid_15x16.h"
 #include <NativeGridEpdFont.h>
 #else
@@ -346,10 +346,14 @@ EpdFont ui10RegularFont(&notosans_13_bold);
 EpdFont ui10BoldFont(&notosans_13_bold);
 EpdFont ui12RegularFont(&notosans_13_bold);
 EpdFont ui12BoldFont(&notosans_13_bold);
+EpdFontFamily smallFontFamily(&smallFont);
+EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
+EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 #else
-// Compact 2-bit CJK stays on UI chrome. Reader/content IDs use the native-grid
-// face (ranked-bitset 15x16 corpus) so offline CJK coverage is the full
-// 28,953-glyph set without a per-glyph EpdGlyph ROM table.
+// Built-in 15x16 1-bit native-grid is the single system face. UI chrome and
+// default/fallback reader IDs all bind this instance at native 15x16 metrics.
+// bindSystemReader may wrap NOTOSANS_16 in ScaledEpdFont for reader size;
+// SMALL/UI_10/UI_12 must never be scaled or remapped to a reader TTF.
 extern const uint8_t m4_native_grid_15x16_bin_start[] asm("_binary_src_fontdata_m4_native_grid_15x16_bin_start");
 extern const uint8_t m4_native_grid_15x16_bin_end[] asm("_binary_src_fontdata_m4_native_grid_15x16_bin_end");
 static_assert(M4NativeGridFont::kGlyphCount == 28953, "native-grid corpus size");
@@ -360,17 +364,10 @@ EpdFontFamily notosans12FontFamily(&nativeGridFont, &nativeGridFont, &nativeGrid
 EpdFontFamily notosans14FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
 EpdFontFamily notosans16FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
 EpdFontFamily notosans18FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
-
-EpdFont smallFont(&m4_compact_cjk_16);
-EpdFont ui10RegularFont(&m4_compact_cjk_16);
-EpdFont ui10BoldFont(&m4_compact_cjk_16);
-EpdFont ui12RegularFont(&m4_compact_cjk_16);
-EpdFont ui12BoldFont(&m4_compact_cjk_16);
+EpdFontFamily smallFontFamily(&nativeGridFont);
+EpdFontFamily ui10FontFamily(&nativeGridFont, &nativeGridFont);
+EpdFontFamily ui12FontFamily(&nativeGridFont, &nativeGridFont);
 #endif  // OMIT_FONTS
-
-EpdFontFamily smallFontFamily(&smallFont);
-EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
-EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
 
 // measurement of power button press duration calibration value
@@ -601,7 +598,8 @@ void setupDisplayAndFonts() {
   renderer.begin();
   Serial.printf("[%lu] [M4-DISP] Display initialized\n", millis());
   // Mandatory IDs (NOTOSANS_*, UI_*, SMALL) always registered so SYSTEM_FONT /
-  // UI drawing never no-ops. OMIT_FONTS builds use the M4 UI CJK subset.
+  // UI drawing never no-ops. OMIT_FONTS builds bind chrome and the default
+  // reader face to the builtin 15x16 1-bit native-grid.
   renderer.insertFont(NOTOSANS_12_FONT_ID, notosans12FontFamily);
   renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
   renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
@@ -610,9 +608,9 @@ void setupDisplayAndFonts() {
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 #ifdef OMIT_FONTS
-  Serial.printf("[%lu] [M4-FONT] Registered UI chrome on compact 2-bit CJK; "
-                "NOTOSANS reader/content IDs on native-grid 15x16 (valid=%d glyphs=%u outliers=%u); "
-                "canonical SD/runtime faces still promote when available\n",
+  Serial.printf("[%lu] [M4-FONT] Registered UI chrome + default reader on native-grid 15x16 "
+                "(valid=%d glyphs=%u outliers=%u); canonical SD/runtime faces still promote "
+                "onto reader IDs only\n",
                 millis(), nativeGridFont.valid() ? 1 : 0,
                 static_cast<unsigned>(nativeGridFont.glyphCount()),
                 static_cast<unsigned>(nativeGridFont.outlierCount()));
