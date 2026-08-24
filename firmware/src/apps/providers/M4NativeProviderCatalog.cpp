@@ -790,6 +790,11 @@ void taskMain(void*) {
           // failures keep placeholders for retry.
           if (job.providerId == "legado" && !cancelled() &&
               M4LegadoTocPolicy::isStaleShelfFetch(fullTransferOk, fullErr, fullRows)) {
+            // Drop the skeleton file before surfacing the error. Otherwise the
+            // next open sees cachedRows > 0 and the cache guard would seed
+            // Ready from hollow 第N章 placeholders instead of retrying the
+            // (stale) shelf. Transient failures keep placeholders on disk.
+            if (SdMan.exists(finalPath.c_str())) SdMan.remove(finalPath.c_str());
             publish(Phase::Error, 0, 0, "legado_shelf_stale");
           }
         }
