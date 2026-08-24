@@ -4,6 +4,7 @@
 
 #include "apps/M4xJsonStream.h"
 
+#include <Arduino.h>
 #include <ctime>
 #include <cstdio>
 #include <cstring>
@@ -27,6 +28,7 @@ std::string chapterDateUtc() {
   struct tm tm {};
   if (now >= 1700000000 && gmtime_r(&now, &tm) != nullptr && (tm.tm_year + 1900) >= 2024) {
     std::snprintf(ymd, sizeof(ymd), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    Serial.printf("[Fanqie] nt=%s source=rtc\n", ymd);
     return ymd;
   }
   int day = 0, year = 0;
@@ -37,8 +39,10 @@ std::string chapterDateUtc() {
     const char* hit = std::strstr(kMonths, mon);
     const int mi = hit ? static_cast<int>(hit - kMonths) / 3 + 1 : 1;
     std::snprintf(ymd, sizeof(ymd), "%04d-%02d-%02d", year, mi, day);
+    Serial.printf("[Fanqie] nt=%s source=build_date\n", ymd);
     return ymd;
   }
+  Serial.printf("[Fanqie] nt=2026-08-18 source=last_resort\n");
   return "2026-08-18";
 }
 

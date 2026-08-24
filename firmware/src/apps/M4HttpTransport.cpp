@@ -231,6 +231,11 @@ Result perform(esp_http_client_handle_t h, const Request& req, RxCtx& ctx, const
     setError(out, buf);
   } else if (out.status < 200 || out.status >= 300) {
     std::snprintf(out.error, sizeof(out.error), "http_%d", out.status);
+  } else if (ctx.bytes == 0) {
+    // Some mirrors (fanqie fq-book.nat.netsite.cc:8043 nt= date gate) answer
+    // HTTP 200 with an empty body. Callers treat ok=true as "payload ready",
+    // so surface this distinctly instead; M4NativeProviderHttp retries once.
+    setError(out, "http_2xx_empty");
   } else {
     out.ok = true;
   }
