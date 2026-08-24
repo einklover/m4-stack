@@ -600,8 +600,14 @@ void EpubReaderActivity::loop() {
     if (subActivity) {
       const bool replaced = pumpSubActivityFrame();
       if (replaced) {
-        updateRequired = false;
         skipNextButtonCheck = true;
+        // 子页面退出时 onGoBack 已置 updateRequired=true 请求重绘；仅当替换出
+        // 新子页面时才清除，避免吞掉合法的阅读器重绘请求。
+        if (subActivity) {
+          updateRequired = false;
+        } else {
+          updateRequired = true;
+        }
       }
       // Deferred exit: process after subActivity->loop() returns to avoid use-after-free
       if (pendingSubactivityExit) {
@@ -1373,6 +1379,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             // 返回阅读器后重载当前章节以应用新设置（字体、边距等影响排版）
             exitActivity();
             section.reset();
+            // 设置期间 autoPageTurnEnabled 可能变化：重新对表，避免旧定时器
+            // 回到阅读器后立即触发一次翻页（与 onReaderMenuBack 一致）。
+            applyAutoPageTurnSettings();
             updateRequired = true;
           }));
       xSemaphoreGive(renderingMutex);
