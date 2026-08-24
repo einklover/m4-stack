@@ -87,7 +87,13 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
   }
 
   bool write(const uint8_t* data, size_t len) override {
-    if (!data || !ensureFile()) return false;
+    // Some Weread shelf-sync responses include virtual shelf/category objects
+    // with no bookId (their TSV starts with a tab). They are not openable books;
+    // dropping them here keeps the persisted shelf index aligned with rows the
+    // UI can actually render.
+    if (!data || len == 0) return true;
+    if (data[0] == '\t' || data[0] == '\n') return true;
+    if (!ensureFile()) return false;
     written_ += len;
     while (len > 0) {
       const size_t take = std::min(len, kBufferBytes - used_);

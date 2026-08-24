@@ -17,7 +17,7 @@ class FanqieNetworkContractTests(unittest.TestCase):
         source = self.source
         self.assertIn('file.open(rowsPath(job.appId), job.providerId == "fanqie")', source)
         self.assertIn("if (deferFileOpen) return true;", source)
-        self.assertIn("if (!data || !ensureFile()) return false;", source)
+        self.assertIn("if (!ensureFile()) return false;", source)
 
         fanqie_open = source.index('file.open(rowsPath(job.appId), job.providerId == "fanqie")')
         first_http_request = source.index("const auto net = M4NativeProviderHttp::requestToSink", fanqie_open)
@@ -56,6 +56,12 @@ class FanqieNetworkContractTests(unittest.TestCase):
         source = self.source
         sink = source[source.index("class AtomicRowsSink"):source.index("class RecordExtractorSink")]
         self.assertIn("commitTempFile(tmpPath_, finalPath_, written_, true, false)", sink)
+
+    def test_discovery_drops_rows_without_a_book_id(self):
+        source = self.source
+        sink = source[source.index("class AtomicRowsSink"):source.index("class RecordExtractorSink")]
+        self.assertIn("if (!data || len == 0) return true;", sink)
+        self.assertIn("if (data[0] == '\\t' || data[0] == '\\n') return true;", sink)
 
 
 
