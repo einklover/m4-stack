@@ -69,12 +69,12 @@ int activeRuntimeTtfSize = -1;
 // One borrowed source face plus one reusable scaler gives system reader text
 // exact arbitrary pixel sizes without creating a 12/16/18 artifact matrix.
 ScaledEpdFont scaledSystemReader;
-const EpdFont* compactSystemReader = nullptr;
+const EpdFont* builtinSystemReader = nullptr;
 
-void captureCompactSystemReader(const GfxRenderer& renderer) {
-  if (compactSystemReader) return;
+void captureBuiltinSystemReader(const GfxRenderer& renderer) {
+  if (builtinSystemReader) return;
   const EpdFont* candidate = renderer.getFontPtr(NOTOSANS_16_FONT_ID);
-  if (candidate && candidate != &scaledSystemReader) compactSystemReader = candidate;
+  if (candidate && candidate != &scaledSystemReader) builtinSystemReader = candidate;
 }
 
 void logFontMap(const GfxRenderer& renderer, const char* stage, int readerId) {
@@ -131,22 +131,25 @@ void promoteToReaderIds(GfxRenderer& renderer, const char* familyName, int size)
 #ifdef CROSSPOINT_MURPHY_M4
 void bindSystemReader(GfxRenderer& renderer, int targetPx) {
   const EpdFont* source = renderer.getFontPtr(NOTOSANS_16_FONT_ID);
-  if (!source || source == &scaledSystemReader) source = compactSystemReader;
+  if (!source || source == &scaledSystemReader) source = builtinSystemReader;
   if (!source) {
     Serial.println("[M4-FONT] DIAG: no system reader source to scale");
     return;
   }
-  // The compact builtin face is generated at 16pt but rasterizes at only
-  // ~14px (advanceY=20, ascender=15), while the canonical SD epdfont is a real
-  // 16px raster. Divide by the bound source's actual pixels or every
-  // compact-sourced size lands ~12% small relative to custom TTF.
-  const bool compactSource = source == compactSystemReader;
+  // Compact 2-bit chrome is a 14px raster; native-grid and canonical SD
+  // epdfonts are 16px. Detect 2-bit from the bound face, not from "is the
+  // boot builtin" — the boot reader source is now the 15x16 native-grid.
+  const EpdFontData* srcData = source->getData();
+  const bool compactSource = srcData && srcData->is2Bit;
   const float scale = static_cast<float>(targetPx) /
                       static_cast<float>(M4FontPolicy::systemReaderSourcePx(compactSource));
   scaledSystemReader.bind(source, scale);
   renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&scaledSystemReader));
+  const char* srcName = "canonical-epdfont";
+  if (compactSource) srcName = "compact-2bit";
+  else if (source == builtinSystemReader) srcName = "native-grid-15x16";
   Serial.printf("[M4-FONT] System reader=%dpx scale=%.3f source=%s\n", targetPx, scaledSystemReader.scale(),
-                compactSource ? "compact-2bit" : "canonical-epdfont");
+                srcName);
 }
 #endif
 }  // namespace
@@ -164,7 +167,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
   loadedCustomIds.clear();
   lastCanonicalResult = M4FontPolicy::LoadResult::NotAttempted;
 #ifdef CROSSPOINT_MURPHY_M4
-  captureCompactSystemReader(renderer);
+  captureBuiltinSystemReader(renderer);
 #endif
   FontManager::getInstance().invalidateScan();
   const auto& families = FontManager::getInstance().getAvailableFamilies();
@@ -300,7 +303,8 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
     if (lastCanonicalResult == M4FontPolicy::LoadResult::NotAttempted) {
       lastCanonicalResult = M4FontPolicy::LoadResult::Missing;
     }
-    Serial.printf("[M4-FONT] DIAG: copy %s to SD for full reader/app CJK; compact UI subset otherwise. "
+    Serial.printf("[M4-FONT] DIAG: copy %s to SD for canonical reader/app CJK; "
+                  "offline native-grid 15x16 reader + compact UI CJK otherwise. "
                   "Other epdfonts are never auto-promoted.\n",
                   M4FontPolicy::kCanonicalSdPath);
   }

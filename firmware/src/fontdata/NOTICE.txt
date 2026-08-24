@@ -5,3 +5,10 @@ firmware/scripts/generate_m4_compact_cjk.py.
 The source font and this derivative are distributed under the SIL Open Font
 License, Version 1.1. See LICENSE-OFL.txt. The source font is not vendored;
 pass its local path with --font when regenerating the header.
+
+The tracked m4_native_grid_15x16.bin derivative is generated from the
+external pixel TTF 标准像素粗.ttf (SHA-256
+9507b4d3e915455afadfa688e8ea515abf816bce06f76346ee356f0f38810574) with
+firmware/scripts/generate_m4_native_grid.py. The source TTF is not vendored.
+That blob is a ranked-bitset 15x16 1-bit corpus plus a 32-glyph outlier
+sidecar; it is not an OFL/Noto derivative.

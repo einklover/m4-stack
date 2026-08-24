@@ -139,11 +139,24 @@ add_test(NAME m4_gfx_refresh_policy_tests COMMAND m4_gfx_refresh_policy_tests)
 add_executable(m4_compact_cjk_font_tests tests/compact_cjk_font.cpp)
 target_include_directories(m4_compact_cjk_font_tests PRIVATE ../firmware/src ../firmware/lib/EpdFont)
 add_test(NAME m4_compact_cjk_font_tests COMMAND m4_compact_cjk_font_tests)
+# Host font tests avoid firmware/lib/EpdFont/EpdFont.cpp (Arduino/Utf8) and
+# instead link a tiny Arduino-free vtable TU. Derived faces still override
+# getGlyph / glyphAdvanceX / loadGlyphBitmap. -fno-rtti matches murphy_m4.
+add_executable(m4_native_grid_font_tests
+  tests/native_grid_font.cpp
+  tests/epd_font_host_vtable.cpp
+)
+target_include_directories(m4_native_grid_font_tests PRIVATE ../firmware/src ../firmware/lib/EpdFont)
+target_compile_options(m4_native_grid_font_tests PRIVATE -fno-rtti)
+add_test(NAME m4_native_grid_font_tests
+         COMMAND m4_native_grid_font_tests
+                 "${CMAKE_CURRENT_SOURCE_DIR}/../firmware/src/fontdata/m4_native_grid_15x16.bin")
 # Runtime-scaled compact/system reader faces must honor arbitrary practical
 # pixel sizes (14/15/17/20/22) instead of snapping to the 12/16/18 artifacts.
-# Host build avoids EpdFont.cpp (Arduino/Utf8) by overriding glyphAdvanceX and
-# compiling without RTTI, matching murphy_m4's -fno-rtti firmware setting.
-add_executable(m4_scaled_epd_font_tests tests/scaled_epd_font.cpp)
+add_executable(m4_scaled_epd_font_tests
+  tests/scaled_epd_font.cpp
+  tests/epd_font_host_vtable.cpp
+)
 target_include_directories(m4_scaled_epd_font_tests PRIVATE ../firmware/src ../firmware/lib/EpdFont)
 target_compile_options(m4_scaled_epd_font_tests PRIVATE -fno-rtti)
 add_test(NAME m4_scaled_epd_font_tests COMMAND m4_scaled_epd_font_tests)

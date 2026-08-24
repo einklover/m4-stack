@@ -74,8 +74,8 @@ inline Decision decide(const Inputs& in) {
     d.loadCustomFamily.clear();
     if (!in.hasCanonical) {
       d.diagnostic =
-          "no canonical /fonts/NotoSansCJKsc.epdfont; offline m4_ui_cjk subset only "
-          "(other epdfonts are not auto-promoted)";
+          "no canonical /fonts/NotoSansCJKsc.epdfont; offline native-grid 15x16 reader "
+          "+ compact UI CJK (other epdfonts are not auto-promoted)";
     }
     return d;
   }
@@ -116,8 +116,12 @@ constexpr int kCanonicalEpdfontPixelSize = 16;
 // kCanonicalEpdfontPixelSize, or every compact-sourced size renders ~12% small.
 constexpr int kCompactCjkSourcePx = 14;
 
+// Native-grid builtin reader face is a true 16-row raster (15x16 1-bit cells).
+constexpr int kNativeGridSourcePx = 16;
+
 // Divisor for ScaledEpdFont::bind when sizing the system reader face: the
-// bound source's actual raster pixels (compact builtin vs canonical SD epdfont).
+// bound source's actual raster pixels. Compact 2-bit chrome/legacy sources
+// divide by 14; native-grid and canonical SD epdfont sources divide by 16.
 inline int systemReaderSourcePx(bool compact2BitSource) {
   return compact2BitSource ? kCompactCjkSourcePx : kCanonicalEpdfontPixelSize;
 }

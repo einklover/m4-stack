@@ -88,6 +88,8 @@ bool bitmapHasInk(const uint8_t* bmp, uint32_t dataLength, bool is2Bit) {
 
 static_assert(M4FontPolicy::kCompactCjkSourcePx == 14,
               "compact builtin CJK rasterizes at 14px despite the 16pt generation size");
+static_assert(M4FontPolicy::kNativeGridSourcePx == 16,
+              "native-grid reader face is a 16-row raster");
 
 int main() {
   // Production divisor selection: the compact 2-bit source divides by its real

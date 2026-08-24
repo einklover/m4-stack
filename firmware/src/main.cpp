@@ -7,10 +7,14 @@
 #include <SDCardManager.h>
 #include <SPI.h>
 #ifdef OMIT_FONTS
-// Murphy M4: keep a compact common-CJK fallback in the tracked application
-// source. Full-book CJK still uses SD /fonts/*.epdfont via EpdFontLoader, and
-// runtime sfnt/variable/CFF faces remain available through /FONT.
+// Murphy M4: UI chrome stays on the compact 2-bit CJK face (SMALL / UI_10 /
+// UI_12 metrics). Reader/content NOTOSANS_* IDs use the uncompressed 15x16
+// 1-bit native-grid corpus when the canonical SD epdfont is absent. Full-book
+// CJK still promotes SD /fonts/*.epdfont via EpdFontLoader, and runtime
+// sfnt/variable/CFF faces remain available through /FONT.
 #include "fontdata/m4_compact_cjk_16.h"
+#include "fontdata/m4_native_grid_15x16.h"
+#include <NativeGridEpdFont.h>
 #else
 #include <builtinFonts/all.h>
 #endif
@@ -343,32 +347,19 @@ EpdFont ui10BoldFont(&notosans_13_bold);
 EpdFont ui12RegularFont(&notosans_13_bold);
 EpdFont ui12BoldFont(&notosans_13_bold);
 #else
-// Compact common-CJK fallback (2-bit cropped glyphs). Reader/full-book
-// coverage is promoted from SD EPDF or runtime sfnt when available.
-EpdFont notosans12RegularFont(&m4_compact_cjk_16);
-EpdFont notosans12BoldFont(&m4_compact_cjk_16);
-EpdFont notosans12ItalicFont(&m4_compact_cjk_16);
-EpdFont notosans12BoldItalicFont(&m4_compact_cjk_16);
-EpdFontFamily notosans12FontFamily(&notosans12RegularFont, &notosans12BoldFont, &notosans12ItalicFont,
-                                   &notosans12BoldItalicFont);
-EpdFont notosans14RegularFont(&m4_compact_cjk_16);
-EpdFont notosans14BoldFont(&m4_compact_cjk_16);
-EpdFont notosans14ItalicFont(&m4_compact_cjk_16);
-EpdFont notosans14BoldItalicFont(&m4_compact_cjk_16);
-EpdFontFamily notosans14FontFamily(&notosans14RegularFont, &notosans14BoldFont, &notosans14ItalicFont,
-                                   &notosans14BoldItalicFont);
-EpdFont notosans16RegularFont(&m4_compact_cjk_16);
-EpdFont notosans16BoldFont(&m4_compact_cjk_16);
-EpdFont notosans16ItalicFont(&m4_compact_cjk_16);
-EpdFont notosans16BoldItalicFont(&m4_compact_cjk_16);
-EpdFontFamily notosans16FontFamily(&notosans16RegularFont, &notosans16BoldFont, &notosans16ItalicFont,
-                                   &notosans16BoldItalicFont);
-EpdFont notosans18RegularFont(&m4_compact_cjk_16);
-EpdFont notosans18BoldFont(&m4_compact_cjk_16);
-EpdFont notosans18ItalicFont(&m4_compact_cjk_16);
-EpdFont notosans18BoldItalicFont(&m4_compact_cjk_16);
-EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
-                                   &notosans18BoldItalicFont);
+// Compact 2-bit CJK stays on UI chrome. Reader/content IDs use the native-grid
+// face (ranked-bitset 15x16 corpus) so offline CJK coverage is the full
+// 28,953-glyph set without a per-glyph EpdGlyph ROM table.
+extern const uint8_t m4_native_grid_15x16_bin_start[] asm("_binary_src_fontdata_m4_native_grid_15x16_bin_start");
+extern const uint8_t m4_native_grid_15x16_bin_end[] asm("_binary_src_fontdata_m4_native_grid_15x16_bin_end");
+static_assert(M4NativeGridFont::kGlyphCount == 28953, "native-grid corpus size");
+static NativeGridEpdFont nativeGridFont(
+    m4_native_grid_15x16_bin_start,
+    static_cast<size_t>(m4_native_grid_15x16_bin_end - m4_native_grid_15x16_bin_start));
+EpdFontFamily notosans12FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
+EpdFontFamily notosans14FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
+EpdFontFamily notosans16FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
+EpdFontFamily notosans18FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
 
 EpdFont smallFont(&m4_compact_cjk_16);
 EpdFont ui10RegularFont(&m4_compact_cjk_16);
@@ -619,9 +610,12 @@ void setupDisplayAndFonts() {
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 #ifdef OMIT_FONTS
-  Serial.printf("[%lu] [M4-FONT] Registered mandatory IDs with compact 2-bit CJK fallback "
-                "(common CJK offline; full-book CJK uses SD/runtime font when available)\n",
-                millis());
+  Serial.printf("[%lu] [M4-FONT] Registered UI chrome on compact 2-bit CJK; "
+                "NOTOSANS reader/content IDs on native-grid 15x16 (valid=%d glyphs=%u outliers=%u); "
+                "canonical SD/runtime faces still promote when available\n",
+                millis(), nativeGridFont.valid() ? 1 : 0,
+                static_cast<unsigned>(nativeGridFont.glyphCount()),
+                static_cast<unsigned>(nativeGridFont.outlierCount()));
 #else
   Serial.printf("[%lu] [FONT] Builtin NotoSans full CJK registered\n", millis());
 #endif

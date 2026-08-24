@@ -53,6 +53,7 @@ class CompactCjkFontTests(unittest.TestCase):
         # generation size — that 16/16 unity scale was the ~12% undersize bug.
         bind = loader[loader.index("void bindSystemReader") : loader.index("EpdFontLoader::ensureFontsFromSd")]
         self.assertIn("M4FontPolicy::systemReaderSourcePx(compactSource)", bind)
+        self.assertIn("srcData->is2Bit", bind)
         self.assertNotIn("kCanonicalEpdfontPixelSize", bind)
 
     def test_missing_custom_glyph_keeps_builtin_chrome(self) -> None:
