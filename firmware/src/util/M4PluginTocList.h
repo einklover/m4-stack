@@ -104,10 +104,10 @@ struct PagedTitleSource {
     if (!rows->isOpen()) return false;
     const int last = std::min<int>(static_cast<int>(catalog.chapterCount), firstIndex + count);
     if (firstIndex >= last) return false;
-    for (int i = firstIndex; i < last; ++i) {
-      presentOut[static_cast<size_t>(i - firstIndex)] = 1;
-    }
 
+    // presentOut must reflect rows that were actually read from the file, not
+    // the whole requested range: a registered chapterCount larger than
+    // toc_rows.txt would otherwise render hollow blank entries as present.
     bool ok = true;
     const int firstPage = firstIndex / rows->pageSize() + 1;
     const int lastPage = (last - 1) / rows->pageSize() + 1;
