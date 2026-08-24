@@ -5,7 +5,7 @@
 // Process-wide UI runtime policy for the currently active Activity.
 //
 // Murphy M4 renders one foreground Activity at a time. Runtime TTF typography
-// itself is now quantized to shared fixed raster faces (18/22/26px), so Native
+// itself is now quantized to shared fixed raster faces (16/32/32 integer-N), so Native
 // plugin pages deliberately use 100% text scale and reuse the exact same system
 // chrome fonts. The percentage remains for legacy epdfont/package compatibility,
 // but built-in Native providers no longer depend on arbitrary bitmap scaling.

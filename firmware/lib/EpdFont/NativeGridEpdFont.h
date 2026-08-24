@@ -76,6 +76,68 @@ class NativeGridEpdFont final : public EpdFont {
   uint16_t glyphCount() const { return glyphCount_; }
   uint16_t outlierCount() const { return outlierCount_; }
 
+  // Layout rules for the 15x16 ROM cell inside a logical 16x16 system pixel
+  // cell (16x16 outliers already fill the cell). Bitmap packing is unchanged:
+  // width/height stay the stored size so pixelPosition=y*width+x still
+  // addresses the blob. Advances and xOffset (`left`) are synthesized. The
+  // extra CJK column is metric/render spacing, not a duplicated flash bitmap.
+  enum class MetricKind : uint8_t { Space, Latin, PairOpen, PairClose, Cjk };
+
+  static constexpr uint8_t kLogicalCellPx = 16;
+  static constexpr uint8_t kLatinSideBearing = 1;
+  static constexpr uint8_t kPairOuterBearing = 2;  // away from enclosed text
+  static constexpr uint8_t kPairInnerBearing = 1;  // toward enclosed text
+  static constexpr uint8_t kCjkGap = 1;            // 15px ink + 1px right gap = 16
+  static constexpr uint8_t kSpaceAdvance = 4;
+
+  static MetricKind metricKind(uint32_t cp) {
+    if (cp == ' ' || cp == 0x00A0u) return MetricKind::Space;
+    switch (cp) {
+      case '(':
+      case '[':
+      case '{':
+      case '<':
+      case 0x2018u:  // ‘
+      case 0x201Cu:  // “
+      case 0x3008u:  // 〈
+      case 0x300Au:  // 《
+      case 0x300Cu:  // 「
+      case 0x300Eu:  // 『
+      case 0x3010u:  // 【
+      case 0x3014u:  // 〔
+      case 0x3016u:  // 〖
+      case 0xFF08u:  // （
+      case 0xFF3Bu:  // ［
+      case 0xFF5Bu:  // ｛
+      case 0xFF1Cu:  // ＜
+        return MetricKind::PairOpen;
+      case ')':
+      case ']':
+      case '}':
+      case '>':
+      case 0x2019u:  // ’
+      case 0x201Du:  // ”
+      case 0x3009u:  // 〉
+      case 0x300Bu:  // 》
+      case 0x300Du:  // 」
+      case 0x300Fu:  // 』
+      case 0x3011u:  // 】
+      case 0x3015u:  // 〕
+      case 0x3017u:  // 〗
+      case 0xFF09u:  // ）
+      case 0xFF3Du:  // ］
+      case 0xFF5Du:  // ｝
+      case 0xFF1Eu:  // ＞
+        return MetricKind::PairClose;
+      default:
+        break;
+    }
+    if (cp >= 0x21u && cp <= 0x7Eu) return MetricKind::Latin;
+    if (cp >= 0xA1u && cp <= 0x24Fu) return MetricKind::Latin;
+    if (cp >= 0x2010u && cp <= 0x2027u) return MetricKind::Latin;
+    return MetricKind::Cjk;
+  }
+
   const EpdGlyph* getGlyph(uint32_t cp,
                            const EpdFontStyles::Style style = EpdFontStyles::REGULAR) const override {
     (void)style;
@@ -96,20 +158,16 @@ class NativeGridEpdFont final : public EpdFont {
     if (outlier) {
       g.width = 16;
       g.height = 16;
-      g.advanceX = 16;
-      g.left = 0;
-      g.top = 16;
       g.dataLength = 32;
       g.dataOffset = outlierBmpsOff_ + static_cast<uint32_t>(rank) * 32u;
     } else {
       g.width = 15;
       g.height = 16;
-      g.advanceX = 15;
-      g.left = 0;
-      g.top = 16;
       g.dataLength = 30;
       g.dataOffset = bitmapsOff_ + static_cast<uint32_t>(rank) * 30u;
     }
+    g.top = 16;
+    applyMetrics(cp, g);
     return &g;
   }
 
@@ -153,6 +211,78 @@ class NativeGridEpdFont final : public EpdFont {
     scratchI_ = static_cast<uint8_t>((scratchI_ + 1u) & 3u);
     scratch_[scratchI_] = {};
     return scratch_[scratchI_];
+  }
+
+  static bool pixelOn(const uint8_t* bmp, int w, int x, int y) {
+    const uint32_t idx = static_cast<uint32_t>(y) * static_cast<uint32_t>(w) + static_cast<uint32_t>(x);
+    return ((bmp[idx / 8u] >> (7u - (idx % 8u))) & 1u) != 0;
+  }
+
+  bool inkXBounds(const EpdGlyph& g, int* x0, int* x1) const {
+    const uint32_t end = g.dataOffset + g.dataLength;
+    if (!blob_ || end < g.dataOffset || end > size_) return false;
+    const uint8_t* bmp = blob_ + g.dataOffset;
+    const int w = g.width;
+    const int h = g.height;
+    int lo = w;
+    int hi = -1;
+    for (int y = 0; y < h; ++y) {
+      for (int x = 0; x < w; ++x) {
+        if (pixelOn(bmp, w, x, y)) {
+          if (x < lo) lo = x;
+          if (x > hi) hi = x;
+        }
+      }
+    }
+    if (hi < 0) return false;
+    *x0 = lo;
+    *x1 = hi;
+    return true;
+  }
+
+  static uint8_t clampU8(int n) {
+    if (n < 1) return 1;
+    if (n > 255) return 255;
+    return static_cast<uint8_t>(n);
+  }
+
+  void applyCompact(EpdGlyph& g, int lsb, int rsb) const {
+    int x0 = 0;
+    int x1 = -1;
+    if (!inkXBounds(g, &x0, &x1)) {
+      g.left = 0;
+      g.advanceX = kSpaceAdvance;
+      return;
+    }
+    const int inkW = x1 - x0 + 1;
+    g.left = static_cast<int16_t>(lsb - x0);
+    g.advanceX = clampU8(lsb + inkW + rsb);
+  }
+
+  void applyMetrics(uint32_t cp, EpdGlyph& g) const {
+    switch (metricKind(cp)) {
+      case MetricKind::Space:
+        g.left = 0;
+        g.advanceX = kSpaceAdvance;
+        return;
+      case MetricKind::Latin:
+        applyCompact(g, kLatinSideBearing, kLatinSideBearing);
+        return;
+      case MetricKind::PairOpen:
+        applyCompact(g, kPairOuterBearing, kPairInnerBearing);
+        return;
+      case MetricKind::PairClose:
+        applyCompact(g, kPairInnerBearing, kPairOuterBearing);
+        return;
+      case MetricKind::Cjk:
+        // 15x16 ink lives in a logical 16x16 cell (right-side gap). 16x16
+        // outliers already fill the cell; do not add a second full gap.
+        g.left = 0;
+        g.advanceX = kLogicalCellPx;
+        return;
+    }
+    g.left = 0;
+    g.advanceX = g.width;
   }
 
   int32_t rankedIndex(uint16_t cp) const {

@@ -136,6 +136,9 @@ target_link_libraries(m4_issue_contracts PRIVATE m4_reader_core m4_deterministic
 add_test(NAME m4_issue_contracts COMMAND m4_issue_contracts)
 add_executable(m4_gfx_refresh_policy_tests ../firmware/tests/native_app/test_gfx_refresh_policy.cpp)
 add_test(NAME m4_gfx_refresh_policy_tests COMMAND m4_gfx_refresh_policy_tests)
+add_executable(m4_runtime_ui_font_policy_tests ../firmware/tests/native_app/test_runtime_ui_font_policy.cpp)
+target_include_directories(m4_runtime_ui_font_policy_tests PRIVATE ../firmware/src)
+add_test(NAME m4_runtime_ui_font_policy_tests COMMAND m4_runtime_ui_font_policy_tests)
 # Host font tests avoid firmware/lib/EpdFont/EpdFont.cpp (Arduino/Utf8) and
 # instead link a tiny Arduino-free vtable TU. Derived faces still override
 # getGlyph / glyphAdvanceX / loadGlyphBitmap. -fno-rtti matches murphy_m4.
@@ -148,9 +151,8 @@ target_compile_options(m4_native_grid_font_tests PRIVATE -fno-rtti)
 add_test(NAME m4_native_grid_font_tests
          COMMAND m4_native_grid_font_tests
                  "${CMAKE_CURRENT_SOURCE_DIR}/../firmware/src/fontdata/m4_native_grid_15x16.bin")
-# Runtime-scaled system reader faces must honor arbitrary practical pixel
-# sizes (14/15/17/20/22) over the 16px native-grid source. Chrome IDs are
-# never scaled.
+# Builtin native-grid may only scale by integer N (Kronecker). Nominal reader
+# sizes snap (12–20→1x, 21–39→2x, 40+→3x). Chrome is 1x/2x/2x (16/32/32).
 add_executable(m4_scaled_epd_font_tests
   tests/scaled_epd_font.cpp
   tests/epd_font_host_vtable.cpp

@@ -136,16 +136,24 @@ void bindSystemReader(GfxRenderer& renderer, int targetPx) {
     Serial.println("[M4-FONT] DIAG: no system reader source to scale");
     return;
   }
-  // Reader-only scaler. Source is the 16px native-grid builtin or a 16px
-  // canonical SD epdfont promoted onto NOTOSANS. Chrome IDs (SMALL/UI_10/
-  // UI_12) stay on the unscaled builtin native-grid face.
-  const float scale = static_cast<float>(targetPx) /
-                      static_cast<float>(M4FontPolicy::systemReaderSourcePx());
-  scaledSystemReader.bind(source, scale);
-  renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&scaledSystemReader));
-  const char* srcName = (source == builtinSystemReader) ? "native-grid-15x16" : "canonical-epdfont";
-  Serial.printf("[M4-FONT] System reader=%dpx scale=%.3f source=%s\n", targetPx, scaledSystemReader.scale(),
-                srcName);
+  // Reader-only scaler. Chrome IDs (SMALL/UI_10/UI_12) stay on the fixed
+  // integer-N builtin native-grid scaler and must not consume targetPx.
+  // Builtin 1-bit snaps to integer Kronecker N; canonical 16px SD epdfont
+  // keeps an arbitrary dest-sample scale. Runtime TTF/OTF does not use this.
+  if (source == builtinSystemReader) {
+    const int n = M4FontPolicy::nativeGridIntegerScale(targetPx);
+    scaledSystemReader.bindInteger(source, n);
+    renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&scaledSystemReader));
+    Serial.printf("[M4-FONT] System reader nominal=%dpx integer=%dx cell=%dpx source=native-grid-15x16\n",
+                  targetPx, n, M4FontPolicy::nativeGridCellPx(targetPx));
+  } else {
+    const float scale = static_cast<float>(targetPx) /
+                        static_cast<float>(M4FontPolicy::systemReaderSourcePx());
+    scaledSystemReader.bind(source, scale, false);
+    renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&scaledSystemReader));
+    Serial.printf("[M4-FONT] System reader=%dpx scale=%.3f source=canonical-epdfont\n", targetPx,
+                  scaledSystemReader.scale());
+  }
 }
 #endif
 }  // namespace

@@ -5,7 +5,8 @@
 // Rules:
 //  A) Only the verified canonical family "NotoSansCJKsc" may be auto-promoted
 //     onto NOTOSANS reader/content IDs. UI / SMALL stay on the builtin 15x16
-//     1-bit native-grid system font and never follow a reader TTF/size.
+//     1-bit native-grid system font (logical 16x16 cell, integer-N scale) and
+//     never follow a reader TTF/size.
 //     Never use families.front() as fallback.
 //  B) SYSTEM_FONT + canonical present: promote canonical for content without
 //     mutating settings to FONT_CUSTOM.
@@ -111,11 +112,43 @@ inline Decision decide(const Inputs& in) {
 // are those of the single 16pt epdfont until multi-size artifacts ship.
 constexpr int kCanonicalEpdfontPixelSize = 16;
 
-// Native-grid builtin system face is a true 16-row raster (15x16 1-bit cells).
-// Chrome IDs bind this face at 1:1. Reader NOTOSANS_16 may be ScaledEpdFont
-// wrapped; the divisor is always this raster size (canonical SD epdfont is
-// also a 16px artifact).
-constexpr int kNativeGridSourcePx = 16;
+// Logical system pixel cell is 16x16. The ROM corpus stays 15x16 1-bit (32
+// outliers are already 16x16). Ordinary full-width CJK treats the extra column
+// as a right-side metric/render gap — the blank column is not stored in flash.
+constexpr int kLogicalCellPx = 16;
+constexpr int kNativeGridSourcePx = 16;  // 16-row raster / logical cell
+
+// Built-in 1-bit native-grid may only scale by integer N (Kronecker N x N).
+// Every source/logical pixel becomes exactly N x N destination pixels.
+// Nominal reader sizes snap to N; TTF/OTF must NOT use this mapping.
+// UI may still display the user's numeric size (18/22/31); the builtin face
+// renders at 16/32/48. Chosen from reader range 12–48 and the diagnosed 31px:
+//   12–20 → 1x (16px cell)  includes default readerPixelSize=18
+//   21–39 → 2x (32px cell)  includes the real-device 31px setting
+//   40–48 → 3x (48px cell)
+constexpr int nativeGridIntegerScale(int requestedPx) {
+  if (requestedPx <= 20) return 1;
+  if (requestedPx <= 39) return 2;
+  return 3;
+}
+
+constexpr int nativeGridCellPx(int requestedPx) {
+  return kLogicalCellPx * nativeGridIntegerScale(requestedPx);
+}
+
+// Chrome integer scales. SMALL stays 1x for status/secondary text. UI_10 and
+// UI_12 share 2x so major menu/list labels are readable on the 480x800
+// touch screen. 3x (48) would overflow Lyra listRowHeight=40.
+// Constraint: UI_10==UI_12 visually at 2x because the only other integer is
+// 1x, which would shrink UI_10 versus the previous 22px. Native-app 96px
+// cells can no longer fit four UI_10 CJK glyphs (32*4=128); those tight
+// cells must use SMALL (16*4=64) or wrap. Do not 3x chrome.
+constexpr int kChromeSmallScale = 1;
+constexpr int kChromeUi10Scale = 2;
+constexpr int kChromeUi12Scale = 2;
+constexpr int kChromeSmallPx = kLogicalCellPx * kChromeSmallScale;  // 16
+constexpr int kChromeUi10Px = kLogicalCellPx * kChromeUi10Scale;    // 32
+constexpr int kChromeUi12Px = kLogicalCellPx * kChromeUi12Scale;    // 32
 
 inline int systemReaderSourcePx() {
   return kNativeGridSourcePx;

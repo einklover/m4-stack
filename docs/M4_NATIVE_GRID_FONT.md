@@ -1,23 +1,97 @@
-# Murphy M4 native-grid 15x16 system font
+# Murphy M4 native-grid system font (15×16 ROM, 16×16 logical cell)
 
 Offline system UI and the default/fallback reader face on `murphy_m4`
-(`OMIT_FONTS=1`) is the uncompressed 15x16 1-bit native-grid corpus. This is
+(`OMIT_FONTS=1`) is the uncompressed 15×16 1-bit native-grid corpus. This is
 not Luna block/radical/convolution compression.
+
+The **logical** system pixel cell is **16×16**. The stored corpus stays 15×16
+(32 outliers already 16×16). Ordinary full-width CJK is 15×16 ink plus one
+right-side logical blank column of spacing. That extra column is a
+metric/render concept; it is **not** duplicated into flash.
+
+## Integer-N scaling only (native 1-bit path)
+
+Built-in 1-bit native-grid may scale **only** by integer Kronecker
+replication N = 1, 2, 3, … :
+
+```
+dest(sx*N + ix, sy*N + iy) = src(sx, sy)    for ix, iy in 0..N-1
+```
+
+A 1px source stroke becomes exactly N dest pixels everywhere. The logical
+16×16 cell becomes exactly 16N×16N (2x = 32×32, 3x = 48×48). Stored bitmap
+size is 15N×16N; the 16th column is advance, not stored pixels.
+
+The old `blitCoverage1Bit` / `coverage0` / `coverage1` arbitrary-ratio mapper
+is **gone**. It produced 29×31-class rasters (e.g. 15×16 → ~29×31 at nominal
+31px) with mixed 1/2/3 dest pixels per source pixel. Native-grid production
+calls `ScaledEpdFont::bindInteger` only. Dest-sample `bind(source, scale,
+false)` remains solely for canonical 2-bit / non-native bitmap faces.
+Runtime TTF/OTF never uses this scaler.
 
 ## Call-site split
 
 | Font IDs | Face | Why |
 |----------|------|-----|
-| `SMALL` / `UI_10` / `UI_12` | native-grid 15x16 1-bit at native metrics | Home, menus, dialogs, settings, chapter lists, plugin UI, status bars. Never a reader TTF, never `ScaledEpdFont`, never `readerPixelSize`. |
-| `NOTOSANS_12/14/16/18` default | same native-grid instance | default/fallback reader body when no SD epdfont / runtime TTF is selected |
-| `NOTOSANS_16` after `bindSystemReader` | `ScaledEpdFont` over native-grid or canonical SD epdfont | reader pixel size only; chrome IDs are not replaced |
-| `/fonts/NotoSansCJKsc.epdfont` | canonical SD epdfont | still promoted onto NOTOSANS when present |
-| `/FONT` runtime sfnt | streamed TTF/OTF/CFF | reader hash IDs only; `M4FixedRuntimeUiFonts` restores chrome builtins |
+| `SMALL` | native-grid `bindInteger` **1x** (16px cell) | status / secondary chrome |
+| `UI_10` / `UI_12` | native-grid `bindInteger` **2x** (32px cell) | major menu/list labels. Constraint: both roles are 2x because 1x shrinks UI_10 versus the old 22px and 3x (48) overflows Lyra `listRowHeight=40`. Native-app 96px cells cannot fit four UI_10 CJK (32×4=128); those tight cells must use SMALL (16×4=64) or wrap. |
+| `NOTOSANS_12/14/16/18` default | native-grid at 1x (16-row metrics) | default/fallback reader body when no SD epdfont / runtime TTF is selected |
+| `NOTOSANS_16` after `bindSystemReader` | `bindInteger` over native-grid **or** dest-sample over canonical SD epdfont | reader size only; chrome IDs are not replaced |
+| `/fonts/NotoSansCJKsc.epdfont` | canonical SD epdfont | still promoted onto NOTOSANS when present; arbitrary px, no 16×16 snap |
+| `/FONT` runtime sfnt | streamed TTF/OTF/CFF | reader hash IDs only at the exact numeric pixel size; `M4FixedRuntimeUiFonts` restores chrome builtins |
 
-`bindSystemReader` always divides by 16 (`M4FontPolicy::systemReaderSourcePx()`).
+UI may still display the user's numeric size (18/22/31). Built-in pixel font
+**snaps** to 16/32/48. TTF/OTF uses the exact requested pixel size.
+
+## Reader size mapping (`M4FontPolicy::nativeGridIntegerScale`)
+
+One place. Range is the existing 12–48 `readerPixelSize` clamp. Default
+`readerPixelSize=18`. Diagnosed real-device setting 31.
+
+| Requested px | N | Logical cell |
+|--------------|---|--------------|
+| 12–20 | 1x | 16 |
+| 21–39 | 2x | 32 |
+| 40–48 | 3x | 48 |
+
+Do not apply this mapping to TTF/OTF.
+
 The legacy compact 2-bit CJK face (`m4_compact_cjk_16`, 14px raster) has been
-removed. UI glyph metrics, line height, and layout must not change when the
-user switches a reader TTF or reader font size.
+removed. Changing reader TTF or reader size must not change any system UI
+metric or system UI font.
+
+## Native-grid metric rules (15×16 ROM cell, 16×16 logical cell)
+
+`width`/`height` stay 15×16 (or 16×16 outliers) so `pixelPosition=y*width+x`
+still addresses the blob. `left` (xOffset) and `advanceX` are synthesized at
+1x, then multiplied by exact N:
+
+| Kind | Codepoints | `left` | `advanceX` at 1x |
+|------|------------|--------|------------------|
+| Space | U+0020, U+00A0 | 0 | 4 |
+| Latin | ASCII 0x21–0x7E letters/digits/symmetric punct, Latin-1/Extended, U+2010–U+2027 except pairs | `1 - firstInk` | `1 + inkW + 1` |
+| Pair open | `( [ { < ‘ “ 〈 《 「 『 【 〔 〖 （ ［ ｛ ＜` | `2 - firstInk` | `2 + inkW + 1` |
+| Pair close | `) ] } > ’ ” 〉 》 」 』 】 〕 〗 ） ］ ｝ ＞` | `1 - firstInk` | `1 + inkW + 2` |
+| CJK | everything else (ideographs + `，。、！？` etc.) | 0 | **16** (`kLogicalCellPx`) |
+
+CJK always advances 16/32/48 at 1x/2x/3x, including 16-wide outliers (do not
+add a second full gap). The 15px ink plus one logical blank column is the
+basic inter-character gap. Latin/digits/ASCII punctuation stay proportional:
+`A`/`i`/`M`/`1`/`,` are **not** all 16N.
+
+Opening marks have larger left side bearing than right (sit toward following
+text). Closing marks have larger right side bearing (sit toward preceding
+text). Source rasters are left-packed in the 15-cell; equal centering is
+forbidden — open `(` / `“` / `《` must not share placement with close `)` /
+`”` / `》`. Straight ASCII `'` / `"` stay Latin (symmetric 1+ink+1) because
+the same glyph is used for both sides. Visual ink origin is
+`cursor + left + firstInk`. At N×, bitmap, `left`/`top`, and advance all
+scale by exactly N. No activity-level screen-position hacks.
+
+Host regressions walk `设置 阅读 ABC abc 123,.;:!?()[]` and
+`“测试” ‘ABC’ （测试） 《书名》 【章节】` plus CJK with 1px H/V strokes
+(`中`/`口`/`日`/`工`/`十`). Rendered 2x/3x glyphs must equal nearest-neighbor
+replication of the stored 15×16 bitmap.
 
 Missing glyphs still return `nullptr` from `getGlyph`; `EpdFont` /
 `GfxRenderer` fall back to `'?'`. Native-grid includes U+0020 and U+003F.
@@ -63,32 +137,33 @@ Source TTF is external (not vendored): 标准像素粗.ttf SHA-256
 ## UI metrics vs the removed compact 2-bit face
 
 Chrome previously used a 14px 2-bit Noto raster (`advanceY=20`, CJK advance
-~12–14). Native-grid chrome is 15×16 1-bit (`advanceY=16`, CJK advance 15).
-Layouts that query `getLineHeight` / `getTextWidth` pick this up automatically.
-Hardcoded offsets (`rect.y + 6`, `itemY + 4`) still need a real-device
-spot-check: tighter line pitch, slightly wider CJK wrap/truncate. No chrome
-`ScaledEpdFont` wrapper was added; 16px glyphs in typical ~40px rows should
-not overlap, but that is not proven in QEMU.
+~12–14), then a rejected 18/22/26 arbitrary-ratio coverage blit. Current
+chrome is the same 15×16 1-bit face at integer N: SMALL=16 / UI_10=32 /
+UI_12=32 (`advanceY` matches those px). Layouts that query `getLineHeight` /
+`getTextWidth` pick this up automatically. Fengyan `listRowHeight` 52 /
+`headerHeight` 44 still fit UI_12 at 32px. Lyra `listRowHeight=40` is 8px
+above a 32px glyph — tight, no layout rewrite. Hardcoded offsets (`rect.y +
+6`, `itemY + 4`) still need a real-device spot-check after 2x chrome.
 
 ## Production firmware size
 
 Do not commit `.pio` / `firmware.bin`. Numbers below are from `pio run -e
-murphy_m4` after chrome IDs moved to native-grid and compact 2-bit CJK was
-deleted.
+murphy_m4` after integer-N native-grid (logical 16×16 cell, Kronecker scale).
 
 | Field | Value |
 |-------|-------|
-| `firmware.bin` | 5,456,256 bytes |
-| SHA-256 | `ad061883509fb84140db5ec12031a421ff792e4d28727cc9c76d7ace7c3b2ee7` |
-| Linked Flash | 5,455,749 / 7,143,424 (76.4%) |
-| Linked RAM | 96,700 / 327,680 (29.5%) |
-| vs pre-unification (`be53d07`, native-grid reader + compact UI) | 5,715,648 → 5,456,256 (**−259,392 B recovered**) |
-| 85% APP1 remaining (`check_m4_build_budget.py`) | 615,654 B (`failures: []`) |
-| APP1 remaining | 1,687,168 B |
+| `firmware.bin` | 5,457,872 bytes |
+| SHA-256 | `b2699bbc03510cf5f392aba09384499d166a59161d7aac900464e82f0f40a4cc` |
+| Linked Flash | 5,457,365 / 7,143,424 (76.4%) |
+| Linked RAM | 96,964 / 327,680 (29.6%) |
+| vs chrome-unification (`dc75082`) | 5,456,256 → 5,457,872 (**+1,616 B**) |
+| vs pre-unification (`be53d07`, native-grid reader + compact UI) | 5,715,648 → 5,457,872 (**−257,776 B recovered**) |
+| 85% APP1 remaining (`0.85 * 7,143,424 − bin`) | 614,038 B |
+| APP1 remaining | 1,685,552 B |
 
-QEMU plugin-debug (`murphy_m4_qemu_plugin`) linked Flash 5,464,653 / 7,143,424
-(76.5%), RAM 95,996. Host: `test_ui_chrome_font_isolation.py` 7 tests OK,
-`test_native_grid_font.py` 5 tests OK, CTest `m4_native_grid_font_tests` and
-`m4_scaled_epd_font_tests` PASS. m4sim generic smoke PASS (Home / `sd_ok`);
-reader-ui journey PASS (`Reader overlays + Catalog/More full pages + Bookmark
-manager`).
+QEMU plugin-debug (`murphy_m4_qemu_plugin`) linked Flash 5,466,289 / 7,143,424
+(76.5%), RAM 96,260; `firmware.bin` 5,466,800 B. Host: `test_ui_chrome_font_isolation.py`
+7 tests OK, `test_native_grid_font.py` 5 tests OK, `test_font_visual_metrics.py`
+3 tests OK, CTest `m4_native_grid_font_tests`, `m4_scaled_epd_font_tests`,
+`m4_runtime_ui_font_policy_tests` PASS. m4sim generic smoke PASS (Home /
+`sd_ok`). TTF arbitrary-size rasterization is unchanged (no integer snap).

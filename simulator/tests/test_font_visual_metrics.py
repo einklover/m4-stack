@@ -34,6 +34,11 @@ class VisualMetricTests(unittest.TestCase):
         self.assertIn("lookupAdvancePx(cp)", runtime)
         self.assertIn("advance_x", converter)
         self.assertNotIn("gb.advance + visualOriginX_", runtime)
+        # Integer-N / 16x16 cell snapping is native-grid only. TTF/OTF keeps
+        # exact nominal reader pixel size and must not import that mapping.
+        self.assertNotIn("nativeGridIntegerScale", runtime)
+        self.assertNotIn("bindInteger", runtime)
+        self.assertNotIn("kLogicalCellPx", runtime)
 
     def test_reader_font_never_rebinds_system_ui_ids(self) -> None:
         loader = (ROOT / "firmware/lib/EpdFontLoader/EpdFontLoader.cpp").read_text(encoding="utf-8")
