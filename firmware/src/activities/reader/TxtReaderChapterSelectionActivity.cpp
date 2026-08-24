@@ -206,12 +206,20 @@ void TxtReaderChapterSelectionActivity::skipChapters(int delta) {
     struct CachedBatchProber {
       Txt* t;
       int* loadedBatchStart;
+      // True only when the cache file exists AND the parse actually made
+      // chapters visible in RAM; otherwise skip-down would scan an unloaded
+      // batch and loadedBatchStart_ would point at stale content.
       bool loadBatchFromCache(int batchStartValue) {
         if (!t->hasChapterBatchCache(batchStartValue)) return false;
         t->parseChapterIndexAndOffset(batchStartValue,
                                       M4TxtIndexPolicy::kPickerBatchAllowScan);
-        *loadedBatchStart = batchStartValue;
-        return true;
+        for (int i = 24; i >= 0; --i) {
+          if (t->isChapterExist(batchStartValue + i)) {
+            *loadedBatchStart = batchStartValue;
+            return true;
+          }
+        }
+        return false;
       }
       bool existsInRam(int chapter) const { return t->isChapterExist(chapter); }
     } prober{txt.get(), &loadedBatchStart_};
@@ -219,7 +227,7 @@ void TxtReaderChapterSelectionActivity::skipChapters(int delta) {
     const int found = M4TxtIndexPolicy::skipFallbackFromCachedBatches(
         target, 0, chapterBatchStart,
         [](void* ctx, int batchStartValue) -> bool {
-          return static_cast<const CachedBatchProber*>(ctx)->loadBatchFromCache(batchStartValue);
+          return static_cast<CachedBatchProber*>(ctx)->loadBatchFromCache(batchStartValue);
         },
         [](void* ctx, int chapter) -> bool {
           return static_cast<const CachedBatchProber*>(ctx)->existsInRam(chapter);
