@@ -34,6 +34,8 @@
 
 namespace {
 
+constexpr uint32_t kChapterLoadingTimeoutMs = 45u * 1000u;
+
 std::string chapterErrorText(const std::string& code) {
   if (code == "http_request_failed") return "网络请求失败";
   if (code == "http_begin_failed") return "无法建立网络连接";
@@ -59,6 +61,7 @@ std::string chapterErrorText(const std::string& code) {
   if (code == "catalog_resolve") return "目录章节信息无效";
   if (code == "provider_not_supported") return "内容源不支持此章节";
   if (code == "cancelled") return "加载已取消";
+  if (code == "chapter_timeout") return "正文请求超时，请重试";
   return code.empty() ? "未知错误" : code;
 }
 
@@ -571,6 +574,7 @@ void NativeProviderBookActivity::requestChapter(int index0, bool fromToc) {
   loadingIndex_ = index0;
   loadingFromToc_ = fromToc;
   loadingTitle_ = titleAt(index0);
+  chapterLoadStartedAtMs_ = 0;
   error_.clear();
   lastLoadingSignature_.clear();
   lastLoadingPaintMs_ = 0;
@@ -974,6 +978,7 @@ void NativeProviderBookActivity::loop() {
       chapterStartPending_ = false;
       const bool queued = M4NativeProviderManager::requestChapter(
           providerId_, bookId_, loadingIndex_, M4NativeProviderManager::LoadIntent::Foreground);
+      if (queued) chapterLoadStartedAtMs_ = millis();
       if (!queued) {
         const auto queuedState = M4ContentProviderSession::chapterAt(providerId_, bookId_, loadingIndex_);
         if (queuedState.state != M4ContentProvider::ChapterReady::Ready) {
@@ -1000,6 +1005,14 @@ void NativeProviderBookActivity::loop() {
     }
     if (st.state == M4ContentProvider::ChapterReady::Error && authRequired) {
       openLogin();
+      return;
+    }
+    if (chapterLoadStartedAtMs_ != 0 && st.state != M4ContentProvider::ChapterReady::Error &&
+        millis() - chapterLoadStartedAtMs_ >= kChapterLoadingTimeoutMs) {
+      M4NativeProviderManager::cancelForeground();
+      error_ = "chapter_timeout";
+      state_ = State::Error;
+      renderError();
       return;
     }
     renderLoading(false);

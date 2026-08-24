@@ -93,6 +93,7 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   uint32_t lastLoadingPaintMs_ = 0;
   uint32_t catalogStartAtMs_ = 0;
   uint32_t chapterStartAtMs_ = 0;
+  uint32_t chapterLoadStartedAtMs_ = 0;
   bool catalogStartPending_ = false;
   bool chapterStartPending_ = false;
   std::string lastCatalogSignature_;

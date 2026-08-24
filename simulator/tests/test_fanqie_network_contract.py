@@ -39,6 +39,13 @@ class FanqieNetworkContractTests(unittest.TestCase):
         self.assertIn('s.maxRows = 24;', fanqie_spec)
         self.assertIn('"book_id", "book_name", "author", "_m4_progress"', fanqie_spec)
 
+    def test_chapter_header_failure_gets_one_clean_retry(self):
+        source = (ROOT / "firmware/src/apps/providers/FanqieProvider.cpp").read_text(encoding="utf-8")
+        self.assertIn("kMaxChapterAttempts", source)
+        self.assertIn("http_ESP_ERR_HTTP_FETCH_HEADER", source)
+        self.assertIn("removeIncomplete(req.cacheAbsPath)", source)
+
+
 
 if __name__ == "__main__":
     unittest.main()

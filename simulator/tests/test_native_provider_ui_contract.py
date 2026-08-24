@@ -22,6 +22,12 @@ class NativeProviderUiContractTests(unittest.TestCase):
         self.assertIn("catalogStartPending_", source)
         self.assertIn("chapterStartPending_", source)
 
+    def test_chapter_loading_has_a_terminal_timeout(self):
+        source = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.cpp").read_text()
+        self.assertIn("kChapterLoadingTimeoutMs", source)
+        self.assertIn('"chapter_timeout"', source)
+        self.assertIn("cancelForeground()", source)
+
     def test_file_row_chapter_queue_does_not_resolve_from_row_zero_on_ui_task(self):
         source = (ROOT / "firmware/src/apps/providers/M4NativeProviderManager.cpp").read_text()
         request = source[source.index("bool requestChapter("):source.index("bool ensureChapter(")]

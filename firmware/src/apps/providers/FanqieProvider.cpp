@@ -16,6 +16,7 @@ namespace {
 
 constexpr const char* kFanqieUa =
     "Mozilla/5.0 (Linux; Android 10.0; wv) AppleWebKit/603.1.30 Version/4.0 M4Native/1";
+constexpr int kMaxChapterAttempts = 2;
 
 // M4 has no NTP on boot. time() is often epoch, so never probe the landing
 // host (that second TLS is ESP_ERR_HTTP_CONNECT). Always hit :8043 with an
@@ -68,68 +69,82 @@ class FanqieProvider final : public M4NativeProvider::Adapter {
       return out;
     }
 
-    M4NativeProviderIo::PartFileSink file;
-    if (!file.open(req.cacheAbsPath)) {
-      out.error = "sd_open_failed";
-      return out;
-    }
-    M4xJsonStream::ScalarStreamExtractor scalar({"data", "data"}, "content", file);
-    M4NativeProviderHttp::ExtractorSink sink(scalar);
+    const auto fetchAttempt = [&]() {
+      M4NativeProvider::FetchResult attempt;
+      M4NativeProviderIo::PartFileSink file;
+      if (!file.open(req.cacheAbsPath)) {
+        attempt.error = "sd_open_failed";
+        return attempt;
+      }
+      M4xJsonStream::ScalarStreamExtractor scalar({"data", "data"}, "content", file);
+      M4NativeProviderHttp::ExtractorSink sink(scalar);
 
-    M4NativeProviderHttp::Request http;
-    http.method = "GET";
-    http.url = resolveChapterUrl(req.chapter.uid);
-    http.headers = {
-        {"User-Agent", kFanqieUa},
-        {"Referer", "https://fanqienovel.com/"},
+      M4NativeProviderHttp::Request http;
+      http.method = "GET";
+      http.url = resolveChapterUrl(req.chapter.uid);
+      http.headers = {
+          {"User-Agent", kFanqieUa},
+          {"Referer", "https://fanqienovel.com/"},
+      };
+      http.maxBytes = req.book.cachePolicy.maxChapterBytes > 0
+                          ? std::max<size_t>(req.book.cachePolicy.maxChapterBytes, 4u * 1024u * 1024u)
+                          : 4u * 1024u * 1024u;
+      http.timeoutMs = 30000;
+      http.followRedirects = false;
+      // Isolated tls_get to this host succeeds with the CA bundle. insecureTls
+      // (skip CN) was aborting the same URL as ESP_ERR_HTTP_CONNECT ~150ms.
+      http.insecureTls = false;
+
+      if (progress) progress(M4NativeProvider::Phase::Connecting, 0, 0, 0);
+      const auto res = M4NativeProviderHttp::requestToSink(
+          http, sink,
+          [&](size_t received) {
+            if (progress) progress(M4NativeProvider::Phase::Receiving, received, file.written(), 0);
+          },
+          cancelled);
+      if (!res.ok) {
+        file.close();
+        M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
+        attempt.error = res.error.empty() ? "network" : res.error;
+        return attempt;
+      }
+      if (!scalar.finish()) {
+        file.close();
+        M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
+        attempt.error = M4xJsonStream::errorString(scalar.error());
+        if (attempt.error.empty()) attempt.error = "json_extract";
+        return attempt;
+      }
+      if (!file.flush() || file.written() == 0) {
+        file.close();
+        M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
+        attempt.error = "empty_content";
+        return attempt;
+      }
+      const size_t written = file.written();
+      file.close();
+      if (progress) progress(M4NativeProvider::Phase::Writing, res.bytes, written, 95);
+      size_t finalBytes = 0;
+      if (!M4NativeProviderIo::commitPart(req.cacheAbsPath, &finalBytes)) {
+        attempt.error = "cache_commit_failed";
+        return attempt;
+      }
+      attempt.ok = true;
+      attempt.bytes = finalBytes;
+      attempt.cacheRelPath = req.cacheRelPath;
+      if (progress) progress(M4NativeProvider::Phase::Ready, res.bytes, finalBytes, 100);
+      return attempt;
     };
-    http.maxBytes = req.book.cachePolicy.maxChapterBytes > 0
-                        ? std::max<size_t>(req.book.cachePolicy.maxChapterBytes, 4u * 1024u * 1024u)
-                        : 4u * 1024u * 1024u;
-    http.timeoutMs = 30000;
-    http.followRedirects = false;
-    // Isolated tls_get to this host succeeds with the CA bundle. insecureTls
-    // (skip CN) was aborting the same URL as ESP_ERR_HTTP_CONNECT ~150ms.
-    http.insecureTls = false;
 
-    if (progress) progress(M4NativeProvider::Phase::Connecting, 0, 0, 0);
-    const auto res = M4NativeProviderHttp::requestToSink(
-        http, sink,
-        [&](size_t received) {
-          if (progress) progress(M4NativeProvider::Phase::Receiving, received, file.written(), 0);
-        },
-        cancelled);
-    if (!res.ok) {
-      file.close();
+    out = fetchAttempt();
+    // The Fanqie content host occasionally closes a fresh TLS connection
+    // before sending HTTP headers. A single clean GET retry is safe and avoids
+    // making the user press retry for a transient transport failure.
+    if (kMaxChapterAttempts > 1 && !out.ok &&
+        out.error == "http_ESP_ERR_HTTP_FETCH_HEADER" && !cancelled()) {
       M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
-      out.error = res.error.empty() ? "network" : res.error;
-      return out;
+      out = fetchAttempt();
     }
-    if (!scalar.finish()) {
-      file.close();
-      M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
-      out.error = M4xJsonStream::errorString(scalar.error());
-      if (out.error.empty()) out.error = "json_extract";
-      return out;
-    }
-    if (!file.flush() || file.written() == 0) {
-      file.close();
-      M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
-      out.error = "empty_content";
-      return out;
-    }
-    const size_t written = file.written();
-    file.close();
-    if (progress) progress(M4NativeProvider::Phase::Writing, res.bytes, written, 95);
-    size_t finalBytes = 0;
-    if (!M4NativeProviderIo::commitPart(req.cacheAbsPath, &finalBytes)) {
-      out.error = "cache_commit_failed";
-      return out;
-    }
-    out.ok = true;
-    out.bytes = finalBytes;
-    out.cacheRelPath = req.cacheRelPath;
-    if (progress) progress(M4NativeProvider::Phase::Ready, res.bytes, finalBytes, 100);
     return out;
   }
 };
