@@ -497,7 +497,8 @@ bool commitPsramBody(const std::string& finalPath, PsramRowsSink& mem) {
 // decides whether to keep a partial catalog).
 bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
                          const std::string& finalPath, size_t totalHint,
-                         bool keepPartialOnFail, size_t* outRows, size_t* outBytes) {
+                         bool keepPartialOnFail, size_t* outRows, size_t* outBytes,
+                         bool* outTransferOk = nullptr, std::string* outError = nullptr) {
   publish(Phase::Receiving, 0, 0, {}, keepPartialOnFail, totalHint);
 
   // --- Prefer PSRAM path ---
@@ -520,6 +521,18 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
       mem.clear();
       if (outBytes) *outBytes = net.bytes;
       if (outRows) *outRows = rows.recordCount();
+      if (outTransferOk) *outTransferOk = net.ok;
+      if (outError) {
+        // Same classification streamCatalogProgressive uses so stale-shelf
+        // detection sees identical error identities on both open paths.
+        if (!net.ok) {
+          *outError = net.error.empty() ? "catalog_http" : net.error;
+        } else if (rows.recordCount() == 0) {
+          *outError = "catalog_empty";
+        } else {
+          *outError = M4xJsonStream::errorString(rows.error());
+        }
+      }
       Serial.printf("[NativeCatalog] full psram parse failed err=%s keep_partial=%d\n",
                     net.error.empty() ? M4xJsonStream::errorString(rows.error())
                                       : net.error.c_str(),
@@ -530,6 +543,8 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
     if (!commitPsramBody(finalPath, mem)) {
       if (outBytes) *outBytes = net.bytes;
       if (outRows) *outRows = rowCount;
+      if (outTransferOk) *outTransferOk = net.ok;
+      if (outError) *outError = "catalog_commit_failed";
       return false;
     }
     if (outBytes) *outBytes = net.bytes;
@@ -541,6 +556,8 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
   Serial.printf("[NativeCatalog] psram unavailable → SD stream fallback\n");
   AtomicRowsSink file;
   if (!file.open(finalPath)) {
+    if (outTransferOk) *outTransferOk = false;
+    if (outError) *outError = "sd_open_failed";
     if (!keepPartialOnFail) publish(Phase::Error, 0, 0, "sd_open_failed", false, totalHint);
     return false;
   }
@@ -561,12 +578,24 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
     file.discard();
     if (outBytes) *outBytes = net.bytes;
     if (outRows) *outRows = rows.recordCount();
+    if (outTransferOk) *outTransferOk = net.ok;
+    if (outError) {
+      if (!net.ok) {
+        *outError = net.error.empty() ? "catalog_http" : net.error;
+      } else if (rows.recordCount() == 0) {
+        *outError = "catalog_empty";
+      } else {
+        *outError = M4xJsonStream::errorString(rows.error());
+      }
+    }
     return false;
   }
   if (!file.commit()) {
     file.discard();
     if (outBytes) *outBytes = net.bytes;
     if (outRows) *outRows = rows.recordCount();
+    if (outTransferOk) *outTransferOk = net.ok;
+    if (outError) *outError = "catalog_commit_failed";
     return false;
   }
   if (outBytes) *outBytes = net.bytes;
@@ -709,13 +738,12 @@ void taskMain(void*) {
     //   PlaceholderThenFull — known total (Legado totalChapterNum) → skeleton now
     //   WindowThenFull      — stream first window, Ready, full refill
     size_t totalHint = 0;
-    const std::string finalAbsPath = appRoot(job.appId) + "/" + finalPath;
     if (job.providerId == "legado") {
       totalHint = readShelfTotalHint(job.appId, job.bookId);
       // A cached TOC with real rows must never be placeholder-overwritten just
       // because the (possibly stale) shelf still advertises a larger count:
       // seed directly from cache and let only a successful full stream replace it.
-      const size_t cachedRows = countTocRows(finalAbsPath);
+      const size_t cachedRows = countTocRows(finalPath);
       if (cachedRows > 0 && !M4LegadoTocPolicy::mayWritePlaceholderSkeleton(totalHint, cachedRows)) {
         Serial.printf("[NativeCatalog] legado cached TOC wins hint=%u rows=%u book=%s\n",
                       static_cast<unsigned>(totalHint), static_cast<unsigned>(cachedRows),
@@ -744,14 +772,26 @@ void taskMain(void*) {
         // Full stream (PSRAM when available) replaces placeholders with real titles.
         size_t fullRows = 0;
         size_t fullBytes = 0;
+        bool fullTransferOk = false;
+        std::string fullErr;
         if (downloadFullCatalog(job, spec, finalPath, totalHint, /*keepPartialOnFail=*/true,
-                                &fullRows, &fullBytes)) {
+                                &fullRows, &fullBytes, &fullTransferOk, &fullErr)) {
           (void)registerBook(job, spec, fullRows, job.currentIndex0);
           publish(Phase::Ready, fullBytes, fullRows, {}, false, fullRows);
           Serial.printf("[NativeCatalog] placeholder→full ready rows=%u\n",
                         static_cast<unsigned>(fullRows));
         } else {
-          Serial.printf("[NativeCatalog] full refill failed, keep placeholders\n");
+          Serial.printf("[NativeCatalog] full refill failed err=%s keep placeholders\n",
+                        fullErr.c_str());
+          // Stale Legado shelf on a fresh first open (empty 200 {"data":[]},
+          // 404 locator gone, or changed response shape with zero records):
+          // replace the hollow Ready-with-placeholders state with a visible
+          // error instead of leaving 第N章 skeletons. Transient network
+          // failures keep placeholders for retry.
+          if (job.providerId == "legado" && !cancelled() &&
+              M4LegadoTocPolicy::isStaleShelfFetch(fullTransferOk, fullErr, fullRows)) {
+            publish(Phase::Error, 0, 0, "legado_shelf_stale");
+          }
         }
       } else {
         // Placeholder failed — fall through to progressive stream.
