@@ -88,6 +88,7 @@ std::string catalogErrorText(const std::string& code) {
   if (code == "http_request_failed" || code == "catalog_http") return "目录网络请求失败";
   if (code == "http_404") return "未找到书籍目录";
   if (code == "http_429") return "请求过于频繁";
+  if (code == "http_2xx_empty") return "目录源返回空数据，请重试";
   if (code == "catalog_empty") return "目录为空";
   // Open/commit failures and mid-write FatFS/SPI contention all present as
   // "can't persist the TOC". Wording steers users toward free space + retry.

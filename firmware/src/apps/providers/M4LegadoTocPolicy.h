@@ -35,9 +35,12 @@ inline size_t clampedChapterCount(size_t registeredCount, size_t actualRows) {
 //   - HTTP 200 transfer with zero extracted records ({"data":[]} — the
 //     shelf no longer parses this book), reported as "", "catalog_empty" or
 //     "json_path_not_found";
-//   - HTTP 404 — the locator is gone from the phone service.
+//   - HTTP 404 — the locator is gone from the phone service;
+//   - HTTP 2xx with a zero-byte body (`http_2xx_empty`, from M4HttpTransport)
+//     — same empty-catalog identity as {"data":[]} after the Fanqie empty-2xx
+//     classification landed; still Legado-only at the call site.
 inline bool isStaleShelfFetch(bool transferOk, const std::string& error, size_t recordCount) {
-  if (!transferOk) return error == "http_404";
+  if (!transferOk) return error == "http_404" || error == "http_2xx_empty";
   if (recordCount != 0) return false;
   return error.empty() || error == "catalog_empty" || error == "json_path_not_found";
 }

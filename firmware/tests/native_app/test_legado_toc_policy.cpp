@@ -56,9 +56,11 @@ void level2_stale_shelf_classification() {
   assert(!isStaleShelfFetch(true, "catalog_empty", 64));
   assert(!isStaleShelfFetch(true, "", 1));
 
-  // Transport failures keep their network error identity; only 404 means the
-  // locator vanished from the phone service (stale shelf).
+  // Transport failures keep their network error identity; 404 means the
+  // locator vanished from the phone service, and a 2xx zero-byte body is the
+  // same empty-catalog identity as {"data":[]} after http_2xx_empty landed.
   assert(isStaleShelfFetch(false, "http_404", 0));
+  assert(isStaleShelfFetch(false, "http_2xx_empty", 0));
   assert(!isStaleShelfFetch(false, "http_500", 0));
   assert(!isStaleShelfFetch(false, "http_request_failed", 0));
   assert(!isStaleShelfFetch(false, "wifi_not_connected", 0));
