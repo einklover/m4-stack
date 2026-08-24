@@ -1,0 +1,68 @@
+{
+  "audit": "APP1 font-headroom for 15x16 1-bit corpus",
+  "date": "2026-08-24",
+  "branch": "agent/m4-ox-supervisor-integration",
+  "head": "5ba8be26c10e6bbaaab790b545aeedcb1a192260",
+  "production_env": "murphy_m4",
+  "device_flash": false,
+  "firmware_built_locally": true,
+  "corpus_regenerated": false,
+  "corpus_source": "m4-integrated-candidate artifacts/standard_pixel_native_compression_report.json (read-only)",
+  "partition": {
+    "flash_chip_bytes": 16777216,
+    "app0_offset": 65536,
+    "app1_offset": 7208960,
+    "app_slot_bytes": 7143424,
+    "spiffs_bytes": 2097152,
+    "release_flash_fraction": 0.85,
+    "release_budget_bytes": 6071910,
+    "official_reserve_bytes": 1071514
+  },
+  "current_image": {
+    "firmware_bin_bytes": 4840048,
+    "firmware_bin_sha256": "e7f32092a72d7fe3bb09e1b1067dba29f2bc4b1b514495e9b24a3a1f4583970a",
+    "linker_image_bytes": 4839885,
+    "linked_flash_used_bytes": 4839537,
+    "linked_ram_used_bytes": 96724,
+    "ram_total_bytes": 327680,
+    "app1_headroom_bytes": 2303376,
+    "release_budget_headroom_bytes": 1231862,
+    "compact_cjk_static_bytes": 259142
+  },
+  "corpus": {
+    "glyphs_strict_15x16": 28953,
+    "outliers": 32,
+    "raw_bytes_per_glyph": 30,
+    "raw_bitmap_bytes": 868590,
+    "sorted_uint16_index_bytes": 57906,
+    "ranked_bitset_index_bytes": 5000,
+    "run_table_6byte_bytes": 1140,
+    "header_bytes": 16,
+    "outlier_bitmap_bytes": 1024,
+    "outlier_index_bytes": 64,
+    "uncompressed_decoder_estimate_bytes": 2048,
+    "fixed_block_decoder_estimate_bytes": 4096,
+    "fixed_block_5x8_total_rom_bytes": 728652,
+    "fixed_block_5x8_inclusive_with_outlier_bitmaps_bytes": 729676,
+    "epdfont_naive_bytes": 1334150,
+    "uncompressed_sorted_production_bytes": 929648,
+    "uncompressed_ranked_production_bytes": 876744,
+    "fixed_block_production_bytes": 733852,
+    "ttf_sha256": "9507b4d3e915455afadfa688e8ea515abf816bce06f76346ee356f0f38810574",
+    "supported_corpus_sha256": "f953cc612ae2fc412bda55b4aae8a105b8d6eb105ae3c06269b84c976c2cc1b3"
+  },
+  "after_add_keep_compact_cjk": {
+    "uncompressed_ranked": {"image_bytes": 5716792, "app1_left": 1426632, "budget85_left": 355118},
+    "uncompressed_sorted": {"image_bytes": 5769696, "app1_left": 1373728, "budget85_left": 302214},
+    "fixed_block_inclusive": {"image_bytes": 5569724, "app1_left": 1573700, "budget85_left": 502186},
+    "fixed_block_production": {"image_bytes": 5573900, "app1_left": 1569524, "budget85_left": 498010},
+    "epdfont_naive": {"image_bytes": 6174198, "app1_left": 969226, "budget85_left": -102288}
+  },
+  "safety_margin": {
+    "hard_ota_limit_bytes": 7143424,
+    "release_gate_bytes": 6071910,
+    "font_decision_extra_min_remaining_to_release_gate_bytes": 262144
+  },
+  "recommendation": "uncompressed_full_corpus",
+  "compression_required": false
+}

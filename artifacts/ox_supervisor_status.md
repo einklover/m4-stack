@@ -1,6 +1,6 @@
 # OX supervisor status
 
-Last updated: 2026-08-24T10:20:00Z (simulator-only A–G regression PASS)
+Last updated: 2026-08-24T19:50:00Z (simulator A–G PASS; APP1 font-headroom audit complete)
 
 Supervisor worktree: `/Volumes/z/paseo/workspaces/paseo/worktrees/0xdf4ldr/m4-ox-supervisor`
 Supervisor branch: `agent/m4-ox-supervisor-integration`
@@ -111,3 +111,27 @@ QEMU journeys (`--plugin-debug --skip-build --ready-seconds 90`):
 | G LUT / waveform / refresh policy | `test_reader_lut_contract.py` 7/7 + `test_gfx_refresh_policy` + m4sim `reader-ui` PTA windowed anim + `large-txt` 0 FULL/HALF | PASS | none (merged `6365d4c`) | Pinned SDK has no `RefreshMode::ReaderCleanup` so `m4_ssd1677_driver_replay` cannot build; real SSD1677 LUT arming/cleanup still device-only |
 
 Candidate worktree still `2cdc112`. Luna TTF compression not merged. m4sim not expanded. No production firmware change this pass.
+
+## Font compression headroom audit (measurement only)
+
+Local `pio run -e murphy_m4` SUCCESS on `5ba8be2`. No device flash. Corpus tables were not regenerated; sizes from candidate experiment artifacts (read-only). Production font representation unchanged. Luna compression not integrated.
+
+Full write-up: `artifacts/font_app1_headroom_audit.md`.
+
+| Item | Bytes |
+|------|------:|
+| Flash chip | 16,777,216 |
+| Applicable app slot (APP0 and APP1 each) | 7,143,424 |
+| 85% release budget | 6,071,910 |
+| Current `firmware.bin` | 4,840,048 |
+| APP1 remaining | 2,303,376 |
+| Remaining inside 85% | 1,231,862 |
+| Compact 2-bit CJK already in image | 259,142 |
+| 15×16 raw bitmaps (28,953 × 30) | 868,590 |
+| Uncompressed production (ranked index + header + 32 outliers + decoder) | 876,744 |
+| Fixed-block 5×8 inclusive (728,652 + 1,024 outliers) | 729,676 |
+| After adding uncompressed ranked | image 5,716,792; 85% left 355,118 |
+| After adding 5×8 inclusive | image 5,569,724; 85% left 502,186 |
+| Naive EpdFont 16 B/glyph | 1,334,150 — **fails 85%** |
+
+**Recommendation: uncompressed full corpus. Compression is not required.** Hard OTA still has ~1.4 MiB; the 85% gate still has ≥302 KiB after an add. Keep ≥256 KiB remaining to that gate as the font-decision extra margin. Do not embed via `EpdGlyph` records.
