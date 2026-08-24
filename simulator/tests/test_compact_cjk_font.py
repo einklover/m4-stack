@@ -43,6 +43,18 @@ class CompactCjkFontTests(unittest.TestCase):
         self.assertIn("M4FixedRuntimeUiFonts::ensure", loader)
         self.assertIn("UI chrome=builtin (no custom promotion)", loader)
 
+    def test_system_reader_bind_divides_compact_face_by_real_raster_px(self) -> None:
+        loader = LOADER.read_text(encoding="utf-8")
+        policy = (ROOT / "firmware/src/util/M4FontPolicy.h").read_text(encoding="utf-8")
+        self.assertIn("kCompactCjkSourcePx = 14", policy)
+        self.assertIn("kCanonicalEpdfontPixelSize = 16", policy)
+        self.assertIn("systemReaderSourcePx(bool compact2BitSource)", policy)
+        # Production bind must use the real compact raster (14), not the 16pt
+        # generation size — that 16/16 unity scale was the ~12% undersize bug.
+        bind = loader[loader.index("void bindSystemReader") : loader.index("EpdFontLoader::ensureFontsFromSd")]
+        self.assertIn("M4FontPolicy::systemReaderSourcePx(compactSource)", bind)
+        self.assertNotIn("kCanonicalEpdfontPixelSize", bind)
+
     def test_missing_custom_glyph_keeps_builtin_chrome(self) -> None:
         ui_text = UI_TEXT.read_text(encoding="utf-8")
         # Chrome layout IDs never adopt a custom face. Reader/content IDs may

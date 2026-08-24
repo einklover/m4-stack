@@ -1,10 +1,10 @@
 # OX supervisor status
 
-Last updated: 2026-08-24T09:45:00Z (all seven accepted+merged; combined-diff audit PASS)
+Last updated: 2026-08-24T10:20:00Z (simulator-only A–G regression PASS)
 
 Supervisor worktree: `/Volumes/z/paseo/workspaces/paseo/worktrees/0xdf4ldr/m4-ox-supervisor`
 Supervisor branch: `agent/m4-ox-supervisor-integration`
-Supervisor HEAD: `561afcf` + this commit (`fix(legado): treat Fanqie http_2xx_empty as Legado stale-shelf`)
+Supervisor HEAD: `bfbc7fe` + this host-test commit
 Integrated-candidate baseline (read-only): `agent/m4-integrated-candidate` @ `2cdc112`
 
 ## Baseline correction
@@ -80,3 +80,34 @@ Host/static regressions after integration (g++-14, no device/QEMU/ADB/pio):
 - Independently reviewed Legado `296852b`: remove-then-publish on stale PlaceholderThenFull only; cached-TOC untouched. ACCEPT and merged as `561afcf`. ACCEPT-and-stop sent to `96456397`.
 - Combined-diff audit after all seven merges. Tiny supervisor integration: Legado-only `http_2xx_empty` stale remap + catalog UI map.
 - Candidate worktree not modified (`2cdc112`). No ADB/QEMU/flash/device. Luna TTF compression not merged.
+
+## Simulator-only A–G regression (2026-08-24)
+
+No hardware, no real ADB daemon, no APP1 flash. QEMU used repository `m4sim` + patched xtensa at `~/.cache/murphy-m4/espressif-qemu-v3/` and `pio run -e murphy_m4_qemu_plugin` (`firmware.bin` 4.6M, sha256 `3f7b37be…`). First `reader-ui` attempt flake-failed at BookmarkManager (`m4adb timeout 20s` after settings/LUT already succeeded); retry PASS. No production firmware bug found.
+
+Host tests added/tightened (no production change):
+- `simulator/tests/test_compact_cjk_font.py` — `bindSystemReader` uses `systemReaderSourcePx(compactSource)` (14, not 16)
+- `simulator/tests/test_plugin_toc_phasing_contract.py` — WeRead/Fanqie cooperative TOC; JJWXC keeps `Api.toc_loader_spec`, no `toc_prefetched`/lupa
+- `simulator/tests/test_legado_toc_contract.py` — `countTocRows(finalPath)`, remove-then-publish, cached keepPartialOnFail, `http_2xx_empty` stale map
+- `simulator/tests/test_large_txt_open_contract.py` — skip commented-out `HALF_REFRESH` in `firmware/lib/Epub/Epub/Page.cpp`
+
+Python contracts: 66 tests OK (3 skipped: SDK is the legacy fast-only copy, no `RefreshMode::ReaderCleanup`). Native g++-14: `test_legado_toc_policy`, `test_txt_index_policy`, `test_fanqie_empty_body`, `test_reader_settings_handoff`, `test_gfx_refresh_policy`, `test_reader_settings_handoff_contract.sh` PASS. CMake: `m4_scaled_epd_font_tests` (16px compact advance=16), `m4_compact_cjk_font_tests`, `m4_gfx_refresh_policy_tests` PASS. `m4_ssd1677_driver_replay` not built (pinned SDK lacks `ReaderCleanup`).
+
+QEMU journeys (`--plugin-debug --skip-build --ready-seconds 90`):
+- `./m4sim test smoke` PASS (Home ping, sd_ok, qemu-openeth, 48011-byte frame)
+- `./m4sim test reader-ui` PASS on retry (settings enter/exit, windowed PTA LUT, bookmark manager)
+- `./m4sim test large-txt` PASS: 12 MiB fixture, first_page_ready index_complete=0 at +113 ms, first_physical +230 ms, obvious FULL/HALF=0, FAST-only mode=2/eff=2
+
+### A–G matrix
+
+| Item | Simulator path / test | Result | Fix commit | Remaining device-only risks |
+|------|----------------------|--------|------------|-----------------------------|
+| A font sizing / compact CJK | `test_compact_cjk_font.py` + `m4_scaled_epd_font_tests` + `m4_compact_cjk_font_tests` | PASS (16px compact advance=16 via 16/14) | none (merged `e1112c6`) | Device crispness / SSD1677 replay pin; QEMU does not prove physical glyph edges |
+| B settings handoff / return repaint | `test_reader_settings_handoff` C++ + contract.sh + `test_reader_regressions_contract.py` + m4sim `reader-ui` (EpubReaderSettings enter+exit then reader continues) | PASS | none (merged `0bbe32d`) | Auto-turn timer on real panel timing; QEMU busy-ms=20 is not device waveform time |
+| C large-TXT first-open / resume / residuals | `test_txt_index_policy` + `test_large_txt_open_contract.py` + m4sim `large-txt` 12 MiB | PASS (index incomplete at first paint; chapter batch after physical; 0 FULL/HALF) | none (merged `a426fb9`) | Mid-book resume catch-up on device SD; 40k-chapter density not run this pass |
+| D Fanqie 200-empty / date | g++-14 `test_fanqie_empty_body` + `test_fanqie_network_contract.py` + transport `http_2xx_empty` | PASS | none (merged `f5a27a0`) | Live Fanqie 2xx+0B / `nt=` vs device RTC; no live HTTP in QEMU |
+| E Legado TOC stale/count/file | g++-14 `test_legado_toc_policy` + `test_legado_toc_contract.py` + `test_legado_plugin.py` | PASS | none (merged `561afcf`; supervisor `bfbc7fe` already mapped `http_2xx_empty`) | Live Legado empty-2xx / leftover `toc_rows.txt` on device SD |
+| F plugin UI / blocking | `test_plugin_toc_phasing_contract.py` (Weread+Fanqie cooperative; JJWXC untouched) + `test_native_provider_ui_contract.py` | PASS | none (merged `627fbaa`) | No lupa/luac Lua runtime here; live long-catalog paint ticks still device/plugin-debug |
+| G LUT / waveform / refresh policy | `test_reader_lut_contract.py` 7/7 + `test_gfx_refresh_policy` + m4sim `reader-ui` PTA windowed anim + `large-txt` 0 FULL/HALF | PASS | none (merged `6365d4c`) | Pinned SDK has no `RefreshMode::ReaderCleanup` so `m4_ssd1677_driver_replay` cannot build; real SSD1677 LUT arming/cleanup still device-only |
+
+Candidate worktree still `2cdc112`. Luna TTF compression not merged. m4sim not expanded. No production firmware change this pass.

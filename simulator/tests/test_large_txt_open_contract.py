@@ -241,7 +241,13 @@ class LargeTxtOpenContracts(unittest.TestCase):
                 continue
             if "open-m4-sdk" in rel.parts or ".pio" in rel.parts:
                 continue
-            self.assertIsNone(call.search(rel.read_text(encoding="utf-8", errors="replace")), msg=str(rel))
+            src = rel.read_text(encoding="utf-8", errors="replace")
+            for match in call.finditer(src):
+                line_start = src.rfind("\n", 0, match.start()) + 1
+                line = src[line_start:src.find("\n", match.end())]
+                if line.lstrip().startswith("//"):
+                    continue
+                self.fail(f"{rel}: live legacy refresh call: {line.strip()[:160]}")
 
     def test_reader_cleanup_is_only_used_by_reader_body_paths(self) -> None:
         reader_paths = (
