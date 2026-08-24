@@ -15,6 +15,7 @@
 #include "activities/ActivityWithSubactivity.h"
 #include "apps/M4PluginReaderSession.h"
 #include "util/M4ContentProviderContract.h"
+#include "util/M4TxtIndexPolicy.h"
 
 class TxtReaderActivity final : public ActivityWithSubactivity {
  public:
@@ -169,6 +170,10 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // channel is unreliable on M4). Used to find which render step is slow
   // (TTF glyph rasterization vs SD read/decode vs physical refresh).
   void logPerf(const char* step, uint32_t ms, int page, uint32_t extra = 0) const;
+  // Rate gate for the per-page perf line: hot indexing calls loadPageAtOffset
+  // hundreds of times and an unconditional SD append stalls that path. State is
+  // touched from the display task only; mutable because logPerf callers are const.
+  mutable M4TxtIndexPolicy::LoadPageLogGate loadPageLogGate_;
   // Physical body rectangle (panel-native 800x480, byte-aligned) — the page-turn
   // wipe window covers exactly this so status/other regions are off-panel.
   bool computeBodyPhysicalWindow(uint16_t& x, uint16_t& y, uint16_t& w, uint16_t& h) const;
