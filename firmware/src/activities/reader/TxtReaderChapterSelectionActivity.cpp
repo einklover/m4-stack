@@ -5,6 +5,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "util/M4TxtIndexPolicy.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/M4ListTouchPolicy.h"
@@ -94,7 +95,11 @@ bool TxtReaderChapterSelectionActivity::ensureChapterBatch(int chapterIndex, boo
 
   const int batch = chapterBatchStart(chapterIndex);
   if (loadedBatchStart_ != batch) {
-    const bool cacheHit = txt->parseChapterIndexAndOffset(batch);
+    // Touch path: cache-only. A missing batch defers to the display task's
+    // quiet rebuild/prefetch; a full scan here froze input for seconds on
+    // large TXT books.
+    const bool cacheHit =
+        txt->parseChapterIndexAndOffset(batch, M4TxtIndexPolicy::kPickerBatchAllowScan);
     loadedBatchStart_ = batch;
     if (outFromCache) *outFromCache = cacheHit;
   } else if (outFromCache) {
@@ -192,25 +197,43 @@ void TxtReaderChapterSelectionActivity::skipChapters(int delta) {
       target = n - 1;
     }
   } else if (!ensureChapterBatch(target) || !chapterExists(target)) {
-    int batch = chapterBatchStart(target);
-    int found = -1;
-    while (batch >= 0) {
-      txt->parseChapterIndexAndOffset(batch);
-      loadedBatchStart_ = batch;
-      for (int i = 0; i < CHAPTER_BATCH; ++i) {
-        const int ch = batch + i;
-        if (chapterExists(ch)) found = ch;
+    // Cache-only skip fallback (same contract as ensureChapterBatch): answer
+    // from batches already in RAM/on SD and defer any missing-batch discovery
+    // to prefetchNextBatchQuiet. The former parseChapterIndexAndOffset(batch)
+    // default here triggered multi-second scans per skipped page. Units stay
+    // explicit: batch starts only to loadBatchFromCache, chapter indices only
+    // to existsInRam.
+    struct CachedBatchProber {
+      Txt* t;
+      int* loadedBatchStart;
+      // True only when the cache file exists AND the parse actually made
+      // chapters visible in RAM; otherwise skip-down would scan an unloaded
+      // batch and loadedBatchStart_ would point at stale content.
+      bool loadBatchFromCache(int batchStartValue) {
+        if (!t->hasChapterBatchCache(batchStartValue)) return false;
+        t->parseChapterIndexAndOffset(batchStartValue,
+                                      M4TxtIndexPolicy::kPickerBatchAllowScan);
+        for (int i = 24; i >= 0; --i) {
+          if (t->isChapterExist(batchStartValue + i)) {
+            *loadedBatchStart = batchStartValue;
+            return true;
+          }
+        }
+        return false;
       }
-      if (found >= 0) {
-        target = found;
-        break;
-      }
-      if (batch == 0) {
-        target = 0;
-        break;
-      }
-      batch -= CHAPTER_BATCH;
-    }
+      bool existsInRam(int chapter) const { return t->isChapterExist(chapter); }
+    } prober{txt.get(), &loadedBatchStart_};
+
+    const int found = M4TxtIndexPolicy::skipFallbackFromCachedBatches(
+        target, 0, chapterBatchStart,
+        [](void* ctx, int batchStartValue) -> bool {
+          return static_cast<CachedBatchProber*>(ctx)->loadBatchFromCache(batchStartValue);
+        },
+        [](void* ctx, int chapter) -> bool {
+          return static_cast<const CachedBatchProber*>(ctx)->existsInRam(chapter);
+        },
+        &prober);
+    target = found >= 0 ? found : 0;
   }
 
   page = target / pageItems + 1;

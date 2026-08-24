@@ -20,6 +20,7 @@
 #include "util/M4PluginTocList.h"
 #include "util/M4PluginTidxCodec.h"
 #include "util/M4PluginReaderStatePolicy.h"
+#include "util/M4TxtIndexPolicy.h"
 #include "util/M4ProgressiveTxtIndex.h"
 #include "debug/M4WaveformLab.h"
 #include <HalDisplay.h>
@@ -644,10 +645,9 @@ int TxtReaderActivity::pageIndexForByteLocked(size_t byteOffset) const {
 }
 
 void TxtReaderActivity::applyPendingRestoreIfReady() {
-  // Caller holds renderingMutex.
-  M4PluginReaderStatePolicy::IndexState s;
-  s.pageOffsets = pageOffsets;  // share vector content via assign
-  // Work on live fields without full copy of vector for apply:
+  // Caller holds renderingMutex. pageIndexForByteLocked already reads live
+  // pageOffsets under the lock; the former full-vector IndexState copy here
+  // was dead work on every progressive-index tick.
   if (!hasPendingRestore_ || userMovedPage_ || pageOffsets.empty()) return;
   const size_t target = pendingRestoreByte_;
   if (!indexComplete_) {
@@ -1963,11 +1963,15 @@ void TxtReaderActivity::goToPercentAlreadyLocked(int percent) {
 
   int targetChapter = chapternum;
   if (!pluginSession_.active) {
-    // Library multi-chapter: resolve chapter for byte (may touch SD chapter index).
+    // Library multi-chapter: resolve the target chapter from CACHE only.
+    // The former allowScan=true path could run multi-second full-file scans on
+    // this UI-thread site for any uncached batch; a missing batch defers to
+    // idle discovery and the jump lands once the batch exists.
     {
       const int page = chapternum / 25 + 1;
       const int pagebegin = (page - 1) * 25;
-      txt->parseChapterIndexAndOffset(pagebegin);
+      txt->parseChapterIndexAndOffset(pagebegin,
+                                      M4TxtIndexPolicy::kGoToPercentBatchAllowScan);
     }
     for (int ch = 0; ch < 10000; ch++) {
       size_t chBegin = txt->getChapterOffsetByIndex(ch);
@@ -1976,7 +1980,8 @@ void TxtReaderActivity::goToPercentAlreadyLocked(int percent) {
       if (chEnd == 0) chEnd = fileSize;
       if (chBegin == 0 && ch > 0) {
         const int pg = ch / 25 + 1;
-        txt->parseChapterIndexAndOffset((pg - 1) * 25);
+        txt->parseChapterIndexAndOffset((pg - 1) * 25,
+                                        M4TxtIndexPolicy::kGoToPercentBatchAllowScan);
         chBegin = txt->getChapterOffsetByIndex(ch);
         chEnd = txt->getChapterendOffsetByIndex(ch);
         if (chBegin == 0 && chEnd == 0) break;
@@ -2660,18 +2665,16 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
     Serial.printf("[%lu] [TRS] library first_page_index_begin ch=%d range=%zu..%zu\n", millis(),
                   chapter_num, chapterOffsetbegin, chapterOffsetend);
     buildPageIndexFirstPage(chapterOffsetbegin, chapterOffsetend);
-    // Resume mid-chapter (saved page N) or prev-chapter last page: need enough
-    // index before first paint. Next-chapter opens with currentPage=0 → no wait.
-    if (!indexComplete_ && currentPage != 0) {
-      if (currentPage < 0) {
-        while (!indexComplete_) {
-          if (continuePageIndex(16, 256 * 1024) == 0 && !indexComplete_) break;
-        }
-      } else {
-        while (!indexComplete_ && totalPages <= currentPage) {
-          if (continuePageIndex(16, 256 * 1024) == 0 && !indexComplete_) break;
-        }
-      }
+    // Saved mid-page resume: one bounded sync slice so the saved page usually
+    // exists before first paint. The former unbounded loops here serialized a
+    // whole-range catch-up under the render lock on large TXT (currentPage<0
+    // prev-chapter opens indexed the ENTIRE range synchronously). Anything past
+    // this budget defers to renderScreen/displayTaskLoop progressive index +
+    // applyPendingRestoreIfReady, which re-arm updateRequired until covered.
+    if (M4TxtIndexPolicy::resumeCatchupNeeded(indexComplete_, currentPage,
+                                              static_cast<int>(pageOffsets.size()))) {
+      (void)continuePageIndex(M4TxtIndexPolicy::kResumeCatchupMaxPages,
+                              M4TxtIndexPolicy::kResumeCatchupMaxBytes);
     }
     Serial.printf("[%lu] [TRS] library first_page_index_end ch=%d ms=%lu pages=%d complete=%d\n",
                   millis(), chapter_num, static_cast<unsigned long>(millis() - tIdx0), totalPages,
@@ -2911,6 +2914,13 @@ int TxtReaderActivity::continuePageIndex(int maxPages, size_t maxBytes) {
     const size_t before = indexCursor_;
     if (!loadPageAtOffset(indexCursor_, indexRangeEnd_, tempLines, nextOffset,
                           nullptr, 0, 0, 0, &justifyScratch)) {
+      // Generic page-load failure (alloc / SD read / decode) is NOT chapter
+      // end. Marking complete here persisted a truncated index (.tidx /
+      // chapterN.bin) that could never be extended. Only cursor >= rangeEnd is
+      // real EOF; leave incomplete so the next idle slice resumes here.
+      if (!M4TxtIndexPolicy::loadFailureIsChapterEnd(indexCursor_, indexRangeEnd_)) {
+        break;
+      }
       indexComplete_ = true;
       break;
     }
@@ -3579,8 +3589,13 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
 
   if (needFree) free(buffer);
 
-  logPerf("loadPage", millis() - tLoad0, currentPage,
-          static_cast<uint32_t>(outLines.size()));
+  // Hot indexing calls this hundreds of times; an SD append per call stalled
+  // the very path being measured. Slow pages always log; fast pages at most
+  // once per interval (see M4TxtIndexPolicy).
+  if (loadPageLogGate_.shouldLog(millis(), millis() - tLoad0)) {
+    logPerf("loadPage", millis() - tLoad0, currentPage,
+            static_cast<uint32_t>(outLines.size()));
+  }
   return !outLines.empty();
 }
 
@@ -4877,6 +4892,11 @@ void TxtReaderActivity::libraryIdlePrefetchNextChapter() {
     const size_t before = prefetchCursor_;
     if (!loadPageAtOffset(prefetchCursor_, prefetchRangeEnd_, tempLines, nextOffset, nullptr, 0, 0, 0,
                           &justifyScratch)) {
+      // Mirror continuePageIndex: a failed read is not chapter end — retry on
+      // a later idle pass instead of persisting a truncated N+1 cache.
+      if (!M4TxtIndexPolicy::loadFailureIsChapterEnd(prefetchCursor_, prefetchRangeEnd_)) {
+        break;
+      }
       prefetchComplete_ = true;
       break;
     }
