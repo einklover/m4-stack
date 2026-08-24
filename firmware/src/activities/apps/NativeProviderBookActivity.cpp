@@ -49,6 +49,7 @@ std::string chapterErrorText(const std::string& code) {
   if (code == "heap_corrupt") return "检测到内存异常，请返回后重试";
   if (code == "body_stream_failed") return "正文接收失败";
   if (code == "empty_content" || code == "psvts_not_found") return "未获取到有效正文，请重试";
+  if (code == "http_2xx_empty") return "内容源返回空数据，请重试";
   if (code == "shard_json" || code == "shard_bad_header" || code == "shard_md5") {
     return "正文分片校验失败，请重试";
   }

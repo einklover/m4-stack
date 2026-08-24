@@ -111,8 +111,13 @@ Result fromTransportResult(const M4HttpTransport::Result& src) {
 }
 
 bool canRetryZeroByteTransport(const Result& result, const Request& req) {
-  if (result.ok || result.bytes != 0 || result.status != 0 || result.error.empty()) return false;
+  if (result.ok || result.bytes != 0 || result.error.empty()) return false;
   if (!req.method.empty() && req.method != "GET") return false;
+  // A peer that answers 200 with an empty body (fanqie :8043 nt= gate) is
+  // transient in practice; one fresh GET is safe because no body byte ever
+  // reached the sink, so nothing needs rewinding.
+  if (result.error == "http_2xx_empty") return true;
+  if (result.status != 0) return false;
 
   // ESP-IDF may report a short-lived connect/fetch-header failure while Wi-Fi
   // still says WL_CONNECTED. A fresh one-shot esp_http_client handle is safe to
