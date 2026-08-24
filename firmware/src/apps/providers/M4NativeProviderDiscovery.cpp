@@ -133,7 +133,10 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     }
     // replacedExtension bak (not final+".bak"): FatFS 8.3 aliases
     // shelf_rows.tsv.bak onto SHELF_ROWS.TSV. already-final is success.
-    return M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true);
+    // Discovery data is refreshed in-place. Equal byte counts do not prove the
+    // old shelf is identical; refusing the rename would preserve a corrupt
+    // same-size cache forever.
+    return M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true, false);
   }
 
   void discard() {

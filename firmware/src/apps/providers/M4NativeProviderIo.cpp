@@ -234,9 +234,10 @@ bool clearCacheArtifacts(const std::string& absPath) {
 }
 
 bool commitTempFile(const std::string& tempAbsPath, const std::string& finalAbsPath,
-                    size_t expectedBytes, bool preserveOld) {
+                    size_t expectedBytes, bool preserveOld, bool allowAlreadyFinal) {
   // Same 8.3 alias as the live file: the payload is already at the destination.
-  if (!finalAbsPath.empty() && expectedBytes > 0 && fileSizeIs(finalAbsPath, expectedBytes)) {
+  if (allowAlreadyFinal && !finalAbsPath.empty() && expectedBytes > 0 &&
+      fileSizeIs(finalAbsPath, expectedBytes)) {
     Serial.printf("[NP-IO] commit already-final size=%u %s\n", static_cast<unsigned>(expectedBytes),
                   finalAbsPath.c_str());
     return true;

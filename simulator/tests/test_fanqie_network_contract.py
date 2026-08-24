@@ -52,6 +52,11 @@ class FanqieNetworkContractTests(unittest.TestCase):
         self.assertIn("flushBuffer", sink)
         self.assertIn("used_", sink)
 
+    def test_discovery_replaces_same_size_stale_shelf(self):
+        source = self.source
+        sink = source[source.index("class AtomicRowsSink"):source.index("class RecordExtractorSink")]
+        self.assertIn("commitTempFile(tmpPath_, finalPath_, written_, true, false)", sink)
+
 
 
 if __name__ == "__main__":

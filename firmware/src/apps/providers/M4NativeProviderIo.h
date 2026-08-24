@@ -34,7 +34,8 @@ bool clearCacheArtifacts(const std::string& absPath);
 // verified streaming copy is used before the old generation is discarded.
 // `expectedBytes` must be non-zero and is verified on the committed file.
 bool commitTempFile(const std::string& tempAbsPath, const std::string& finalAbsPath,
-                    size_t expectedBytes, bool preserveOld = true);
+                    size_t expectedBytes, bool preserveOld = true,
+                    bool allowAlreadyFinal = true);
 
 bool commitPart(const std::string& absPath, size_t* sizeOut = nullptr);
 
