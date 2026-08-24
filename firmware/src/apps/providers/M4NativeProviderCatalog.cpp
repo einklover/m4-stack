@@ -4,6 +4,7 @@
 #include "apps/providers/M4JjwxcEndpoint.h"
 #include "apps/providers/M4WereadEndpoint.h"
 #include "apps/providers/M4LegadoBridge.h"
+#include "apps/providers/M4LegadoTocPolicy.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4ProgressiveCatalog.h"
@@ -120,6 +121,32 @@ size_t readShelfTotalHint(const std::string& appId, const std::string& bookId) {
   }
   f.close();
   return 0;
+}
+
+// Count rows actually present in a committed toc_rows.txt. Bounded by the
+// catalog hard cap so a corrupt file cannot spin SD reads forever.
+size_t countTocRows(const std::string& absPath) {
+  FsFile f;
+  if (!SdMan.openFileForRead("NP-TOC-CNT", absPath.c_str(), f)) return 0;
+  uint8_t buf[2048];
+  size_t rows = 0;
+  bool any = false;
+  uint8_t last = '\n';
+  while (f.available()) {
+    const int n = f.read(buf, sizeof(buf));
+    if (n <= 0) break;
+    any = true;
+    for (int i = 0; i < n; ++i) {
+      last = buf[i];
+      if (buf[i] == '\n' && ++rows >= M4ContentProvider::kMaxCatalogChapters) {
+        f.close();
+        return rows;
+      }
+    }
+  }
+  f.close();
+  if (any && last != '\n' && rows < M4ContentProvider::kMaxCatalogChapters) ++rows;
+  return rows;
 }
 
 // Write placeholder TSV via AtomicRowsSink-compatible temp commit.
@@ -368,6 +395,9 @@ CatalogSpec makeSpec(const Snapshot& job) {
     }
     s.request.url = M4LegadoBridge::baseUrl() + "/getChapterList?url=" + urlEncode(locator);
     s.request.headers = {{"User-Agent", "Mozilla/5.0 Murphy-M4 NativeProvider/1"}};
+    // Match getBookContent: some server editions answer the chapter list with
+    // an HTTP redirect when the locator was re-normalized on the phone.
+    s.request.followRedirects = true;
     // Long web novels (2k–10k chapters) often ship 1–3 MB JSON with full
     // title/url fields. 1.5 MB was too tight and surfaced as response_too_large
     // ("目录数据过大"). Match other providers: 4 MB PSRAM-backed body.
@@ -627,6 +657,14 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
     } else {
       error = M4xJsonStream::errorString(rows.error());
     }
+    // Stale Legado phone shelf: empty 200 body / 404 / path-not-found with
+    // zero records is not a transient failure and must not be masked as a
+    // generic empty catalog. Strictly Legado-only — other providers keep
+    // their own error strings and UI mapping.
+    if (job.providerId == "legado" && !cancelled() &&
+        M4LegadoTocPolicy::isStaleShelfFetch(net.ok, error, rowCount)) {
+      error = "legado_shelf_stale";
+    }
     if (job.providerId == "weread" &&
         (error == "http_401" || error == "http_403" || error == "login_required")) {
       publish(Phase::AuthRequired, net.bytes, 0, error);
@@ -671,8 +709,28 @@ void taskMain(void*) {
     //   PlaceholderThenFull — known total (Legado totalChapterNum) → skeleton now
     //   WindowThenFull      — stream first window, Ready, full refill
     size_t totalHint = 0;
+    const std::string finalAbsPath = appRoot(job.appId) + "/" + finalPath;
     if (job.providerId == "legado") {
       totalHint = readShelfTotalHint(job.appId, job.bookId);
+      // A cached TOC with real rows must never be placeholder-overwritten just
+      // because the (possibly stale) shelf still advertises a larger count:
+      // seed directly from cache and let only a successful full stream replace it.
+      const size_t cachedRows = countTocRows(finalAbsPath);
+      if (cachedRows > 0 && !M4LegadoTocPolicy::mayWritePlaceholderSkeleton(totalHint, cachedRows)) {
+        Serial.printf("[NativeCatalog] legado cached TOC wins hint=%u rows=%u book=%s\n",
+                      static_cast<unsigned>(totalHint), static_cast<unsigned>(cachedRows),
+                      job.bookId.c_str());
+        (void)registerBook(job, spec, cachedRows, job.currentIndex0);
+        publish(Phase::Ready, 0, cachedRows, {}, true, cachedRows);
+        size_t fullRows = 0;
+        size_t fullBytes = 0;
+        if (downloadFullCatalog(job, spec, finalPath, totalHint, /*keepPartialOnFail=*/true,
+                                &fullRows, &fullBytes)) {
+          (void)registerBook(job, spec, fullRows, job.currentIndex0);
+          publish(Phase::Ready, fullBytes, fullRows, {}, false, fullRows);
+        }
+        return;
+      }
     }
     const auto strategy = M4ProgressiveCatalog::chooseStrategy(
         totalHint, M4ProgressiveCatalog::defaultPolicy().firstWindow);

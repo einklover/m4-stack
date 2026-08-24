@@ -5,6 +5,7 @@
 #include "apps/providers/M4NativeProviderAdapters.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeProviderIo.h"
+#include "apps/providers/M4LegadoTocPolicy.h"
 #include "apps/providers/M4Psram.h"
 #include "util/M4PluginReaderBridge.h"
 
@@ -538,6 +539,26 @@ bool ensureBook(const std::string& providerId, const std::string& bookId,
   StoredBook b;
   if (!loadPersisted(providerId, bookId, appId, b) && !inferLegacy(providerId, bookId, appId, title, b)) return false;
   if (!title.empty() && (b.spec.title.empty() || b.spec.title == b.spec.bookId)) b.spec.title = title;
+  // Legado-only TOC consistency gate: a stale shelf can persist a chapter
+  // count larger than what toc_rows.txt actually holds (interrupted refill).
+  // Clamp to readable rows and re-persist; zero readable rows fails the load
+  // so the caller falls back to a fresh catalog bootstrap instead of opening
+  // a hollow TOC.
+  if (providerId == "legado" &&
+      b.spec.catalog.kind == M4ContentProvider::ChapterCatalogKind::FileRows &&
+      !b.spec.catalog.fileRelPath.empty() && b.spec.catalog.chapterCount > 0) {
+    const size_t actualRows = countLines(b.appDataRoot + "/" + b.spec.catalog.fileRelPath);
+    const size_t clamped = M4LegadoTocPolicy::clampedChapterCount(b.spec.catalog.chapterCount, actualRows);
+    if (clamped != b.spec.catalog.chapterCount) {
+      Serial.printf("[NativeStore] legado count %u->%u rows=%u book=%s\n",
+                    static_cast<unsigned>(b.spec.catalog.chapterCount),
+                    static_cast<unsigned>(clamped), static_cast<unsigned>(actualRows),
+                    bookId.c_str());
+      if (clamped == 0) return false;
+      b.spec.catalog.chapterCount = clamped;
+      if (!persist(b)) return false;
+    }
+  }
   {
     std::lock_guard<std::mutex> lock(gMu);
     gBooks[keyOf(providerId, bookId)] = b;

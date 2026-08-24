@@ -102,6 +102,7 @@ std::string catalogErrorText(const std::string& code) {
   if (code == "json_too_many_records") return "目录章节过多";
   if (code == "json_syntax" || code == "json_truncated") return "目录数据解析失败";
   if (code == "book_locator_missing") return "书源定位丢失，请刷新书架";
+  if (code == "legado_shelf_stale") return "手机端书架已变化，请在开源阅读 App 刷新书架后重试";
   if (code == "legado_endpoint_missing") return "未找到开源阅读服务，请先用手机打开本机传书页";
   if (code == "response_too_large") {
     return "目录数据过大（章节特别多，请更新固件或换较短书试）";
