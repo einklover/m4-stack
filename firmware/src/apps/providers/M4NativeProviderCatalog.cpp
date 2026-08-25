@@ -5,6 +5,7 @@
 #include "apps/providers/M4WereadEndpoint.h"
 #include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4LegadoTocPolicy.h"
+#include "apps/providers/M4NativeCatalogPolicy.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4ProgressiveCatalog.h"
@@ -503,7 +504,7 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
 
   // --- Prefer PSRAM path ---
   PsramRowsSink mem;
-  if (mem.reserve(256u * 1024u)) {
+  if (M4NativeCatalogPolicy::preferPsramAssembly(job.providerId) && mem.reserve(256u * 1024u)) {
     M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, mem, spec.maxRows);
     RecordExtractorSink jsonSink(rows);
     M4NativeProviderHttp::Result net;
@@ -552,8 +553,9 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
     return true;
   }
 
-  // --- Fallback: direct buffered SD writes ---
-  Serial.printf("[NativeCatalog] psram unavailable → SD stream fallback\n");
+  // --- Direct buffered SD writes ---
+  // Fanqie deliberately takes this path so catalog memory stays O(1) in chapter count.
+  Serial.printf("[NativeCatalog] direct SD stream provider=%s\n", job.providerId.c_str());
   AtomicRowsSink file;
   if (!file.open(finalPath)) {
     if (outTransferOk) *outTransferOk = false;
@@ -843,7 +845,8 @@ bool start(const std::string& providerId, const std::string& bookId,
   }
   TaskHandle_t handle = nullptr;
   // Stack in PSRAM so catalog HTTPS leaves internal RAM for TLS.
-  if (M4Psram::createTask(taskMain, "NativeCatalog", 24u * 1024u, nullptr, 1, &handle) != pdPASS) {
+  if (M4Psram::createTask(taskMain, "NativeCatalog", M4NativeCatalogPolicy::kTaskStackBytes,
+                          nullptr, 1, &handle) != pdPASS) {
     gBusy.store(false, std::memory_order_release);
     publish(Phase::Error, 0, 0, "catalog_task_create");
     return false;

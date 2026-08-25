@@ -1,4 +1,5 @@
 #include "apps/providers/M4NativeProviderIo.h"
+#include "apps/M4xNetPolicy.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -425,12 +426,22 @@ bool loadCookieHeader(const std::string& appDataRoot, const std::string& provide
   if (providerId == "weread") {
     const std::string vid = cookies["wr_vid"] | "";
     const std::string skey = cookies["wr_skey"] | "";
-    const std::string rt = cookies["wr_rt"] | "";
     if (vid.empty() || skey.empty()) return false;
-    add("wr_vid", vid);
-    add("wr_skey", skey);
-    if (!rt.empty()) add("wr_rt", rt);
-    add("wr_localvid", vid);
+
+    bool hasLocalVid = false;
+    for (JsonPair kv : cookies) {
+      const std::string key = kv.key().c_str();
+      if (!M4xNetPolicy::isWereadCookieName(key)) continue;
+      std::string value;
+      if (kv.value().is<const char*>()) value = kv.value().as<const char*>();
+      else if (kv.value().is<long>()) value = std::to_string(kv.value().as<long>());
+      else if (kv.value().is<unsigned long>()) value = std::to_string(kv.value().as<unsigned long>());
+      else continue;
+      if (value.empty()) continue;
+      add(key, value);
+      if (M4xNetPolicy::toLowerAscii(key) == "wr_localvid") hasLocalVid = true;
+    }
+    if (!hasLocalVid) add("wr_localvid", vid);
     return true;
   }
 

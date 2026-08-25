@@ -141,13 +141,19 @@ inline bool parseSetCookiePair(const std::string& setCookieLine, std::string& na
   return true;
 }
 
+// WeRead session cookies are an evolving wr_* family (wr_vid, wr_skey, wr_rt, wr_ql, ...).
+inline bool isWereadCookieName(const std::string& name) {
+  const std::string n = toLowerAscii(name);
+  return n.size() > 3 && n.rfind("wr_", 0) == 0;
+}
+
 // Parse wr_* cookie pairs from a single Set-Cookie line or Cookie header value.
 inline std::vector<std::pair<std::string, std::string>> parseWereadCookieAttrs(const std::string& setCookieLine) {
   std::vector<std::pair<std::string, std::string>> out;
   std::string name, value;
   if (!parseSetCookiePair(setCookieLine, name, value)) return out;
   const std::string ln = toLowerAscii(name);
-  if (ln == "wr_vid" || ln == "wr_skey" || ln == "wr_rt") {
+  if (isWereadCookieName(ln)) {
     out.emplace_back(ln, value);
   }
   return out;

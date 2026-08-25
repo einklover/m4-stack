@@ -47,11 +47,24 @@ end
 function Auth.cookie_header()
   local c = Auth.cookies
   if not c or not c.wr_skey then return "" end
-  local parts = {}
-  if c.wr_vid then parts[#parts + 1] = "wr_vid=" .. tostring(c.wr_vid) end
-  if c.wr_skey then parts[#parts + 1] = "wr_skey=" .. tostring(c.wr_skey) end
-  if c.wr_rt then parts[#parts + 1] = "wr_rt=" .. tostring(c.wr_rt) end
-  parts[#parts + 1] = "wr_localvid=" .. tostring(c.wr_vid or "")
+  local parts, seen = {}, {}
+  local function add(name, value)
+    if value == nil then return end
+    name = tostring(name):lower()
+    value = tostring(value)
+    if value == "" or seen[name] then return end
+    parts[#parts + 1] = name .. "=" .. value
+    seen[name] = true
+  end
+  -- Keep the historically required cookies first, then replay any newer wr_* values.
+  add("wr_vid", c.wr_vid)
+  add("wr_skey", c.wr_skey)
+  add("wr_rt", c.wr_rt)
+  for name, value in pairs(c) do
+    name = tostring(name):lower()
+    if name:sub(1, 3) == "wr_" then add(name, value) end
+  end
+  if not seen.wr_localvid then add("wr_localvid", c.wr_vid) end
   return table.concat(parts, "; ")
 end
 
@@ -76,7 +89,7 @@ function Auth.absorb_set_cookie(resp)
         local name, val = nv:match("^%s*([^=]+)=(.*)$")
         if name and val then
           name = name:lower():gsub("^%s+", ""):gsub("%s+$", "")
-          if name == "wr_vid" or name == "wr_skey" or name == "wr_rt" then
+          if name:sub(1, 3) == "wr_" then
             c[name] = val
             changed = true
           end
