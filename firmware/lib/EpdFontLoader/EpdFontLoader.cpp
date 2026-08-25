@@ -29,7 +29,7 @@ M4FontPolicy::LoadResult EpdFontLoader::lastCanonicalResult = M4FontPolicy::Load
 bool EpdFontLoader::sdFontsLoaded_ = false;
 
 #ifdef CROSSPOINT_MURPHY_M4
-static void (*g_applySystemChrome)(GfxRenderer&) = nullptr;
+static bool (*g_applySystemChrome)(GfxRenderer&) = nullptr;
 #endif
 
 namespace {
@@ -118,12 +118,12 @@ void bindReaderBody(GfxRenderer& renderer, int targetPx) {
                 centerKernelReader.valid() ? 1 : 0);
 }
 
-void bindSystemChrome(GfxRenderer& renderer) {
+bool bindSystemChrome(GfxRenderer& renderer) {
   const int uiPx = M4FontPolicy::chromeUiPxFromTier(SETTINGS.getUiFontSize());
   const int smallPx = M4FontPolicy::kChromeSmallPx;
   if (!bindCkBlob(centerKernelChromeSmall) || !bindCkBlob(centerKernelChromeUi)) {
     Serial.println("[M4-FONT] CenterKernel chrome blob missing");
-    return;
+    return false;
   }
   bindCkFace(centerKernelChromeSmall, smallPx);
   bindCkFace(centerKernelChromeUi, uiPx);
@@ -132,6 +132,7 @@ void bindSystemChrome(GfxRenderer& renderer) {
   renderer.replaceFont(UI_12_FONT_ID, EpdFontFamily(&centerKernelChromeUi, &centerKernelChromeUi));
   Serial.printf("[M4-FONT] CenterKernel chrome small=%dpx ui=%dpx (tier=%u)\n", smallPx, uiPx,
                 static_cast<unsigned>(SETTINGS.getUiFontSize()));
+  return true;
 }
 
 void captureBuiltinSystemReader(const GfxRenderer& renderer) {
@@ -224,18 +225,19 @@ struct ApplyChromeHook {
   ApplyChromeHook() {
     g_applySystemChrome = [](GfxRenderer& renderer) {
       captureBuiltinSystemReader(renderer);
-      bindSystemChrome(renderer);
+      return bindSystemChrome(renderer);
     };
   }
 } applyChromeHook;
 #endif
 }  // namespace
 
-void EpdFontLoader::applySystemChrome(GfxRenderer& renderer) {
+bool EpdFontLoader::applySystemChrome(GfxRenderer& renderer) {
 #ifdef CROSSPOINT_MURPHY_M4
-  if (g_applySystemChrome) g_applySystemChrome(renderer);
+  return g_applySystemChrome ? g_applySystemChrome(renderer) : false;
 #else
   (void)renderer;
+  return false;
 #endif
 }
 

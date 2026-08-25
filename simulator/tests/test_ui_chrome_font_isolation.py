@@ -111,6 +111,7 @@ class UiChromeFontIsolationTests(unittest.TestCase):
     def test_chrome_binds_builtin_native_grid_not_reader_scaler(self) -> None:
         main = text("firmware/src/main.cpp")
         policy = text("firmware/src/util/M4FontPolicy.h")
+        loader = text("firmware/lib/EpdFontLoader/EpdFontLoader.cpp")
         self.assertNotIn("m4_compact_cjk", main)
         self.assertIn("kChromeSmallScale = 1", policy)
         self.assertIn("kChromeUi10Scale = 1", policy)
@@ -119,21 +120,7 @@ class UiChromeFontIsolationTests(unittest.TestCase):
         self.assertNotIn("kChromeSmallPx = 18", policy)
         self.assertNotIn("kChromeUi10Px = 22", policy)
         self.assertNotIn("chromeScale", policy)
-        # Chrome is the builtin native-grid at fixed integer N, never reader px.
-        self.assertIn("scaledChromeSmall.bindInteger(&nativeGridFont", main)
-        self.assertIn("scaledChromeUi10.bindInteger(&nativeGridFont", main)
-        self.assertIn("scaledChromeUi12.bindInteger(&nativeGridFont", main)
-        self.assertIn("M4FontPolicy::kChromeSmallScale", main)
-        self.assertIn("M4FontPolicy::kChromeUi10Scale", main)
-        self.assertIn("M4FontPolicy::kChromeUi12Scale", main)
-        self.assertIn("smallFontFamily(&scaledChromeSmall)", main)
-        self.assertIn("ui10FontFamily(&scaledChromeUi10", main)
-        self.assertIn("ui12FontFamily(&scaledChromeUi12", main)
-        self.assertIn("M4FontPolicy::kChromeSmallPx", main)
-        self.assertIn("M4FontPolicy::kChromeUi10Px", main)
-        self.assertIn("M4FontPolicy::kChromeUi12Px", main)
         self.assertNotIn("getReaderPixelSize()", main)
-        loader = text("firmware/lib/EpdFontLoader/EpdFontLoader.cpp")
         bind = function_body(loader, "void bindSystemReader(")
         self.assertIn("replaceFont(NOTOSANS_16_FONT_ID", bind)
         self.assertNotIn("SMALL_FONT_ID", bind)
@@ -144,6 +131,14 @@ class UiChromeFontIsolationTests(unittest.TestCase):
         self.assertIn("nativeGridIntegerScale(targetPx)", bind)
         self.assertIn("bindInteger(source, n)", bind)
         self.assertIn("source == builtinSystemReader", bind)
+        # Chrome is rebound from the CenterKernel blob at the current UI tier;
+        # it never consumes reader pixel size or reader face pointers.
+        chrome = function_body(loader, "bool bindSystemChrome(")
+        self.assertIn("M4FontPolicy::chromeUiPxFromTier(SETTINGS.getUiFontSize())", chrome)
+        self.assertIn("bindCkFace(centerKernelChromeSmall, smallPx)", chrome)
+        self.assertIn("bindCkFace(centerKernelChromeUi, uiPx)", chrome)
+        self.assertIn("EpdFontFamily(&centerKernelChromeUi", chrome)
+        self.assertNotIn("getReaderPixelSize", chrome)
 
     def test_missing_custom_glyph_keeps_builtin_chrome(self) -> None:
         ui_text = text("firmware/src/util/M4UiText.h")

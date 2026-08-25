@@ -1,5 +1,6 @@
 #pragma once
 
+#include <EpdFontLoader.h>
 #include <EpdFontFamily.h>
 #include <GfxRenderer.h>
 
@@ -16,8 +17,8 @@
 // after a font switch.
 //
 // Custom faces affect only reader/content hash IDs (and the NOTOSANS_* reader
-// bind path). This header now exists only to restore builtin chrome if a stale
-// session somehow left custom pointers mapped, and to document the contract.
+// bind path). This header repairs stale chrome mappings through the current
+// system-tier binder and retains boot-face fallback safety.
 namespace M4FixedRuntimeUiFonts {
 
 struct Originals {
@@ -54,9 +55,11 @@ inline void restore(GfxRenderer& renderer) {
   if (o.ui12Regular) renderer.replaceFont(UI_12_FONT_ID, EpdFontFamily(o.ui12Regular, o.ui12Bold));
 }
 
-// Product rule: never promote a custom Reader face onto chrome IDs.
-// Always restore builtins and report that custom chrome is not active.
+// Product rule: never promote a custom Reader face onto chrome IDs. Reapply
+// the current system tier first; only use boot-captured faces as the fallback
+// when the CenterKernel chrome blob is unavailable.
 inline bool ensure(GfxRenderer& renderer, const char* /*familyName*/) {
+  if (EpdFontLoader::applySystemChrome(renderer)) return false;
   restore(renderer);
   return false;
 }

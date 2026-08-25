@@ -34,6 +34,20 @@ OCCUPANCY_BLOB = ROOT / "firmware/src/fontdata/m4_center_kernel_16x16.bin"
 OCCUPANCY_JSON = ROOT / "firmware/src/fontdata/m4_center_kernel_16x16.json"
 NATIVE_BLOB = ROOT / "firmware/src/fontdata/m4_native_grid_15x16.bin"
 
+
+def function_body(src: str, signature: str) -> str:
+    start = src.index(signature)
+    brace = src.index("{", start)
+    depth = 0
+    for i in range(brace, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[brace + 1 : i]
+    raise AssertionError(f"unterminated function: {signature}")
+
 ALLOWED = (16, 24, 26, 36, 38, 40, 48)
 FORBIDDEN_SPLIT = (32, 45)
 DEFAULT_PX = 26
@@ -275,21 +289,20 @@ class CenterKernelReaderContract(unittest.TestCase):
         loader = LOADER.read_text(encoding="utf-8")
         self.assertIn("CenterKernel", loader)
         self.assertIn("bindReaderBody", loader)
-        # Builtin reader body must not snap 26→16 or 38→32 via nativeGridIntegerScale.
-        policy = POLICY_H.read_text(encoding="utf-8")
-        self.assertIn("centerKernel", policy.lower().replace(" ", "") or policy)
-        self.assertNotIn(
-            "nativeGridIntegerScale(targetPx)",
-            loader.split("bindSystemReader")[1].split("\n}")[0] if "bindSystemReader" in loader else loader,
-        )
+        # CenterKernel owns the primary reader path; native-grid scaling remains
+        # only as the documented missing-blob fallback.
+        self.assertIn("ensureCenterKernelBound()", loader)
+        self.assertIn("bindReaderBody(renderer, targetPx)", loader)
 
     def test_chrome_path_untouched_by_reader_kernel(self) -> None:
-        main = (ROOT / "firmware/src/main.cpp").read_text(encoding="utf-8")
-        self.assertIn("kChromeSmallScale", main)
-        self.assertIn("kChromeUi10Scale", main)
-        self.assertIn("bindInteger(&nativeGridFont", main)
         loader = LOADER.read_text(encoding="utf-8")
-        self.assertIn("SMALL/UI_10/UI_12", loader)
+        chrome = function_body(loader, "bool bindSystemChrome(")
+        self.assertIn("SMALL_FONT_ID", chrome)
+        self.assertIn("UI_10_FONT_ID", chrome)
+        self.assertIn("UI_12_FONT_ID", chrome)
+        self.assertIn("centerKernelChromeSmall", chrome)
+        self.assertIn("centerKernelChromeUi", chrome)
+        self.assertNotIn("getReaderPixelSize", chrome)
 
 
 # === Source-grid contract (TDD for CenterKernel CJK occupancy fix) ===
