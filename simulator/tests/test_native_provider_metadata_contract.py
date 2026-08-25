@@ -98,6 +98,7 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         controller = (ROOT / "firmware/src/apps/native/M4NativeAppControllerFactory.cpp").read_text(
             encoding="utf-8"
         )
+        self.assertIn('#include "apps/providers/M4LegadoBridge.h"', controller.split("namespace", 1)[0])
         header = DETAIL_HEADER.read_text(encoding="utf-8")
         legado_spec = source[source.index('if (providerId == "legado")'):source.index('if (providerId == "weread")')]
         self.assertIn(

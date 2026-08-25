@@ -2,6 +2,7 @@
 #include "apps/native/M4ScreenBridgeController.h"
 
 #include "apps/providers/M4NativeLoadUi.h"
+#include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4NativeProviderDiscovery.h"
 #include "apps/providers/M4NativeProviderExplore.h"
 #include "apps/providers/M4NativeProviderManager.h"
