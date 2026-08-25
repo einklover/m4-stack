@@ -266,12 +266,14 @@ void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi
 
   std::string selectedTitle;
   std::string selectedSubtitle;
+  std::string selectedCoverUrl;
   if (index0 >= 0 && !ctx.source.empty()) {
     M4NativeUi::Row row;
     if (controller_->rowAt(ctx.source, static_cast<size_t>(index0), row)) {
       ctx.rowKey = row.key;
       selectedTitle = row.title;
       selectedSubtitle = row.subtitle;
+      selectedCoverUrl = row.coverUrl;
     }
   }
 
@@ -307,7 +309,7 @@ void NativeAppActivity::handleAction(const std::string& action, const M4NativeUi
           [this]() {
             requestExitSubActivity();
             updateRequired_ = true;
-          }));
+          }, false, -1, selectedCoverUrl));
       return;
     }
     case M4NativeUi::ActionKind::OpenLogin: {

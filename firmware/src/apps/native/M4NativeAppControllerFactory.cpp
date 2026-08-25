@@ -245,6 +245,9 @@ class ProviderController final : public BaseController {
     fieldAt(line, 1, out.title);
     fieldAt(line, 2, out.subtitle);
     fieldAt(line, 3, out.value);
+    if (app_.provider == "fanqie" || app_.provider == "jjwxc" || app_.provider == "weread") {
+      fieldAt(line, 4, out.coverUrl);
+    }
     if (out.title.empty()) out.title = out.key;
     if (!out.value.empty()) out.value += "%";
     return !out.key.empty();

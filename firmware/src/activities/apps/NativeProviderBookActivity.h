@@ -19,16 +19,18 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
                              std::string providerId, std::string bookId,
                              std::string appId, std::string title, std::string author,
                              const std::function<void()>& onExitBook,
-                             bool autoStartReading = false, int autoOpenIndex = -1);
+                             bool autoStartReading = false, int autoOpenIndex = -1,
+                             std::string coverUrl = {});
 
   NativeProviderBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                              std::string providerId, std::string bookId,
                              std::string appId, std::string title,
                              const std::function<void()>& onExitBook,
-                             bool autoStartReading = false, int autoOpenIndex = -1)
+                             bool autoStartReading = false, int autoOpenIndex = -1,
+                             std::string coverUrl = {})
       : NativeProviderBookActivity(renderer, mappedInput, providerId, bookId, appId,
                                    title, std::string(), onExitBook, autoStartReading,
-                                   autoOpenIndex) {}
+                                   autoOpenIndex, std::move(coverUrl)) {}
 
   void onEnter() override;
   void onExit() override;
@@ -67,6 +69,7 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   std::string appId_;
   std::string title_;
   std::string author_;
+  std::string coverUrl_;
   std::string appDataRoot_;
   std::string error_;
   std::function<void()> onExitBook_;

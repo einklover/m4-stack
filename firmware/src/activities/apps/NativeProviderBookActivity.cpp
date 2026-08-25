@@ -201,13 +201,15 @@ std::string displayWordCount(const std::string& raw) {
 NativeProviderBookActivity::NativeProviderBookActivity(
     GfxRenderer& renderer, MappedInputManager& mappedInput, std::string providerId,
     std::string bookId, std::string appId, std::string title, std::string author,
-    const std::function<void()>& onExitBook, bool autoStartReading, int autoOpenIndex)
+    const std::function<void()>& onExitBook, bool autoStartReading, int autoOpenIndex,
+    std::string coverUrl)
     : ActivityWithSubactivity("NativeProviderBook", renderer, mappedInput),
       providerId_(std::move(providerId)),
       bookId_(std::move(bookId)),
       appId_(std::move(appId)),
       title_(std::move(title)),
       author_(std::move(author)),
+      coverUrl_(std::move(coverUrl)),
       onExitBook_(onExitBook),
       autoStartReading_(autoStartReading),
       autoOpenIndex_(autoOpenIndex) {}
@@ -324,6 +326,7 @@ void NativeProviderBookActivity::loadBookDetail() {
   req.bookId = bookId_;
   req.title = title_;
   req.author = author_;
+  req.coverUrl = coverUrl_;
   req.maxBytes = 96u * 1024u;
   detail_ = M4NativeProviderBookDetail::seed(req);
   detailError_.clear();

@@ -12,6 +12,7 @@ struct Row {
   std::string title;
   std::string subtitle;
   std::string value;
+  std::string coverUrl;
   bool enabled = true;
 };
 

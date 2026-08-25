@@ -103,8 +103,55 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         self.assertIn("fieldAt(line, 1, out.title)", controller)
         self.assertIn("fieldAt(line, 2, out.subtitle)", controller)
         self.assertIn("fieldAt(line, 3, out.value)", controller)
+        cover_read = 'fieldAt(line, 4, out.coverUrl)'
+        self.assertIn(cover_read, controller)
+        cover_gate = controller[controller.index('if (app_.provider == "fanqie"'):controller.index(cover_read) + len(cover_read)]
+        self.assertIn('app_.provider == "fanqie"', cover_gate)
+        self.assertIn('app_.provider == "jjwxc"', cover_gate)
+        self.assertIn('app_.provider == "weread"', cover_gate)
+        self.assertNotIn('app_.provider == "legado"', cover_gate)
         self.assertIn("Older 4-column", (ROOT / "firmware/tests/native_app/test_legado_detail.cpp").read_text())
         self.assertIn("fields[2]", header)
+
+    def test_discovery_cover_reaches_detail_seed_through_activation_chain(self):
+        controller = (ROOT / "firmware/src/apps/native/M4NativeAppControllerFactory.cpp").read_text(
+            encoding="utf-8"
+        )
+        ui_row = (ROOT / "firmware/src/apps/native/M4NativeUiController.h").read_text(encoding="utf-8")
+        activity = (ROOT / "firmware/src/activities/apps/NativeAppActivity.cpp").read_text(encoding="utf-8")
+        book_activity = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.cpp").read_text(
+            encoding="utf-8"
+        )
+        book_header = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.h").read_text(
+            encoding="utf-8"
+        )
+        detail = DETAIL.read_text(encoding="utf-8")
+        detail_header = DETAIL_HEADER.read_text(encoding="utf-8")
+
+        # This is the production chain, not a fixture-only projection:
+        # persisted TSV -> Row -> activated activity -> Request -> seed().
+        self.assertIn("std::string coverUrl;", ui_row)
+        self.assertIn("fieldAt(line, 4, out.coverUrl)", controller)
+        self.assertIn("selectedCoverUrl = row.coverUrl", activity)
+        self.assertIn("false, -1, selectedCoverUrl", activity)
+        self.assertIn("std::string coverUrl_", book_header)
+        self.assertIn("req.coverUrl = coverUrl_", book_activity)
+        self.assertIn("std::string coverUrl;", detail_header)
+        self.assertIn("detail.coverUrl = boundedUtf8(req.coverUrl, kFieldMax)", detail)
+
+        # Missing field 4 is valid for all append-only legacy rows. Legado's
+        # field 4 remains the latest-chapter display field, never cover.
+        for line in (
+            "fanqie-id\t番茄旧书\t作者\t0",
+            "jjwxc-id\t晋江旧书\t作者\t1",
+            "weread-id\t微信旧书\t作者\t42",
+            "legado-id\t本地旧书\t作者\t10\t最新章",
+        ):
+            self.assertEqual(line.split("\t")[4:] if len(line.split("\t")) > 4 else [],
+                             (["最新章"] if line.startswith("legado-") else []))
+
+        self.assertIn("out.detail = seed(req)", detail)
+        self.assertIn("if (!value.empty()) dst =", detail)
 
 
 if __name__ == "__main__":

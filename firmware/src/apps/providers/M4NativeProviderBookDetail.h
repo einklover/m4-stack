@@ -17,6 +17,7 @@ struct Request {
   std::string bookId;
   std::string title;
   std::string author;
+  std::string coverUrl;
   size_t maxBytes = 96u * 1024u;
 };
 

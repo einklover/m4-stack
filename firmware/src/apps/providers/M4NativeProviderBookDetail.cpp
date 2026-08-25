@@ -361,6 +361,7 @@ M4NovelProvider::BookDetail seed(const Request& req) {
   detail.bookId = req.bookId;
   detail.title = boundedUtf8(req.title, kFieldMax);
   detail.author = boundedUtf8(req.author, kFieldMax);
+  detail.coverUrl = boundedUtf8(req.coverUrl, kFieldMax);
   return detail;
 }
 
