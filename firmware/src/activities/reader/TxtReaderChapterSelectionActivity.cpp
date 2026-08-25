@@ -251,6 +251,7 @@ void TxtReaderChapterSelectionActivity::taskTrampoline(void* param) {
 
 void TxtReaderChapterSelectionActivity::onEnter() {
   Activity::onEnter();
+  M4TouchNavigation::activateForChapterSelection();
 
   // Full-CJK titles need reader IDs promoted from SD epdfont (not UI subset → '?').
   // ensure*: skip if boot/settings already loaded; full scan only when never done.
@@ -526,7 +527,7 @@ void TxtReaderChapterSelectionActivity::drawScreen(const std::vector<std::string
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
-  const char* header = headerTitle_.empty() ? "目  录" : headerTitle_.c_str();
+  const char* header = headerTitle_.empty() ? "目录" : headerTitle_.c_str();
   const auto metrics = UITheme::getInstance().getMetrics();
   const bool touch = mappedInput.hasTouch();
   const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;

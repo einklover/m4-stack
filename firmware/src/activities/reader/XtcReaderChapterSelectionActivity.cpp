@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 
 #include "MappedInputManager.h"
+#include "components/UITheme.h"
 #include "fontIds.h"
 #include "Xtc.h"
 #include "util/M4ListTouchPolicy.h"
@@ -40,6 +41,7 @@ void XtcReaderChapterSelectionActivity::taskTrampoline(void* param) {
 void XtcReaderChapterSelectionActivity::onEnter() {
   renderer.clearScreen();
   Activity::onEnter();
+  M4TouchNavigation::activateForChapterSelection();
 
   // Full-CJK titles; skip rescan if already loaded this session.
   EpdFontLoader::ensureFontsFromSd(renderer);
@@ -215,8 +217,8 @@ void XtcReaderChapterSelectionActivity::renderScreen() {
   const auto rowFace = M4UiText::resolveChapterRow(renderer, layoutFont);
   const int rowFont = rowFace.fontId;
   const float rowScale = rowFace.scale;
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, M4TouchListMetrics::chapterTitleY(touch), "目录", true,
-                         EpdFontFamily::BOLD);
+  const auto metrics = UITheme::getInstance().getMetrics();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight}, "目录");
 
   const int FIX_LINE_HEIGHT = M4TouchListMetrics::chapterLineHeight(touch);
   const int BASE_Y = M4TouchListMetrics::chapterListTop(touch);

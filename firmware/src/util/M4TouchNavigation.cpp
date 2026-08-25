@@ -12,18 +12,8 @@ namespace M4TouchNavigation {
 namespace {
 std::atomic<uint8_t> gMode{static_cast<uint8_t>(Mode::None)};
 std::atomic<bool> gHeaderBackVisible{false};
-
-void drawBackIcon(const GfxRenderer& renderer, int cx, int cy) {
-  // GfxRenderer::drawLine intentionally supports only horizontal/vertical
-  // lines. Draw the chevron explicitly so this stays cheap and deterministic.
-  for (int i = 0; i <= 9; ++i) {
-    renderer.drawPixel(cx - i, cy - i, true);
-    renderer.drawPixel(cx - i, cy - i + 1, true);
-    renderer.drawPixel(cx - i, cy + i, true);
-    renderer.drawPixel(cx - i, cy + i + 1, true);
-  }
-  renderer.fillRect(cx - 8, cy, 23, 2, true);
-}
+std::atomic<int> gChapterHeaderX{0};
+std::atomic<int> gChapterHeaderY{0};
 
 void drawHeaderBackIcon(const GfxRenderer& renderer, int x, int cy) {
   // Compact chevron only. Fengyan title text starts at ~20 px, so keep all
@@ -34,19 +24,6 @@ void drawHeaderBackIcon(const GfxRenderer& renderer, int x, int cy) {
     renderer.drawPixel(x + i, cy + i, true);
     renderer.drawPixel(x + i, cy + i + 1, true);
   }
-}
-
-void drawHomeIcon(const GfxRenderer& renderer, int cx, int cy) {
-  // Roof (two 45-degree strokes) + rectangular body. No font glyph is needed
-  // for the icon, so navigation remains recognizable during font failures.
-  for (int i = 0; i <= 9; ++i) {
-    renderer.drawPixel(cx - i, cy - 2 + i, true);
-    renderer.drawPixel(cx + i, cy - 2 + i, true);
-    renderer.drawPixel(cx - i, cy - 1 + i, true);
-    renderer.drawPixel(cx + i, cy - 1 + i, true);
-  }
-  renderer.drawRect(cx - 8, cy + 7, 17, 13, true);
-  renderer.fillRect(cx - 2, cy + 13, 5, 7, true);
 }
 
 bool inHeaderBack(int x, int y) {
@@ -74,26 +51,59 @@ void activateForActivity(bool showNavigation) {
 #endif
 }
 
+void activateForChapterSelection() {
+  gHeaderBackVisible.store(false, std::memory_order_release);
+  gChapterHeaderX.store(0, std::memory_order_release);
+  gChapterHeaderY.store(0, std::memory_order_release);
+#if defined(CROSSPOINT_MURPHY_M4)
+  setMode(Mode::ChapterHeaderBack);
+#else
+  setMode(Mode::None);
+#endif
+}
+
 bool hitBack(int x, int y, int screenWidth, int screenHeight) {
   const Mode m = mode();
   if (m == Mode::HeaderBack) return inHeaderBack(x, y);
+  if (m == Mode::ChapterHeaderBack) {
+    return TouchHitGeometry::chapterHeaderBackRect(gChapterHeaderX.load(std::memory_order_acquire),
+                                                   gChapterHeaderY.load(std::memory_order_acquire))
+        .contains(x, y);
+  }
   if (m == Mode::BottomBackHome) {
-    const int top = screenHeight - kBottomBarHeight;
-    const bool bottomBack = y >= top && y < screenHeight && x >= 0 && x < screenWidth / 2;
-    return bottomBack || inHeaderBack(x, y);
+    const auto layout = TouchHitGeometry::makeBottomNavigationLayout(screenWidth, screenHeight, kBottomBarHeight);
+    return layout.back.contains(x, y) || inHeaderBack(x, y);
   }
   return false;
 }
 
 bool hitHome(int x, int y, int screenWidth, int screenHeight) {
   if (mode() != Mode::BottomBackHome) return false;
-  const int top = screenHeight - kBottomBarHeight;
-  return y >= top && y < screenHeight && x >= screenWidth / 2 && x < screenWidth;
+  return TouchHitGeometry::makeBottomNavigationLayout(screenWidth, screenHeight, kBottomBarHeight).home.contains(x, y);
 }
 
-void drawHeaderBack(const GfxRenderer& renderer, const Rect& headerRect) {
+void drawHeaderBack(const GfxRenderer& renderer, const Rect& headerRect, const char* title) {
 #if defined(CROSSPOINT_MURPHY_M4)
   if (!enabled() || headerRect.width <= 0 || headerRect.height <= 0) return;
+  if (mode() == Mode::ChapterHeaderBack) {
+    gChapterHeaderX.store(headerRect.x, std::memory_order_release);
+    gChapterHeaderY.store(headerRect.y, std::memory_order_release);
+    constexpr int kVisibleWidth = 112;
+    renderer.fillRect(headerRect.x, headerRect.y, kVisibleWidth, headerRect.height, true);
+    M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, headerRect.x, headerRect.y, kVisibleWidth,
+                                headerRect.height, "返回", false, EpdFontFamily::BOLD, 8);
+    if (title && title[0]) {
+      const int titleX = headerRect.x + kChapterHeaderHitWidth + 16;
+      const int titleWidth = headerRect.width - kChapterHeaderHitWidth - 16;
+      if (titleWidth > 0) {
+        const auto label = M4UiText::truncated(renderer, UI_12_FONT_ID, title, titleWidth,
+                                               EpdFontFamily::BOLD);
+        M4UiText::draw(renderer, UI_12_FONT_ID, titleX, headerRect.y + 6, label.c_str(), true,
+                       EpdFontFamily::BOLD);
+      }
+    }
+    return;
+  }
   // Visible icon stays inside the theme's existing left padding; hit area is
   // 56x56, so the control remains easy to tap without changing list geometry.
   const int cy = headerRect.y + headerRect.height / 2 - 2;
@@ -112,8 +122,9 @@ void drawBottomBar(GfxRenderer& renderer) {
 
   const int w = renderer.getScreenWidth();
   const int h = renderer.getScreenHeight();
-  const int top = h - kBottomBarHeight;
-  if (top < 0) return;
+  const auto layout = TouchHitGeometry::makeBottomNavigationLayout(w, h, kBottomBarHeight);
+  if (!layout.valid()) return;
+  const int top = layout.back.y;
 
   // Replace legacy hardware-only hints with a high-contrast, stable touch bar.
   // The standard layouts already reserve roughly this much footer space.
@@ -121,12 +132,10 @@ void drawBottomBar(GfxRenderer& renderer) {
   renderer.drawLine(0, top, w - 1, top, true);
   renderer.drawLine(w / 2, top + 7, w / 2, h - 7, true);
 
-  const int iconY = top + 18;
-  drawBackIcon(renderer, w / 4 - 30, iconY);
-  drawHomeIcon(renderer, 3 * w / 4 - 30, iconY - 7);
-
-  M4UiText::draw(renderer, UI_10_FONT_ID, w / 4 - 8, top + 12, "返回", true);
-  M4UiText::draw(renderer, UI_10_FONT_ID, 3 * w / 4 - 8, top + 12, "主页", true);
+  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, layout.back.x, layout.back.y, layout.back.width,
+                              layout.back.height, "返回", true, EpdFontFamily::BOLD, 0);
+  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, layout.home.x, layout.home.y, layout.home.width,
+                              layout.home.height, "主页", true, EpdFontFamily::BOLD, 0);
 #else
   (void)renderer;
 #endif

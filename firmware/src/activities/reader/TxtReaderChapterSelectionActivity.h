@@ -28,8 +28,8 @@ class TxtReaderChapterSelectionActivity final : public Activity {
   std::vector<std::string> externalCacheTitles_;
   std::vector<uint8_t> externalCachePresent_;
   bool useExternal_ = false;
-  // Explicit label complements the existing 56px header-back hit target.
-  std::string headerTitle_ = "返回  目  录";
+  // The shared chapter-header Back control supplies the explicit affordance.
+  std::string headerTitle_ = "目录";
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   int chapternum = 0;
@@ -77,7 +77,7 @@ class TxtReaderChapterSelectionActivity final : public Activity {
                                              std::vector<std::string> titles, int currentIndex,
                                              const std::function<void()>& onGoBack,
                                              const std::function<void(int newChapterNum)>& onSelectchapter,
-                                             std::string headerTitle = "返回  目  录")
+                                             std::string headerTitle = "目录")
       : Activity("TxtReaderChapterSelection", renderer, mappedInput),
         externalTitles_(std::move(titles)),
         externalCount_(static_cast<int>(externalTitles_.size())),
@@ -93,7 +93,7 @@ class TxtReaderChapterSelectionActivity final : public Activity {
                          std::vector<uint8_t>& present)> pageLoader,
       int currentIndex, const std::function<void()>& onGoBack,
       const std::function<void(int newChapterNum)>& onSelectchapter,
-      std::string headerTitle = "返回  目  录")
+      std::string headerTitle = "目录")
       : Activity("TxtReaderChapterSelection", renderer, mappedInput),
         externalPageLoader_(std::move(pageLoader)),
         externalCount_(chapterCount < 0 ? 0 : chapterCount),

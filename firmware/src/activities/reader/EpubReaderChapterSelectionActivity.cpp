@@ -38,6 +38,7 @@ void EpubReaderChapterSelectionActivity::taskTrampoline(void* param) {
 
 void EpubReaderChapterSelectionActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
+  M4TouchNavigation::activateForChapterSelection();
   if (!epub) return;
 
   EpdFontLoader::ensureFontsFromSd(renderer);
