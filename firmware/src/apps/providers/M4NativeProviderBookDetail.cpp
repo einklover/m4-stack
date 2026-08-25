@@ -140,6 +140,8 @@ JsonVariantConst fanqieNode(const JsonDocument& doc) {
   if (!data.isNull() && data.size() > 0) return data[0];
   JsonVariantConst nested = doc["data"]["data"];
   if (!nested.isNull()) return nested;
+  JsonObjectConst object = doc["data"].as<JsonObjectConst>();
+  if (!object.isNull()) return object;
   return doc.as<JsonVariantConst>();
 }
 
@@ -250,9 +252,9 @@ Result fetchFanqie(const Request& req, const CancelFn& cancelled) {
   out.detail = seed(req);
 
   M4NativeProviderHttp::Request http;
-  http.url =
-      "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/multi-detail/v/"
-      "?aid=1967&iid=1&version_code=999&book_id=" + req.bookId;
+  // Current Fanqie web API. The legacy api5 multi-detail endpoint now returns
+  // HTTP 200 with an empty body, so it cannot supply optional metadata.
+  http.url = "https://fanqienovel.com/api/book/info?bookId=" + req.bookId;
   http.headers = {{"User-Agent", kFanqieUa}, {"Referer", "https://fanqienovel.com/"}};
   http.maxBytes = std::max<size_t>(48u * 1024u, req.maxBytes);
   http.timeoutMs = 30000;
@@ -271,7 +273,7 @@ Result fetchFanqie(const Request& req, const CancelFn& cancelled) {
   if (!parseBody(body, doc, out)) return out;
   JsonVariantConst node = fanqieNode(doc);
   assignField(out.detail.title, firstText(node, {"book_name", "bookName", "title"}));
-  assignField(out.detail.author, firstText(node, {"author", "author_name"}));
+  assignField(out.detail.author, firstText(node, {"author", "authorName", "author_name"}));
   assignField(out.detail.intro, cleanIntro(firstText(node, {"abstract", "introduction", "intro"})), kIntroMax);
   assignField(out.detail.kind, firstText(node, {"category", "complete_category", "sub_info"}));
   assignField(out.detail.status, fanqieStatus(node));
