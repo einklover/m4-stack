@@ -37,7 +37,9 @@ namespace {
 constexpr uint32_t kChapterLoadingTimeoutMs = 45u * 1000u;
 
 std::string chapterErrorText(const std::string& code) {
-  if (code == "http_request_failed") return "网络请求失败";
+  if (code == "http_request_failed" || code.rfind("http_ESP_ERR", 0) == 0) {
+    return "网络请求失败（时间不准时会自动校时，请再试）";
+  }
   if (code == "http_begin_failed") return "无法建立网络连接";
   if (code == "wifi_not_connected") return "Wi-Fi 未连接";
   if (code == "http_401" || code == "http_403") return "登录已失效";

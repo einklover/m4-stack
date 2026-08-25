@@ -1,5 +1,6 @@
 #include "apps/M4HttpTransport.h"
 
+#include "apps/M4OnlineClockSync.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeWifi.h"
 
@@ -174,6 +175,7 @@ Result perform(esp_http_client_handle_t h, const Request& req, RxCtx& ctx, const
     logStep(tag ? tag : "perform", "wifi_not_connected", nullptr);
     return out;
   }
+  M4OnlineClockSync::ensureOnce();
   M4NativeProviderHeavyGate::diagnosticStage() = 0x411;
   esp_http_client_set_user_data(h, &ctx);
   esp_http_client_set_method(h, std::strcmp(req.method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);

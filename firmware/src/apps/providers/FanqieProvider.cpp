@@ -1,6 +1,7 @@
 #include "apps/providers/M4NativeProvider.h"
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderIo.h"
+#include "apps/M4OnlineClockSync.h"
 
 #include "apps/M4xJsonStream.h"
 
@@ -72,6 +73,10 @@ class FanqieProvider final : public M4NativeProvider::Adapter {
       if (progress) progress(M4NativeProvider::Phase::Ready, 0, cached, 100);
       return out;
     }
+
+    // TLS cert checks and the :8043 nt= date gate both fail when the ESP clock
+    // is still at epoch. One bounded SNTP poll, only if time is out of range.
+    M4OnlineClockSync::ensureOnce();
 
     const auto fetchAttempt = [&]() {
       M4NativeProvider::FetchResult attempt;
