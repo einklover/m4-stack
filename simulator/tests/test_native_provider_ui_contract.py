@@ -2,6 +2,7 @@ import importlib.util
 import tempfile
 import unittest
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -9,6 +10,25 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class NativeProviderUiContractTests(unittest.TestCase):
+    def test_provider_entries_have_direct_book_activation_and_no_details_footer(self):
+        for provider in ("fanqie", "jjwxc", "weread", "legado"):
+            plugin = ROOT / "plugins" / f"m4-{provider}-plugin"
+            root = ET.parse(plugin / "main.xml").getroot()
+            home = root.find("./screen[@id='home']")
+            self.assertIsNotNone(home, provider)
+            books = home.find("./list[@id='books']")
+            self.assertIsNotNone(books, provider)
+            self.assertEqual(books.attrib.get("onActivate"), "provider.openBook")
+            buttons = home.find("./buttons")
+            self.assertIsNotNone(buttons, provider)
+            self.assertNotEqual(buttons.attrib.get("primary"), "详情")
+
+    def test_native_activity_tap_dispatches_list_action_directly(self):
+        source = (ROOT / "firmware/src/activities/apps/NativeAppActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("handleAction(listAction_, nullptr, hit)", source)
+        self.assertIn("handleAction(listAction_.empty() ? buttonActions_[1] : listAction_, nullptr, selectedIndex_)", source)
+        self.assertIn("footerLayout_.buttonAt", source)
+
     def test_detail_enrichment_is_not_run_by_activity_task(self):
         source = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.cpp").read_text()
         self.assertNotIn("M4NativeProviderBookDetail::fetch(req)", source)

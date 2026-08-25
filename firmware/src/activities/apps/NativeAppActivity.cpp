@@ -81,7 +81,7 @@ int flowDefaultHeight(const M4NativeUi::Node& node) {
   return M4NativeUi::hasStyle(node.style, M4NativeUi::StyleCompact) ? 72 : 96;
 }
 
-int tilesDefaultHeight(const M4NativeUi::Node&) { return 116; }
+int tilesDefaultHeight(const M4NativeUi::Node&) { return 152; }
 
 int nodeSidePadding(const M4NativeUi::Node& node, int base) {
   return base + (M4NativeUi::hasStyle(node.style, M4NativeUi::StyleInset) ? 10 : 0);
@@ -496,34 +496,17 @@ void NativeAppActivity::loop() {
   int tx = 0, ty = 0;
   if (!mappedInput.wasScreenTapped(tx, ty)) return;
   const auto metrics = UITheme::getInstance().getMetrics();
-  const int footerTop = renderer.getScreenHeight() - metrics.buttonHintsHeight;
-  if (ty >= footerTop) {
-    const int slot = std::min(3, std::max(0, tx * 4 / std::max(1, renderer.getScreenWidth())));
-    if (!buttonActions_[slot].empty()) handleAction(buttonActions_[slot]);
+  const int slot = footerLayout_.buttonAt(tx, ty);
+  if (slot >= 0 && slot < 4) {
+    if (!footerActions_[slot].empty()) handleAction(footerActions_[slot]);
     return;
   }
 
-  if (tilesNode_ && tilesCount_ > 0 && ty >= tilesTop_ && ty < tilesTop_ + tilesHeight_) {
-    const int pad = nodeSidePadding(*tilesNode_, metrics.contentSidePadding);
-    constexpr int gap = 6;
-    const int columns = std::max(1, tilesColumns_);
-    const int rows = std::max(1, (tilesCount_ + columns - 1) / columns);
-    const int innerWidth = std::max(1, renderer.getScreenWidth() - 2 * pad);
-    const int cellWidth = std::max(1, (innerWidth - gap * (columns - 1)) / columns);
-    const int cellHeight = std::max(1, (tilesHeight_ - gap * (rows - 1)) / rows);
-    const int localX = tx - pad;
-    const int localY = ty - tilesTop_;
-    if (localX >= 0 && localY >= 0) {
-      const int col = localX / std::max(1, cellWidth + gap);
-      const int row = localY / std::max(1, cellHeight + gap);
-      const int inCellX = localX % std::max(1, cellWidth + gap);
-      const int inCellY = localY % std::max(1, cellHeight + gap);
-      const int index = row * columns + col;
-      if (col >= 0 && col < columns && row >= 0 && row < rows && index >= 0 &&
-          index < tilesCount_ && inCellX < cellWidth && inCellY < cellHeight) {
-        handleAction(tilesNode_->action, tilesNode_, index);
-        return;
-      }
+  if (tilesNode_) {
+    const int index = tilesLayout_.indexAt(tx, ty);
+    if (index >= 0) {
+      handleAction(tilesNode_->action, tilesNode_, index);
+      return;
     }
   }
 
@@ -562,11 +545,10 @@ void NativeAppActivity::render() {
   listSource_.clear();
   listNodeId_.clear();
   listAction_.clear();
-  tilesTop_ = 0;
-  tilesHeight_ = 0;
-  tilesCount_ = 0;
-  tilesColumns_ = 4;
+  tilesLayout_ = {};
   tilesNode_ = nullptr;
+  footerLayout_ = {};
+  for (auto& a : footerActions_) a.clear();
   flowVisible_ = false;
 
   if (!error_.empty()) {
@@ -596,7 +578,7 @@ void NativeAppActivity::render() {
                                M4NativeUi::hasStyle(screen->style, M4NativeUi::StyleCompact);
   const int screenGap = documentCompact ? std::max(2, metrics.verticalSpacing / 2) : metrics.verticalSpacing;
   int y = metrics.topPadding + metrics.headerHeight + screenGap;
-  const int contentBottom = h - metrics.buttonHintsHeight - screenGap;
+  const int contentBottom = h - M4NativeUi::ProviderFooterLayout::kHeight - screenGap;
   int fixedHeight = 0;
   const M4NativeUi::Node* flexList = nullptr;
   for (const auto& node : screen->nodes) {
@@ -698,28 +680,18 @@ void NativeAppActivity::render() {
         const size_t requested = node.pageSize > 0 ? static_cast<size_t>(node.pageSize) : 8u;
         const int count = static_cast<int>(std::min<size_t>(8, std::min(requested, controller_->rowCount(node.source))));
         const int pad = nodeSidePadding(node, metrics.contentSidePadding);
-        constexpr int gap = 6;
-        constexpr int columns = 4;
-        const int rows = std::max(1, (count + columns - 1) / columns);
-        const int innerWidth = std::max(1, w - 2 * pad);
-        const int cellWidth = std::max(1, (innerWidth - gap * (columns - 1)) / columns);
-        const int cellHeight = std::max(1, (height - gap * (rows - 1)) / rows);
-        tilesTop_ = y;
-        tilesHeight_ = height;
-        tilesCount_ = count;
-        tilesColumns_ = columns;
+        tilesLayout_ = M4NativeUi::ProviderTileLayout::make(w, y, height, count, pad);
         tilesNode_ = &node;
         for (int i = 0; i < count; ++i) {
           M4NativeUi::Row row;
           if (!controller_->rowAt(node.source, static_cast<size_t>(i), row)) continue;
-          const int col = i % columns;
-          const int r = i / columns;
-          const int x = pad + col * (cellWidth + gap);
-          const int tileY = y + r * (cellHeight + gap);
+          const auto tile = tilesLayout_.rectFor(i);
           const bool selected = row.value == "selected";
-          if (selected && cellWidth > 8 && cellHeight > 8) renderer.fillRoundedRect(x + 3, tileY + 3, cellWidth - 6, cellHeight - 6, 7, Color::LightGray);
-          const std::string titleText = M4UiText::truncated(renderer, UI_10_FONT_ID, row.title.c_str(), std::max(1, cellWidth - 8), selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
-          M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, tileY, cellWidth, cellHeight, titleText.c_str(), true, selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 4);
+          if (selected && tile.width > 8 && tile.height > 8) renderer.fillRoundedRect(tile.x + 3, tile.y + 3, tile.width - 6, tile.height - 6, 7, Color::LightGray);
+          const auto family = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+          const std::string titleText = M4UiText::truncated(renderer, UI_10_FONT_ID, row.title.c_str(), tilesLayout_.labelMaxWidth(), family);
+          M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, tile.x, tile.y, tile.width, tile.height,
+                                      titleText.c_str(), true, family, M4NativeUi::ProviderTileLayout::kLabelPadding);
         }
         y += height;
         break;
@@ -803,16 +775,34 @@ void NativeAppActivity::render() {
   for (const auto& node : screen->nodes) {
     if (node.type == M4NativeUi::NodeType::Buttons) { buttons = &node; break; }
   }
-  const char* raw[4] = {"« 返回", listCount_ > 0 ? "打开" : "", "", ""};
+  const char* raw[4] = {"返回", "", "", ""};
   std::string owned[4];
   if (buttons) {
     for (int i = 0; i < 4; ++i) {
       owned[i] = resolved(buttons->labels[i]);
-      if (!owned[i].empty()) raw[i] = owned[i].c_str();
+      raw[i] = owned[i].c_str();
     }
   }
   const auto labels = mappedInput.mapLabels(raw[0], raw[1], raw[2], raw[3]);
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+  const auto actions = mappedInput.mapLabels(buttonActions_[0].c_str(), buttonActions_[1].c_str(),
+                                             buttonActions_[2].c_str(), buttonActions_[3].c_str());
+  const char* mappedLabels[4] = {labels.btn1, labels.btn2, labels.btn3, labels.btn4};
+  const char* mappedActions[4] = {actions.btn1, actions.btn2, actions.btn3, actions.btn4};
+  bool active[4] = {};
+  for (int i = 0; i < 4; ++i) {
+    footerActions_[i] = mappedActions[i] ? mappedActions[i] : "";
+    active[i] = mappedLabels[i] && mappedLabels[i][0] != '\0' && !footerActions_[i].empty();
+  }
+  footerLayout_ = M4NativeUi::ProviderFooterLayout::make(w, h, active);
+  renderer.fillRect(0, footerLayout_.top, w, footerLayout_.height, false);
+  if (footerLayout_.height > 0) renderer.drawLine(0, footerLayout_.top, w - 1, footerLayout_.top, true);
+  for (int i = 0; i < footerLayout_.count; ++i) {
+    const auto& button = footerLayout_.buttons[i];
+    renderer.fillRect(button.x, button.y, button.width, button.height, false);
+    renderer.drawRect(button.x, button.y, button.width, button.height, true);
+    M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, button.x, button.y, button.width, button.height,
+                                mappedLabels[i], true, EpdFontFamily::BOLD, 8);
+  }
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 

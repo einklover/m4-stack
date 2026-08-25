@@ -58,16 +58,15 @@ class NativeAppActivity final : public ActivityWithSubactivity {
   std::string listNodeId_;
   std::string listAction_;
 
-  // Bounded category tiles are a fixed 4-column touch target above the flex
+  // Bounded category tiles share one 3-column draw/hit layout above the flex
   // list. They intentionally do not add another focus model: hardware keys
   // continue to operate the book list while M4 touch selects a category.
-  int tilesTop_ = 0;
-  int tilesHeight_ = 0;
-  int tilesCount_ = 0;
-  int tilesColumns_ = 4;
+  M4NativeUi::ProviderTileLayout tilesLayout_;
   const M4NativeUi::Node* tilesNode_ = nullptr;
 
   std::string buttonActions_[4];
+  std::string footerActions_[4];
+  M4NativeUi::ProviderFooterLayout footerLayout_;
 
   // Flow text is paged by the native renderer, where the actual font metrics
   // are known. XML/controllers continue to provide one plain UTF-8 body.
