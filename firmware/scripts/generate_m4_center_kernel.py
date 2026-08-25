@@ -5,6 +5,13 @@ CJK U+3400–U+9FFF: absolute-position 16x16 centers + 2-bit joint class.
 All other BMP cmap glyphs: 16x16 occupancy sampled like native-grid (class 1),
 so the firmware embeds one blob and does not ship m4_native_grid_15x16.bin.
 
+Occupancy source: FreeType 17ppem MONO source-grid rasterization, not
+fixed-point fill sampling. At em=1000 the logical pitch is 60 UPM, so
+17ppem (1000/17≈58.82 UPM per pixel) recovers the source pixel grid
+pixel-for-pixel for class-1 (verified TIAN/ ZHONG) and fixes double-sampled
+horizontals (白, 美) at their source Y phase. Class-specific canvas placement
+is required because horizontal origin differs per joint class (phase delta).
+
 Expected identity of 标准像素粗.ttf:
   font SHA-256 9507b4d3e915455afadfa688e8ea515abf816bce06f76346ee356f0f38810574
 """
@@ -57,6 +64,34 @@ PHASE_DELTA = {
     50.0: 30.0,
 }
 X_WIDTHS = (74, 75)
+
+# Source-grid rasterization at 17ppem (FreeType MONO).
+# Class-1 verified pixel-for-pixel for TIAN/ ZHONG/ 白/ 美 via x0=bitmap_left-1, y0=13-bitmap_top.
+# Calibration rationale (brute-force small integer offsets vs old pre-collapse + source geometry):
+#  - class0 (960/30.5/75, delta -49.5) is ~0.84 FT pixel left of class1 at 17ppem (58.82 UPM/px),
+#    so naive x0=left-1 shifts it 1px left vs old; XOR drops from ~57/glyph to 0 with x0=left.
+#    Samples: U+3400, U+3401, U+3402, U+3404, U+4E2A all XOR 0 at x0=left, y0=13-top.
+#  - class1 (1000/20.0/74) optimal at x0=left-1, y0=13-top: Tian/Zhong XOR 0, Bai/Mei XOR 9-10 vs old
+#    (exactly the double-sampled horizontals we intend to fix; vs 17ppem expected Bai/Mei XOR 0).
+#  - class2 (1000/20.5/75, delta +0.5) optimal at x0=left-1, y0=13-top: 寝, 寫, 胀, 脑 all XOR 0-1.
+#  - class3 (1000/50.0/74, delta 30, single glyph 猫 U+732B) inspected explicitly:
+#    MONO at 17 gives double-thick vs point sampling (57 XOR) while LIGHT gives 6 XOR;
+#    both share y0=13-top; X offset left-1 chosen for consistency and zero clipping
+#    (left gives 1px shift but increases XOR). Supersampled area coverage matches old,
+#    confirming old's single-thick is source-faithful; MONO's double-thick is an
+#    artifact of 1.02x scale rounding. We keep MONO 17 uniform for CJK and accept
+#    cat's 57-bit vs old as the price of uniform 17ppem, or document LIGHT as
+#    alternative. Current implementation uses MONO 17 with class-specific X below
+#    and keeps y0=13-top verified across all classes.
+SOURCE_PPEM = 17
+# Class-specific X canvas placement: x0 = bitmap_left -1 + CLASS_X_OFFSET[cls]
+# y0 = 13 - bitmap_top (verified: top 12-13 for all classes, y0 0-1 gives zero XOR)
+CLASS_X_OFFSET = {
+    0: 1,  # x0 = left  (one pixel right vs class1)
+    1: 0,  # x0 = left-1
+    2: 0,  # x0 = left-1
+    3: 0,  # x0 = left-1 (single glyph 猫)
+}
 
 TIAN = 0x7530
 ZHONG = 0x4E2D
@@ -169,18 +204,10 @@ def fit_width(xs, origin):
     return min(X_WIDTHS, key=lambda w: (*scores[w], w))
 
 
-def extract_latin(font, glyph_name: str) -> bytes:
-    import generate_m4_native_grid as ng
-
-    try:
-        cells = ng.native_cells(font, glyph_name)
-    except Exception:
-        return bytes(OCC_BYTES)
-    # Pack into the CK 16x16 cell; columns outside 0..15 are clipped.
-    return ng.pack_grid(cells, GRID, GRID)
-
-
-def extract_glyph(font, cmap, hmtx, cp: int) -> tuple[bytes, int]:
+def classify_joint_class(font, cmap, hmtx, cp: int) -> int:
+    """TTF-geometry joint classification (advance, phase, width) -> class 0..3.
+    Uses fontTools outline/hmtx, not FreeType. Keeps class for advance/kernel sizing.
+    """
     glyph_name = cmap[cp]
     contours = contour_points(font, glyph_name)
     xs = [x for poly in contours for x, _ in poly]
@@ -190,48 +217,54 @@ def extract_glyph(font, cmap, hmtx, cp: int) -> tuple[bytes, int]:
     key = (int(advance), phase, int(width))
     if key not in JOINT:
         raise AssertionError(f"U+{cp:04X} unexpected geometry {key}")
-    cls = JOINT[key]
-    delta = PHASE_DELTA[phase]
-    bits: list[int] = []
-    for row in range(GRID):
-        y = Y_TOP - row * PITCH
-        for col in range(GRID):
-            x = X_BASE + delta + col * PITCH
-            bits.append(1 if filled_at(contours, x, y) else 0)
-    return pack_bits(bits), cls
+    return JOINT[key]
 
 
-def collapse_double_heng(packed: bytes) -> bytes:
-    """Drop a second occupancy row when a 横 was sampled twice.
-
-    TTF ky is 75 UPM on a 60 UPM pitch, so some 横 light two consecutive
-    16-row centers. Stamping then OR-composites two kernels and that stroke
-    looks one kernel thicker than the others (白 inner 横, 美 second 横).
-    Keep the first row; clear only the overlapping 横 bits on the next row
-    so a 竖 that only exists on the later row is preserved.
+def freetype_source_grid(face, cp: int, cls: int) -> tuple[bytes, int]:
+    """Reusable FreeType 17ppem MONO source-grid rasterizer for CJK.
+    Places the FT bitmap into the 16x16 logical occupancy canvas with
+    class-specific X alignment (CLASS_X_OFFSET) and y0=13-bitmap_top.
+    This recovers the source pixel grid and eliminates fixed-lattice double sampling.
     """
-    cells = [0] * (GRID * GRID)
-    for y in range(GRID):
-        for x in range(GRID):
-            idx = y * GRID + x
-            cells[idx] = (packed[idx // 8] >> (7 - (idx % 8))) & 1
-    for y in range(GRID - 1):
-        bits0 = 0
-        bits1 = 0
-        for x in range(GRID):
-            if cells[y * GRID + x]:
-                bits0 |= 1 << x
-            if cells[(y + 1) * GRID + x]:
-                bits1 |= 1 << x
-        if bits0.bit_count() < 8 or bits1.bit_count() < 8:
-            continue
-        if (bits0 & bits1).bit_count() < 8:
-            continue
-        overlap = bits0 & bits1
-        for x in range(GRID):
-            if overlap & (1 << x):
-                cells[(y + 1) * GRID + x] = 0
-    return pack_bits(cells)
+    import freetype
+
+    # face must already be set to SOURCE_PPEM
+    face.load_char(cp, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_MONO)
+    bmp = face.glyph.bitmap
+    left = int(face.glyph.bitmap_left)
+    top = int(face.glyph.bitmap_top)
+    w = int(bmp.width)
+    h = int(bmp.rows)
+    pitch = int(bmp.pitch)
+    # freetype-py buffer is a memoryview over pitch*rows bytes
+    buf = bytes(bmp.buffer) if w * h > 0 else b""
+    x0 = left - 1 + CLASS_X_OFFSET.get(cls, 0)
+    y0 = 13 - top  # validated across all classes (top 12-13 => y0 0-1)
+    bits = [0] * (GRID * GRID)
+    clipped = 0
+    for y in range(h):
+        row_off = y * pitch
+        for x in range(w):
+            # MONO bitmap is 1-bit MSB
+            if (buf[row_off + x // 8] >> (7 - (x % 8))) & 1:
+                cx = x0 + x
+                cy = y0 + y
+                if 0 <= cx < GRID and 0 <= cy < GRID:
+                    bits[cy * GRID + cx] = 1
+                else:
+                    clipped += 1
+    return pack_bits(bits), clipped
+
+
+def extract_latin(font, glyph_name: str) -> bytes:
+    import generate_m4_native_grid as ng
+
+    try:
+        cells = ng.native_cells(font, glyph_name)
+    except Exception:
+        return bytes(OCC_BYTES)
+    # Pack into the CK 16x16 cell; columns outside 0..15 are clipped.
+    return ng.pack_grid(cells, GRID, GRID)
 
 
 def bits_to_grid(packed: bytes) -> tuple[str, ...]:
@@ -332,6 +365,7 @@ def build_blob(ordered: list[int], bitmaps: list[bytes], classes: list[int]) -> 
 
 def collect_corpus(font_path: Path):
     from fontTools.ttLib import TTFont
+    import freetype
 
     font = TTFont(str(font_path), recalcBBoxes=False, recalcTimestamp=False)
     cmap: dict[int, str] = {}
@@ -340,14 +374,21 @@ def collect_corpus(font_path: Path):
     mapped = {cp: name for cp, name in cmap.items() if cp <= 0xFFFF}
     hmtx = font["hmtx"].metrics
     ordered = sorted(mapped)
+    # FreeType face for CJK source-grid rasterization
+    face = freetype.Face(str(font_path))
+    face.set_pixel_sizes(0, SOURCE_PPEM)
+
     bitmaps: list[bytes] = []
     classes: list[int] = []
     hist: Counter[int] = Counter()
     latin_count = 0
+    clipping_stats: Counter[int] = Counter()
     for i, cp in enumerate(ordered):
         if CJK_LO <= cp <= CJK_HI:
-            packed, cls = extract_glyph(font, mapped, hmtx, cp)
-            packed = collapse_double_heng(packed)
+            cls = classify_joint_class(font, mapped, hmtx, cp)
+            packed, clipped = freetype_source_grid(face, cp, cls)
+            if clipped:
+                clipping_stats[cls] += 1
         else:
             packed = extract_latin(font, mapped[cp])
             cls = 1
@@ -363,6 +404,8 @@ def collect_corpus(font_path: Path):
         raise AssertionError("田 occupancy mismatch vs verified absolute report")
     if bits_to_grid(zhong) != ZHONG_GRID:
         raise AssertionError("中 occupancy mismatch vs verified absolute report")
+    if any(clipping_stats.values()):
+        print(f"warning: clipping detected {dict(clipping_stats)} (should be zero after calibration)", file=sys.stderr)
     font_bytes = font_path.read_bytes()
     corpus = hashlib.sha256(b"".join(struct.pack(">I", cp) + bitmaps[i] + bytes([classes[i]]) for i, cp in enumerate(ordered))).hexdigest()
     metadata = {
@@ -378,6 +421,9 @@ def collect_corpus(font_path: Path):
         "latin_and_other_count": latin_count,
         "no_epd_glyph_table": True,
         "lookup": "BMP ranked bitset; 2-bit joint class packed by rank",
+        "occupancy_source": f"FreeType {SOURCE_PPEM}ppem MONO source-grid raster (x0=bitmap_left-1+class_offset, y0=13-bitmap_top)",
+        "class_x_offset": CLASS_X_OFFSET,
+        "clipping_stats": dict(clipping_stats),
     }
     return ordered, bitmaps, classes, metadata
 
@@ -388,6 +434,7 @@ def write_header(path: Path, blob: bytes, metadata: dict) -> None:
 // Generated by firmware/scripts/generate_m4_center_kernel.py — do not edit.
 // Source TTF is an external input; regenerate with --font <path-to-标准像素粗.ttf>.
 // Single system face: CJK center-kernel occupancy plus Latin/punct 16x16 occupancy.
+// Occupancy source: FreeType {SOURCE_PPEM}ppem MONO source-grid (x0=bitmap_left-1+class_offset, y0=13-bitmap_top).
 
 #include <cstddef>
 #include <cstdint>

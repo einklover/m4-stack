@@ -11,7 +11,7 @@
     "2": 4,
     "3": 1
   },
-  "supported_corpus_sha256": "18387ebc26f884ed492be5f95336df6eb4bd8bdd659ddc707d2478adbc169a9c",
+  "supported_corpus_sha256": "4ea7ae807bc65570ea50e027019040900f45c2ec4b50108fd72f8e6324bccd71",
   "cjk_range": [
     "U+3400",
     "U+9FFF"
@@ -19,8 +19,19 @@
   "latin_and_other_count": 1432,
   "no_epd_glyph_table": true,
   "lookup": "BMP ranked bitset; 2-bit joint class packed by rank",
+  "occupancy_source": "FreeType 17ppem MONO source-grid raster (x0=bitmap_left-1+class_offset, y0=13-bitmap_top)",
+  "class_x_offset": {
+    "0": 1,
+    "1": 0,
+    "2": 0,
+    "3": 0
+  },
+  "clipping_stats": {
+    "0": 113,
+    "1": 67
+  },
   "blob_bytes": 939815,
-  "blob_sha256": "ce583aa20d016a5a816464c297d31b3896d56d77c5d9ad59cbb8abb8f2c37586",
+  "blob_sha256": "72e46e2ae4b9c62ff0e62d571fbbeaf300f2c3991921fea748dfec3a128e2827",
   "header_bytes": 48,
   "index_bytes": 5000,
   "occupied_pages": 132,

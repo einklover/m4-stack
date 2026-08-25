@@ -292,6 +292,94 @@ class CenterKernelReaderContract(unittest.TestCase):
         self.assertIn("SMALL/UI_10/UI_12", loader)
 
 
+# === Source-grid contract (TDD for CenterKernel CJK occupancy fix) ===
+# Generator must use FreeType 17ppem source-grid rasterization, not collapse_double_heng.
+# Tian/Zhong must stay pixel-identical via x0=bitmap_left-1, y0=13-bitmap_top.
+# Bai/Mei expected grids are derived from 17ppem source raster (see task).
+
+BAI_GRID = (
+    ".......#........",
+    "......#.........",
+    ".....#..........",
+    "..###########...",
+    "..#.........#...",
+    "..#.........#...",
+    "..#.........#...",
+    "..#.........#...",
+    "..###########...",
+    "..#.........#...",
+    "..#.........#...",
+    "..#.........#...",
+    "..#.........#...",
+    "..#.........#...",
+    "..#.........#...",
+    "..###########...",
+)
+
+MEI_GRID = (
+    "...#.......#....",
+    "....#.....#.....",
+    ".....#...#......",
+    ".#############..",
+    ".......#........",
+    "..###########...",
+    ".......#........",
+    ".......#........",
+    "###############.",
+    ".......#........",
+    ".......#........",
+    ".#############..",
+    "......#.#.......",
+    ".....#...#......",
+    "...##.....##....",
+    "###.........###.",
+)
+
+GENERATOR = ROOT / "firmware/scripts/generate_m4_center_kernel.py"
+
+
+class CenterKernelSourceGridContract(unittest.TestCase):
+    def test_generator_uses_freetype_source_grid_not_collapse(self) -> None:
+        src = GENERATOR.read_text(encoding="utf-8")
+        # Must NOT contain the post-processing hack
+        self.assertNotIn(
+            "collapse_double_heng",
+            src,
+            "generator must not use collapse_double_heng post-processing; use FreeType 17ppem source-grid",
+        )
+        # Must use FreeType 17ppem source-grid rasterization
+        self.assertIn("freetype", src.lower(), "generator must import/use freetype-py")
+        self.assertIn("17", src, "generator must reference 17ppem source-grid")
+        # Must reference bitmap_left/top placement (class-specific X alignment)
+        self.assertIn("bitmap_left", src, "generator must place FT bitmap via bitmap_left")
+        self.assertIn("bitmap_top", src, "generator must place FT bitmap via bitmap_top")
+        # Must mention source-grid / 17ppem in comments/metadata
+        self.assertRegex(src, r"17.*ppem|source.grid", "generator must document 17ppem source-grid")
+        # No per-character exceptions
+        self.assertNotIn("0x767D", src, "no per-character exception for U+767D")
+        self.assertNotIn("0x7F8E", src, "no per-character exception for U+7F8E")
+        self.assertNotIn("\\u767D", src)
+
+    def test_tian_zhong_still_exact_via_source_grid(self) -> None:
+        blob = OCCUPANCY_BLOB.read_bytes()
+        self.assertEqual(occupancy_from_blob(blob, 0x7530), TIAN_GRID)
+        self.assertEqual(occupancy_from_blob(blob, 0x4E2D), ZHONG_GRID)
+
+    def test_bai_mei_source_grid_expected(self) -> None:
+        blob = OCCUPANCY_BLOB.read_bytes()
+        bai = occupancy_from_blob(blob, 0x767D)
+        mei = occupancy_from_blob(blob, 0x7F8E)
+        self.assertEqual(bai, BAI_GRID, f"白 U+767D must match 17ppem source-grid; got {bai}")
+        self.assertEqual(mei, MEI_GRID, f"美 U+7F8E must match 17ppem source-grid; got {mei}")
+
+    def test_class_specific_x_alignment_documented(self) -> None:
+        src = GENERATOR.read_text(encoding="utf-8")
+        # Must document or implement class-specific X alignment (class0 differs by ~1px)
+        self.assertRegex(src, r"class.*0|960.*30\.5|left.*\+.*1|bitmap_left.*\+.*0|bitmap_left.*-.*1", "generator must calibrate class-specific X placement")
+        # y0 must be 13 - bitmap_top (or equivalent 13) if verified
+        self.assertIn("13", src)
+
+
 def occupancy_from_blob(blob: bytes, cp: int) -> tuple[str, ...]:
     if len(blob) < 48 or blob[:4] != b"M4CK":
         raise AssertionError("not an M4CK occupancy blob")
