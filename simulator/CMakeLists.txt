@@ -142,6 +142,9 @@ add_test(NAME m4_gfx_refresh_policy_tests COMMAND m4_gfx_refresh_policy_tests)
 add_executable(m4_runtime_ui_font_policy_tests ../firmware/tests/native_app/test_runtime_ui_font_policy.cpp)
 target_include_directories(m4_runtime_ui_font_policy_tests PRIVATE ../firmware/src)
 add_test(NAME m4_runtime_ui_font_policy_tests COMMAND m4_runtime_ui_font_policy_tests)
+add_executable(m4_provider_shelf_cache_tests ../firmware/tests/native_app/test_provider_shelf_cache.cpp)
+target_include_directories(m4_provider_shelf_cache_tests PRIVATE ../firmware/src)
+add_test(NAME m4_provider_shelf_cache_tests COMMAND m4_provider_shelf_cache_tests)
 # Host font tests avoid firmware/lib/EpdFont/EpdFont.cpp (Arduino/Utf8) and
 # instead link a tiny Arduino-free vtable TU. Derived faces still override
 # getGlyph / glyphAdvanceX / loadGlyphBitmap. -fno-rtti matches murphy_m4.

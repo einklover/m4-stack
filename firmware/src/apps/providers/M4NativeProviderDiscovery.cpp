@@ -9,6 +9,7 @@
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderIo.h"
 #include "apps/providers/M4NativeProviderLogin.h"
+#include "apps/providers/M4ProviderShelfCache.h"
 #include "apps/providers/M4Psram.h"
 #include "util/M4WereadAuthPolicy.h"
 
@@ -127,24 +128,13 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     return ok && !writeFailed_;
   }
 
-  bool commit() {
-    if (!close()) return false;
-    if (tmpPath_.empty() || finalPath_.empty()) return false;
-    // A valid Legado bookshelf may be empty. Treat the successful JSON
-    // response as a committed empty shelf so manual endpoint verification can
-    // still persist the working service instead of reporting a parse failure.
-    if (written_ == 0) {
-      if (SdMan.exists(finalPath_.c_str())) (void)SdMan.remove(finalPath_.c_str());
-      if (SdMan.exists(tmpPath_.c_str())) (void)SdMan.remove(tmpPath_.c_str());
-      return true;
-    }
-    // replacedExtension bak (not final+".bak"): FatFS 8.3 aliases
-    // shelf_rows.tsv.bak onto SHELF_ROWS.TSV. already-final is success.
-    // Discovery data is refreshed in-place. Equal byte counts do not prove the
-    // old shelf is identical; refusing the rename would preserve a corrupt
-    // same-size cache forever.
-    return M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true, false);
+  bool stageEmpty() {
+    if (written_ != 0) return true;
+    return ensureFile() && close();
   }
+
+  const std::string& tempPath() const { return tmpPath_; }
+  size_t written() const { return written_; }
 
   void discard() {
     close();
@@ -319,6 +309,11 @@ struct DiscoverySpec {
 DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
                        const std::string& category) {
   DiscoverySpec s;
+  const M4ProviderShelfCache::Schema* shelfSchema = M4ProviderShelfCache::schema(providerId);
+  if (!shelfSchema) {
+    s.error = "provider_not_supported";
+    return s;
+  }
   s.request.timeoutMs = 30000;
 
   if (providerId == "fanqie") {
@@ -338,7 +333,7 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.path = {"data", "data"};
     // Keep the legacy first four TSV columns stable; cover is optional and
     // appended so old shelf rows remain readable.
-    s.fields = {"book_id", "book_name", "author", "_m4_progress", "thumb_url"};
+    s.fields = shelfSchema->columns;
     s.maxRows = 24;
     return s;
   }
@@ -362,7 +357,7 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.path = {channel};
     // getFullPage is streamed through RecordExtractor; selecting cover does
     // not materialize the response or the large intro payload in Lua/native.
-    s.fields = {"novelId", "novelName", "authorName", "_m4_progress", "cover"};
+    s.fields = shelfSchema->columns;
     s.maxRows = 24;
     return s;
   }
@@ -386,7 +381,7 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     // re-fetches / parses the whole bookshelf on the UI thread. coverUrl is
     // appended after it; the rewrite keeps the source URL so endpoint changes
     // can rebuild the local /cover proxy URL at row/detail time.
-    s.fields = {"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl"};
+    s.fields = shelfSchema->columns;
     s.maxRows = 64;
     return s;
   }
@@ -406,7 +401,7 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.path = {"books"};
     // cover is an optional fifth column; the first four columns are the
     // persisted shelf contract used by older SD caches.
-    s.fields = {"bookId", "title", "author", "progress", "cover"};
+    s.fields = shelfSchema->columns;
     // First window only. Waiting for a 4096-row / no-Content-Length body
     // wedges QEMU TLS the same way JJWXC did. More rows stay on Refresh.
     s.maxRows = 64;
@@ -415,6 +410,27 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
 
   s.error = "provider_not_supported";
   return s;
+}
+
+bool commitShelfGeneration(AtomicRowsSink& file, const std::string& providerId,
+                           const std::string& appId) {
+  if (!file.close()) return false;
+  if (file.written() == 0 && !file.stageEmpty()) return false;
+  const std::string rows = rowsPath(appId);
+  const std::string meta = M4ProviderShelfCache::metadataPath(rows);
+  const std::string metaTemp = M4ProviderShelfCache::metadataTempPath(rows);
+  const std::string metadata = M4ProviderShelfCache::metadataJson(providerId);
+  if (!M4NativeProviderIo::writeTextFile(metaTemp, metadata)) {
+    file.discard();
+    return false;
+  }
+  const bool committed = M4NativeProviderIo::commitTempFilesPair(
+      file.tempPath(), rows, file.written(), metaTemp, meta, metadata.size());
+  if (!committed) {
+    file.discard();
+    if (SdMan.exists(metaTemp.c_str())) SdMan.remove(metaTemp.c_str());
+  }
+  return committed;
 }
 
 void taskMain(void*) {
@@ -478,7 +494,7 @@ void taskMain(void*) {
         writeDiscoveryDiag(job.appId, "error", net.ok, net.bytes, error, rowCount, rewrite.skipped(),
                            hadSidecar);
         publish(Phase::Error, net.bytes, rowCount, error);
-      } else if (!file.commit()) {
+      } else if (!commitShelfGeneration(file, job.providerId, job.appId)) {
         file.discard();
         writeDiscoveryDiag(job.appId, "commit_fail", net.ok, net.bytes, "discovery_commit_failed",
                            rowCount, rewrite.skipped(), hadSidecar);
@@ -528,8 +544,9 @@ void taskMain(void*) {
             },
             [&]() { return rows.recordCount() >= spec.maxRows; });
         const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
-        const bool parsed = rows.recordCount() > 0 &&
-                            ((net.ok && rows.finish()) || boundedWindow);
+        const bool finished = net.ok && rows.finish();
+        const bool parsed = (finished && (rows.recordCount() > 0 || job.providerId == "weread")) ||
+                            boundedWindow;
         const std::string error = !net.ok
                                       ? (net.error.empty() ? "discovery_http" : net.error)
                                       : (rows.recordCount() == 0
@@ -556,7 +573,7 @@ void taskMain(void*) {
           }
           break;
         }
-        if (!file.commit()) {
+        if (!commitShelfGeneration(file, job.providerId, job.appId)) {
           file.discard();
           writeDiscoveryDiag(job.appId, "commit_fail", net.ok || boundedWindow, net.bytes,
                              "discovery_commit_failed",

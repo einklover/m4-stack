@@ -9,6 +9,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "firmware/tests/native_app/fixtures"
 DISCOVERY = ROOT / "firmware/src/apps/providers/M4NativeProviderDiscovery.cpp"
+SCHEMA = ROOT / "firmware/src/apps/providers/M4ProviderShelfCache.h"
 DETAIL = ROOT / "firmware/src/apps/providers/M4NativeProviderBookDetail.cpp"
 DETAIL_HEADER = ROOT / "firmware/src/apps/providers/M4NativeProviderBookDetail.h"
 
@@ -38,10 +39,12 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         self.assertEqual(detail["thumbUrl"], load("fanqie_detail.json")["data"]["thumbUrl"])
         source = DETAIL.read_text(encoding="utf-8")
         discovery_source = DISCOVERY.read_text(encoding="utf-8")
+        schema_source = SCHEMA.read_text(encoding="utf-8")
         self.assertIn('https://fanqienovel.com/api/book/info?bookId=', source)
         self.assertIn('JsonObjectConst object = doc["data"].as<JsonObjectConst>();', source)
         self.assertIn('firstText(node, {"thumbUrl", "thumb_url"})', source)
-        self.assertIn('"book_id", "book_name", "author", "_m4_progress", "thumb_url"', discovery_source)
+        self.assertIn('"book_id", "book_name", "author", "_m4_progress", "thumb_url"', schema_source)
+        self.assertIn("s.fields = shelfSchema->columns;", discovery_source)
 
     def test_jjwxc_streaming_discovery_and_bounded_detail_map_author_cover(self):
         row = load("jjwxc_discovery.json")["14000019"][0]
@@ -55,8 +58,10 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         self.assertTrue(detail["novelCover"])
 
         discovery_source = DISCOVERY.read_text(encoding="utf-8")
+        schema_source = SCHEMA.read_text(encoding="utf-8")
         detail_source = DETAIL.read_text(encoding="utf-8")
-        self.assertIn('"novelId", "novelName", "authorName", "_m4_progress", "cover"', discovery_source)
+        self.assertIn('"novelId", "novelName", "authorName", "_m4_progress", "cover"', schema_source)
+        self.assertIn("s.fields = shelfSchema->columns;", discovery_source)
         self.assertIn('firstText(node, {"novelCover", "originalCover"})', detail_source)
         self.assertIn("requestSmall(http, body, net, req.maxBytes, cancelled)", detail_source)
         self.assertNotIn("getFullPage", detail_source)
@@ -72,8 +77,10 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         self.assertTrue(detail["cover"])
 
         discovery_source = DISCOVERY.read_text(encoding="utf-8")
+        schema_source = SCHEMA.read_text(encoding="utf-8")
         detail_source = DETAIL.read_text(encoding="utf-8")
-        self.assertIn('"bookId", "title", "author", "progress", "cover"', discovery_source)
+        self.assertIn('"bookId", "title", "author", "progress", "cover"', schema_source)
+        self.assertIn("s.fields = shelfSchema->columns;", discovery_source)
         self.assertIn('firstText(node, {"cover"})', detail_source)
         self.assertIn('loadCookieHeader(appRoot(req.appId), "weread", cookie)', detail_source)
 
@@ -95,6 +102,7 @@ class NativeProviderMetadataContracts(unittest.TestCase):
             fields = legacy.split("\t")
             self.assertEqual(fields[:4], expected)
         source = DISCOVERY.read_text(encoding="utf-8")
+        schema_source = SCHEMA.read_text(encoding="utf-8")
         controller = (ROOT / "firmware/src/apps/native/M4NativeAppControllerFactory.cpp").read_text(
             encoding="utf-8"
         )
@@ -103,8 +111,9 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         legado_spec = source[source.index('if (providerId == "legado")'):source.index('if (providerId == "weread")')]
         self.assertIn(
             '"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl"',
-            legado_spec,
+            schema_source,
         )
+        self.assertIn("s.fields = shelfSchema->columns;", legado_spec)
         self.assertIn("fieldAt(line, 0, rawKey)", controller)
         self.assertIn("fieldAt(line, 1, out.title)", controller)
         self.assertIn("fieldAt(line, 2, out.subtitle)", controller)

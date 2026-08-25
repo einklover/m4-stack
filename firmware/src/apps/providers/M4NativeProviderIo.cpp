@@ -217,6 +217,126 @@ bool cacheVerified(const std::string& absPath, size_t* sizeOut) {
   return true;
 }
 
+bool readSmallText(const std::string& path, std::string& out, size_t cap) {
+  return readSmall(path, out, cap);
+}
+
+bool writeTextFile(const std::string& path, const std::string& body) {
+  if (path.empty() || body.empty() || !ensureParentDirs(path)) return false;
+  if (SdMan.exists(path.c_str())) SdMan.remove(path.c_str());
+  FsFile f;
+  if (!SdMan.openFileForWrite("NP-TEXT", path.c_str(), f)) return false;
+  size_t off = 0;
+  bool ok = true;
+  while (off < body.size()) {
+    const size_t n = std::min<size_t>(4096, body.size() - off);
+    const int w = f.write(reinterpret_cast<const uint8_t*>(body.data() + off), n);
+    if (w != static_cast<int>(n)) {
+      ok = false;
+      break;
+    }
+    off += n;
+  }
+  if (ok) f.flush();
+  f.close();
+  if (!ok && SdMan.exists(path.c_str())) SdMan.remove(path.c_str());
+  return ok;
+}
+
+bool commitTempFilesPair(const std::string& firstTemp, const std::string& firstFinal,
+                         size_t firstBytes, const std::string& secondTemp,
+                         const std::string& secondFinal, size_t secondBytes) {
+  if (firstTemp.empty() || firstFinal.empty() || secondTemp.empty() || secondFinal.empty() ||
+      firstTemp == firstFinal || secondTemp == secondFinal || secondBytes == 0 ||
+      !SdMan.exists(firstTemp.c_str()) || !SdMan.exists(secondTemp.c_str()) ||
+      !fileSizeIs(firstTemp, firstBytes) || !fileSizeIs(secondTemp, secondBytes) ||
+      !ensureParentDirs(firstFinal) || !ensureParentDirs(secondFinal)) {
+    return false;
+  }
+
+  const std::string firstBackup = replacedExtension(firstFinal, "rkb");
+  const std::string secondBackup = replacedExtension(secondFinal, "mkb");
+  if (firstBackup == secondBackup || firstBackup == firstFinal || secondBackup == secondFinal) {
+    return false;
+  }
+  if (SdMan.exists(firstBackup.c_str())) SdMan.remove(firstBackup.c_str());
+  if (SdMan.exists(secondBackup.c_str())) SdMan.remove(secondBackup.c_str());
+
+  const bool hadFirst = SdMan.exists(firstFinal.c_str());
+  const bool hadSecond = SdMan.exists(secondFinal.c_str());
+  bool firstBacked = false;
+  bool secondBacked = false;
+  bool firstInstalled = false;
+  bool secondInstalled = false;
+  auto restore = [&]() {
+    if (firstInstalled && SdMan.exists(firstFinal.c_str())) SdMan.remove(firstFinal.c_str());
+    if (secondInstalled && SdMan.exists(secondFinal.c_str())) SdMan.remove(secondFinal.c_str());
+    if (firstBacked && SdMan.exists(firstBackup.c_str())) {
+      (void)SdMan.rename(firstBackup.c_str(), firstFinal.c_str());
+    }
+    if (secondBacked && SdMan.exists(secondBackup.c_str())) {
+      (void)SdMan.rename(secondBackup.c_str(), secondFinal.c_str());
+    }
+  };
+
+  if (hadFirst) {
+    firstBacked = SdMan.rename(firstFinal.c_str(), firstBackup.c_str());
+    if (!firstBacked) return false;
+  }
+  if (hadSecond) {
+    secondBacked = SdMan.rename(secondFinal.c_str(), secondBackup.c_str());
+    if (!secondBacked) {
+      restore();
+      return false;
+    }
+  }
+
+  bool committed = SdMan.rename(firstTemp.c_str(), firstFinal.c_str());
+  firstInstalled = committed;
+  committed = committed && fileSizeIs(firstFinal, firstBytes);
+  if (committed) {
+    committed = SdMan.rename(secondTemp.c_str(), secondFinal.c_str());
+    secondInstalled = committed;
+    committed = committed && fileSizeIs(secondFinal, secondBytes);
+  }
+  if (!committed) {
+    restore();
+    return false;
+  }
+
+  if (firstBacked && SdMan.exists(firstBackup.c_str())) SdMan.remove(firstBackup.c_str());
+  if (secondBacked && SdMan.exists(secondBackup.c_str())) SdMan.remove(secondBackup.c_str());
+  return true;
+}
+
+void recoverTempFilesPair(const std::string& firstFinal, const std::string& secondFinal) {
+  const std::string firstBackup = replacedExtension(firstFinal, "rkb");
+  const std::string secondBackup = replacedExtension(secondFinal, "mkb");
+  const bool firstBacked = SdMan.exists(firstBackup.c_str());
+  const bool secondBacked = SdMan.exists(secondBackup.c_str());
+  if (!firstBacked && !secondBacked) return;
+
+  const bool firstFinalPresent = SdMan.exists(firstFinal.c_str());
+  const bool secondFinalPresent = SdMan.exists(secondFinal.c_str());
+  if (firstFinalPresent && secondFinalPresent) {
+    // Both new finals were installed; only cleanup was interrupted.
+    if (firstBacked) SdMan.remove(firstBackup.c_str());
+    if (secondBacked) SdMan.remove(secondBackup.c_str());
+    return;
+  }
+
+  // At least one final is absent, so restore each available old generation.
+  // Never delete an untouched sibling that has no corresponding backup.
+  if (firstBacked) {
+    if (firstFinalPresent) SdMan.remove(firstFinal.c_str());
+    (void)SdMan.rename(firstBackup.c_str(), firstFinal.c_str());
+  }
+  if (secondBacked) {
+    if (secondFinalPresent) SdMan.remove(secondFinal.c_str());
+    (void)SdMan.rename(secondBackup.c_str(), secondFinal.c_str());
+  }
+}
+
 bool removeIncomplete(const std::string& absPath) {
   const std::string part = absPath + ".part";
   if (SdMan.exists(part.c_str())) SdMan.remove(part.c_str());

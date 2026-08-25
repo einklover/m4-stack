@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "firmware/src/apps/providers/M4NativeProviderDiscovery.cpp"
+SCHEMA = ROOT / "firmware/src/apps/providers/M4ProviderShelfCache.h"
 
 
 class FanqieNetworkContractTests(unittest.TestCase):
@@ -37,7 +38,10 @@ class FanqieNetworkContractTests(unittest.TestCase):
         self.assertIn('s.path = {"data", "data"};', fanqie_spec)
         self.assertIn('s.request.maxBytes = 4u * 1024u * 1024u;', fanqie_spec)
         self.assertIn('s.maxRows = 24;', fanqie_spec)
-        self.assertIn('"book_id", "book_name", "author", "_m4_progress", "thumb_url"', fanqie_spec)
+        self.assertIn(
+            '"book_id", "book_name", "author", "_m4_progress", "thumb_url"',
+            SCHEMA.read_text(encoding="utf-8"),
+        )
 
     def test_chapter_header_failure_gets_one_clean_retry(self):
         source = (ROOT / "firmware/src/apps/providers/FanqieProvider.cpp").read_text(encoding="utf-8")
@@ -54,8 +58,8 @@ class FanqieNetworkContractTests(unittest.TestCase):
 
     def test_discovery_replaces_same_size_stale_shelf(self):
         source = self.source
-        sink = source[source.index("class AtomicRowsSink"):source.index("class RecordExtractorSink")]
-        self.assertIn("commitTempFile(tmpPath_, finalPath_, written_, true, false)", sink)
+        self.assertIn("commitShelfGeneration", source)
+        self.assertIn("commitTempFilesPair", source)
 
     def test_discovery_drops_rows_without_a_book_id(self):
         source = self.source

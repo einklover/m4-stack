@@ -6,6 +6,8 @@
 #include "apps/providers/M4NativeProviderDiscovery.h"
 #include "apps/providers/M4NativeProviderExplore.h"
 #include "apps/providers/M4NativeProviderManager.h"
+#include "apps/providers/M4ProviderShelfCache.h"
+#include "apps/providers/M4NativeProviderIo.h"
 #include "util/M4ContentProviderContract.h"
 #include "util/M4ProviderShelfIndex.h"
 
@@ -377,7 +379,10 @@ class ProviderController final : public BaseController {
       if (shelfIndexing_) pumpShelfIndex();
       if (!shelfIndexReady_) return;
     }
-    if (shelfCount_ != 0 || autoDiscoveryAttempted_ || M4NativeProviderDiscovery::busy()) return;
+    if (!M4ProviderShelfCache::shouldAutoDiscover(shelfCacheNeedsRefresh_, autoDiscoveryAttempted_,
+                                                   M4NativeProviderDiscovery::busy())) {
+      return;
+    }
     // One-shot auto fill for public discovery providers (fanqie/jjwxc) and
     // account shelves (weread/legado). Kept out of scalar()/render().
     autoDiscoveryAttempted_ = true;
@@ -400,11 +405,26 @@ class ProviderController final : public BaseController {
     shelfIndexError_.clear();
     shelfIndexReady_ = false;
 
+    const std::string shelfMetaPath = M4ProviderShelfCache::metadataPath(shelfRows_);
+    M4NativeProviderIo::recoverTempFilesPair(shelfRows_, shelfMetaPath);
     if (!SdMan.exists(shelfRows_.c_str())) {
+      shelfCacheNeedsRefresh_ = true;
       shelfIndexReady_ = true;
       return;
     }
+    std::string shelfMeta;
+    if (!M4NativeProviderIo::readSmallText(shelfMetaPath, shelfMeta, 1024) ||
+        M4ProviderShelfCache::cacheNeedsRefresh(app_.provider, true, shelfMeta)) {
+      // Keep the legacy/current TSV in place for rollback and diagnostics, but
+      // never let it block the one-shot discovery refresh or render as fresh.
+      shelfCacheNeedsRefresh_ = true;
+      shelfIndexReady_ = true;
+      ++revision_;
+      return;
+    }
+    shelfCacheNeedsRefresh_ = false;
     if (!SdMan.openFileForRead("NA-SHELF", shelfRows_.c_str(), shelfIndexFile_)) {
+      shelfCacheNeedsRefresh_ = true;
       shelfIndexFailed_ = true;
       shelfIndexReady_ = true;
       shelfIndexError_ = "shelf_open_failed";
@@ -418,6 +438,7 @@ class ProviderController final : public BaseController {
     }
     if (shelfIndexFile_.fileSize() > kMaxShelfBytes) {
       shelfIndexFile_.close();
+      shelfCacheNeedsRefresh_ = true;
       shelfIndexFailed_ = true;
       shelfIndexReady_ = true;
       shelfIndexError_ = "shelf_too_large";
@@ -435,6 +456,7 @@ class ProviderController final : public BaseController {
     shelfIndexReady_ = true;
     const size_t count = shelfIndexBuilder_.finish();
     if (failed || shelfIndexBuilder_.overflow || count > kMaxShelfRows) {
+      shelfCacheNeedsRefresh_ = true;
       shelfCount_ = 0;
       shelfAnchors_.clear();
       shelfIndexFailed_ = true;
@@ -493,6 +515,7 @@ class ProviderController final : public BaseController {
   mutable bool shelfIndexing_ = false;
   mutable bool shelfIndexReady_ = false;
   mutable bool shelfIndexFailed_ = false;
+  mutable bool shelfCacheNeedsRefresh_ = false;
   mutable std::string shelfIndexError_;
   bool autoDiscoveryAttempted_ = false;
   std::string selectedCategoryKey_;
