@@ -462,8 +462,8 @@ void TxtReaderActivity::persistOpenHistory() {
     if (pluginSession_.providerManaged && !pluginSession_.providerId.empty()) {
       const std::string uri = M4ContentProvider::makeHistoryUri(pluginSession_.providerId.c_str(),
                                                                 pluginSession_.bookId.c_str());
-      // Metadata contract: RecentBook.author = m4x appId (com.weread.client), never
-      // providerId ("weread"). originalSourcePath = last chapter cache abs path.
+      // New provider history stores the human author. App identity is recovered
+      // from the URI/registry; old rows still reopen through the legacy fallback.
       std::string appId;
       if (!M4HistoryReopen::resolveHistoryAppId(pluginSession_.appId, pluginSession_.appDataRoot, filePath,
                                                 appId)) {
@@ -478,7 +478,7 @@ void TxtReaderActivity::persistOpenHistory() {
                                              ? providerHistory.title
                                              : (pluginSession_.titleOverride.empty() ? fileName
                                                                                        : pluginSession_.titleOverride);
-        RECENT_BOOKS.addBook(uri, historyTitle, appId, "", filePath);
+        RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor, "", filePath);
         M4ContentProviderSession::markHistoryRegistered(pluginSession_.providerId, pluginSession_.bookId);
         Serial.printf("[WRCP] history_uri=%s appId=%s cache=%s\n", uri.c_str(), appId.c_str(), filePath.c_str());
       } else {
@@ -782,7 +782,7 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
           !snap.title.empty() ? snap.title
                               : (pluginSession_.titleOverride.empty() ? pluginSession_.bookId
                                                                       : pluginSession_.titleOverride);
-      RECENT_BOOKS.addBook(uri, historyTitle, appId, "", abs);
+      RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor, "", abs);
     }
   }
 

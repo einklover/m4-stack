@@ -642,6 +642,7 @@ bool NativeProviderBookActivity::openReadyReader(int index0) {
   sess.chapterIndex = index0;
   sess.providerId = providerId_;
   sess.appId = appId_;
+  sess.providerAuthor = !detail_.author.empty() ? detail_.author : author_;
   sess.appDataRoot = appDataRoot_;
   sess.cacheRelPath = st.cacheRelPath;
   sess.progressKey = providerId_ + ":" + bookId_ + ":" + st.chapterUid;

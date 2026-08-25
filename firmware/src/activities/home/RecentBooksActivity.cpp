@@ -7,6 +7,7 @@
 
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "apps/M4xRegistry.h"
 #include "util/M4ContentProviderContract.h"
 #include "util/M4HistoryReopen.h"
 #include <SDCardManager.h>
@@ -153,11 +154,18 @@ void RecentBooksActivity::loop() {
       selectorIndex = hit;
       {
         const auto& b = recentBooks[selectorIndex];
-        std::string src = b.originalSourcePath;
-        if (M4ContentProvider::isHistoryUri(b.path.c_str()) &&
-            (src.empty() || !SdMan.exists(src.c_str())) && b.author.find('.') != std::string::npos) {
-          src = std::string("app:") + b.author;
-        }
+        const auto apps = M4xRegistry::load();
+        const M4HistoryReopen::ProviderAppIdResolver appIdForProvider = [apps](const std::string& providerId) {
+          std::string found;
+          for (const auto& app : apps) {
+            if (app.provider != providerId) continue;
+            if (!found.empty() && found != app.id) return std::string();
+            found = app.id;
+          }
+          return found;
+        };
+        const std::string src = M4HistoryReopen::appHintForRecentBook(
+            b.path, b.originalSourcePath, b.author, appIdForProvider);
         onSelectBook(b.path, src);
       }
       return;
@@ -169,11 +177,18 @@ void RecentBooksActivity::loop() {
       Serial.printf("Selected recent book: %s\n", recentBooks[selectorIndex].path.c_str());
       {
         const auto& b = recentBooks[selectorIndex];
-        std::string src = b.originalSourcePath;
-        if (M4ContentProvider::isHistoryUri(b.path.c_str()) &&
-            (src.empty() || !SdMan.exists(src.c_str())) && b.author.find('.') != std::string::npos) {
-          src = std::string("app:") + b.author;
-        }
+        const auto apps = M4xRegistry::load();
+        const M4HistoryReopen::ProviderAppIdResolver appIdForProvider = [apps](const std::string& providerId) {
+          std::string found;
+          for (const auto& app : apps) {
+            if (app.provider != providerId) continue;
+            if (!found.empty() && found != app.id) return std::string();
+            found = app.id;
+          }
+          return found;
+        };
+        const std::string src = M4HistoryReopen::appHintForRecentBook(
+            b.path, b.originalSourcePath, b.author, appIdForProvider);
         onSelectBook(b.path, src);
       }
       return;

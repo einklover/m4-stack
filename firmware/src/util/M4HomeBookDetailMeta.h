@@ -4,8 +4,8 @@
 //
 // Visible fields: title, author, plugin display name, plus the existing
 // graphical progress bar value. Textual progress ("37%", "已读…") is not
-// part of this contract. Persistence of RecentBook is unchanged: plugin
-// history still stores m4x appId in RecentBook.author for reopen.
+// part of this contract. New provider history stores the real author;
+// legacy provider rows may still carry an appId in author.
 
 #include "util/M4ContentProviderContract.h"
 
@@ -115,16 +115,18 @@ inline Presented present(const std::string& path, const std::string& title, cons
   out.title = title;
   out.progress = progress;
 
-  const bool authorIsAppId = looksLikePackageId(authorField);
+  std::string providerId;
+  std::string bookId;
+  const bool pluginHistory = M4ContentProvider::parseHistoryUri(path.c_str(), providerId, bookId);
+  // A local book may have any author string. Only URI-backed history has the
+  // legacy appId interpretation.
+  const bool authorIsAppId = pluginHistory && looksLikePackageId(authorField);
   if (authorField.empty() || authorIsAppId) {
     out.author = orLabel(labels.emptyAuthor, "无");
   } else {
     out.author = authorField;
   }
 
-  std::string providerId;
-  std::string bookId;
-  const bool pluginHistory = M4ContentProvider::parseHistoryUri(path.c_str(), providerId, bookId);
   if (pluginHistory || authorIsAppId) {
     out.source = resolvePluginDisplayName(providerId, authorIsAppId ? authorField : std::string(), plugins, labels);
   } else {

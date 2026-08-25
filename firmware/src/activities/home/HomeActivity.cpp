@@ -75,10 +75,6 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
 
     if (M4ContentProvider::isHistoryUri(book.path.c_str())) {
       // Keep provider entries for history reopen (cache or app launch).
-      if (!book.originalSourcePath.empty() && book.originalSourcePath.compare(0, 4, "app:") != 0 &&
-          !SdMan.exists(book.originalSourcePath.c_str()) && book.author.find('.') == std::string::npos) {
-        continue;
-      }
       book.progress = loadBookProgress(book.originalSourcePath.empty() ? book.path : book.originalSourcePath);
       recentBooks.push_back(book);
       continue;
@@ -504,11 +500,18 @@ void HomeActivity::loop() {
 
     if (selectorIndex < static_cast<int>(recentBooks.size())) {
       const auto& b = recentBooks[selectorIndex];
-      std::string src = b.originalSourcePath;
-      if (M4ContentProvider::isHistoryUri(b.path.c_str()) &&
-          (src.empty() || !SdMan.exists(src.c_str())) && b.author.find('.') != std::string::npos) {
-        src = std::string("app:") + b.author;
-      }
+      const auto apps = M4xRegistry::load();
+      const M4HistoryReopen::ProviderAppIdResolver appIdForProvider = [apps](const std::string& providerId) {
+        std::string found;
+        for (const auto& app : apps) {
+          if (app.provider != providerId) continue;
+          if (!found.empty() && found != app.id) return std::string();
+          found = app.id;
+        }
+        return found;
+      };
+      const std::string src = M4HistoryReopen::appHintForRecentBook(
+          b.path, b.originalSourcePath, b.author, appIdForProvider);
       onSelectBook(b.path, src);
     } else if (menuSelectedIndex == myLibraryIdx) {
       onMyLibraryOpen();

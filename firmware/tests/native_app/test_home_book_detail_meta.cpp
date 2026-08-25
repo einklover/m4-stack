@@ -99,6 +99,20 @@ void local_txt_missing_author() {
   std::cout << "local missing author OK\n";
 }
 
+void new_provider_author_is_presented() {
+  const auto meta = present("m4cp://weread/book9", "X", "刘慈欣", 8, {}, kLabels);
+  assert(meta.author == "刘慈欣");
+  assert(meta.source == "微信读书");
+  std::cout << "provider author OK\n";
+}
+
+void local_package_looking_author_is_unchanged() {
+  const auto meta = present("/books/local.epub", "X", "com.example.author", 8, {}, kLabels);
+  assert(meta.author == "com.example.author");
+  assert(meta.source == "本地");
+  std::cout << "local package-looking author OK\n";
+}
+
 void unknown_plugin_does_not_leak_id() {
   const auto meta = present("m4cp://obscure/book9", "X", "com.obscure.client", 3, {}, kLabels);
   assert(meta.source == "未知来源");
@@ -142,6 +156,8 @@ int main() {
   progress_value_passthrough();
   local_epub_source_and_author();
   local_txt_missing_author();
+  new_provider_author_is_presented();
+  local_package_looking_author_is_unchanged();
   unknown_plugin_does_not_leak_id();
   history_uri_without_appid_still_names_source();
   malformed_history_is_local();

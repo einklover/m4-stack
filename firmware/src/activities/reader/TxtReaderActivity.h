@@ -40,7 +40,8 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
     // ContentProvider-managed book (provider-agnostic; not a filesystem path).
     bool providerManaged = false;
     std::string providerId;    // e.g. "weread" (URI segment, NOT app id)
-    std::string appId;         // installed m4x id e.g. "com.weread.client" — history author field
+    std::string appId;         // installed m4x id e.g. "com.weread.client"
+    std::string providerAuthor;  // human author; never used as app identity
     std::string appDataRoot;   // /apps_data/<appId>
     std::string cacheRelPath;  // current chapter relative .txt
   };

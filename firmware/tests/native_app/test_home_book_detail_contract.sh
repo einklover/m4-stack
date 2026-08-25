@@ -5,7 +5,8 @@
 #   1. Selected-book info box shows title, author, source (plugin display name).
 #   2. No textual progress percentage / "已读" / kReadingProgressLabel in that box.
 #   3. Graphical progress bar still consumes recentBooks[selectorIndex].progress.
-#   4. Home reopen still uses RecentBook.author as m4x appId (persistence unchanged).
+#   4. Home reopen resolves app identity from provider URI/registry, with
+#      RecentBook.author retained only as a legacy fallback.
 #   5. Reader / system UI files are not part of this diff surface.
 set -euo pipefail
 
@@ -47,9 +48,12 @@ echo "$SLICE" | grep -q 'recentBooks\[selectorIndex\].progress' \
 echo "$SLICE" | grep -q 'fillWidth' \
   || fail "graphical progress bar fill must remain"
 
-# Persistence/reopen contract: plugin history author remains appId.
-grep -q 'src = std::string("app:") + b.author' "$HOME" \
-  || fail "HomeActivity must still reopen plugin books via app:+author"
+# Persistence/reopen contract: URI/registry is preferred and helper retains
+# legacy author fallback.
+grep -q 'appHintForRecentBook' "$HOME" \
+  || fail "HomeActivity must resolve provider history through helper"
+grep -q 'looksLikeAppId(authorAppIdHint)' "$ROOT/firmware/src/util/M4HistoryReopen.h" \
+  || fail "history helper must retain legacy author appId fallback"
 
 # Helper must refuse raw package ids as the source label.
 grep -q 'looksLikePackageId' "$HELPER" || fail "helper must detect package ids"

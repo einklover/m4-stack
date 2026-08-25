@@ -310,19 +310,29 @@ void ReaderActivity::onEnter() {
       const auto apps = M4xRegistry::load();
       return M4xRegistry::find(apps, id) != nullptr;
     };
-    // Recover title + author(appId) from RecentBooksStore. Callbacks only pass
-    // path/originalSourcePath; author holds reverse-DNS app id for m4cp entries.
+    // Recover title/author from RecentBooksStore. App identity is resolved from
+    // provider URI + installed registry; author is only a legacy appId hint.
     std::string historyTitle;
-    std::string authorAppId;
+    std::string authorField;
     for (const auto& b : RECENT_BOOKS.getBooks()) {
       if (b.path == initialBookPath) {
         historyTitle = b.title;
-        authorAppId = b.author;
+        authorField = b.author;
         break;
       }
     }
+    const auto apps = M4xRegistry::load();
+    const M4HistoryReopen::ProviderAppIdResolver appIdForProvider = [apps](const std::string& providerId) {
+      std::string found;
+      for (const auto& app : apps) {
+        if (app.provider != providerId) continue;
+        if (!found.empty() && found != app.id) return std::string();
+        found = app.id;
+      }
+      return found;
+    };
     auto hist = M4HistoryReopen::resolveFromRecentBookFields(
-        initialBookPath, originalSourcePath, historyTitle, authorAppId, exists, appInstalled);
+        initialBookPath, originalSourcePath, historyTitle, authorField, appIdForProvider, exists, appInstalled);
 
     // Prefer in-session reopen metadata when still warm (same boot).
     if (M4ContentProvider::isHistoryUri(initialBookPath.c_str())) {
@@ -333,8 +343,8 @@ void ReaderActivity::onEnter() {
             st.state == M4ContentProvider::ChapterReady::Ready && !st.cacheRelPath.empty()) {
           if (hist.chapterUid.empty()) hist.chapterUid = st.chapterUid;
           if (hist.cacheRelPath.empty()) hist.cacheRelPath = st.cacheRelPath;
-          if (hist.appId.empty() && M4HistoryReopen::looksLikeAppId(authorAppId)) {
-            hist.appId = authorAppId;
+          if (hist.appId.empty() && M4HistoryReopen::looksLikeAppId(authorField)) {
+            hist.appId = authorField;
             hist.appDataRoot = M4HistoryReopen::appDataRootFor(hist.appId);
           }
           if (!hist.appId.empty() && hist.openPath.empty()) {
@@ -354,8 +364,8 @@ void ReaderActivity::onEnter() {
         const std::string cand = originalSourcePath.substr(4);
         if (M4HistoryReopen::looksLikeAppId(cand)) appId = cand;
       }
-      if (appId.empty() && M4HistoryReopen::looksLikeAppId(authorAppId)) {
-        appId = authorAppId;
+      if (appId.empty() && M4HistoryReopen::looksLikeAppId(authorField)) {
+        appId = authorField;
       }
       if (!appId.empty() && appInstalled(appId)) {
         M4ContentProviderSession::HistoryResume resume;
@@ -472,6 +482,7 @@ void ReaderActivity::onEnter() {
           sess.cacheRelPath = hist.cacheRelPath;
           sess.appDataRoot = hist.appDataRoot;
           sess.appId = appId;
+          sess.providerAuthor = authorField;
           sess.titleOverride = hist.title;
           sess.tocRelPath = "cache/" + hist.bookId + "/toc.json";
           if (!sess.appDataRoot.empty()) {

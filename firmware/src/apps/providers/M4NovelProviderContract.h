@@ -39,6 +39,7 @@ struct BookCard {
   std::string bookId;
   std::string title;
   std::string author;
+  std::string coverUrl;  // optional provider URL; host owns fetch/decode/cache
   std::string meta;   // category/status/update summary
   std::string value;  // rank/progress/word-count display value
   uint32_t flags = 0;
@@ -51,6 +52,7 @@ struct BookDetail {
   std::string bookId;
   std::string title;
   std::string author;
+  std::string coverUrl;  // optional provider URL; host owns fetch/decode/cache
   std::string intro;
   std::string kind;
   std::string status;
