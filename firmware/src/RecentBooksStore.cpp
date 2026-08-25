@@ -51,6 +51,29 @@ void RecentBooksStore::updateBook(const std::string& path, const std::string& ti
   }
 }
 
+void RecentBooksStore::updateProviderBook(const std::string& path, const std::string& title,
+                                          const std::string& author, const std::string& coverBmpPath) {
+  auto it = std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) {
+    return book.path == path;
+  });
+  if (it == recentBooks.end()) return;
+  RecentBook& book = *it;
+  bool changed = false;
+  if (!title.empty() && book.title != title) {
+    book.title = title;
+    changed = true;
+  }
+  if (!author.empty() && book.author != author) {
+    book.author = author;
+    changed = true;
+  }
+  if (!coverBmpPath.empty() && book.coverBmpPath != coverBmpPath) {
+    book.coverBmpPath = coverBmpPath;
+    changed = true;
+  }
+  if (changed) saveToFile();
+}
+
 bool RecentBooksStore::saveToFile() const {
   // Make sure the directory exists
   SdMan.mkdir("/.crosspoint");

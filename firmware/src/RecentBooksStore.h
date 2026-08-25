@@ -34,6 +34,12 @@ class RecentBooksStore {
   void updateBook(const std::string& path, const std::string& title, const std::string& author,
                   const std::string& coverBmpPath);
 
+  // Provider metadata is best-effort and arrives after the history row may
+  // already exist. Empty values preserve the current row, so failed cover
+  // acquisition is non-fatal and cannot erase good metadata.
+  void updateProviderBook(const std::string& path, const std::string& title, const std::string& author,
+                          const std::string& coverBmpPath);
+
   // Get the list of recent books (most recent first)
   const std::vector<RecentBook>& getBooks() const { return recentBooks; }
 

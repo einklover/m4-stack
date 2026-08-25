@@ -64,6 +64,13 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent) {
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress) {
+  return downloadToFileBounded(url, destPath, static_cast<size_t>(-1), progress);
+}
+
+HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::string& url,
+                                                                     const std::string& destPath,
+                                                                     const size_t maxBytes,
+                                                                     ProgressCallback progress) {
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
@@ -100,6 +107,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   // ESP32 HTTPClient returns -1 (0xFFFFFFFF as size_t) when Content-Length is unknown
   const size_t contentLength = (rawSize == (size_t)-1) ? 0 : rawSize;
   Serial.printf("[%lu] [HTTP] Content-Length: %zu\n", millis(), contentLength);
+  if (contentLength > maxBytes) {
+    http.end();
+    return HTTP_ERROR;
+  }
 
   // Remove existing file if present
   if (SdMan.exists(destPath.c_str())) {
@@ -137,6 +148,12 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     }
 
     const size_t toRead = available < DOWNLOAD_CHUNK_SIZE ? available : DOWNLOAD_CHUNK_SIZE;
+    if (downloaded >= maxBytes || toRead > maxBytes - downloaded) {
+      file.close();
+      SdMan.remove(destPath.c_str());
+      http.end();
+      return HTTP_ERROR;
+    }
     const size_t bytesRead = stream->readBytes(buffer, toRead);
 
     if (bytesRead == 0) {

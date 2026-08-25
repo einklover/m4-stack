@@ -14,7 +14,9 @@
 #include "apps/providers/M4NativeProviderManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "RecentBooksStore.h"
 #include "util/M4ErrorScreen.h"
+#include "util/M4ProviderCoverCache.h"
 #include "util/M4PluginReaderBridge.h"
 #include "util/M4PluginTocList.h"
 #include "util/M4UiText.h"
@@ -158,6 +160,17 @@ void appendMeta(std::string& out, const std::string& value) {
   if (value.empty()) return;
   if (!out.empty()) out += " · ";
   out += value;
+}
+
+void updateRecentProviderMetadata(const std::string& providerId, const std::string& bookId,
+                                  const M4NovelProvider::BookDetail& detail) {
+  const std::string uri = M4ContentProvider::makeHistoryUri(providerId.c_str(), bookId.c_str());
+  if (uri.empty()) return;
+  const auto metrics = UITheme::getInstance().getMetrics();
+  const auto cover = M4ProviderCoverCache::acquireProviderCover(
+      M4ProviderCoverCache::requestFor(providerId, bookId, detail, metrics.homeCoverWidth,
+                                       metrics.homeCoverThumbHeight));
+  RECENT_BOOKS.updateProviderBook(uri, detail.title, detail.author, cover.coverBmpPath);
 }
 
 std::string displayWordCount(const std::string& raw) {
@@ -313,6 +326,7 @@ void NativeProviderBookActivity::loadBookDetail() {
   req.maxBytes = 96u * 1024u;
   detail_ = M4NativeProviderBookDetail::seed(req);
   detailError_.clear();
+  updateRecentProviderMetadata(providerId_, bookId_, detail_);
 
   // Paint the immediately available discovery/history model first (FAST only).
   // Legado detail is local-only (shelf row + seed) and must not block on a
@@ -341,6 +355,7 @@ void NativeProviderBookActivity::pollDetailLoading() {
     detailError_.clear();
     if (!detail_.title.empty()) title_ = detail_.title;
     if (!detail_.author.empty()) author_ = detail_.author;
+    updateRecentProviderMetadata(providerId_, bookId_, detail_);
   } else {
     detailError_ = snap.result.error.empty() ? "detail_http" : snap.result.error;
   }

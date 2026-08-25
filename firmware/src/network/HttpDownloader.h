@@ -38,6 +38,10 @@ class HttpDownloader {
    */
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr);
+  // Same streamed path with a hard response/file-size ceiling. The body is
+  // never accumulated in RAM; oversized or truncated responses are removed.
+  static DownloadError downloadToFileBounded(const std::string& url, const std::string& destPath,
+                                             size_t maxBytes, ProgressCallback progress = nullptr);
   static DownloadError downloadToFile_jg(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr);
   static DownloadError downloadToFile_dc(const std::string& url, const std::string& destPath,

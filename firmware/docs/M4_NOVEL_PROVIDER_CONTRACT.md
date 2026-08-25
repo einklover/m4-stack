@@ -81,6 +81,7 @@ Useful fields:
 ```text
 title
 author
+coverUrl        # optional URL; host downloads/decodes/caches it
 intro
 kind
 status
@@ -89,6 +90,10 @@ lastChapter
 ```
 
 Only `bookId + title` are mandatory. The shared detail page remains usable when a source cannot cheaply provide all metadata.
+
+`M4NovelProvider::BookCard::coverUrl` and `M4NovelProvider::BookDetail::coverUrl`
+are the exact optional cover interface. Providers return the URL only; the host
+owns bounded download, BMP conversion, cache naming, and `RecentBook.coverBmpPath`.
 
 The page provides two host actions:
 
