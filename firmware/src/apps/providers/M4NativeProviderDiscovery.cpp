@@ -377,10 +377,10 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.request.maxBytes = 4u * 1024u * 1024u;
     s.path = {"data"};
     // totalChapterNum powers progressive catalog placeholders (fast open).
-    // latestChapterTitle is reused by the detail page so opening a book never
-    // re-fetches / parses the whole bookshelf on the UI thread. coverUrl is
-    // appended after it; the rewrite keeps the source URL so endpoint changes
-    // can rebuild the local /cover proxy URL at row/detail time.
+    // latestChapterTitle and intro are reused by the detail page so opening a
+    // book never re-fetches / parses the whole bookshelf on the UI thread.
+    // coverUrl remains before intro; the rewrite keeps the source URL so
+    // endpoint changes can rebuild the local /cover proxy URL at row/detail time.
     s.fields = shelfSchema->columns;
     s.maxRows = 64;
     return s;

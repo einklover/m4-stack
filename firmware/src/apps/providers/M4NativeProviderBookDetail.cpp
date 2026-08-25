@@ -27,7 +27,6 @@ constexpr const char* kJjUa =
     "Mozilla/5.0 (Linux; Android 5.1; Lenovo) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Version/4.0 Chrome/39.0.0.0 Mobile Safari/537.36/JINJIANG-Android/206(Lenovo;android 5.1;Scale/2.0)";
 constexpr const char* kJjRef = "http://android.jjwxc.net?v=206";
-constexpr size_t kIntroMax = 1536;
 constexpr size_t kFieldMax = 192;
 
 std::string appRoot(const std::string& appId) {
@@ -39,75 +38,6 @@ std::string boundedUtf8(std::string s, size_t maxBytes) {
   s.resize(maxBytes);
   while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0u) == 0x80u) s.pop_back();
   return s;
-}
-
-bool startsWithAt(const std::string& s, size_t pos, const char* literal) {
-  if (!literal || pos > s.size()) return false;
-  const size_t n = std::char_traits<char>::length(literal);
-  return pos + n <= s.size() && s.compare(pos, n, literal) == 0;
-}
-
-std::string cleanIntro(const std::string& src) {
-  std::string out;
-  out.reserve(std::min(src.size(), kIntroMax));
-  bool inTag = false;
-  bool pendingSpace = false;
-  for (size_t i = 0; i < src.size() && out.size() < kIntroMax; ++i) {
-    const char c = src[i];
-    if (c == '<') {
-      inTag = true;
-      pendingSpace = true;
-      continue;
-    }
-    if (inTag) {
-      if (c == '>') inTag = false;
-      continue;
-    }
-    if (c == '&') {
-      if (startsWithAt(src, i, "&nbsp;")) {
-        pendingSpace = true;
-        i += 5;
-        continue;
-      }
-      if (startsWithAt(src, i, "&amp;")) {
-        if (pendingSpace && !out.empty() && out.back() != ' ') out.push_back(' ');
-        pendingSpace = false;
-        out.push_back('&');
-        i += 4;
-        continue;
-      }
-      if (startsWithAt(src, i, "&lt;")) {
-        if (pendingSpace && !out.empty() && out.back() != ' ') out.push_back(' ');
-        pendingSpace = false;
-        out.push_back('<');
-        i += 3;
-        continue;
-      }
-      if (startsWithAt(src, i, "&gt;")) {
-        if (pendingSpace && !out.empty() && out.back() != ' ') out.push_back(' ');
-        pendingSpace = false;
-        out.push_back('>');
-        i += 3;
-        continue;
-      }
-      if (startsWithAt(src, i, "&quot;")) {
-        if (pendingSpace && !out.empty() && out.back() != ' ') out.push_back(' ');
-        pendingSpace = false;
-        out.push_back('"');
-        i += 5;
-        continue;
-      }
-    }
-    if (c == '\r' || c == '\n' || c == '\t' || c == ' ') {
-      pendingSpace = true;
-      continue;
-    }
-    if (pendingSpace && !out.empty() && out.back() != ' ') out.push_back(' ');
-    pendingSpace = false;
-    out.push_back(c);
-  }
-  while (!out.empty() && out.back() == ' ') out.pop_back();
-  return boundedUtf8(std::move(out), kIntroMax);
 }
 
 std::string jsonText(JsonVariantConst v) {
@@ -187,6 +117,7 @@ bool enrichFromLocalShelf(const std::string& appId, const std::string& bookId,
   if (!SdMan.openFileForRead("NP-DETAIL-SHELF", path.c_str(), f)) return false;
   std::string line;
   char buf[128];
+  constexpr size_t kShelfLineMax = 3u * 1024u;
   bool found = false;
   const std::string coverBase = M4LegadoBridge::baseUrl();
   while (f.available()) {
@@ -202,7 +133,7 @@ bool enrichFromLocalShelf(const std::string& appId, const std::string& bookId,
           return true;
         }
       } else if (buf[i] != '\r') {
-        if (line.size() < 2048) line.push_back(buf[i]);
+        if (line.size() < kShelfLineMax) line.push_back(buf[i]);
       }
     }
   }
@@ -236,7 +167,7 @@ Result fetchJjwxc(const Request& req, const CancelFn& cancelled) {
   assignField(out.detail.title, firstText(node, {"novelName", "novelname"}));
   assignField(out.detail.author, firstText(node, {"authorName", "authorname"}));
   assignField(out.detail.coverUrl, firstText(node, {"novelCover", "originalCover"}));
-  assignField(out.detail.intro, cleanIntro(firstText(node, {"novelIntro", "novelIntroShort"})), kIntroMax);
+  assignField(out.detail.intro, detail::cleanIntro(firstText(node, {"novelIntro", "novelIntroShort"})), detail::kIntroMax);
   std::string kind = firstText(node, {"novelClass", "className"});
   const std::string tags = firstText(node, {"novelTags", "tags"});
   if (!tags.empty()) kind += (kind.empty() ? "" : " · ") + tags;
@@ -277,7 +208,7 @@ Result fetchFanqie(const Request& req, const CancelFn& cancelled) {
   assignField(out.detail.title, firstText(node, {"book_name", "bookName", "title"}));
   assignField(out.detail.author, firstText(node, {"author", "authorName", "author_name"}));
   assignField(out.detail.coverUrl, firstText(node, {"thumbUrl", "thumb_url"}));
-  assignField(out.detail.intro, cleanIntro(firstText(node, {"abstract", "introduction", "intro"})), kIntroMax);
+  assignField(out.detail.intro, detail::cleanIntro(firstText(node, {"abstract", "introduction", "intro"})), detail::kIntroMax);
   assignField(out.detail.kind, firstText(node, {"category", "complete_category", "sub_info"}));
   assignField(out.detail.status, fanqieStatus(node));
   assignField(out.detail.wordCount, firstText(node, {"word_number", "wordNumber"}));
@@ -319,7 +250,7 @@ Result fetchWeread(const Request& req, const CancelFn& cancelled) {
   assignField(out.detail.title, firstText(node, {"title", "bookTitle"}));
   assignField(out.detail.author, firstText(node, {"author", "authorName"}));
   assignField(out.detail.coverUrl, firstText(node, {"cover"}));
-  assignField(out.detail.intro, cleanIntro(firstText(node, {"intro", "introduction", "summary"})), kIntroMax);
+  assignField(out.detail.intro, detail::cleanIntro(firstText(node, {"intro", "introduction", "summary"})), detail::kIntroMax);
   assignField(out.detail.kind, firstText(node, {"category", "categories"}));
   assignField(out.detail.status, firstText(node, {"status", "bookStatus"}));
   assignField(out.detail.wordCount, firstText(node, {"wordCount", "word_count"}));

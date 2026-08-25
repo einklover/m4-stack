@@ -36,6 +36,18 @@ class NativeProviderUiContractTests(unittest.TestCase):
         self.assertIn("pollDetailLoading", source)
         self.assertIn("detailError_", source)
 
+    def test_detail_has_single_back_footer_and_geometry_driven_touch_targets(self):
+        source = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.cpp").read_text()
+        header = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.h").read_text()
+        self.assertIn("state_ == State::Detail", header)
+        self.assertIn("? M4FooterTouchPolicy::Back", header)
+        self.assertIn('mapLabels("« 返回", "", "", "")', source)
+        self.assertIn("detailTouch_.reset", source)
+        self.assertIn("detailTouch_.setChapterBlock", source)
+        self.assertIn("detailTouch_.actionAt", source)
+        self.assertIn("openToc();", source)
+        self.assertNotIn("tx * 4 /", source)
+
     def test_catalog_and_chapter_handoffs_do_not_sleep_ui_task(self):
         source = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.cpp").read_text()
         self.assertNotIn("delay(600)", source)

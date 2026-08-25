@@ -145,6 +145,16 @@ add_test(NAME m4_runtime_ui_font_policy_tests COMMAND m4_runtime_ui_font_policy_
 add_executable(m4_provider_shelf_cache_tests ../firmware/tests/native_app/test_provider_shelf_cache.cpp)
 target_include_directories(m4_provider_shelf_cache_tests PRIVATE ../firmware/src)
 add_test(NAME m4_provider_shelf_cache_tests COMMAND m4_provider_shelf_cache_tests)
+add_executable(m4_legado_detail_tests ../firmware/tests/native_app/test_legado_detail.cpp)
+target_include_directories(m4_legado_detail_tests PRIVATE ../firmware/src ../firmware/tests/native_app)
+add_test(NAME m4_legado_detail_tests COMMAND m4_legado_detail_tests)
+add_executable(m4_provider_cover_cache_tests ../firmware/tests/native_app/test_provider_cover_cache.cpp)
+target_include_directories(m4_provider_cover_cache_tests PRIVATE ../firmware/src)
+add_test(NAME m4_provider_cover_cache_tests COMMAND m4_provider_cover_cache_tests)
+add_executable(m4_native_provider_detail_touch_tests
+  ../firmware/tests/native_app/test_native_provider_detail_touch.cpp)
+target_include_directories(m4_native_provider_detail_touch_tests PRIVATE ../firmware/src)
+add_test(NAME m4_native_provider_detail_touch_tests COMMAND m4_native_provider_detail_touch_tests)
 # Host font tests avoid firmware/lib/EpdFont/EpdFont.cpp (Arduino/Utf8) and
 # instead link a tiny Arduino-free vtable TU. Derived faces still override
 # getGlyph / glyphAdvanceX / loadGlyphBitmap. -fno-rtti matches murphy_m4.

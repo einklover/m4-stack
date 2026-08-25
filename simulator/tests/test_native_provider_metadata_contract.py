@@ -110,7 +110,7 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         header = DETAIL_HEADER.read_text(encoding="utf-8")
         legado_spec = source[source.index('if (providerId == "legado")'):source.index('if (providerId == "weread")')]
         self.assertIn(
-            '"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl"',
+            '"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl", "intro"',
             schema_source,
         )
         self.assertIn("s.fields = shelfSchema->columns;", legado_spec)
@@ -130,6 +130,15 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         self.assertNotIn("fieldAt(line, 4, legadoCover)", controller)
         self.assertIn("Older 4-column", (ROOT / "firmware/tests/native_app/test_legado_detail.cpp").read_text())
         self.assertIn("fields[2]", header)
+        self.assertIn("fields[6]", header)
+        self.assertIn("book.intro", header)
+
+    def test_legado_intro_fixture_preserves_record_extractor_control_chars(self):
+        fixture = load("legado_shelf_intro.json")
+        intro = fixture["data"][0]["intro"]
+        self.assertIn("\n", intro)
+        self.assertIn("\t", intro)
+        self.assertIn("\r", intro)
 
     def test_discovery_cover_reaches_detail_seed_through_activation_chain(self):
         controller = (ROOT / "firmware/src/apps/native/M4NativeAppControllerFactory.cpp").read_text(
@@ -185,6 +194,7 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         self.assertIn("root + \"/cover?path=\"", bridge)
         self.assertIn("fields[5]", detail)
         self.assertIn("field >= 6", detail)
+        self.assertIn("fields[6]", detail)
         self.assertIn("latestChapterTitle", discovery)
         self.assertIn("coverUrl", discovery)
         expected = "http://10.0.0.9:8080/cover?path=" + quote(raw, safe="-_.~")

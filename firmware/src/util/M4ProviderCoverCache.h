@@ -34,6 +34,10 @@ inline ImageFormat detectImageFormat(const uint8_t* bytes, size_t size) {
   return ImageFormat::Unknown;
 }
 
+inline bool canConvertImageFormat(ImageFormat format) {
+  return format == ImageFormat::Bmp || format == ImageFormat::Jpeg || format == ImageFormat::Png;
+}
+
 struct Request {
   std::string providerId;
   std::string bookId;
@@ -126,7 +130,7 @@ inline Request requestFor(const std::string& providerId, const std::string& book
   return {providerId, bookId, detail.coverUrl, width, height};
 }
 
-// Production adapter: streamed HTTP download + existing JPEG converter + SD.
+// Production adapter: streamed HTTP download + existing PNGdec/JPEG converters + SD.
 Result acquireProviderCover(const Request& request);
 
 }  // namespace M4ProviderCoverCache

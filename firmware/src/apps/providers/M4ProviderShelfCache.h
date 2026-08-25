@@ -69,7 +69,7 @@ inline const Schema* schema(const std::string& providerId) {
   static const Schema weread =
       makeSchema("weread", {"bookId", "title", "author", "progress", "cover"});
   static const Schema legado = makeSchema(
-      "legado", {"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl"});
+      "legado", {"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl", "intro"});
   if (providerId == fanqie.providerId) return &fanqie;
   if (providerId == jjwxc.providerId) return &jjwxc;
   if (providerId == weread.providerId) return &weread;

@@ -17,7 +17,7 @@ class ProviderShelfCacheContractTests(unittest.TestCase):
             '"book_id", "book_name", "author", "_m4_progress", "thumb_url"',
             '"novelId", "novelName", "authorName", "_m4_progress", "cover"',
             '"bookId", "title", "author", "progress", "cover"',
-            '"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl"',
+            '"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl", "intro"',
         ):
             self.assertIn(columns, schema)
         self.assertEqual(discovery.count("s.fields = shelfSchema->columns;"), 4)

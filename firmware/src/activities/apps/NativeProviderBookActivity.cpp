@@ -16,6 +16,7 @@
 #include "fontIds.h"
 #include "RecentBooksStore.h"
 #include "util/M4ErrorScreen.h"
+#include "util/M4FooterTouchPolicy.h"
 #include "util/M4ProviderCoverCache.h"
 #include "util/M4PluginReaderBridge.h"
 #include "util/M4PluginTocList.h"
@@ -385,8 +386,7 @@ void NativeProviderBookActivity::renderDetail() {
   const int pad = metrics.contentSidePadding + 10;
   const int textWidth = std::max(1, w - 2 * pad);
   int y = metrics.topPadding + metrics.headerHeight + 12;
-  detailReadButtonTop_ = 0;
-  detailReadButtonHeight_ = 0;
+  detailTouch_.reset(w, h, metrics.buttonHintsHeight);
 
   const std::string displayTitle = !detail_.title.empty() ? detail_.title
                                    : (!title_.empty() ? title_ : std::string("在线书籍"));
@@ -444,16 +444,16 @@ void NativeProviderBookActivity::renderDetail() {
   // 69shuba-inspired primary action: make reading the strongest visual target,
   // while keeping the standard footer/physical Confirm action for consistency.
   if (y + 50 < contentBottom) {
-    detailReadButtonTop_ = y;
-    detailReadButtonHeight_ = 48;
-    renderer.drawRoundedRect(pad, y, textWidth, detailReadButtonHeight_, 2, 7, true);
+    detailTouch_.setReadButton(y, 48);
+    renderer.drawRoundedRect(pad, y, textWidth, 48, 2, 7, true);
     const char* primary = hasHistory ? "继续阅读" : "开始阅读";
-    M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, pad, y, textWidth, detailReadButtonHeight_,
+    M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, pad, y, textWidth, 48,
                                 primary, true, EpdFontFamily::BOLD, 12);
-    y += detailReadButtonHeight_ + 10;
+    y += 48 + 10;
   }
 
   if (y + 26 < contentBottom) {
+    const int chapterTop = y;
     renderer.drawLine(pad, y, w - pad, y, true);
     y += 10;
     M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, "最近更新", true, EpdFontFamily::BOLD);
@@ -483,6 +483,7 @@ void NativeProviderBookActivity::renderDetail() {
       M4UiText::draw(renderer, UI_10_FONT_ID, pad, y, state.c_str());
       y += M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 3;
     }
+    detailTouch_.setChapterBlock(chapterTop, y);
   }
 
   if (y + 34 < contentBottom) {
@@ -509,8 +510,7 @@ void NativeProviderBookActivity::renderDetail() {
     }
   }
 
-  const char* primary = hasHistory ? "继续阅读" : "开始阅读";
-  const auto labels = mappedInput.mapLabels("« 返回", primary, "章节", "");
+  const auto labels = mappedInput.mapLabels("« 返回", "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
@@ -851,6 +851,9 @@ void NativeProviderBookActivity::renderError() {
 }
 
 void NativeProviderBookActivity::loop() {
+  // State changes happen inside this activity, so refresh the global touch
+  // footer mask before dispatching each frame (Detail is Back-only).
+  M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
   if (subActivity) {
     const bool closed = pumpSubActivityFrame();
     if (!closed) return;
@@ -915,17 +918,18 @@ void NativeProviderBookActivity::loop() {
     if (mappedInput.hasTouch()) {
       int tx = 0, ty = 0;
       if (mappedInput.wasScreenTapped(tx, ty)) {
-        if (detailReadButtonHeight_ > 0 && ty >= detailReadButtonTop_ &&
-            ty < detailReadButtonTop_ + detailReadButtonHeight_) {
-          startReading();
-          return;
-        }
-        const auto metrics = UITheme::getInstance().getMetrics();
-        if (ty >= renderer.getScreenHeight() - metrics.buttonHintsHeight) {
-          const int slot = std::min(3, std::max(0, tx * 4 / std::max(1, renderer.getScreenWidth())));
-          if (slot == 0) onExitBook_();
-          else if (slot == 1) startReading();
-          else if (slot == 2) openToc();
+        switch (detailTouch_.actionAt(tx, ty)) {
+          case M4NativeProviderDetailTouchPolicy::Action::Back:
+            onExitBook_();
+            return;
+          case M4NativeProviderDetailTouchPolicy::Action::Read:
+            startReading();
+            return;
+          case M4NativeProviderDetailTouchPolicy::Action::Chapter:
+            openToc();
+            return;
+          case M4NativeProviderDetailTouchPolicy::Action::None:
+            break;
         }
       }
     }

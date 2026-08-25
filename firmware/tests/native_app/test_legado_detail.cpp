@@ -4,7 +4,24 @@
 #include <cstdio>
 #include <string>
 
+#include "apps/M4xJsonStream.h"
 #include "apps/providers/M4NativeProviderBookDetail.h"
+
+#include "legado_intro_fixture.inc"
+
+namespace {
+
+class StringSink final : public M4xJsonStream::Sink {
+ public:
+  bool write(const uint8_t* data, size_t len) override {
+    row.append(reinterpret_cast<const char*>(data), len);
+    return true;
+  }
+
+  std::string row;
+};
+
+}  // namespace
 
 int main() {
   using namespace M4NativeProviderBookDetail;
@@ -25,6 +42,7 @@ int main() {
   assert(fromShelf.author == "江门二爷");
   assert(fromShelf.lastChapter == "第3章 关九九");
   assert(fromShelf.coverUrl.empty());
+  assert(fromShelf.intro.empty());
   assert(legadoLocalDetailSufficient(fromShelf));
 
   // New append-only cover column follows latestChapterTitle and is proxied
@@ -61,6 +79,37 @@ int main() {
                        legacyFive, "http://10.0.0.9:8080"));
   assert(legacyFive.lastChapter == "最新章");
   assert(legacyFive.coverUrl.empty());
+
+  // Seven-column rows append intro after coverUrl. Old columns retain their
+  // meaning, and multiline JSON text is sanitized by RecordExtractor before
+  // it reaches the local-only detail parser.
+  StringSink sink;
+  M4xJsonStream::RecordExtractor extractor(
+      {"data"}, {"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle",
+                  "coverUrl", "intro"},
+      sink);
+  const std::string fixture = kLegadoIntroShelfFixture;
+  for (size_t offset = 0; offset < fixture.size(); offset += 5) {
+    const size_t len = std::min<size_t>(5, fixture.size() - offset);
+    assert(extractor.feed(reinterpret_cast<const uint8_t*>(fixture.data() + offset), len));
+  }
+  assert(extractor.finish());
+  assert(sink.row ==
+         "0123456789abcdef\t关九九\t江门二爷\t120\t第3章 关九九\tcover-original\t第一行 第二行 第三行 \n");
+
+  M4NovelProvider::BookDetail withIntro;
+  assert(applyShelfRow(sink.row, "0123456789abcdef", withIntro,
+                       "http://10.0.0.9:8080"));
+  assert(withIntro.lastChapter == "第3章 关九九");
+  assert(withIntro.coverUrl ==
+         "http://10.0.0.9:8080/cover?path=cover-original");
+  assert(withIntro.intro == "第一行 第二行 第三行");
+
+  // Intro is bounded on the same 1536-byte limit used by remote detail paths.
+  M4NovelProvider::BookDetail boundedIntro;
+  assert(applyShelfRow("id\t书\t作\t1\t最新\tcover\t" + std::string(1800, 'x'),
+                       "id", boundedIntro));
+  assert(boundedIntro.intro.size() == 1536);
 
   // Prefix collision: id must be followed by a tab.
   M4NovelProvider::BookDetail collision;

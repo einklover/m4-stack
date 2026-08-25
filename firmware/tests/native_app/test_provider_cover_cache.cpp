@@ -18,6 +18,11 @@ int main() {
   assert(detectImageFormat(pngMagic, sizeof(pngMagic)) == ImageFormat::Png);
   assert(detectImageFormat(webpMagic, sizeof(webpMagic)) == ImageFormat::Webp);
   assert(detectImageFormat(unknownMagic, sizeof(unknownMagic)) == ImageFormat::Unknown);
+  assert(canConvertImageFormat(ImageFormat::Bmp));
+  assert(canConvertImageFormat(ImageFormat::Jpeg));
+  assert(canConvertImageFormat(ImageFormat::Png));
+  assert(!canConvertImageFormat(ImageFormat::Webp));
+  assert(!canConvertImageFormat(ImageFormat::Unknown));
 
   M4NovelProvider::BookDetail extensionlessDetail;
   extensionlessDetail.coverUrl = "https://cdn.invalid/image?id=1";
@@ -85,6 +90,7 @@ int main() {
   formatBackend.makeDirs = [&](const std::string&) { return true; };
   formatBackend.fetch = [&](const std::string& url, const std::string& path, size_t) {
     if (url.find("png") != std::string::npos) payloads[path] = std::vector<uint8_t>(pngMagic, pngMagic + sizeof(pngMagic));
+    else if (url.find("bmp") != std::string::npos) payloads[path] = {'B', 'M', 0, 0};
     else if (url.find("webp") != std::string::npos) payloads[path] = std::vector<uint8_t>(webpMagic, webpMagic + sizeof(webpMagic));
     else if (url.find("unknown") != std::string::npos) payloads[path] = std::vector<uint8_t>(unknownMagic, unknownMagic + sizeof(unknownMagic));
     else payloads[path] = std::vector<uint8_t>(jpegMagic, jpegMagic + sizeof(jpegMagic));
@@ -92,7 +98,8 @@ int main() {
     return true;
   };
   formatBackend.convert = [&](const std::string& source, const std::string& target, int, int) {
-    if (detectImageFormat(payloads[source].data(), payloads[source].size()) != ImageFormat::Jpeg) return false;
+    if (!canConvertImageFormat(
+            detectImageFormat(payloads[source].data(), payloads[source].size()))) return false;
     files.insert(target);
     return true;
   };
@@ -100,7 +107,20 @@ int main() {
     files.erase(path);
     payloads.erase(path);
   };
-  for (const char* kindValue : {"png", "webp", "unknown"}) {
+  const auto pngSuccess = acquire(
+      Request{"weread", "accept-png", "https://cdn.invalid/png", 120, 160}, formatBackend);
+  assert(!pngSuccess.coverBmpPath.empty());
+  assert(files.count(concreteBmpPath("weread", "accept-png", 120, 160)) != 0);
+
+  for (const char* kindValue : {"bmp", "jpeg"}) {
+    const std::string kind = kindValue;
+    const auto accepted = acquire(Request{"weread", "accept-" + kind,
+                                         "https://cdn.invalid/" + kind, 120, 160},
+                                  formatBackend);
+    assert(!accepted.coverBmpPath.empty());
+  }
+
+  for (const char* kindValue : {"webp", "unknown"}) {
     const std::string kind = kindValue;
     const auto rejected = acquire(Request{"weread", "reject-" + kind, "https://cdn.invalid/" + kind,
                                           120, 160}, formatBackend);

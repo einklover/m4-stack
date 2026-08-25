@@ -1,0 +1,13 @@
+{
+  "data": [
+    {
+      "bookUrl": "0123456789abcdef",
+      "name": "关九九",
+      "author": "江门二爷",
+      "totalChapterNum": 120,
+      "latestChapterTitle": "第3章 关九九",
+      "coverUrl": "cover-original",
+      "intro": "第一行\n第二行\t第三行\r"
+    }
+  ]
+}

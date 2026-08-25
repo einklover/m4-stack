@@ -2,6 +2,7 @@
 
 #include "../ActivityWithSubactivity.h"
 #include "apps/providers/M4NovelProviderContract.h"
+#include "util/M4NativeProviderDetailTouchPolicy.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -40,7 +41,9 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   bool isFullscreenActivity() const override { return true; }
   int uiTextScalePercent() const override { return M4UiRuntimePolicy::kNativePluginTextScalePercent; }
   uint8_t touchFooterButtonsMask() const override {
-    return M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm | M4FooterTouchPolicy::Left;
+    return state_ == State::Detail
+               ? M4FooterTouchPolicy::Back
+               : M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm | M4FooterTouchPolicy::Left;
   }
 
  private:
@@ -107,6 +110,5 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   bool detailAttempted_ = false;
   std::string detailError_;
   std::string providerCoverBmpPath_;
-  int detailReadButtonTop_ = 0;
-  int detailReadButtonHeight_ = 0;
+  M4NativeProviderDetailTouchPolicy::Layout detailTouch_;
 };

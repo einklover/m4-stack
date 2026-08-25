@@ -45,9 +45,15 @@ void assert_provider_schemas() {
   assert(fanqie->fingerprint != jjwxc->fingerprint);
   assert(fanqie->fingerprint != weread->fingerprint);
   assert(fanqie->fingerprint != legado->fingerprint);
-  assert(legado->columns.size() == 6);
+  assert(legado->columns.size() == 7);
   assert(legado->columns[4] == "latestChapterTitle");
   assert(legado->columns[5] == "coverUrl");
+  assert(legado->columns[6] == "intro");
+
+  const auto legacyLegadoFingerprint = M4ProviderShelfCache::fingerprintFor(
+      "legado", legado->schemaVersion,
+      {"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl"});
+  assert(legado->fingerprint != legacyLegadoFingerprint);
 }
 
 void assert_refresh_contract() {
