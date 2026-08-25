@@ -135,7 +135,7 @@ class CenterKernelEpdFont final : public EpdFont {
     const int N = pixelSize_;
     g.width = static_cast<uint8_t>(N);
     g.height = static_cast<uint8_t>(N);
-    int adv = CenterKernelFont::advancePx(N, cls);
+    int adv = advanceForCp(cp, static_cast<uint32_t>(rank), cls);
     if (adv < 1) adv = 1;
     if (adv > 255) adv = 255;
     g.advanceX = static_cast<uint8_t>(adv);
@@ -155,7 +155,7 @@ class CenterKernelEpdFont final : public EpdFont {
       if (rank >= 0) {
         int cls = glyphClass(rank);
         if (cls < 0 || cls > 3) cls = 1;
-        return CenterKernelFont::advancePx(pixelSize_, cls);
+        return advanceForCp(cp, static_cast<uint32_t>(rank), cls);
       }
     }
     if (fallback_) {
@@ -393,6 +393,68 @@ class CenterKernelEpdFont final : public EpdFont {
     }
     if (rank >= glyphCount_) return -1;
     return static_cast<int32_t>(rank);
+  }
+
+  static bool fullwidthCp(uint32_t cp) {
+    if (cp >= 0x3400u && cp <= 0x9FFFu) return true;
+    if (cp >= 0x3000u && cp <= 0x303Fu) return true;
+    if (cp >= 0xFF01u && cp <= 0xFF60u) return true;
+    if (cp >= 0xFFE0u && cp <= 0xFFE6u) return true;
+    return false;
+  }
+
+  int occupancyInkWidth(uint32_t rank) const {
+    if (!blob_ || rank >= glyphCount_) return 0;
+    const uint8_t* occ = blob_ + bitmapsOff_ + rank * 32u;
+    int lo = 16;
+    int hi = -1;
+    for (int row = 0; row < 16; ++row) {
+      for (int col = 0; col < 16; ++col) {
+        const int idx = row * 16 + col;
+        if (((occ[idx / 8] >> (7 - (idx % 8))) & 1) == 0) continue;
+        if (col < lo) lo = col;
+        if (col > hi) hi = col;
+      }
+    }
+    if (hi < 0) return 0;
+    return hi - lo + 1;
+  }
+
+  int advanceForCp(uint32_t cp, uint32_t rank, int cls) const {
+    const int N = pixelSize_;
+    if (cp == ' ' || cp == 0x00A0u) {
+      int adv = (4 * N + CenterKernelFont::kCellPx / 2) / CenterKernelFont::kCellPx;
+      return adv < 1 ? 1 : adv;
+    }
+    if (fullwidthCp(cp)) return CenterKernelFont::advancePx(N, cls);
+    const int inkW = occupancyInkWidth(rank);
+    int lsb = 1;
+    int rsb = 1;
+    switch (cp) {
+      case '(':
+      case '[':
+      case '{':
+      case '<':
+      case 0x2018u:
+      case 0x201Cu:
+        lsb = 2;
+        rsb = 1;
+        break;
+      case ')':
+      case ']':
+      case '}':
+      case '>':
+      case 0x2019u:
+      case 0x201Du:
+        lsb = 1;
+        rsb = 2;
+        break;
+      default:
+        break;
+    }
+    const int cells = (inkW > 0) ? (lsb + inkW + rsb) : 4;
+    int adv = (cells * N + CenterKernelFont::kCellPx / 2) / CenterKernelFont::kCellPx;
+    return adv < 1 ? 1 : adv;
   }
 
   int glyphClass(int32_t rank) const {

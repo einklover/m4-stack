@@ -298,8 +298,8 @@ void FengyanTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCoun
     if (hasSubtitle) {
       std::string subtitleText = rowSubtitle(i);
       // Subtitle chrome: still compact; use UI face path so CJK is covered.
-      auto subtitle = M4UiText::truncated(renderer, SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
-      M4UiText::draw(renderer, SMALL_FONT_ID, textX, itemY + subtitleTop, subtitle.c_str(), true);
+      auto subtitle = M4UiText::truncated(renderer, UI_10_FONT_ID, subtitleText.c_str(), rowTextWidth);
+      M4UiText::draw(renderer, UI_10_FONT_ID, textX, itemY + subtitleTop, subtitle.c_str(), true);
     }
 
     if (rowValue != nullptr) {
@@ -617,8 +617,8 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
         // 绘制作者行：左侧标题（带虚线下划线）+内容，右侧右对齐
         const std::string& authorDisplay = meta.author;
         const char* bookAuthorLabel = L(Str::kBookAuthor);
-        M4UiText::draw(renderer, SMALL_FONT_ID, infoBoxX + 12, currentY, bookAuthorLabel, true);
-        int bookAuthorLabelWidth = M4UiText::textWidth(renderer, SMALL_FONT_ID, bookAuthorLabel);
+        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + 12, currentY, bookAuthorLabel, true);
+        int bookAuthorLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, bookAuthorLabel);
         // 绘制虚线下划线（4像素实线，2像素间隔）
         for (int x = infoBoxX + 12; x < infoBoxX + 12 + bookAuthorLabelWidth; x += 6) {
           renderer.drawPixel(x, currentY + normalLineHeight - 2, true);
@@ -626,9 +626,9 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
           renderer.drawPixel(x + 2, currentY + normalLineHeight - 2, true);
           renderer.drawPixel(x + 3, currentY + normalLineHeight - 2, true);
         }
-        auto authorText = M4UiText::truncated(renderer, SMALL_FONT_ID, authorDisplay.c_str(), totalCoversWidth - 120);
-        int authorTextWidth = M4UiText::textWidth(renderer, SMALL_FONT_ID, authorText.c_str());
-        M4UiText::draw(renderer, SMALL_FONT_ID, infoBoxX + totalCoversWidth - 12 - authorTextWidth, currentY,
+        auto authorText = M4UiText::truncated(renderer, UI_10_FONT_ID, authorDisplay.c_str(), totalCoversWidth - 120);
+        int authorTextWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, authorText.c_str());
+        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + totalCoversWidth - 12 - authorTextWidth, currentY,
                        authorText.c_str(), true);
         currentY += normalLineHeight + lineSpacing;
 

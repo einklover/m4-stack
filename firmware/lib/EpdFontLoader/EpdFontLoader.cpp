@@ -100,49 +100,33 @@ bool bindCkBlob(CenterKernelEpdFont& face) {
 
 bool ensureCenterKernelBound() { return bindCkBlob(centerKernelReader); }
 
-void bindCkFace(CenterKernelEpdFont& face, ScaledEpdFont& fbScaler, const EpdFont* latinSrc, int px) {
-  (void)fbScaler;
+void bindCkFace(CenterKernelEpdFont& face, int px) {
   bindCkBlob(face);
-  // Unscaled native occupancy: CenterKernel stamps Latin with the same Kx/Ky.
-  if (latinSrc) face.setFallback(latinSrc);
+  face.setFallback(nullptr);
   face.setPixelSize(px);
 }
 
 void bindReaderBody(GfxRenderer& renderer, int targetPx) {
-  if (!builtinSystemReader) return;
-  ensureCenterKernelBound();
-  const EpdFont* fallbackSource = nullptr;
-  EpdFontFamily* canonicalFam = FontManager::getInstance().getCustomFontFamily(
-      M4FontPolicy::kCanonicalFamily, M4FontPolicy::kCanonicalEpdfontPixelSize);
-  if (canonicalFam) fallbackSource = canonicalFam->getFont(EpdFontFamily::REGULAR);
-  if (!fallbackSource) fallbackSource = builtinSystemReader;
-  if (fallbackSource) {
-    centerKernelReader.setFallback(fallbackSource);
-  }
-  if (!centerKernelReader.valid()) {
+  if (!ensureCenterKernelBound()) {
     Serial.printf("[M4-FONT] CenterKernel blob missing, keeping previous reader %dpx\n", targetPx);
     return;
   }
+  centerKernelReader.setFallback(nullptr);
   centerKernelReader.bindReaderBody(targetPx);
   renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&centerKernelReader));
-  Serial.printf("[M4-FONT] CenterKernel reader=%dpx valid=%d fallback=%s\n", targetPx,
-                centerKernelReader.valid() ? 1 : 0, canonicalFam ? "canonical" : "builtin");
+  Serial.printf("[M4-FONT] CenterKernel reader=%dpx valid=%d (CJK+Latin blob)\n", targetPx,
+                centerKernelReader.valid() ? 1 : 0);
 }
 
 void bindSystemChrome(GfxRenderer& renderer) {
   const int uiPx = M4FontPolicy::chromeUiPxFromTier(SETTINGS.getUiFontSize());
   const int smallPx = M4FontPolicy::kChromeSmallPx;
-  const EpdFont* latin = builtinSystemReader;
-  if (!latin) {
-    Serial.println("[M4-FONT] DIAG: no latin source for chrome CenterKernel fallback");
-    return;
-  }
   if (!bindCkBlob(centerKernelChromeSmall) || !bindCkBlob(centerKernelChromeUi)) {
-    Serial.println("[M4-FONT] CenterKernel chrome blob missing; keeping native-grid UI");
+    Serial.println("[M4-FONT] CenterKernel chrome blob missing");
     return;
   }
-  bindCkFace(centerKernelChromeSmall, scaledChromeSmallFb, latin, smallPx);
-  bindCkFace(centerKernelChromeUi, scaledChromeUiFb, latin, uiPx);
+  bindCkFace(centerKernelChromeSmall, smallPx);
+  bindCkFace(centerKernelChromeUi, uiPx);
   renderer.replaceFont(SMALL_FONT_ID, EpdFontFamily(&centerKernelChromeSmall));
   renderer.replaceFont(UI_10_FONT_ID, EpdFontFamily(&centerKernelChromeUi, &centerKernelChromeUi));
   renderer.replaceFont(UI_12_FONT_ID, EpdFontFamily(&centerKernelChromeUi, &centerKernelChromeUi));

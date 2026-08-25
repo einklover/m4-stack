@@ -251,8 +251,8 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 
     if (hasSubtitle) {
       std::string subtitleText = rowSubtitle(i);
-      auto subtitle = M4UiText::truncated(renderer, SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
-      M4UiText::draw(renderer, SMALL_FONT_ID, textX, itemY + subtitleTop, subtitle.c_str(), true);
+      auto subtitle = M4UiText::truncated(renderer, UI_10_FONT_ID, subtitleText.c_str(), rowTextWidth);
+      M4UiText::draw(renderer, UI_10_FONT_ID, textX, itemY + subtitleTop, subtitle.c_str(), true);
     }
 
     if (rowValue != nullptr) {
@@ -470,9 +470,9 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
       int tileX = LyraMetrics::values.contentSidePadding + tileWidth * i;
       const int textW = tileWidth - 2 * hPaddingInSelection;
       auto title =
-          M4UiText::truncated(renderer, SMALL_FONT_ID, recentBooks[i].title.c_str(), textW);
+          M4UiText::truncated(renderer, UI_10_FONT_ID, recentBooks[i].title.c_str(), textW);
       const char* authorSrc = recentBooks[i].author.c_str();
-      auto author = M4UiText::truncated(renderer, SMALL_FONT_ID,
+      auto author = M4UiText::truncated(renderer, UI_10_FONT_ID,
                                         (authorSrc && authorSrc[0]) ? authorSrc : " ", textW);
 
       if (bookSelected) {
@@ -487,10 +487,10 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
                                  bookTitleHeight, cornerRadius, false, false, true, true, Color::LightGray);
       }
       const int textY = tileY + tileHeight - bookTitleHeight + hPaddingInSelection + 2;
-      M4UiText::draw(renderer, SMALL_FONT_ID, tileX + hPaddingInSelection, textY, title.c_str(), true);
+      M4UiText::draw(renderer, UI_10_FONT_ID, tileX + hPaddingInSelection, textY, title.c_str(), true);
       if (!recentBooks[i].author.empty()) {
-        M4UiText::draw(renderer, SMALL_FONT_ID, tileX + hPaddingInSelection,
-                       textY + M4UiText::listLineHeight(renderer, SMALL_FONT_ID) + 2, author.c_str(), true);
+        M4UiText::draw(renderer, UI_10_FONT_ID, tileX + hPaddingInSelection,
+                       textY + M4UiText::listLineHeight(renderer, UI_10_FONT_ID) + 2, author.c_str(), true);
       }
     }
   } else {

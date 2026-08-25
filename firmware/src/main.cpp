@@ -7,16 +7,11 @@
 #include <SDCardManager.h>
 #include <SPI.h>
 #ifdef OMIT_FONTS
-// Murphy M4: system UI chrome (SMALL / UI_10 / UI_12) and the default/fallback
-// reader IDs (NOTOSANS_*) share the uncompressed 15x16 1-bit native-grid
-// corpus. Chrome always stays on this builtin face and never follows a
-// reader-selected TTF/OTF or reader pixel size. Reader body may still bind
-// runtime sfnt from /FONT; canonical SD epdfont still promotes onto NOTOSANS_*
-// only.
-#include "fontdata/m4_native_grid_15x16.h"
+// Murphy M4: one CenterKernel occupancy blob (CJK + Latin). Chrome never
+// follows a reader TTF. Reader body may still bind runtime sfnt from /FONT.
+#include "fontdata/m4_center_kernel_16x16.h"
 #include "util/M4FontPolicy.h"
-#include <NativeGridEpdFont.h>
-#include <ScaledEpdFont.h>
+#include <CenterKernelEpdFont.h>
 #else
 #include <builtinFonts/all.h>
 #endif
@@ -352,28 +347,21 @@ EpdFontFamily smallFontFamily(&smallFont);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 #else
-// Built-in 15x16 1-bit native-grid is the single system face (logical 16x16
-// cell). Default/fallback reader IDs bind the native instance; bindSystemReader
-// wraps NOTOSANS_16 in ScaledEpdFont at integer N for the builtin face.
-// Chrome IDs start as native-grid 1x until EpdFontLoader rebinds SMALL/UI
-// onto CenterKernel (bold) at the settings 小/中/大 tier. Must never follow
-// a reader TTF or readerPixelSize.
-extern const uint8_t m4_native_grid_15x16_bin_start[] asm("_binary_src_fontdata_m4_native_grid_15x16_bin_start");
-extern const uint8_t m4_native_grid_15x16_bin_end[] asm("_binary_src_fontdata_m4_native_grid_15x16_bin_end");
-static_assert(M4NativeGridFont::kGlyphCount == 28953, "native-grid corpus size");
-static NativeGridEpdFont nativeGridFont(
-    m4_native_grid_15x16_bin_start,
-    static_cast<size_t>(m4_native_grid_15x16_bin_end - m4_native_grid_15x16_bin_start));
-static ScaledEpdFont scaledChromeSmall;
-static ScaledEpdFont scaledChromeUi10;
-static ScaledEpdFont scaledChromeUi12;
-EpdFontFamily notosans12FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
-EpdFontFamily notosans14FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
-EpdFontFamily notosans16FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
-EpdFontFamily notosans18FontFamily(&nativeGridFont, &nativeGridFont, &nativeGridFont, &nativeGridFont);
-EpdFontFamily smallFontFamily(&scaledChromeSmall);
-EpdFontFamily ui10FontFamily(&scaledChromeUi10, &scaledChromeUi10);
-EpdFontFamily ui12FontFamily(&scaledChromeUi12, &scaledChromeUi12);
+// Built-in CenterKernel occupancy (CJK + Latin) is the single system face.
+// EpdFontLoader rebinds SMALL/UI to the settings 小/中/大 pixel size.
+extern const uint8_t m4_center_kernel_16x16_bin_start[] asm("_binary_src_fontdata_m4_center_kernel_16x16_bin_start");
+extern const uint8_t m4_center_kernel_16x16_bin_end[] asm("_binary_src_fontdata_m4_center_kernel_16x16_bin_end");
+static CenterKernelEpdFont bootCkFont(
+    m4_center_kernel_16x16_bin_start,
+    static_cast<size_t>(m4_center_kernel_16x16_bin_end - m4_center_kernel_16x16_bin_start),
+    16);
+EpdFontFamily notosans12FontFamily(&bootCkFont, &bootCkFont, &bootCkFont, &bootCkFont);
+EpdFontFamily notosans14FontFamily(&bootCkFont, &bootCkFont, &bootCkFont, &bootCkFont);
+EpdFontFamily notosans16FontFamily(&bootCkFont, &bootCkFont, &bootCkFont, &bootCkFont);
+EpdFontFamily notosans18FontFamily(&bootCkFont, &bootCkFont, &bootCkFont, &bootCkFont);
+EpdFontFamily smallFontFamily(&bootCkFont);
+EpdFontFamily ui10FontFamily(&bootCkFont, &bootCkFont);
+EpdFontFamily ui12FontFamily(&bootCkFont, &bootCkFont);
 #endif  // OMIT_FONTS
 
 
@@ -607,11 +595,6 @@ void setupDisplayAndFonts() {
   // Mandatory IDs (NOTOSANS_*, UI_*, SMALL) always registered so SYSTEM_FONT /
   // UI drawing never no-ops. OMIT_FONTS builds bind chrome and the default
   // reader face to the builtin 15x16 1-bit native-grid.
-#ifdef OMIT_FONTS
-  scaledChromeSmall.bindInteger(&nativeGridFont, M4FontPolicy::kChromeSmallScale);
-  scaledChromeUi10.bindInteger(&nativeGridFont, M4FontPolicy::kChromeUi10Scale);
-  scaledChromeUi12.bindInteger(&nativeGridFont, M4FontPolicy::kChromeUi12Scale);
-#endif
   renderer.insertFont(NOTOSANS_12_FONT_ID, notosans12FontFamily);
   renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
   renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
@@ -620,16 +603,9 @@ void setupDisplayAndFonts() {
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 #ifdef OMIT_FONTS
-  Serial.printf("[%lu] [M4-FONT] Registered UI chrome native-grid 16x16-cell "
-                "integer %dx/%dx/%dx (@%d/%d/%dpx) (valid=%d glyphs=%u outliers=%u); "
-                "default reader native; canonical SD/runtime faces still promote "
-                "onto reader IDs only\n",
-                millis(), M4FontPolicy::kChromeSmallScale, M4FontPolicy::kChromeUi10Scale,
-                M4FontPolicy::kChromeUi12Scale, M4FontPolicy::kChromeSmallPx,
-                M4FontPolicy::kChromeUi10Px, M4FontPolicy::kChromeUi12Px,
-                nativeGridFont.valid() ? 1 : 0,
-                static_cast<unsigned>(nativeGridFont.glyphCount()),
-                static_cast<unsigned>(nativeGridFont.outlierCount()));
+  Serial.printf("[%lu] [M4-FONT] Boot CenterKernel valid=%d glyphs=%u px=16 (CJK+Latin)\n",
+                millis(), bootCkFont.valid() ? 1 : 0,
+                static_cast<unsigned>(bootCkFont.glyphCount()));
 #else
   Serial.printf("[%lu] [FONT] Builtin NotoSans full CJK registered\n", millis());
 #endif

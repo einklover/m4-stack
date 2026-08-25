@@ -4,26 +4,27 @@
   "font_file_bytes": 16081052,
   "format": "M4CK v1 ranked-bitset + 16x16 absolute occupancy + 2-bit joint class",
   "grid": "16x16 absolute center occupancy; not LSB/bbox left-normalized",
-  "supported_count": 27553,
+  "supported_count": 28985,
   "joint_class_histogram": {
     "0": 18376,
-    "1": 9172,
+    "1": 10604,
     "2": 4,
     "3": 1
   },
-  "supported_corpus_sha256": "6b2fbc2ed86d644787099dc9d23856bb59e7190683ca42d56d7e515fee729844",
+  "supported_corpus_sha256": "bd54605193ad8b679d5b0063341cd0ddbbe303dc9d61b0f72c7656eabf0e8246",
   "cjk_range": [
     "U+3400",
     "U+9FFF"
   ],
+  "latin_and_other_count": 1432,
   "no_epd_glyph_table": true,
   "lookup": "BMP ranked bitset; 2-bit joint class packed by rank",
-  "blob_bytes": 892817,
-  "blob_sha256": "676f1e0c87fe3caee1ac83d235bbb96f22df6d13ee291633c83c582c58c9d835",
+  "blob_bytes": 939815,
+  "blob_sha256": "8bc8c7f62a379b23d40a32412300c33876e11d75a716b4eb7d6fb5287dcf49c8",
   "header_bytes": 48,
-  "index_bytes": 4184,
-  "occupied_pages": 108,
-  "bitmap_bytes": 881696,
-  "class_bytes": 6889,
+  "index_bytes": 5000,
+  "occupied_pages": 132,
+  "bitmap_bytes": 927520,
+  "class_bytes": 7247,
   "regenerate": "python3 firmware/scripts/generate_m4_center_kernel.py --font <path-to-标准像素粗.ttf>"
 }
