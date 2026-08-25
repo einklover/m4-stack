@@ -156,6 +156,20 @@ class ReaderRegressionContracts(unittest.TestCase):
         self.assertNotIn("getReaderPixelSize()", settings)
         self.assertIn("kAllowCustomChromePromotion = false", fixed)
 
+    def test_reader_empty_first_frame_retry_is_bounded(self) -> None:
+        # Empty-first-frame retries must go through the bounded policy: the old
+        # branch re-armed cachedPage=-1 + updateRequired every ~10ms forever
+        # (device freeze entering a 正文 whose cache has no renderable lines).
+        reader = text("firmware/src/activities/reader/TxtReaderActivity.cpp")
+        loop = function_body(reader, "void TxtReaderActivity::displayTaskLoop(")
+        policy = text("firmware/src/util/M4TxtIndexPolicy.h")
+        header = text("firmware/src/activities/reader/TxtReaderActivity.h")
+        self.assertIn("emptyFirstFrameShouldRetry(emptyFirstFrameRetries_)", loop)
+        self.assertIn("empty_frame_terminal", loop)
+        self.assertIn("kEmptyFirstFrameMaxRetries", policy)
+        self.assertIn("emptyFirstFrameRetries_ = 0", reader)
+        self.assertIn("int emptyFirstFrameRetries_ = 0", header)
+
 
 if __name__ == "__main__":
     unittest.main()

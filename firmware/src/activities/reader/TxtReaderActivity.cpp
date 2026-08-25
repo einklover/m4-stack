@@ -2175,14 +2175,36 @@ void TxtReaderActivity::displayTaskLoop() {
         if (chapter_initialized && !pageOffsets.empty() && firstFrameHasLines) {
           firstFrameJustReady = !firstReadableLogged_;
           firstPageReady_ = true;
+          emptyFirstFrameRetries_ = 0;
         } else if (chapter_initialized && !pageOffsets.empty() && !firstFrameHasLines) {
           // Retry next tick instead of flushing a blank buffer (looks like "page 1 empty").
-          // cachedPage was already set to currentPage → force a reload next tick, or
-          // the retry spins forever on the same empty lines (busy loop, page never shows).
-          firstPageReady_ = false;
-          pluginPendingHalfFlush_ = false;
-          cachedPage = -1;
-          updateRequired = true;
+          // cachedPage was already set to currentPage → force a reload next tick.
+          // BOUNDED: a chapter with no renderable content in any window (e.g. a
+          // whitespace-only provider body that passed the fetch-time written()>0
+          // guard) used to re-arm this branch every ~10ms forever — SD re-read +
+          // full word-wrap + serial spam while the screen stayed frozen on the
+          // entry placeholder. Past the budget: paint one recoverable message,
+          // then stop re-arming (loop goes quiet).
+          ++emptyFirstFrameRetries_;
+          if (M4TxtIndexPolicy::emptyFirstFrameShouldRetry(emptyFirstFrameRetries_)) {
+            firstPageReady_ = false;
+            pluginPendingHalfFlush_ = false;
+            cachedPage = -1;
+            updateRequired = true;
+          } else if (emptyFirstFrameRetries_ ==
+                     M4TxtIndexPolicy::kEmptyFirstFrameMaxRetries + 1) {
+            physicalEpdBusy_ = true;
+            renderer.setRenderMode(GfxRenderer::BW);
+            renderer.clearScreen(0xFF);
+            M4UiText::drawCentered(renderer, UI_12_FONT_ID, 280, "本章无可显示内容", true,
+                                   EpdFontFamily::BOLD);
+            M4UiText::drawCentered(renderer, UI_10_FONT_ID, 330, "请返回重新选择章节");
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            (void)renderer.storeLastShown();
+            physicalEpdBusy_ = false;
+            Serial.printf("[WR05] t=%lu empty_frame_terminal retries=%d\n",
+                          static_cast<unsigned long>(millis()), emptyFirstFrameRetries_);
+          }
         }
         doHalfFlush = pluginPendingHalfFlush_ && firstFrameHasLines;
         pluginPendingHalfFlush_ = false;
@@ -2358,6 +2380,7 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
 
   // 章节重新初始化时清除页面缓存
   cachedPage = -1;
+  emptyFirstFrameRetries_ = 0;
 
   // 校验章节索引合法性
   if (chapter_num < 0 ) {

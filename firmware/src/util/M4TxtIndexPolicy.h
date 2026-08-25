@@ -104,4 +104,20 @@ struct LoadPageLogGate {
   }
 };
 
+// --- 5) Empty-first-frame retry budget --------------------------------------
+// A chapter whose windows lay out zero renderable lines (whitespace-only
+// provider body that passed the fetch-time written()>0 guard, or a persistent
+// read-window alloc failure right after handoff) must NOT be re-laid-out
+// forever: displayTaskLoop used to force cachedPage=-1 + updateRequired on
+// every ~10ms tick (SD re-read + full word-wrap + serial spam at ~100Hz,
+// screen frozen on the entry placeholder). Count consecutive empty frames;
+// inside the budget transient states still recover, past it the loop goes
+// terminal (one message paint, no more re-arms).
+constexpr int kEmptyFirstFrameMaxRetries = 60;
+
+// consecutiveEmpty includes the frame just observed (first empty frame == 1).
+inline bool emptyFirstFrameShouldRetry(int consecutiveEmpty) {
+  return consecutiveEmpty > 0 && consecutiveEmpty <= kEmptyFirstFrameMaxRetries;
+}
+
 }  // namespace M4TxtIndexPolicy

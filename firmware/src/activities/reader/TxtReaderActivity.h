@@ -248,6 +248,8 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
 
   bool firstPageReady_ = false;
   bool firstReadableLogged_ = false;
+  // Consecutive frames that laid out zero lines (M4TxtIndexPolicy budget gate).
+  int emptyFirstFrameRetries_ = 0;
   bool indexComplete_ = true;
   size_t indexRangeEnd_ = 0;   // exclusive file end for progressive index
   size_t indexCursor_ = 0;     // next page-start to discover
