@@ -20,8 +20,10 @@
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "apps/M4xRegistry.h"
 #include "util/M4ContentProviderContract.h"
 #include "util/M4HistoryReopen.h"
+#include "util/M4HomeBookDetailMeta.h"
 #include "BookmarkStore.h"
 #include "components/UITheme.h"
 #include "components/themes/BaseTheme.h"
@@ -51,6 +53,16 @@ int HomeActivity::getMenuItemCount() const {
 
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
+  {
+    std::vector<M4HomeBookDetailMeta::InstalledPlugin> plugins;
+    const auto apps = M4xRegistry::load();
+    plugins.reserve(apps.size());
+    for (const auto& app : apps) {
+      plugins.push_back({app.id, app.name, app.provider});
+    }
+    M4HomeBookDetailMeta::setInstalledPlugins(std::move(plugins));
+  }
+
   recentBooks.clear();
   const auto& books = RECENT_BOOKS.getBooks();
   recentBooks.reserve(std::min(static_cast<int>(books.size()), maxBooks));
