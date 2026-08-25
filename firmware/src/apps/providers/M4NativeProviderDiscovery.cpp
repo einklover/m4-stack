@@ -8,6 +8,7 @@
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderIo.h"
+#include "apps/providers/M4NativeProviderLogin.h"
 #include "apps/providers/M4Psram.h"
 #include "util/M4WereadAuthPolicy.h"
 
@@ -417,6 +418,13 @@ void taskMain(void*) {
                 job.providerId.c_str(), job.appId.c_str(), job.category.c_str());
 
   DiscoverySpec spec = makeSpec(job.providerId, job.appId, job.category);
+  bool wereadRenewed = false;
+  if (spec.authRequired && job.providerId == "weread") {
+    if (M4NativeProviderLogin::tryRenewSession(appRoot(job.appId))) {
+      wereadRenewed = true;
+      spec = makeSpec(job.providerId, job.appId, job.category);
+    }
+  }
   if (spec.authRequired) {
     publish(Phase::AuthRequired, 0, 0, spec.error);
   } else if (!spec.error.empty()) {
@@ -472,63 +480,85 @@ void taskMain(void*) {
         publish(Phase::Ready, net.bytes, rowCount);
       }
     } else {
-      M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, file, spec.maxRows);
-      RecordExtractorSink jsonSink(rows);
-      publish(Phase::Connecting);
-      M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
-      bool sawBody = false;
-      if (job.providerId != "fanqie") {
-        writeDiscoveryDiag(job.appId, "http_started", false, 0, "-", 0, 0, false);
-      }
-      const auto net = M4NativeProviderHttp::requestToSink(
-          spec.request, jsonSink,
-          [&](size_t bytes) {
-            publish(Phase::Receiving, bytes, rows.recordCount());
-            if (!sawBody) {
-              sawBody = true;
-              if (job.providerId != "fanqie") {
-                writeDiscoveryDiag(job.appId, "http_progress", false, bytes, "-",
-                                   rows.recordCount(), 0, false);
+      for (int attempt = 0; attempt < 2; ++attempt) {
+        if (attempt > 0) {
+          spec = makeSpec(job.providerId, job.appId, job.category);
+          if (spec.authRequired) {
+            publish(Phase::AuthRequired, 0, 0, spec.error);
+            break;
+          }
+          if (!spec.error.empty()) {
+            publish(Phase::Error, 0, 0, spec.error);
+            break;
+          }
+          if (!file.open(rowsPath(job.appId), job.providerId == "fanqie")) {
+            writeDiscoveryDiag(job.appId, "sd_open_failed", false, 0, "sd_open_failed", 0, 0, false);
+            publish(Phase::Error, 0, 0, "sd_open_failed");
+            break;
+          }
+        }
+        M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, file, spec.maxRows);
+        RecordExtractorSink jsonSink(rows);
+        publish(Phase::Connecting);
+        M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
+        bool sawBody = false;
+        if (job.providerId != "fanqie") {
+          writeDiscoveryDiag(job.appId, "http_started", false, 0, "-", 0, 0, false);
+        }
+        const auto net = M4NativeProviderHttp::requestToSink(
+            spec.request, jsonSink,
+            [&](size_t bytes) {
+              publish(Phase::Receiving, bytes, rows.recordCount());
+              if (!sawBody) {
+                sawBody = true;
+                if (job.providerId != "fanqie") {
+                  writeDiscoveryDiag(job.appId, "http_progress", false, bytes, "-",
+                                     rows.recordCount(), 0, false);
+                }
               }
-            }
-          },
-          [&]() { return rows.recordCount() >= spec.maxRows; });
-      const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
-      const bool parsed = rows.recordCount() > 0 &&
-                          ((net.ok && rows.finish()) || boundedWindow);
-      const bool wereadLoginExpired =
-          job.providerId == "weread" && M4WereadAuthPolicy::responseIndicatesLoginRequired(jsonSink.prefix());
-      if (!parsed) {
-        file.discard();
-        if (wereadLoginExpired) {
-          writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, "login_required", 0, 0, false);
-          publish(Phase::AuthRequired, net.bytes, 0, "login_required");
-        } else {
-          const std::string error = !net.ok
-                                        ? (net.error.empty() ? "discovery_http" : net.error)
-                                        : (rows.recordCount() == 0
-                                               ? "discovery_empty"
-                                               : M4xJsonStream::errorString(rows.error()));
-          if (job.providerId == "weread" &&
-              (error == "http_401" || error == "http_403" || error == "login_required")) {
-            writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, error, rows.recordCount(), 0, false);
-            publish(Phase::AuthRequired, net.bytes, 0, error);
+            },
+            [&]() { return rows.recordCount() >= spec.maxRows; });
+        const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
+        const bool parsed = rows.recordCount() > 0 &&
+                            ((net.ok && rows.finish()) || boundedWindow);
+        const std::string error = !net.ok
+                                      ? (net.error.empty() ? "discovery_http" : net.error)
+                                      : (rows.recordCount() == 0
+                                             ? "discovery_empty"
+                                             : M4xJsonStream::errorString(rows.error()));
+        const bool wereadLoginExpired =
+            job.providerId == "weread" &&
+            (M4WereadAuthPolicy::responseIndicatesLoginRequired(jsonSink.prefix()) ||
+             M4WereadAuthPolicy::httpStatusMeansLoginRequired(error));
+        if (!parsed) {
+          file.discard();
+          if (wereadLoginExpired && !wereadRenewed &&
+              M4NativeProviderLogin::tryRenewSession(appRoot(job.appId))) {
+            wereadRenewed = true;
+            continue;
+          }
+          if (wereadLoginExpired) {
+            writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, "login_required", 0, 0, false);
+            publish(Phase::AuthRequired, net.bytes, 0, "login_required");
           } else {
             writeDiscoveryDiag(job.appId, "error", net.ok || boundedWindow, net.bytes, error,
                                rows.recordCount(), 0, false);
             publish(Phase::Error, net.bytes, rows.recordCount(), error);
           }
+          break;
         }
-      } else if (!file.commit()) {
-        file.discard();
-        writeDiscoveryDiag(job.appId, "commit_fail", net.ok || boundedWindow, net.bytes,
-                           "discovery_commit_failed",
-                           rows.recordCount(), 0, false);
-        publish(Phase::Error, net.bytes, rows.recordCount(), "discovery_commit_failed");
-      } else {
-        writeDiscoveryDiag(job.appId, "ready", net.ok || boundedWindow, net.bytes, "-",
-                           rows.recordCount(), 0, false);
-        publish(Phase::Ready, net.bytes, rows.recordCount());
+        if (!file.commit()) {
+          file.discard();
+          writeDiscoveryDiag(job.appId, "commit_fail", net.ok || boundedWindow, net.bytes,
+                             "discovery_commit_failed",
+                             rows.recordCount(), 0, false);
+          publish(Phase::Error, net.bytes, rows.recordCount(), "discovery_commit_failed");
+        } else {
+          writeDiscoveryDiag(job.appId, "ready", net.ok || boundedWindow, net.bytes, "-",
+                             rows.recordCount(), 0, false);
+          publish(Phase::Ready, net.bytes, rows.recordCount());
+        }
+        break;
       }
     }
   }

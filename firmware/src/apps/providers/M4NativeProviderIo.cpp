@@ -464,7 +464,6 @@ bool hasCredential(const std::string& appDataRoot, const std::string& providerId
 
 bool mergeSetCookies(const std::string& appDataRoot, const std::string& providerId,
                      const std::vector<std::string>& lines) {
-  (void)providerId;
   if (lines.empty()) return false;
   const std::string path = configPath(appDataRoot);
   std::string raw;
@@ -486,6 +485,7 @@ bool mergeSetCookies(const std::string& appDataRoot, const std::string& provider
       return static_cast<char>(std::tolower(c));
     });
     if (name.empty()) continue;
+    if (providerId == "weread" && !M4xNetPolicy::isWereadCookieName(name)) continue;
     cookies[name] = value;
     changed = true;
   }

@@ -6,6 +6,8 @@
 #include "apps/providers/M4Psram.h"
 #include "apps/providers/M4NativeProviderIo.h"
 #include "apps/providers/M4NativeWifi.h"
+#include "apps/M4OnlineClockSync.h"
+#include "util/M4WereadAuthPolicy.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -79,28 +81,32 @@ esp_err_t httpEvent(esp_http_client_event_t* evt) {
 
 SmallResponse smallRequest(const char* method, const std::string& url,
                            const std::vector<std::pair<std::string, std::string>>& headers = {},
-                           const std::string& body = {}, size_t cap = 32u * 1024u) {
+                           const std::string& body = {}, size_t cap = 32u * 1024u,
+                           bool honorCancel = true) {
   SmallResponse out;
-  if (cancelled()) {
+  if (honorCancel && cancelled()) {
     out.error = "cancelled";
     return out;
   }
-  const auto wifi = M4NativeWifi::ensureConnected(20000, [] { return cancelled(); });
+  const auto wifi = M4NativeWifi::ensureConnected(20000, [honorCancel] {
+    return honorCancel && cancelled();
+  });
   if (!wifi.ok) {
     out.error = wifi.error.empty() ? "wifi_connect_failed" : wifi.error;
     return out;
   }
-  if (cancelled()) {
+  if (honorCancel && cancelled()) {
     out.error = "cancelled";
     return out;
   }
+  M4OnlineClockSync::ensureOnce();
 
   // Lock only the actual HTTP/TLS transaction. The QR polling loop releases
   // this gate during its 2-second wait, so a login screen never monopolizes
   // the reader for 90-120 seconds. Chapter TLS/decode and login TLS therefore
   // cannot overlap their internal-RAM peaks.
   M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
-  if (cancelled()) {
+  if (honorCancel && cancelled()) {
     out.error = "cancelled";
     return out;
   }
@@ -144,7 +150,7 @@ SmallResponse smallRequest(const char* method, const std::string& url,
     return out;
   }
   if (err != ESP_OK) {
-    out.error = cancelled() ? "cancelled" : "http_request_failed";
+    out.error = (honorCancel && cancelled()) ? "cancelled" : "http_request_failed";
     return out;
   }
   if (out.status < 200 || out.status >= 300) {
@@ -179,6 +185,24 @@ bool waitCancelable(uint32_t ms) {
     vTaskDelay(pdMS_TO_TICKS(50));
   }
   return true;
+}
+
+bool tryRenewWeread(const std::string& root, bool honorCancel) {
+  std::string cookie;
+  if (!M4NativeProviderIo::loadCookieHeader(root, "weread", cookie)) return false;
+  if (cookie.find("wr_rt=") == std::string::npos) return false;
+  SmallResponse r = smallRequest(
+      "POST", std::string(M4_WEREAD_ORIGIN) + M4WereadAuthPolicy::kRenewalPath,
+      {{"Cookie", cookie},
+       {"Referer", "https://weread.qq.com/"},
+       {"Content-Type", "application/json"}},
+      M4WereadAuthPolicy::kRenewalBody, 8u * 1024u, honorCancel);
+  if (!r.setCookies.empty()) {
+    (void)M4NativeProviderIo::mergeSetCookies(root, "weread", r.setCookies);
+  }
+  if (!r.ok) return false;
+  if (M4WereadAuthPolicy::responseIndicatesLoginRequired(r.body)) return false;
+  return M4NativeProviderIo::hasCredential(root, "weread");
 }
 
 bool wereadLogin(const std::string& root) {
@@ -251,6 +275,7 @@ bool wereadLogin(const std::string& root) {
       if (!fallback.empty()) (void)M4NativeProviderIo::storeCookieValues(root, fallback);
     }
     if (M4NativeProviderIo::hasCredential(root, "weread")) {
+      (void)tryRenewWeread(root, true);
       publish(Phase::Success, "登录成功");
       return true;
     }
@@ -388,5 +413,9 @@ Snapshot snapshot() {
 void cancel() { gCancel.store(true, std::memory_order_release); }
 
 bool busy() { return gBusy.load(std::memory_order_acquire); }
+
+bool tryRenewSession(const std::string& appDataRoot) {
+  return tryRenewWeread(appDataRoot, false);
+}
 
 }  // namespace M4NativeProviderLogin
