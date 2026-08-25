@@ -11,7 +11,7 @@
     "2": 4,
     "3": 1
   },
-  "supported_corpus_sha256": "bd54605193ad8b679d5b0063341cd0ddbbe303dc9d61b0f72c7656eabf0e8246",
+  "supported_corpus_sha256": "18387ebc26f884ed492be5f95336df6eb4bd8bdd659ddc707d2478adbc169a9c",
   "cjk_range": [
     "U+3400",
     "U+9FFF"
@@ -20,7 +20,7 @@
   "no_epd_glyph_table": true,
   "lookup": "BMP ranked bitset; 2-bit joint class packed by rank",
   "blob_bytes": 939815,
-  "blob_sha256": "8bc8c7f62a379b23d40a32412300c33876e11d75a716b4eb7d6fb5287dcf49c8",
+  "blob_sha256": "ce583aa20d016a5a816464c297d31b3896d56d77c5d9ad59cbb8abb8f2c37586",
   "header_bytes": 48,
   "index_bytes": 5000,
   "occupied_pages": 132,

@@ -20,7 +20,7 @@ constexpr size_t kBlobBytes = 939815;
 constexpr int kSourcePx = 16;
 
 constexpr const char* kFontSha256 = "9507b4d3e915455afadfa688e8ea515abf816bce06f76346ee356f0f38810574";
-constexpr const char* kSupportedCorpusSha256 = "bd54605193ad8b679d5b0063341cd0ddbbe303dc9d61b0f72c7656eabf0e8246";
-constexpr const char* kBlobSha256 = "8bc8c7f62a379b23d40a32412300c33876e11d75a716b4eb7d6fb5287dcf49c8";
+constexpr const char* kSupportedCorpusSha256 = "18387ebc26f884ed492be5f95336df6eb4bd8bdd659ddc707d2478adbc169a9c";
+constexpr const char* kBlobSha256 = "ce583aa20d016a5a816464c297d31b3896d56d77c5d9ad59cbb8abb8f2c37586";
 
 }  // namespace M4CenterKernelFont

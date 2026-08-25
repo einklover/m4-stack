@@ -201,6 +201,39 @@ def extract_glyph(font, cmap, hmtx, cp: int) -> tuple[bytes, int]:
     return pack_bits(bits), cls
 
 
+def collapse_double_heng(packed: bytes) -> bytes:
+    """Drop a second occupancy row when a 横 was sampled twice.
+
+    TTF ky is 75 UPM on a 60 UPM pitch, so some 横 light two consecutive
+    16-row centers. Stamping then OR-composites two kernels and that stroke
+    looks one kernel thicker than the others (白 inner 横, 美 second 横).
+    Keep the first row; clear only the overlapping 横 bits on the next row
+    so a 竖 that only exists on the later row is preserved.
+    """
+    cells = [0] * (GRID * GRID)
+    for y in range(GRID):
+        for x in range(GRID):
+            idx = y * GRID + x
+            cells[idx] = (packed[idx // 8] >> (7 - (idx % 8))) & 1
+    for y in range(GRID - 1):
+        bits0 = 0
+        bits1 = 0
+        for x in range(GRID):
+            if cells[y * GRID + x]:
+                bits0 |= 1 << x
+            if cells[(y + 1) * GRID + x]:
+                bits1 |= 1 << x
+        if bits0.bit_count() < 8 or bits1.bit_count() < 8:
+            continue
+        if (bits0 & bits1).bit_count() < 8:
+            continue
+        overlap = bits0 & bits1
+        for x in range(GRID):
+            if overlap & (1 << x):
+                cells[(y + 1) * GRID + x] = 0
+    return pack_bits(cells)
+
+
 def bits_to_grid(packed: bytes) -> tuple[str, ...]:
     rows = []
     for y in range(GRID):
@@ -314,6 +347,7 @@ def collect_corpus(font_path: Path):
     for i, cp in enumerate(ordered):
         if CJK_LO <= cp <= CJK_HI:
             packed, cls = extract_glyph(font, mapped, hmtx, cp)
+            packed = collapse_double_heng(packed)
         else:
             packed = extract_latin(font, mapped[cp])
             cls = 1
