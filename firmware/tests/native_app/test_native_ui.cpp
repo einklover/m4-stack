@@ -118,6 +118,23 @@ void providerUiContracts() {
   assert(footer.buttonAt(20, 740) == 0);
   assert(footer.buttonAt(300, 740) == 3);
   assert(footer.buttonAt(240, 740) == -1);
+  const char* labels[4] = {"返回", "", "连接设置", "刷新"};
+  assert(std::string(labels[footer.slots[0]]) == "返回");
+  assert(std::string(labels[footer.slots[1]]) == "刷新");
+  assert(footer.buttonAt(footer.buttons[0].x + footer.buttons[0].width / 2, 760) == footer.slots[0]);
+  assert(footer.buttonAt(footer.buttons[1].x + footer.buttons[1].width / 2, 760) == footer.slots[1]);
+
+  const bool legadoFooterActive[4] = {true, false, true, true};
+  const auto legadoFooter = M4NativeUi::ProviderFooterLayout::make(480, 800, legadoFooterActive);
+  assert(legadoFooter.count == 3);
+  assert(legadoFooter.slots[0] == 0 && legadoFooter.slots[1] == 2 && legadoFooter.slots[2] == 3);
+  assert(std::string(labels[legadoFooter.slots[0]]) == "返回");
+  assert(std::string(labels[legadoFooter.slots[1]]) == "连接设置");
+  assert(std::string(labels[legadoFooter.slots[2]]) == "刷新");
+  for (int i = 0; i < legadoFooter.count; ++i) {
+    const auto& button = legadoFooter.buttons[i];
+    assert(legadoFooter.buttonAt(button.x + button.width / 2, 760) == legadoFooter.slots[i]);
+  }
 
   const auto tiles = M4NativeUi::ProviderTileLayout::make(480, 80, 152, 8, 20);
   assert(tiles.rows == 3 && tiles.cellWidth >= 140 && tiles.cellHeight >= 44);

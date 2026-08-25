@@ -797,11 +797,12 @@ void NativeAppActivity::render() {
   renderer.fillRect(0, footerLayout_.top, w, footerLayout_.height, false);
   if (footerLayout_.height > 0) renderer.drawLine(0, footerLayout_.top, w - 1, footerLayout_.top, true);
   for (int i = 0; i < footerLayout_.count; ++i) {
+    const int slot = footerLayout_.slots[i];
     const auto& button = footerLayout_.buttons[i];
     renderer.fillRect(button.x, button.y, button.width, button.height, false);
     renderer.drawRect(button.x, button.y, button.width, button.height, true);
     M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, button.x, button.y, button.width, button.height,
-                                mappedLabels[i], true, EpdFontFamily::BOLD, 8);
+                                mappedLabels[slot], true, EpdFontFamily::BOLD, 8);
   }
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
