@@ -94,6 +94,35 @@ inline std::string endpointPath(const std::string& appDataRoot) {
 // or discovered. Thread-safe for read after ensureEndpoint.
 std::string baseUrl();
 
+// Encode one query value without allowing a source URL's &, ?, or # to alter
+// the Legado /cover request. Keep this pure so host tests can verify it.
+inline std::string percentEncodeQueryValue(const std::string& value) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  std::string out;
+  out.reserve(value.size() * 2);
+  for (unsigned char c : value) {
+    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      out.push_back(static_cast<char>(c));
+    } else {
+      out.push_back('%');
+      out.push_back(kHex[(c >> 4) & 0x0Fu]);
+      out.push_back(kHex[c & 0x0Fu]);
+    }
+  }
+  return out;
+}
+
+// Build from the currently configured endpoint supplied by the caller. An
+// empty base keeps the original source URL as a non-fatal fallback.
+inline std::string coverProxyUrl(const std::string& base, const std::string& original) {
+  if (original.empty()) return {};
+  if (base.empty()) return original;
+  std::string root = base;
+  while (!root.empty() && root.back() == '/') root.pop_back();
+  if (root.empty()) return original;
+  return root + "/cover?path=" + percentEncodeQueryValue(original);
+}
+
 // Adopt a verified base. Manual entry stages a candidate with persist=false and
 // only persists it after the bookshelf request succeeds.
 void setBaseUrl(const std::string& appDataRoot, const std::string& base, bool persist = true);

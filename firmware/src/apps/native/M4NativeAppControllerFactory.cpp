@@ -245,7 +245,14 @@ class ProviderController final : public BaseController {
     fieldAt(line, 1, out.title);
     fieldAt(line, 2, out.subtitle);
     fieldAt(line, 3, out.value);
-    if (app_.provider == "fanqie" || app_.provider == "jjwxc" || app_.provider == "weread") {
+    if (app_.provider == "legado") {
+      std::string legadoCover;
+      // Column 4 is Legado latestChapterTitle. Cover is the append-only
+      // zero-based field 5 (the sixth TSV column) and is converted using the
+      // current configured endpoint.
+      fieldAt(line, 5, legadoCover);
+      out.coverUrl = M4LegadoBridge::coverProxyUrl(M4LegadoBridge::baseUrl(), legadoCover);
+    } else if (app_.provider == "fanqie" || app_.provider == "jjwxc" || app_.provider == "weread") {
       fieldAt(line, 4, out.coverUrl);
     }
     if (out.title.empty()) out.title = out.key;

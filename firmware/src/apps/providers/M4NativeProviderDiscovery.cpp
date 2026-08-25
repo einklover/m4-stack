@@ -211,7 +211,8 @@ class RecordExtractorSink final : public M4xJsonStream::Sink {
   std::string prefix_;
 };
 
-// Legado shelf rewrite sink: RecordExtractor emits bookUrl\tname\tauthor\n;
+// Legado shelf rewrite sink: RecordExtractor emits the selected shelf fields;
+// the source cover URL stays in the append-only row for endpoint-aware proxying.
 // we map bookUrl → short FNV id (M4-safe) and keep the locator in a sidecar
 // for later getChapterList/getBookContent. Sidecar is best-effort: a shelf
 // without locators still renders; catalog/content will then report
@@ -382,8 +383,10 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.path = {"data"};
     // totalChapterNum powers progressive catalog placeholders (fast open).
     // latestChapterTitle is reused by the detail page so opening a book never
-    // re-fetches / parses the whole bookshelf on the UI thread.
-    s.fields = {"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle"};
+    // re-fetches / parses the whole bookshelf on the UI thread. coverUrl is
+    // appended after it; the rewrite keeps the source URL so endpoint changes
+    // can rebuild the local /cover proxy URL at row/detail time.
+    s.fields = {"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl"};
     s.maxRows = 64;
     return s;
   }

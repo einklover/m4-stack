@@ -188,13 +188,14 @@ bool enrichFromLocalShelf(const std::string& appId, const std::string& bookId,
   std::string line;
   char buf[128];
   bool found = false;
+  const std::string coverBase = M4LegadoBridge::baseUrl();
   while (f.available()) {
     const int n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf) - 1);
     if (n <= 0) break;
     buf[n] = 0;
     for (int i = 0; i < n; ++i) {
       if (buf[i] == '\n') {
-        if (applyShelfRow(line, bookId, detail)) found = true;
+        if (applyShelfRow(line, bookId, detail, coverBase)) found = true;
         line.clear();
         if (found) {
           f.close();
@@ -205,7 +206,7 @@ bool enrichFromLocalShelf(const std::string& appId, const std::string& bookId,
       }
     }
   }
-  if (!found && applyShelfRow(line, bookId, detail)) found = true;
+  if (!found && applyShelfRow(line, bookId, detail, coverBase)) found = true;
   f.close();
   return found;
 }

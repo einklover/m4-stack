@@ -3,6 +3,7 @@
 import json
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,6 +81,8 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         row = load("legado_shelf_no_cover.json")["data"][0]
         self.assertEqual(row.get("author"), "作者")
         self.assertEqual(row.get("cover", ""), "")
+        covered = load("legado_shelf_cover.json")["data"][0]
+        self.assertEqual(covered["coverUrl"], "https://www.deqixs.cc/files/article/image/5/5434/5434s.jpg")
 
         # The persisted legacy formats remain id/title/author/meta plus the
         # optional latest-chapter field; no invented cover field is required.
@@ -97,8 +100,10 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         )
         header = DETAIL_HEADER.read_text(encoding="utf-8")
         legado_spec = source[source.index('if (providerId == "legado")'):source.index('if (providerId == "weread")')]
-        self.assertIn('"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle"', legado_spec)
-        self.assertNotIn('"cover"', legado_spec)
+        self.assertIn(
+            '"bookUrl", "name", "author", "totalChapterNum", "latestChapterTitle", "coverUrl"',
+            legado_spec,
+        )
         self.assertIn("fieldAt(line, 0, rawKey)", controller)
         self.assertIn("fieldAt(line, 1, out.title)", controller)
         self.assertIn("fieldAt(line, 2, out.subtitle)", controller)
@@ -110,6 +115,9 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         self.assertIn('app_.provider == "jjwxc"', cover_gate)
         self.assertIn('app_.provider == "weread"', cover_gate)
         self.assertNotIn('app_.provider == "legado"', cover_gate)
+        self.assertIn('fieldAt(line, 5, legadoCover)', controller)
+        self.assertIn("M4LegadoBridge::coverProxyUrl(M4LegadoBridge::baseUrl(), legadoCover)", controller)
+        self.assertNotIn("fieldAt(line, 4, legadoCover)", controller)
         self.assertIn("Older 4-column", (ROOT / "firmware/tests/native_app/test_legado_detail.cpp").read_text())
         self.assertIn("fields[2]", header)
 
@@ -138,6 +146,8 @@ class NativeProviderMetadataContracts(unittest.TestCase):
         self.assertIn("req.coverUrl = coverUrl_", book_activity)
         self.assertIn("std::string coverUrl;", detail_header)
         self.assertIn("detail.coverUrl = boundedUtf8(req.coverUrl, kFieldMax)", detail)
+        self.assertIn("const std::string coverBase = M4LegadoBridge::baseUrl()", detail)
+        self.assertIn("applyShelfRow(line, bookId, detail, coverBase)", detail)
 
         # Missing field 4 is valid for all append-only legacy rows. Legado's
         # field 4 remains the latest-chapter display field, never cover.
@@ -152,6 +162,28 @@ class NativeProviderMetadataContracts(unittest.TestCase):
 
         self.assertIn("out.detail = seed(req)", detail)
         self.assertIn("if (!value.empty()) dst =", detail)
+
+    def test_legado_cover_proxy_encoding_and_append_only_row_contract(self):
+        bridge = (ROOT / "firmware/src/apps/providers/M4LegadoBridge.h").read_text(encoding="utf-8")
+        detail = DETAIL_HEADER.read_text(encoding="utf-8")
+        discovery = DISCOVERY.read_text(encoding="utf-8")
+        legado = load("legado_shelf_cover.json")["data"][0]
+        raw = legado["coverUrl"]
+
+        self.assertIn("percentEncodeQueryValue", bridge)
+        self.assertIn("coverProxyUrl", bridge)
+        self.assertIn("root + \"/cover?path=\"", bridge)
+        self.assertIn("fields[5]", detail)
+        self.assertIn("field >= 6", detail)
+        self.assertIn("latestChapterTitle", discovery)
+        self.assertIn("coverUrl", discovery)
+        expected = "http://10.0.0.9:8080/cover?path=" + quote(raw, safe="-_.~")
+        self.assertEqual(
+            expected,
+            "http://10.0.0.9:8080/cover?path="
+            "https%3A%2F%2Fwww.deqixs.cc%2Ffiles%2Farticle%2Fimage%2F5%2F5434%2F5434s.jpg",
+        )
+        self.assertIn("if (base.empty()) return original", bridge)
 
 
 if __name__ == "__main__":

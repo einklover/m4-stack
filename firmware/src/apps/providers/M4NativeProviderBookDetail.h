@@ -1,5 +1,6 @@
 #pragma once
 
+#include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4NovelProviderContract.h"
 
 #include <cstddef>
@@ -49,18 +50,19 @@ inline std::string boundedUtf8Field(std::string s, size_t maxBytes) {
 }  // namespace detail
 
 // Host-testable shelf-row parser. Legado shelf_rows.tsv columns:
-//   id \t name \t author \t totalChapterNum [\t latestChapterTitle]
+//   id \t name \t author \t totalChapterNum [\t latestChapterTitle [\t coverUrl]]
 // Returns true when the line matches bookId and yields at least a title.
 inline bool applyShelfRow(const std::string& line, const std::string& bookId,
-                          M4NovelProvider::BookDetail& book) {
+                          M4NovelProvider::BookDetail& book,
+                          const std::string& coverBase = {}) {
   constexpr size_t kFieldMax = 192;
   if (bookId.empty() || line.rfind(bookId, 0) != 0) return false;
   if (line.size() <= bookId.size() || line[bookId.size()] != '\t') return false;
 
-  std::string fields[5];
+  std::string fields[6];
   size_t field = 0;
   size_t start = 0;
-  for (size_t i = 0; i <= line.size() && field < 5; ++i) {
+  for (size_t i = 0; i <= line.size() && field < 6; ++i) {
     if (i == line.size() || line[i] == '\t') {
       fields[field] = line.substr(start, i - start);
       ++field;
@@ -74,6 +76,10 @@ inline bool applyShelfRow(const std::string& line, const std::string& bookId,
   // fields[3] = totalChapterNum (catalog hint); not shown on detail.
   if (field >= 5 && !fields[4].empty()) {
     book.lastChapter = detail::boundedUtf8Field(std::move(fields[4]), kFieldMax);
+  }
+  if (field >= 6 && !fields[5].empty()) {
+    book.coverUrl = M4LegadoBridge::coverProxyUrl(
+        coverBase, detail::boundedUtf8Field(std::move(fields[5]), kFieldMax));
   }
   return !book.title.empty();
 }

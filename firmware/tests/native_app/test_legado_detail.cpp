@@ -27,6 +27,17 @@ int main() {
   assert(fromShelf.coverUrl.empty());
   assert(legadoLocalDetailSufficient(fromShelf));
 
+  // New append-only cover column follows latestChapterTitle and is proxied
+  // through the configured endpoint; the endpoint is intentionally not fixed.
+  M4NovelProvider::BookDetail withCover;
+  const std::string sourceCover =
+      "https://www.deqixs.cc/files/article/image/5/5434/5434s.jpg";
+  const std::string coverRow = row + "\t" + sourceCover;
+  assert(applyShelfRow(coverRow, "0123456789abcdef", withCover, "http://10.0.0.9:8080"));
+  assert(withCover.lastChapter == "第3章 关九九");
+  assert(withCover.coverUrl ==
+         "http://10.0.0.9:8080/cover?path=https%3A%2F%2Fwww.deqixs.cc%2Ffiles%2Farticle%2Fimage%2F5%2F5434%2F5434s.jpg");
+
   // Wrong id must not mutate detail.
   M4NovelProvider::BookDetail other;
   other.title = "keep";
@@ -42,6 +53,14 @@ int main() {
   assert(legacy.lastChapter.empty());
   assert(legacy.coverUrl.empty());
   assert(legadoLocalDetailSufficient(legacy));
+
+  // A 5-column legacy Legado row has only latestChapterTitle; never treat it
+  // as a cover source.
+  M4NovelProvider::BookDetail legacyFive;
+  assert(applyShelfRow("aabbccddeeff0011\t旧书\t佚名\t10\t最新章", "aabbccddeeff0011",
+                       legacyFive, "http://10.0.0.9:8080"));
+  assert(legacyFive.lastChapter == "最新章");
+  assert(legacyFive.coverUrl.empty());
 
   // Prefix collision: id must be followed by a tab.
   M4NovelProvider::BookDetail collision;
