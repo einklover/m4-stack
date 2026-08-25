@@ -6,7 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 #include <functional>
+#include <iterator>
 #include <string>
 
 #include "apps/providers/M4NovelProviderContract.h"
@@ -14,6 +16,23 @@
 namespace M4ProviderCoverCache {
 
 inline constexpr size_t kMaxDownloadBytes = 512u * 1024u;
+
+enum class ImageFormat : uint8_t { Unknown = 0, Jpeg, Bmp, Png, Webp };
+
+// Content sniffing is deliberately independent of URL spelling: CDNs often
+// return extensionless or query-string URLs.
+inline ImageFormat detectImageFormat(const uint8_t* bytes, size_t size) {
+  if (!bytes) return ImageFormat::Unknown;
+  if (size >= 2 && bytes[0] == 0xff && bytes[1] == 0xd8) return ImageFormat::Jpeg;
+  if (size >= 2 && bytes[0] == 'B' && bytes[1] == 'M') return ImageFormat::Bmp;
+  static constexpr uint8_t kPng[] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+  if (size >= sizeof(kPng) && std::equal(std::begin(kPng), std::end(kPng), bytes)) return ImageFormat::Png;
+  if (size >= 12 && bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F' &&
+      bytes[8] == 'W' && bytes[9] == 'E' && bytes[10] == 'B' && bytes[11] == 'P') {
+    return ImageFormat::Webp;
+  }
+  return ImageFormat::Unknown;
+}
 
 struct Request {
   std::string providerId;

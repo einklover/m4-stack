@@ -103,6 +103,7 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   bool detailLoading_ = false;
   bool detailAttempted_ = false;
   std::string detailError_;
+  std::string providerCoverBmpPath_;
   int detailReadButtonTop_ = 0;
   int detailReadButtonHeight_ = 0;
 };

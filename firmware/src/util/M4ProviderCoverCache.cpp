@@ -1,5 +1,6 @@
 #include "util/M4ProviderCoverCache.h"
 
+#include <Bitmap.h>
 #include <JpegToBmpConverter.h>
 #include <SDCardManager.h>
 
@@ -32,13 +33,10 @@ bool copyFile(const std::string& sourcePath, const std::string& targetPath) {
   return ok;
 }
 
-bool isJpegUrl(const std::string& url) {
-  const size_t query = url.find_first_of("?#");
-  const std::string path = url.substr(0, query == std::string::npos ? url.size() : query);
-  if (path.size() < 4) return false;
-  const std::string ext = path.substr(path.size() - 4);
-  return (ext == ".jpg" || ext == ".JPG") ||
-         (path.size() >= 5 && (path.substr(path.size() - 5) == ".jpeg" || path.substr(path.size() - 5) == ".JPEG"));
+M4ProviderCoverCache::ImageFormat sniffFile(FsFile& file) {
+  uint8_t magic[12] = {};
+  if (!file.seek(0) || file.read(magic, sizeof(magic)) <= 0) return M4ProviderCoverCache::ImageFormat::Unknown;
+  return M4ProviderCoverCache::detectImageFormat(magic, sizeof(magic));
 }
 
 }  // namespace
@@ -56,8 +54,20 @@ Result acquireProviderCover(const Request& request) {
   backend.fetch = [](const std::string& url, const std::string& path, size_t maxBytes) {
     return HttpDownloader::downloadToFileBounded(url, path, maxBytes) == HttpDownloader::OK;
   };
-  backend.convert = [&request](const std::string& source, const std::string& target, int width, int height) {
-    if (!isJpegUrl(request.coverUrl)) return copyFile(source, target);
+  backend.convert = [](const std::string& source, const std::string& target, int width, int height) {
+    FsFile sniff;
+    if (!SdMan.openFileForRead("M4Cover", source.c_str(), sniff)) return false;
+    const auto format = sniffFile(sniff);
+    sniff.close();
+    if (format == ImageFormat::Bmp) {
+      FsFile input;
+      if (!SdMan.openFileForRead("M4Cover", source.c_str(), input)) return false;
+      Bitmap bitmap(input);
+      const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok;
+      input.close();
+      return valid && copyFile(source, target);
+    }
+    if (format != ImageFormat::Jpeg) return false;
     FsFile input;
     FsFile output;
     if (!SdMan.openFileForRead("M4Cover", source.c_str(), input) ||

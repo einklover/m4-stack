@@ -478,7 +478,8 @@ void TxtReaderActivity::persistOpenHistory() {
                                              ? providerHistory.title
                                              : (pluginSession_.titleOverride.empty() ? fileName
                                                                                        : pluginSession_.titleOverride);
-        RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor, "", filePath);
+        RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor,
+                             pluginSession_.providerCoverBmpPath, filePath);
         M4ContentProviderSession::markHistoryRegistered(pluginSession_.providerId, pluginSession_.bookId);
         Serial.printf("[WRCP] history_uri=%s appId=%s cache=%s\n", uri.c_str(), appId.c_str(), filePath.c_str());
       } else {
@@ -782,7 +783,8 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
           !snap.title.empty() ? snap.title
                               : (pluginSession_.titleOverride.empty() ? pluginSession_.bookId
                                                                       : pluginSession_.titleOverride);
-      RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor, "", abs);
+      RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor,
+                           pluginSession_.providerCoverBmpPath, abs);
     }
   }
 

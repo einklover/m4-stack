@@ -58,20 +58,7 @@ void RecentBooksStore::updateProviderBook(const std::string& path, const std::st
   });
   if (it == recentBooks.end()) return;
   RecentBook& book = *it;
-  bool changed = false;
-  if (!title.empty() && book.title != title) {
-    book.title = title;
-    changed = true;
-  }
-  if (!author.empty() && book.author != author) {
-    book.author = author;
-    changed = true;
-  }
-  if (!coverBmpPath.empty() && book.coverBmpPath != coverBmpPath) {
-    book.coverBmpPath = coverBmpPath;
-    changed = true;
-  }
-  if (changed) saveToFile();
+  if (mergeProviderMetadata(book, title, author, coverBmpPath)) saveToFile();
 }
 
 bool RecentBooksStore::saveToFile() const {

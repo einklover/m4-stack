@@ -162,15 +162,16 @@ void appendMeta(std::string& out, const std::string& value) {
   out += value;
 }
 
-void updateRecentProviderMetadata(const std::string& providerId, const std::string& bookId,
-                                  const M4NovelProvider::BookDetail& detail) {
+std::string updateRecentProviderMetadata(const std::string& providerId, const std::string& bookId,
+                                         const M4NovelProvider::BookDetail& detail) {
   const std::string uri = M4ContentProvider::makeHistoryUri(providerId.c_str(), bookId.c_str());
-  if (uri.empty()) return;
+  if (uri.empty()) return {};
   const auto metrics = UITheme::getInstance().getMetrics();
   const auto cover = M4ProviderCoverCache::acquireProviderCover(
       M4ProviderCoverCache::requestFor(providerId, bookId, detail, metrics.homeCoverWidth,
                                        metrics.homeCoverThumbHeight));
   RECENT_BOOKS.updateProviderBook(uri, detail.title, detail.author, cover.coverBmpPath);
+  return cover.coverBmpPath;
 }
 
 std::string displayWordCount(const std::string& raw) {
@@ -326,7 +327,8 @@ void NativeProviderBookActivity::loadBookDetail() {
   req.maxBytes = 96u * 1024u;
   detail_ = M4NativeProviderBookDetail::seed(req);
   detailError_.clear();
-  updateRecentProviderMetadata(providerId_, bookId_, detail_);
+  const std::string coverPath = updateRecentProviderMetadata(providerId_, bookId_, detail_);
+  if (!coverPath.empty()) providerCoverBmpPath_ = coverPath;
 
   // Paint the immediately available discovery/history model first (FAST only).
   // Legado detail is local-only (shelf row + seed) and must not block on a
@@ -355,7 +357,8 @@ void NativeProviderBookActivity::pollDetailLoading() {
     detailError_.clear();
     if (!detail_.title.empty()) title_ = detail_.title;
     if (!detail_.author.empty()) author_ = detail_.author;
-    updateRecentProviderMetadata(providerId_, bookId_, detail_);
+    const std::string coverPath = updateRecentProviderMetadata(providerId_, bookId_, detail_);
+    if (!coverPath.empty()) providerCoverBmpPath_ = coverPath;
   } else {
     detailError_ = snap.result.error.empty() ? "detail_http" : snap.result.error;
   }
@@ -658,6 +661,7 @@ bool NativeProviderBookActivity::openReadyReader(int index0) {
   sess.providerId = providerId_;
   sess.appId = appId_;
   sess.providerAuthor = !detail_.author.empty() ? detail_.author : author_;
+  sess.providerCoverBmpPath = providerCoverBmpPath_;
   sess.appDataRoot = appDataRoot_;
   sess.cacheRelPath = st.cacheRelPath;
   sess.progressKey = providerId_ + ":" + bookId_ + ":" + st.chapterUid;

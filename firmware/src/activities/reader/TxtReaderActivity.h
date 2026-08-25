@@ -42,6 +42,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
     std::string providerId;    // e.g. "weread" (URI segment, NOT app id)
     std::string appId;         // installed m4x id e.g. "com.weread.client"
     std::string providerAuthor;  // human author; never used as app identity
+    std::string providerCoverBmpPath;  // host-owned cached BMP template, optional
     std::string appDataRoot;   // /apps_data/<appId>
     std::string cacheRelPath;  // current chapter relative .txt
   };

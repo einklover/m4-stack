@@ -2,12 +2,28 @@
 #include <iostream>
 #include <set>
 #include <string>
+#include <map>
 
+#include "RecentBooksStore.h"
 #include "util/M4ProviderCoverCache.h"
 
 using namespace M4ProviderCoverCache;
 
 int main() {
+  const uint8_t jpegMagic[] = {0xff, 0xd8, 0xff};
+  const uint8_t pngMagic[] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+  const uint8_t webpMagic[] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'};
+  const uint8_t unknownMagic[] = {'n', 'o', 't', ' ', 'a', 'n', ' ', 'i', 'm', 'a', 'g', 'e'};
+  assert(detectImageFormat(jpegMagic, sizeof(jpegMagic)) == ImageFormat::Jpeg);
+  assert(detectImageFormat(pngMagic, sizeof(pngMagic)) == ImageFormat::Png);
+  assert(detectImageFormat(webpMagic, sizeof(webpMagic)) == ImageFormat::Webp);
+  assert(detectImageFormat(unknownMagic, sizeof(unknownMagic)) == ImageFormat::Unknown);
+
+  M4NovelProvider::BookDetail extensionlessDetail;
+  extensionlessDetail.coverUrl = "https://cdn.invalid/image?id=1";
+  const auto extensionlessRequest = requestFor("weread", "extensionless", extensionlessDetail, 120, 160);
+  assert(extensionlessRequest.coverUrl.find(".jpg") == std::string::npos);
+
   std::set<std::string> files;
   std::string fetchedUrl;
   size_t fetchedLimit = 0;
@@ -56,5 +72,44 @@ int main() {
 
   const auto empty = acquire(Request{"weread", "book", "", 120, 160}, backend);
   assert(empty.coverBmpPath.empty());
+
+  RecentBook existing{"m4cp://weread/book", "Title", "Author", "/covers/old.bmp", "/cache/ch.txt"};
+  assert(mergeProviderMetadata(existing, "", "Updated Author", ""));
+  assert(existing.author == "Updated Author");
+  assert(existing.coverBmpPath == "/covers/old.bmp");
+  assert(!mergeProviderMetadata(existing, "", "", ""));
+
+  std::map<std::string, std::vector<uint8_t>> payloads;
+  Backend formatBackend;
+  formatBackend.exists = [&](const std::string& path) { return files.count(path) != 0; };
+  formatBackend.makeDirs = [&](const std::string&) { return true; };
+  formatBackend.fetch = [&](const std::string& url, const std::string& path, size_t) {
+    if (url.find("png") != std::string::npos) payloads[path] = std::vector<uint8_t>(pngMagic, pngMagic + sizeof(pngMagic));
+    else if (url.find("webp") != std::string::npos) payloads[path] = std::vector<uint8_t>(webpMagic, webpMagic + sizeof(webpMagic));
+    else if (url.find("unknown") != std::string::npos) payloads[path] = std::vector<uint8_t>(unknownMagic, unknownMagic + sizeof(unknownMagic));
+    else payloads[path] = std::vector<uint8_t>(jpegMagic, jpegMagic + sizeof(jpegMagic));
+    files.insert(path);
+    return true;
+  };
+  formatBackend.convert = [&](const std::string& source, const std::string& target, int, int) {
+    if (detectImageFormat(payloads[source].data(), payloads[source].size()) != ImageFormat::Jpeg) return false;
+    files.insert(target);
+    return true;
+  };
+  formatBackend.remove = [&](const std::string& path) {
+    files.erase(path);
+    payloads.erase(path);
+  };
+  for (const char* kindValue : {"png", "webp", "unknown"}) {
+    const std::string kind = kindValue;
+    const auto rejected = acquire(Request{"weread", "reject-" + kind, "https://cdn.invalid/" + kind,
+                                          120, 160}, formatBackend);
+    assert(rejected.coverBmpPath.empty());
+    assert(files.count(concreteBmpPath("weread", "reject-" + kind, 120, 160)) == 0);
+  }
+  const auto extensionlessJpeg = acquire(
+      Request{"weread", "extensionless", extensionlessRequest.coverUrl, 120, 160}, formatBackend);
+  assert(!extensionlessJpeg.coverBmpPath.empty());
+  assert(files.count(concreteBmpPath("weread", "extensionless", 120, 160)) != 0);
   std::cout << "provider cover cache bounded/reuse/failure/success passed\n";
 }
