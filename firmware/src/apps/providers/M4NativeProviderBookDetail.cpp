@@ -234,6 +234,7 @@ Result fetchJjwxc(const Request& req, const CancelFn& cancelled) {
   JsonVariantConst node = doc.as<JsonVariantConst>();
   assignField(out.detail.title, firstText(node, {"novelName", "novelname"}));
   assignField(out.detail.author, firstText(node, {"authorName", "authorname"}));
+  assignField(out.detail.coverUrl, firstText(node, {"novelCover", "originalCover"}));
   assignField(out.detail.intro, cleanIntro(firstText(node, {"novelIntro", "novelIntroShort"})), kIntroMax);
   std::string kind = firstText(node, {"novelClass", "className"});
   const std::string tags = firstText(node, {"novelTags", "tags"});
@@ -274,6 +275,7 @@ Result fetchFanqie(const Request& req, const CancelFn& cancelled) {
   JsonVariantConst node = fanqieNode(doc);
   assignField(out.detail.title, firstText(node, {"book_name", "bookName", "title"}));
   assignField(out.detail.author, firstText(node, {"author", "authorName", "author_name"}));
+  assignField(out.detail.coverUrl, firstText(node, {"thumbUrl", "thumb_url"}));
   assignField(out.detail.intro, cleanIntro(firstText(node, {"abstract", "introduction", "intro"})), kIntroMax);
   assignField(out.detail.kind, firstText(node, {"category", "complete_category", "sub_info"}));
   assignField(out.detail.status, fanqieStatus(node));
@@ -315,6 +317,7 @@ Result fetchWeread(const Request& req, const CancelFn& cancelled) {
   JsonVariantConst node = wereadNode(doc);
   assignField(out.detail.title, firstText(node, {"title", "bookTitle"}));
   assignField(out.detail.author, firstText(node, {"author", "authorName"}));
+  assignField(out.detail.coverUrl, firstText(node, {"cover"}));
   assignField(out.detail.intro, cleanIntro(firstText(node, {"intro", "introduction", "summary"})), kIntroMax);
   assignField(out.detail.kind, firstText(node, {"category", "categories"}));
   assignField(out.detail.status, firstText(node, {"status", "bookStatus"}));

@@ -1,0 +1,18 @@
+{
+  "books": [
+    {
+      "bookId": "CB_fixture_cover",
+      "title": "有封面书",
+      "author": "作者一",
+      "progress": 12,
+      "cover": "https://weread-1258476243.file.myqcloud.com/cover/fixture.jpg"
+    },
+    {
+      "bookId": "CB_fixture_empty",
+      "title": "无封面书",
+      "author": "作者二",
+      "progress": 0,
+      "cover": ""
+    }
+  ]
+}

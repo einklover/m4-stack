@@ -37,7 +37,7 @@ class FanqieNetworkContractTests(unittest.TestCase):
         self.assertIn('s.path = {"data", "data"};', fanqie_spec)
         self.assertIn('s.request.maxBytes = 4u * 1024u * 1024u;', fanqie_spec)
         self.assertIn('s.maxRows = 24;', fanqie_spec)
-        self.assertIn('"book_id", "book_name", "author", "_m4_progress"', fanqie_spec)
+        self.assertIn('"book_id", "book_name", "author", "_m4_progress", "thumb_url"', fanqie_spec)
 
     def test_chapter_header_failure_gets_one_clean_retry(self):
         source = (ROOT / "firmware/src/apps/providers/FanqieProvider.cpp").read_text(encoding="utf-8")

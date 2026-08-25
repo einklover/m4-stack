@@ -335,7 +335,9 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.request.headers = {{"User-Agent", kFanqieUa}, {"Referer", "https://fanqienovel.com/"}};
     s.request.maxBytes = 4u * 1024u * 1024u;
     s.path = {"data", "data"};
-    s.fields = {"book_id", "book_name", "author", "_m4_progress"};
+    // Keep the legacy first four TSV columns stable; cover is optional and
+    // appended so old shelf rows remain readable.
+    s.fields = {"book_id", "book_name", "author", "_m4_progress", "thumb_url"};
     s.maxRows = 24;
     return s;
   }
@@ -357,7 +359,9 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.request.headers.clear();
     s.request.maxBytes = 512u * 1024u;
     s.path = {channel};
-    s.fields = {"novelId", "novelName", "authorName", "_m4_progress"};
+    // getFullPage is streamed through RecordExtractor; selecting cover does
+    // not materialize the response or the large intro payload in Lua/native.
+    s.fields = {"novelId", "novelName", "authorName", "_m4_progress", "cover"};
     s.maxRows = 24;
     return s;
   }
@@ -397,7 +401,9 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
                          {"Referer", "https://weread.qq.com/"}, {"Cookie", cookie}};
     s.request.maxBytes = 2u * 1024u * 1024u;
     s.path = {"books"};
-    s.fields = {"bookId", "title", "author", "progress"};
+    // cover is an optional fifth column; the first four columns are the
+    // persisted shelf contract used by older SD caches.
+    s.fields = {"bookId", "title", "author", "progress", "cover"};
     // First window only. Waiting for a 4096-row / no-Content-Length body
     // wedges QEMU TLS the same way JJWXC did. More rows stay on Refresh.
     s.maxRows = 64;

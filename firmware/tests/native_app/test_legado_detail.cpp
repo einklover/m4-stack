@@ -24,6 +24,7 @@ int main() {
   assert(fromShelf.title == "关九九");
   assert(fromShelf.author == "江门二爷");
   assert(fromShelf.lastChapter == "第3章 关九九");
+  assert(fromShelf.coverUrl.empty());
   assert(legadoLocalDetailSufficient(fromShelf));
 
   // Wrong id must not mutate detail.
@@ -39,6 +40,7 @@ int main() {
   assert(legacy.title == "旧书");
   assert(legacy.author == "佚名");
   assert(legacy.lastChapter.empty());
+  assert(legacy.coverUrl.empty());
   assert(legadoLocalDetailSufficient(legacy));
 
   // Prefix collision: id must be followed by a tab.

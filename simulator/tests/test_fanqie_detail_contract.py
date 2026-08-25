@@ -32,6 +32,7 @@ def project_detail(payload: dict, seed_title: str = "") -> dict:
     return {
         "title": node.get("bookName") or node.get("book_name") or node.get("title") or seed_title,
         "author": node.get("author") or node.get("authorName") or node.get("author_name") or "",
+        "coverUrl": node.get("thumbUrl") or node.get("thumb_url") or "",
         "intro": clean_intro(node.get("abstract") or node.get("introduction") or node.get("intro") or ""),
         "lastChapter": node.get("lastChapterTitle") or node.get("last_chapter_title") or "",
     }
@@ -44,6 +45,7 @@ class FanqieDetailContractTests(unittest.TestCase):
 
         self.assertEqual(detail["title"], "十日终焉")
         self.assertEqual(detail["author"], "杀虫队队员")
+        self.assertTrue(detail["coverUrl"])
         self.assertIn("24年番茄年度巅峰榜TOP1", detail["intro"])
         self.assertIn("终焉之地", detail["intro"])
         self.assertEqual(detail["lastChapter"], "陈俊南（终）")
@@ -65,6 +67,7 @@ class FanqieDetailContractTests(unittest.TestCase):
         ):
             detail = project_detail(payload, seed_title="种子标题")
             self.assertTrue(detail["title"])
+            self.assertEqual(detail["coverUrl"], "")
             self.assertEqual(detail["intro"], "")
 
 

@@ -1,0 +1,17 @@
+{
+  "data": {
+    "data": [
+      {
+        "book_id": "6838480082219043843",
+        "book_name": "开局地摊卖大力",
+        "author": "弈青锋",
+        "thumb_url": "https://p3-novel-sign.byteimg.com/novel-pic/example~tplv-shrink:640:0.image"
+      },
+      {
+        "book_id": "no-cover",
+        "book_name": "无封面书",
+        "author": "作者"
+      }
+    ]
+  }
+}
