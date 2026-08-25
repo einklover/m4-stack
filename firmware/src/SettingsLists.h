@@ -97,11 +97,29 @@ inline std::vector<SettingInfo> getSettingsList() {
             "fontSize", "Reader"),
 #endif  // 字号设置项隐藏结束
     SettingInfo::Toggle(L(Str::kFirstLineIndent), &CrossPointSettings::firstlineintented, "firstlineintented","Reader"),
-    // One family-independent reader body size. System fonts are scaled at
-    // runtime, while TTF/CFF/variable faces are rasterized at this exact px.
-    SettingInfo::Value(L(Str::kFontSize), &CrossPointSettings::readerPixelSize,
-                       CrossPointSettings::READER_PIXEL_SIZE_MIN,
-                       CrossPointSettings::READER_PIXEL_SIZE_MAX, 1, "readerPixelSize", "Reader"),
+    // One family-independent reader body size. Allowed body sizes are exactly
+    // {16,24,26,36,38,40,48} (default 26). 32 and 45 are excluded due to
+    // the 74/75 kernel split at N=32/45. Snap ties to larger.
+    SettingInfo::DynamicEnum(L(Str::kFontSize),
+                       {"16", "24", "26", "36", "38", "40", "48"},
+                       []() -> uint8_t {
+                         uint8_t cur = SETTINGS.getReaderPixelSize();
+                         for (uint8_t i = 0; i < CrossPointSettings::kReaderBodyPixelSizesCount; ++i) {
+                           if (CrossPointSettings::kReaderBodyPixelSizes[i] == cur) return i;
+                         }
+                         uint8_t snapped = CrossPointSettings::snapReaderPixelSize(cur);
+                         for (uint8_t i = 0; i < CrossPointSettings::kReaderBodyPixelSizesCount; ++i) {
+                           if (CrossPointSettings::kReaderBodyPixelSizes[i] == snapped) return i;
+                         }
+                         return 2;
+                       },
+                       [](uint8_t index) {
+                         if (index < CrossPointSettings::kReaderBodyPixelSizesCount) {
+                           SETTINGS.setReaderPixelSize(CrossPointSettings::kReaderBodyPixelSizes[index]);
+                           SETTINGS.saveToFile();
+                         }
+                       },
+                       "readerPixelSize", "Reader"),
     SettingInfo::Value(L(Str::kLineSpacing), &CrossPointSettings::customLineSpacing, 5, 20, 1, "lineSpacing", "Reader"),
     SettingInfo::SignedValue(L(Str::kWordSpacing), &CrossPointSettings::wordSpacing, -20, 20, 1, "wordSpacing", "Reader"),
     SettingInfo::Value(L(Str::kTopMargin), &CrossPointSettings::screenMargin_Top, 0,60,1, "screenMarginTop", "Reader"),

@@ -272,7 +272,7 @@ void CrossPointSettings::resetToDefaults() {
   frontButtonLeft = FRONT_HW_LEFT;
   frontButtonRight = FRONT_HW_RIGHT;
   fontFamily = SYSTEM_FONT;
-  readerPixelSize = 18;
+  readerPixelSize = 26;
   customFontSize = 0;
   customFontFamily[0] = '\0';
   fontSize = LARGE;
@@ -738,7 +738,7 @@ bool CrossPointSettings::loadFromBinaryFile() {
 
   // The binary format has no canonical pixel field. Migrate its old family /
   // enum / custom-size combination once, before it is rewritten as JSON.
-  readerPixelSize = legacyReaderPixelSize(fontFamily, fontSize, customFontSize);
+  readerPixelSize = snapReaderPixelSize(legacyReaderPixelSize(fontFamily, fontSize, customFontSize));
   customFontSize = readerPixelSize;
 
   inputFile.close();
@@ -830,9 +830,9 @@ bool CrossPointSettings::loadFromFile() {
           getString("customFontFamily", customFontFamily, sizeof(customFontFamily));
           customFontSize           = doc["customFontSize"]           | (uint8_t)0;
           if (doc["readerPixelSize"].isNull()) {
-            readerPixelSize = legacyReaderPixelSize(fontFamily, fontSize, customFontSize);
+            readerPixelSize = snapReaderPixelSize(legacyReaderPixelSize(fontFamily, fontSize, customFontSize));
           } else {
-            readerPixelSize = clampReaderPixelSize(doc["readerPixelSize"] | (uint8_t)18);
+            readerPixelSize = snapReaderPixelSize(doc["readerPixelSize"] | (int)kReaderBodyDefaultPixelSize);
           }
           customFontSize = readerPixelSize;
           lineSpacing              = doc["lineSpacing"]              | (uint8_t)NORMAL;

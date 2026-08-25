@@ -82,20 +82,43 @@ class ReaderRegressionContracts(unittest.TestCase):
         loader = text("firmware/lib/EpdFontLoader/EpdFontLoader.cpp")
         scaled = text("firmware/lib/EpdFont/ScaledEpdFont.h")
 
-        self.assertIn("readerPixelSize = 18", settings)
+        self.assertIn("readerPixelSize = 26", settings)
+        self.assertNotIn("readerPixelSize = 18", settings)
         self.assertIn('doc["readerPixelSize"]', persistence)
         self.assertIn('doc["readerPixelSize"].isNull()', persistence)
         self.assertIn("legacyReaderPixelSize", persistence)
         self.assertIn("getReaderPixelSize()", persistence)
-        self.assertIn("&CrossPointSettings::readerPixelSize", lists)
         self.assertIn('"readerPixelSize"', lists)
         self.assertIn("SETTINGS.getReaderPixelSize()", menu)
         self.assertNotIn("customFontSize", menu)
+        # Approved reader body sizes: exactly 16,24,26,36,38,40,48 (default 26)
+        # 32 and 45 are excluded (74/75 kernel split)
+        self.assertIn("kReaderBodyPixelSizes", settings)
+        self.assertIn("kReaderBodyPixelSizes", lists)
+        self.assertIn("isAllowedReaderPixelSize", settings)
+        self.assertIn("snapReaderPixelSize", settings)
+        self.assertIn("nextReaderPixelSize", settings)
+        self.assertIn("prevReaderPixelSize", settings)
+        self.assertIn("snapReaderPixelSize", persistence)
+        self.assertIn("nextReaderPixelSize", menu)
+        self.assertIn("prevReaderPixelSize", menu)
+        # Menu must use next/prev helpers, not +-1 clamp through 32/45
+        self.assertNotIn("clampReaderPixelSize", menu)
+        # SettingsLists must use DynamicEnum, not continuous Value 12-48 step1
+        self.assertRegex(lists, r"DynamicEnum[\s\S]{0,2000}readerPixelSize")
+        self.assertNotRegex(lists, r"readerPixelSize[\s\S]{0,200}READER_PIXEL_SIZE_MIN[\s\S]{0,80}1,\s*\"readerPixelSize\"")
+        # Exact allowed sizes must appear, 32 and 45 must not
+        for v in ("16", "24", "26", "36", "38", "40", "48"):
+            self.assertIn(v, lists)
+        self.assertNotIn("\"32\"", lists)
+        self.assertNotIn("\"45\"", lists)
+        # 32/45 must not be in the allowed array header
+        self.assertNotIn("32", settings.split("kReaderBodyPixelSizes")[1].split("}")[0] if "kReaderBodyPixelSizes" in settings else "32")
+        # But explicit forbidden check via helper: ensure 32 absent from array literal
+        self.assertNotIn(", 32,", settings)
+        self.assertNotIn(", 45,", settings)
 
-        # 14/15/17/20 are all in the canonical range and must flow as the
-        # selected value, not through an enum or a 12/16/18 switch.
-        self.assertIn("READER_PIXEL_SIZE_MIN = 12", settings)
-        self.assertIn("READER_PIXEL_SIZE_MAX = 48", settings)
+        # 14/15/17/20 are legacy unsupported sizes and must not be handled as enum
         for px in (14, 15, 17, 20):
             self.assertNotIn(f"== {px} ?", loader)
         self.assertIn("runtimeReaderSize = SETTINGS.getReaderPixelSize()", loader)

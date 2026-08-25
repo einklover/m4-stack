@@ -100,10 +100,52 @@ class CrossPointSettings {
   // retained only for binary/settings migration compatibility.
   static constexpr uint8_t READER_PIXEL_SIZE_MIN = 12;
   static constexpr uint8_t READER_PIXEL_SIZE_MAX = 48;
+  static constexpr uint8_t kReaderBodyPixelSizes[] = {16, 24, 26, 36, 38, 40, 48};
+  static constexpr uint8_t kReaderBodyPixelSizesCount = 7;
+  static constexpr uint8_t kReaderBodyDefaultPixelSize = 26;
+  static bool isAllowedReaderPixelSize(uint8_t px) {
+    for (uint8_t i = 0; i < kReaderBodyPixelSizesCount; ++i) {
+      if (kReaderBodyPixelSizes[i] == px) return true;
+    }
+    return false;
+  }
+  static uint8_t snapReaderPixelSize(int px) {
+    uint8_t best = kReaderBodyPixelSizes[0];
+    int bestDist = px - static_cast<int>(best);
+    if (bestDist < 0) bestDist = -bestDist;
+    for (uint8_t i = 1; i < kReaderBodyPixelSizesCount; ++i) {
+      uint8_t cand = kReaderBodyPixelSizes[i];
+      int d = px - static_cast<int>(cand);
+      if (d < 0) d = -d;
+      if (d < bestDist || (d == bestDist && cand > best)) {
+        best = cand;
+        bestDist = d;
+      }
+    }
+    return best;
+  }
+  static uint8_t nextReaderPixelSize(uint8_t cur) {
+    uint8_t snapped = snapReaderPixelSize(cur);
+    for (uint8_t i = 0; i < kReaderBodyPixelSizesCount; ++i) {
+      if (kReaderBodyPixelSizes[i] == snapped) {
+        if (i + 1 < kReaderBodyPixelSizesCount) return kReaderBodyPixelSizes[i + 1];
+        return kReaderBodyPixelSizes[i];
+      }
+    }
+    return snapped;
+  }
+  static uint8_t prevReaderPixelSize(uint8_t cur) {
+    uint8_t snapped = snapReaderPixelSize(cur);
+    for (uint8_t i = 0; i < kReaderBodyPixelSizesCount; ++i) {
+      if (kReaderBodyPixelSizes[i] == snapped) {
+        if (i > 0) return kReaderBodyPixelSizes[i - 1];
+        return kReaderBodyPixelSizes[i];
+      }
+    }
+    return snapped;
+  }
   static uint8_t clampReaderPixelSize(int px) {
-    if (px < READER_PIXEL_SIZE_MIN) return READER_PIXEL_SIZE_MIN;
-    if (px > READER_PIXEL_SIZE_MAX) return READER_PIXEL_SIZE_MAX;
-    return static_cast<uint8_t>(px);
+    return snapReaderPixelSize(px);
   }
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
   enum WORDS_COMPRESSION { WORD_TIGHT = 0, WORD_NORMAL = 1, WORD_WIDE = 2, WORD_COMPRESSION_COUNT };
@@ -175,7 +217,7 @@ class CrossPointSettings {
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
   // Reader font settings
   uint8_t fontFamily = SYSTEM_FONT;
-  uint8_t readerPixelSize = 18;  // canonical reader body size, independent of family
+  uint8_t readerPixelSize = 26;  // canonical reader body size, independent of family
   uint8_t customFontSize = 0;  // legacy JSON/binary alias; runtime never uses this
   char customFontFamily[64] = "";
   uint8_t fontSize = LARGE;

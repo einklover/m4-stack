@@ -239,8 +239,8 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
   if (action == InternalAction::FONT_DECREASE || action == InternalAction::FONT_INCREASE) {
     const bool increase = action == InternalAction::FONT_INCREASE;
     const uint8_t oldSize = SETTINGS.getReaderPixelSize();
-    const uint8_t target = CrossPointSettings::clampReaderPixelSize(
-        static_cast<int>(oldSize) + (increase ? 1 : -1));
+    const uint8_t target = increase ? CrossPointSettings::nextReaderPixelSize(oldSize)
+                                   : CrossPointSettings::prevReaderPixelSize(oldSize);
     const bool changed = target != oldSize;
     if (changed) SETTINGS.setReaderPixelSize(target);
 
