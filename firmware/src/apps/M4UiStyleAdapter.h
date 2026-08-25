@@ -25,7 +25,7 @@ inline M4UiStyle::Theme current(int screenWidth, int screenHeight) {
   M4UiStyle::FontRoles fonts;
   fonts.title = UI_12_FONT_ID;
   fonts.row = UI_12_FONT_ID;
-  fonts.subtitle = UI_10_FONT_ID;
+  fonts.subtitle = SMALL_FONT_ID;
   fonts.button = UI_10_FONT_ID;
   fonts.caption = UI_10_FONT_ID;
   return M4UiStyle::makeTheme(screenWidth, screenHeight, sm, fonts);

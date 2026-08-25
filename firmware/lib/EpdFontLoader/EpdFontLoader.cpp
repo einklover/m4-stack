@@ -28,6 +28,10 @@ std::vector<int> EpdFontLoader::loadedCustomIds;
 M4FontPolicy::LoadResult EpdFontLoader::lastCanonicalResult = M4FontPolicy::LoadResult::NotAttempted;
 bool EpdFontLoader::sdFontsLoaded_ = false;
 
+#ifdef CROSSPOINT_MURPHY_M4
+static void (*g_applySystemChrome)(GfxRenderer&) = nullptr;
+#endif
+
 namespace {
 int hashFontId(const char* familyName, int size) {
   std::string key = std::string(familyName) + "-" + std::to_string(size);
@@ -97,12 +101,10 @@ bool bindCkBlob(CenterKernelEpdFont& face) {
 bool ensureCenterKernelBound() { return bindCkBlob(centerKernelReader); }
 
 void bindCkFace(CenterKernelEpdFont& face, ScaledEpdFont& fbScaler, const EpdFont* latinSrc, int px) {
+  (void)fbScaler;
   bindCkBlob(face);
-  if (latinSrc) {
-    const float scale = static_cast<float>(px) / static_cast<float>(M4FontPolicy::systemReaderSourcePx());
-    fbScaler.bind(latinSrc, scale, false);
-    face.setFallback(&fbScaler);
-  }
+  // Unscaled native occupancy: CenterKernel stamps Latin with the same Kx/Ky.
+  if (latinSrc) face.setFallback(latinSrc);
   face.setPixelSize(px);
 }
 
@@ -115,9 +117,7 @@ void bindReaderBody(GfxRenderer& renderer, int targetPx) {
   if (canonicalFam) fallbackSource = canonicalFam->getFont(EpdFontFamily::REGULAR);
   if (!fallbackSource) fallbackSource = builtinSystemReader;
   if (fallbackSource) {
-    const float scale = static_cast<float>(targetPx) / static_cast<float>(M4FontPolicy::systemReaderSourcePx());
-    scaledSystemReader.bind(fallbackSource, scale, false);
-    centerKernelReader.setFallback(&scaledSystemReader);
+    centerKernelReader.setFallback(fallbackSource);
   }
   if (!centerKernelReader.valid()) {
     Serial.printf("[M4-FONT] CenterKernel blob missing, keeping previous reader %dpx\n", targetPx);
@@ -235,8 +235,25 @@ void bindSystemReader(GfxRenderer& renderer, int targetPx) {
                   scaledSystemReader.scale());
   }
 }
+
+struct ApplyChromeHook {
+  ApplyChromeHook() {
+    g_applySystemChrome = [](GfxRenderer& renderer) {
+      captureBuiltinSystemReader(renderer);
+      bindSystemChrome(renderer);
+    };
+  }
+} applyChromeHook;
 #endif
 }  // namespace
+
+void EpdFontLoader::applySystemChrome(GfxRenderer& renderer) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (g_applySystemChrome) g_applySystemChrome(renderer);
+#else
+  (void)renderer;
+#endif
+}
 
 void EpdFontLoader::ensureFontsFromSd(GfxRenderer& renderer) {
   if (sdFontsLoaded_) {

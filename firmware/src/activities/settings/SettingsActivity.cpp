@@ -376,6 +376,11 @@ void SettingsActivity::toggleCurrentSetting() {
     const uint8_t currentIndex = setting.valueGetter();
     const uint8_t safe = (currentIndex < static_cast<uint8_t>(n)) ? currentIndex : 0;
     setting.valueSetter(static_cast<uint8_t>((safe + 1) % n));
+#ifdef CROSSPOINT_MURPHY_M4
+    if (setting.key && strcmp(setting.key, "uiFontSize") == 0) {
+      EpdFontLoader::applySystemChrome(renderer);
+    }
+#endif
 } else if (setting.type == SettingType::VALUE && setting.signedValuePtr != nullptr) {
     // 有符号数值类型：打开数字选择器
     const int currentValue = SETTINGS.*(setting.signedValuePtr);

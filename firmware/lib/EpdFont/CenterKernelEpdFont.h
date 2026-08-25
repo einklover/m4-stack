@@ -7,7 +7,8 @@
 // Occupancy 32 bytes MSB-first per row (bit7 is col0). Class 2 bits per rank:
 // (bytes[i>>2] >> ((i&3)*2)) &3. One instance has one pixelSize; reader and
 // chrome use separate instances of the same M4CK blob. Latin/punct fallback
-// remains native-grid (CJK only U+3400–U+9FFF).
+// CJK is U+3400–U+9FFF occupancy. Latin/punct is stamped from the native-grid
+// 15/16 occupancy with the same class-1 kernel as CJK at this pixelSize.
 
 #include <cstddef>
 #include <cstdint>
@@ -126,8 +127,7 @@ class CenterKernelEpdFont final : public EpdFont {
     }
     int32_t rank = rankedIndex(cp);
     if (rank < 0) {
-      if (fallback_) return fallback_->getGlyph(cp, style);
-      return nullptr;
+      return latinGlyph(cp, style);
     }
     int cls = glyphClass(rank);
     if (cls < 0 || cls > 3) cls = 1;
@@ -158,7 +158,11 @@ class CenterKernelEpdFont final : public EpdFont {
         return CenterKernelFont::advancePx(pixelSize_, cls);
       }
     }
-    if (fallback_) return fallback_->glyphAdvanceX(cp, style);
+    if (fallback_) {
+      const int src = fallback_->glyphAdvanceX(cp, style);
+      const int scaled = (src * pixelSize_ + CenterKernelFont::kCellPx / 2) / CenterKernelFont::kCellPx;
+      return scaled < 1 ? 1 : scaled;
+    }
     const EpdGlyph* g = getGlyph(cp, style);
     if (!g) {
       g = getGlyph('?', style);
@@ -184,10 +188,12 @@ class CenterKernelEpdFont final : public EpdFont {
     }
     if (!isScratch) {
       if (fallback_) return fallback_->loadGlyphBitmap(glyph, buffer, style);
-      // Fallback to rank interpretation if possible
       if (!valid_) return nullptr;
       if (glyph->dataOffset < glyphCount_) rank = static_cast<int32_t>(glyph->dataOffset);
       else return nullptr;
+    }
+    if ((static_cast<uint32_t>(rank) & kLatinSentinel) != 0) {
+      return stampLatin(static_cast<uint32_t>(rank) & ~kLatinSentinel, glyph, buffer, style);
     }
     if (!valid_) {
       if (fallback_) return fallback_->loadGlyphBitmap(glyph, buffer, style);
@@ -249,6 +255,87 @@ class CenterKernelEpdFont final : public EpdFont {
   static constexpr uint16_t kVersion = 1;
   static constexpr uint16_t kHeaderBytes = 48;
   static constexpr uint16_t kLeafBytes = 34;
+  static constexpr uint32_t kLatinSentinel = 0x80000000u;
+
+  const EpdGlyph* latinGlyph(uint32_t cp, const EpdFontStyles::Style style) const {
+    if (!fallback_) return nullptr;
+    const EpdGlyph* src = fallback_->getGlyph(cp, style);
+    if (!src) return nullptr;
+    const int N = pixelSize_;
+    EpdGlyph& g = nextScratch(kLatinSentinel | (cp & ~kLatinSentinel));
+    g.width = static_cast<uint8_t>(N);
+    g.height = static_cast<uint8_t>(N);
+    const int srcAdv = fallback_->glyphAdvanceX(cp, style);
+    int adv = (srcAdv * N + CenterKernelFont::kCellPx / 2) / CenterKernelFont::kCellPx;
+    if (adv < 1) adv = 1;
+    if (adv > 255) adv = 255;
+    g.advanceX = static_cast<uint8_t>(adv);
+    g.left = 0;
+    g.top = static_cast<int16_t>(N);
+    const uint32_t pixels = static_cast<uint32_t>(N) * static_cast<uint32_t>(N);
+    g.dataLength = (pixels + 7u) / 8u;
+    g.dataOffset = kLatinSentinel | (cp & ~kLatinSentinel);
+    return &g;
+  }
+
+  const uint8_t* stampOcc(const uint8_t occ[32], int cls, const EpdGlyph* glyph, uint8_t* buffer) const {
+    const int N = pixelSize_;
+    const int Kx = CenterKernelFont::kernelX(N, cls);
+    const int Ky = CenterKernelFont::kernelY(N, cls);
+    const uint32_t dstLen = glyph->dataLength;
+    if (dstLen == 0) return nullptr;
+    uint8_t* dst = buffer;
+    if (!dst) {
+      if (!ensureScratch(dstLen)) return nullptr;
+      dst = scratchBitmap_;
+    }
+    std::memset(dst, 0, dstLen);
+    for (int row = 0; row < 16; ++row) {
+      for (int col = 0; col < 16; ++col) {
+        const int idx = row * 16 + col;
+        const int on = (occ[idx / 8] >> (7 - (idx % 8))) & 1;
+        if (!on) continue;
+        const int cx = CenterKernelFont::centerX(N, cls, col);
+        const int cy = CenterKernelFont::centerY(N, row);
+        const int x0 = CenterKernelFont::origin0(cx, Kx);
+        const int y0 = CenterKernelFont::origin0(cy, Ky);
+        for (int ky = 0; ky < Ky; ++ky) {
+          const int y = y0 + ky;
+          if (y < 0 || y >= N) continue;
+          for (int kx = 0; kx < Kx; ++kx) {
+            const int x = x0 + kx;
+            if (x < 0 || x >= N) continue;
+            const uint32_t p = static_cast<uint32_t>(y) * static_cast<uint32_t>(N) + static_cast<uint32_t>(x);
+            dst[p / 8] |= static_cast<uint8_t>(0x80 >> (p % 8));
+          }
+        }
+      }
+    }
+    return dst;
+  }
+
+  const uint8_t* stampLatin(uint32_t cp, const EpdGlyph* glyph, uint8_t* buffer,
+                            const EpdFontStyles::Style style) const {
+    if (!fallback_ || !glyph) return nullptr;
+    const EpdGlyph* src = fallback_->getGlyph(cp, style);
+    if (!src) return nullptr;
+    uint8_t nativeBuf[32];
+    const uint8_t* srcBmp = fallback_->loadGlyphBitmap(src, nativeBuf, style);
+    if (!srcBmp) return nullptr;
+    uint8_t occ[32];
+    std::memset(occ, 0, sizeof(occ));
+    const int w = src->width;
+    const int h = src->height;
+    for (int row = 0; row < 16 && row < h; ++row) {
+      for (int col = 0; col < 16 && col < w; ++col) {
+        const uint32_t sidx = static_cast<uint32_t>(row) * static_cast<uint32_t>(w) + static_cast<uint32_t>(col);
+        if (((srcBmp[sidx / 8u] >> (7u - (sidx % 8u))) & 1u) == 0) continue;
+        const int didx = row * 16 + col;
+        occ[didx / 8] |= static_cast<uint8_t>(0x80 >> (didx % 8));
+      }
+    }
+    return stampOcc(occ, 1, glyph, buffer);
+  }
 
   static uint16_t rd16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (static_cast<uint16_t>(p[1]) << 8)); }
   static uint32_t rd32(const uint8_t* p) {
