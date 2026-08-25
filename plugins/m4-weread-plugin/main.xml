@@ -16,11 +16,9 @@
     <buttons
       back="返回"
       primary="阅读"
-      left="找书"
       right="登录"
       onBack="system.back"
       onPrimary="provider.openSelected"
-      onLeft="ui.go:search"
       onRight="provider.login" />
   </screen>
 

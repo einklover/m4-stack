@@ -34,5 +34,6 @@ class AppListActivity final : public ActivityWithSubactivity {
   void reload();
   void render() const;
   void openSelected();
+  void openInstall();
   void uninstallSelected();
 };

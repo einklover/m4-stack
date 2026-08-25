@@ -84,17 +84,20 @@ void AppListActivity::openSelected() {
   if (apps_.empty() || selectedIndex_ < 0 || selectedIndex_ >= static_cast<int>(apps_.size())) return;
   const auto app = apps_[static_cast<size_t>(selectedIndex_)];
   xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-  exitActivity();
-  auto onClosed = [this]() {
-    exitActivity();
-    reload();
-    updateRequired_ = true;
-  };
+  auto onClosed = [this]() { requestExitSubActivity(); };
   if (app.runtime == M4xRuntimeKind::Native) {
     enterNewActivity(new NativeAppActivity(renderer, mappedInput, app, onClosed));
   } else {
     enterNewActivity(new AppRuntimeActivity(renderer, mappedInput, app, onClosed));
   }
+  xSemaphoreGive(renderingMutex_);
+}
+
+void AppListActivity::openInstall() {
+  xSemaphoreTake(renderingMutex_, portMAX_DELAY);
+  enterNewActivity(new AppInstallActivity(renderer, mappedInput, "", [this]() {
+    requestExitSubActivity();
+  }));
   xSemaphoreGive(renderingMutex_);
 }
 
@@ -110,7 +113,10 @@ void AppListActivity::uninstallSelected() {
 
 void AppListActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    if (pumpSubActivityFrame()) {
+      reload();
+      updateRequired_ = true;
+    }
     return;
   }
 
@@ -172,27 +178,13 @@ void AppListActivity::loop() {
             updateRequired_ = true;
           }
         } else {
-          xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-          exitActivity();
-          enterNewActivity(new AppInstallActivity(renderer, mappedInput, "", [this]() {
-            exitActivity();
-            reload();
-            updateRequired_ = true;
-          }));
-          xSemaphoreGive(renderingMutex_);
+          openInstall();
         }
         return;
       }
 
       if (count == 0) {
-        xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-        exitActivity();
-        enterNewActivity(new AppInstallActivity(renderer, mappedInput, "", [this]() {
-          exitActivity();
-          reload();
-          updateRequired_ = true;
-        }));
-        xSemaphoreGive(renderingMutex_);
+        openInstall();
         return;
       }
 
@@ -230,16 +222,7 @@ void AppListActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (count > 0) openSelected();
-    else {
-      xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-      exitActivity();
-      enterNewActivity(new AppInstallActivity(renderer, mappedInput, "", [this]() {
-        exitActivity();
-        reload();
-        updateRequired_ = true;
-      }));
-      xSemaphoreGive(renderingMutex_);
-    }
+    else openInstall();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Left) && count > 0) {
@@ -248,14 +231,7 @@ void AppListActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-    exitActivity();
-    enterNewActivity(new AppInstallActivity(renderer, mappedInput, "", [this]() {
-      exitActivity();
-      reload();
-      updateRequired_ = true;
-    }));
-    xSemaphoreGive(renderingMutex_);
+    openInstall();
     return;
   }
 
