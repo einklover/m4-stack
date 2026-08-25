@@ -136,19 +136,35 @@ constexpr int nativeGridCellPx(int requestedPx) {
   return kLogicalCellPx * nativeGridIntegerScale(requestedPx);
 }
 
-// Chrome integer scales. SMALL stays 1x for status/secondary text. UI_10 and
-// UI_12 share 2x so major menu/list labels are readable on the 480x800
-// touch screen. 3x (48) would overflow Lyra listRowHeight=40.
-// Constraint: UI_10==UI_12 visually at 2x because the only other integer is
-// 1x, which would shrink UI_10 versus the previous 22px. Native-app 96px
-// cells can no longer fit four UI_10 CJK glyphs (32*4=128); those tight
-// cells must use SMALL (16*4=64) or wrap. Do not 3x chrome.
+// Native-grid integer fallback (only used if the CenterKernel blob is missing).
+// SMALL stays 1x. UI no longer uses 2x/32px — that overflowed Lyra
+// listRowHeight=40 and looked oversized next to the 26px reader default.
 constexpr int kChromeSmallScale = 1;
-constexpr int kChromeUi10Scale = 2;
-constexpr int kChromeUi12Scale = 2;
-constexpr int kChromeSmallPx = kLogicalCellPx * kChromeSmallScale;  // 16
-constexpr int kChromeUi10Px = kLogicalCellPx * kChromeUi10Scale;    // 32
-constexpr int kChromeUi12Px = kLogicalCellPx * kChromeUi12Scale;    // 32
+constexpr int kChromeUi10Scale = 1;
+constexpr int kChromeUi12Scale = 1;
+constexpr int kChromeSmallPx = 16;
+
+// System UI size tiers (settings 小/中/大). Default 中=24 is smaller than the
+// previous fixed 32px native-grid chrome. 大=26 matches the reader default
+// and still fits Lyra rows. SMALL/status stays 16 regardless of the tier.
+constexpr int kUiFontTierSmall = 0;
+constexpr int kUiFontTierMedium = 1;
+constexpr int kUiFontTierLarge = 2;
+constexpr int kDefaultUiFontTier = kUiFontTierMedium;
+constexpr int kChromeUiPxSmall = 16;
+constexpr int kChromeUiPxMedium = 24;
+constexpr int kChromeUiPxLarge = 26;
+
+constexpr int chromeUiPxFromTier(int tier) {
+  if (tier <= kUiFontTierSmall) return kChromeUiPxSmall;
+  if (tier >= kUiFontTierLarge) return kChromeUiPxLarge;
+  return kChromeUiPxMedium;
+}
+
+// Layout/policy default = 中. Native-grid integer fallback at boot is 1x/16
+// until CenterKernel chrome rebinds at the selected tier.
+constexpr int kChromeUi10Px = kChromeUiPxMedium;
+constexpr int kChromeUi12Px = kChromeUiPxMedium;
 
 inline int systemReaderSourcePx() {
   return kNativeGridSourcePx;

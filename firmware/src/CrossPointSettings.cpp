@@ -155,6 +155,7 @@ bool CrossPointSettings::saveToFile() const {
   doc["fontSize"]                  = fontSize;
   doc["customFontFamily"]          = customFontFamily;
   doc["readerPixelSize"]            = getReaderPixelSize();
+  doc["uiFontSize"]                 = getUiFontSize();
   // Keep the old key for one release so older firmware sees a sensible size;
   // all current runtime decisions use readerPixelSize.
   doc["customFontSize"]            = getReaderPixelSize();
@@ -273,6 +274,7 @@ void CrossPointSettings::resetToDefaults() {
   frontButtonRight = FRONT_HW_RIGHT;
   fontFamily = SYSTEM_FONT;
   readerPixelSize = 26;
+  uiFontSize = 1;
   customFontSize = 0;
   customFontFamily[0] = '\0';
   fontSize = LARGE;
@@ -835,6 +837,11 @@ bool CrossPointSettings::loadFromFile() {
             readerPixelSize = snapReaderPixelSize(doc["readerPixelSize"] | (int)kReaderBodyDefaultPixelSize);
           }
           customFontSize = readerPixelSize;
+          {
+            int uiTier = doc["uiFontSize"] | 1;
+            if (uiTier < 0 || uiTier > 2) uiTier = 1;
+            uiFontSize = static_cast<uint8_t>(uiTier);
+          }
           lineSpacing              = doc["lineSpacing"]              | (uint8_t)NORMAL;
           customLineSpacing        = doc["customLineSpacing"]        | (uint8_t)10;
           wordSpacing              = static_cast<int8_t>(doc["wordSpacing"] | 0);

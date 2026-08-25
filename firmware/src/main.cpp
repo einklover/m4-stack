@@ -355,7 +355,8 @@ EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 // Built-in 15x16 1-bit native-grid is the single system face (logical 16x16
 // cell). Default/fallback reader IDs bind the native instance; bindSystemReader
 // wraps NOTOSANS_16 in ScaledEpdFont at integer N for the builtin face.
-// Chrome IDs bindInteger at fixed 1x/2x/2x (16/32/32) and must never follow
+// Chrome IDs start as native-grid 1x until EpdFontLoader rebinds SMALL/UI
+// onto CenterKernel (bold) at the settings 小/中/大 tier. Must never follow
 // a reader TTF or readerPixelSize.
 extern const uint8_t m4_native_grid_15x16_bin_start[] asm("_binary_src_fontdata_m4_native_grid_15x16_bin_start");
 extern const uint8_t m4_native_grid_15x16_bin_end[] asm("_binary_src_fontdata_m4_native_grid_15x16_bin_end");

@@ -73,6 +73,16 @@ inline std::vector<SettingInfo> getSettingsList() {
                       {L(Str::kValCornersOnly), L(Str::kValGrayBgOnly), L(Str::kValDashedBorderOnly),
                        L(Str::kValSolidBorderOnly), L(Str::kValCornersAndGrayBg)},
                       "homeIconStyle", "Display"),
+#ifdef CROSSPOINT_MURPHY_M4
+    SettingInfo::DynamicEnum(L(Str::kUiFontSize),
+                       {L(Str::kValSmall), L(Str::kValMedium), L(Str::kValLarge)},
+                       []() -> uint8_t { return SETTINGS.getUiFontSize(); },
+                       [](uint8_t index) {
+                         SETTINGS.setUiFontSize(index);
+                         SETTINGS.saveToFile();
+                       },
+                       "uiFontSize", "Display"),
+#endif
 
     // --- Reader ---
 #if 0  // 字号设置项暂时隐藏，当前只有一种字号

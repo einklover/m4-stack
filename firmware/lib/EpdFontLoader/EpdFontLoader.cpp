@@ -18,7 +18,9 @@
 #include "../../src/managers/FontManager.h"
 #include "../../src/util/M4FontPolicy.h"
 #ifdef CROSSPOINT_MURPHY_M4
+#include "../EpdFont/CenterKernelEpdFont.h"
 #include "../EpdFont/ScaledEpdFont.h"
+#include "../../src/util/CenterKernelFont.h"
 #include "../../src/util/M4FixedRuntimeUiFonts.h"
 #endif
 
@@ -66,15 +68,92 @@ std::string activeRuntimeTtfFamily;
 int activeRuntimeTtfSize = -1;
 
 #ifdef CROSSPOINT_MURPHY_M4
-// One borrowed source face plus one reusable scaler gives system reader text
-// exact arbitrary pixel sizes without creating a 12/16/18 artifact matrix.
 ScaledEpdFont scaledSystemReader;
+ScaledEpdFont scaledChromeSmallFb;
+ScaledEpdFont scaledChromeUiFb;
+CenterKernelEpdFont centerKernelReader;
+CenterKernelEpdFont centerKernelChromeSmall;
+CenterKernelEpdFont centerKernelChromeUi;
 const EpdFont* builtinSystemReader = nullptr;
+
+extern const uint8_t m4_center_kernel_16x16_bin_start[] asm("_binary_src_fontdata_m4_center_kernel_16x16_bin_start") __attribute__((weak));
+extern const uint8_t m4_center_kernel_16x16_bin_end[] asm("_binary_src_fontdata_m4_center_kernel_16x16_bin_end") __attribute__((weak));
+
+bool isCenterKernelFace(const EpdFont* f) {
+  return f == &centerKernelReader || f == &centerKernelChromeSmall || f == &centerKernelChromeUi ||
+         f == &scaledSystemReader || f == &scaledChromeSmallFb || f == &scaledChromeUiFb;
+}
+
+bool bindCkBlob(CenterKernelEpdFont& face) {
+  if (face.valid()) return true;
+  const uint8_t* start = m4_center_kernel_16x16_bin_start;
+  const uint8_t* end = m4_center_kernel_16x16_bin_end;
+  if (!start || !end || end <= start) return false;
+  size_t sz = static_cast<size_t>(end - start);
+  if (sz < 48) return false;
+  return face.bind(start, sz);
+}
+
+bool ensureCenterKernelBound() { return bindCkBlob(centerKernelReader); }
+
+void bindCkFace(CenterKernelEpdFont& face, ScaledEpdFont& fbScaler, const EpdFont* latinSrc, int px) {
+  bindCkBlob(face);
+  if (latinSrc) {
+    const float scale = static_cast<float>(px) / static_cast<float>(M4FontPolicy::systemReaderSourcePx());
+    fbScaler.bind(latinSrc, scale, false);
+    face.setFallback(&fbScaler);
+  }
+  face.setPixelSize(px);
+}
+
+void bindReaderBody(GfxRenderer& renderer, int targetPx) {
+  if (!builtinSystemReader) return;
+  ensureCenterKernelBound();
+  const EpdFont* fallbackSource = nullptr;
+  EpdFontFamily* canonicalFam = FontManager::getInstance().getCustomFontFamily(
+      M4FontPolicy::kCanonicalFamily, M4FontPolicy::kCanonicalEpdfontPixelSize);
+  if (canonicalFam) fallbackSource = canonicalFam->getFont(EpdFontFamily::REGULAR);
+  if (!fallbackSource) fallbackSource = builtinSystemReader;
+  if (fallbackSource) {
+    const float scale = static_cast<float>(targetPx) / static_cast<float>(M4FontPolicy::systemReaderSourcePx());
+    scaledSystemReader.bind(fallbackSource, scale, false);
+    centerKernelReader.setFallback(&scaledSystemReader);
+  }
+  if (!centerKernelReader.valid()) {
+    Serial.printf("[M4-FONT] CenterKernel blob missing, keeping previous reader %dpx\n", targetPx);
+    return;
+  }
+  centerKernelReader.bindReaderBody(targetPx);
+  renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&centerKernelReader));
+  Serial.printf("[M4-FONT] CenterKernel reader=%dpx valid=%d fallback=%s\n", targetPx,
+                centerKernelReader.valid() ? 1 : 0, canonicalFam ? "canonical" : "builtin");
+}
+
+void bindSystemChrome(GfxRenderer& renderer) {
+  const int uiPx = M4FontPolicy::chromeUiPxFromTier(SETTINGS.getUiFontSize());
+  const int smallPx = M4FontPolicy::kChromeSmallPx;
+  const EpdFont* latin = builtinSystemReader;
+  if (!latin) {
+    Serial.println("[M4-FONT] DIAG: no latin source for chrome CenterKernel fallback");
+    return;
+  }
+  if (!bindCkBlob(centerKernelChromeSmall) || !bindCkBlob(centerKernelChromeUi)) {
+    Serial.println("[M4-FONT] CenterKernel chrome blob missing; keeping native-grid UI");
+    return;
+  }
+  bindCkFace(centerKernelChromeSmall, scaledChromeSmallFb, latin, smallPx);
+  bindCkFace(centerKernelChromeUi, scaledChromeUiFb, latin, uiPx);
+  renderer.replaceFont(SMALL_FONT_ID, EpdFontFamily(&centerKernelChromeSmall));
+  renderer.replaceFont(UI_10_FONT_ID, EpdFontFamily(&centerKernelChromeUi, &centerKernelChromeUi));
+  renderer.replaceFont(UI_12_FONT_ID, EpdFontFamily(&centerKernelChromeUi, &centerKernelChromeUi));
+  Serial.printf("[M4-FONT] CenterKernel chrome small=%dpx ui=%dpx (tier=%u)\n", smallPx, uiPx,
+                static_cast<unsigned>(SETTINGS.getUiFontSize()));
+}
 
 void captureBuiltinSystemReader(const GfxRenderer& renderer) {
   if (builtinSystemReader) return;
   const EpdFont* candidate = renderer.getFontPtr(NOTOSANS_16_FONT_ID);
-  if (candidate && candidate != &scaledSystemReader) builtinSystemReader = candidate;
+  if (candidate && !isCenterKernelFace(candidate)) builtinSystemReader = candidate;
 }
 
 void logFontMap(const GfxRenderer& renderer, const char* stage, int readerId) {
@@ -130,16 +209,17 @@ void promoteToReaderIds(GfxRenderer& renderer, const char* familyName, int size)
 
 #ifdef CROSSPOINT_MURPHY_M4
 void bindSystemReader(GfxRenderer& renderer, int targetPx) {
+  if (ensureCenterKernelBound() && centerKernelReader.valid()) {
+    bindReaderBody(renderer, targetPx);
+    const EpdFont* cur = renderer.getFontPtr(NOTOSANS_16_FONT_ID);
+    if (cur == &centerKernelReader) return;
+  }
   const EpdFont* source = renderer.getFontPtr(NOTOSANS_16_FONT_ID);
-  if (!source || source == &scaledSystemReader) source = builtinSystemReader;
+  if (!source || isCenterKernelFace(source)) source = builtinSystemReader;
   if (!source) {
     Serial.println("[M4-FONT] DIAG: no system reader source to scale");
     return;
   }
-  // Reader-only scaler. Chrome IDs (SMALL/UI_10/UI_12) stay on the fixed
-  // integer-N builtin native-grid scaler and must not consume targetPx.
-  // Builtin 1-bit snaps to integer Kronecker N; canonical 16px SD epdfont
-  // keeps an arbitrary dest-sample scale. Runtime TTF/OTF does not use this.
   if (source == builtinSystemReader) {
     const int n = M4FontPolicy::nativeGridIntegerScale(targetPx);
     scaledSystemReader.bindInteger(source, n);
@@ -151,7 +231,7 @@ void bindSystemReader(GfxRenderer& renderer, int targetPx) {
                         static_cast<float>(M4FontPolicy::systemReaderSourcePx());
     scaledSystemReader.bind(source, scale, false);
     renderer.replaceFont(NOTOSANS_16_FONT_ID, EpdFontFamily(&scaledSystemReader));
-    Serial.printf("[M4-FONT] System reader=%dpx scale=%.3f source=canonical-epdfont\n", targetPx,
+    Serial.printf("[M4-FONT] System reader=%dpx scale=%.3f source=canonical-epdfont (no M4CK)\n", targetPx,
                   scaledSystemReader.scale());
   }
 }
@@ -317,6 +397,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
   // canonical system fallback (and is also used for system mode); bind that
   // one stable ID to the exact requested pixel size in either case.
   bindSystemReader(renderer, SETTINGS.getReaderPixelSize());
+  bindSystemChrome(renderer);
   logFontMap(renderer, "load_complete", SETTINGS.getReaderFontId());
 #endif
   sdFontsLoaded_ = true;

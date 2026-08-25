@@ -193,11 +193,14 @@ static_assert(M4FontPolicy::kLogicalCellPx == 16, "logical system cell is 16x16"
 static_assert(M4FontPolicy::kNativeGridSourcePx == 16, "native-grid system face is a 16-row raster");
 static_assert(M4FontPolicy::kCanonicalEpdfontPixelSize == 16, "canonical SD epdfont is a 16px artifact");
 static_assert(M4FontPolicy::kChromeSmallScale == 1, "SMALL chrome is 1x");
-static_assert(M4FontPolicy::kChromeUi10Scale == 2, "UI_10 chrome is 2x");
-static_assert(M4FontPolicy::kChromeUi12Scale == 2, "UI_12 chrome is 2x");
+static_assert(M4FontPolicy::kChromeUi10Scale == 1, "native-grid UI fallback is 1x");
+static_assert(M4FontPolicy::kChromeUi12Scale == 1, "native-grid UI fallback is 1x");
 static_assert(M4FontPolicy::kChromeSmallPx == 16, "SMALL chrome cell is 16px");
-static_assert(M4FontPolicy::kChromeUi10Px == 32, "UI_10 chrome cell is 32px");
-static_assert(M4FontPolicy::kChromeUi12Px == 32, "UI_12 chrome cell is 32px");
+static_assert(M4FontPolicy::kChromeUi10Px == 24, "default UI chrome is 中=24");
+static_assert(M4FontPolicy::kChromeUi12Px == 24, "default UI chrome is 中=24");
+static_assert(M4FontPolicy::chromeUiPxFromTier(0) == 16, "小=16");
+static_assert(M4FontPolicy::chromeUiPxFromTier(1) == 24, "中=24");
+static_assert(M4FontPolicy::chromeUiPxFromTier(2) == 26, "大=26");
 static_assert(M4FontPolicy::nativeGridIntegerScale(12) == 1, "12–20 → 1x");
 static_assert(M4FontPolicy::nativeGridIntegerScale(18) == 1, "default 18 → 1x");
 static_assert(M4FontPolicy::nativeGridIntegerScale(20) == 1, "20 → 1x");
@@ -214,8 +217,8 @@ static_assert(M4FontPolicy::nativeGridCellPx(40) == 48, "40 snaps to 48");
 int main(int argc, char** argv) {
   CHECK(M4FontPolicy::systemReaderSourcePx() == M4FontPolicy::kLogicalCellPx);
   CHECK(M4FontPolicy::kChromeSmallPx == 16);
-  CHECK(M4FontPolicy::kChromeUi10Px == 32);
-  CHECK(M4FontPolicy::kChromeUi12Px == 32);
+  CHECK(M4FontPolicy::kChromeUi10Px == 24);
+  CHECK(M4FontPolicy::kChromeUi12Px == 24);
   // Builtin snaps; TTF keeps the numeric size (documented, not applied here).
   CHECK(M4FontPolicy::nativeGridIntegerScale(31) == 2);
   CHECK(M4FontPolicy::nativeGridCellPx(31) == 32);
@@ -504,10 +507,10 @@ int main(int argc, char** argv) {
   chromeUi10.bindInteger(&source, M4FontPolicy::kChromeUi10Scale);
   chromeUi12.bindInteger(&source, M4FontPolicy::kChromeUi12Scale);
   CHECK(chromeSmall.getData()->advanceY == 16);
-  CHECK(chromeUi10.getData()->advanceY == 32);
-  CHECK(chromeUi12.getData()->advanceY == 32);
+  CHECK(chromeUi10.getData()->advanceY == 16);
+  CHECK(chromeUi12.getData()->advanceY == 16);
   CHECK(measure(chromeSmall, kCjk).advance == 16);
-  CHECK(measure(chromeUi10, kCjk).advance == 32);
+  CHECK(measure(chromeUi10, kCjk).advance == 16);
   const int chromeAdv = measure(chromeUi10, kCjk).advance;
   const int chromeLine = chromeUi10.getData()->advanceY;
   for (int px : {18, 22, 31, 40, 48}) {

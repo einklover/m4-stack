@@ -7,9 +7,9 @@
 
 // Fixed physical-pixel policy for system chrome (builtin native-grid).
 //
-// UI text is quantized to integer-N native-grid cells (SMALL 1x=16, UI_10/UI_12
-// 2x=32) instead of shrinking the Reader bitmap. System UI + Native plugins
-// reuse exactly the same three faces. Runtime TTF never owns chrome IDs.
+// UI text uses CenterKernel CJK at 小/中/大 (16/24/26, default 24). Native-grid
+// remains Latin/punct fallback and the boot face before the M4CK blob binds.
+// Runtime TTF never owns chrome IDs.
 //
 // The legacy generated epdfont names are not pixel sizes (`m4_ui_cjk_13` is
 // 13pt @ 150 DPI), so never derive runtime-TTF chrome metrics from them.

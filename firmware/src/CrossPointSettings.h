@@ -221,6 +221,8 @@ class CrossPointSettings {
   uint8_t customFontSize = 0;  // legacy JSON/binary alias; runtime never uses this
   char customFontFamily[64] = "";
   uint8_t fontSize = LARGE;
+  // System chrome 小/中/大 (0/1/2). Default 中. Independent of readerPixelSize.
+  uint8_t uiFontSize = 1;
   uint8_t lineSpacing = NORMAL;   // Legacy: 0=TIGHT, 1=NORMAL, 2=WIDE
   uint8_t customLineSpacing = 10;  // Custom line spacing: 5-20 -> 0.5-2.0 (default 1.1)
   uint8_t firstlineintented = 1;
@@ -415,6 +417,8 @@ class CrossPointSettings {
 
   uint8_t getReaderPixelSize() const { return clampReaderPixelSize(readerPixelSize); }
   void setReaderPixelSize(uint8_t px) { readerPixelSize = clampReaderPixelSize(px); }
+  uint8_t getUiFontSize() const { return uiFontSize > 2 ? 1 : uiFontSize; }
+  void setUiFontSize(uint8_t tier) { uiFontSize = (tier > 2) ? 1 : tier; }
 
   // Get singleton instance
   static CrossPointSettings& getInstance() { return instance; }
