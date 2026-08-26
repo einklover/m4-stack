@@ -112,7 +112,7 @@ std::vector<std::string> scenario_single_tap_slow_index(uint32_t seed, SimTrace*
 
 // 1b. Regression: same input, but bugNoCatchup — the intent is lost forever.
 // The jump arrives while the index is incomplete AND the panel is BUSY (the
-// first page's FULL refresh is in flight); with no catch-up invariant the
+// first page's refresh is in flight); with no catch-up invariant the
 // display task never re-arms after the commit, so physical stays on page 0.
 // Expect FAIL (this is the bug the simulator must catch).
 std::vector<std::string> scenario_bug_lost_tap(uint32_t seed, SimTrace* traceOut) {
@@ -125,7 +125,7 @@ std::vector<std::string> scenario_bug_lost_tap(uint32_t seed, SimTrace* traceOut
   if (!k.waitFor([&]() { return reader.firstShown() && reader.panelIdle(); }, 6000)) {
     return {"never reached 'page 0 committed, panel idle' state"};
   }
-  reader.tap(+1);  // page 1 render starts (FULL refresh, 1800ms BUSY)
+  reader.tap(+1);  // page 1 render starts and the panel becomes BUSY
   // Wait for the animation to be actually IN FLIGHT (not assume 200ms).
   if (!k.waitFor([&]() { return reader.epdBusy(); }, 3000)) {
     return {"never observed EPD busy after tap"};

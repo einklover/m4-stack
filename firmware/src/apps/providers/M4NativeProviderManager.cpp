@@ -5,6 +5,7 @@
 #include "apps/providers/M4NativeProviderAdapters.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeProviderIo.h"
+#include "apps/providers/M4LegadoTocPolicy.h"
 #include "apps/providers/M4Psram.h"
 #include "util/M4PluginReaderBridge.h"
 
@@ -45,6 +46,11 @@ std::unordered_map<std::string, StoredBook> gBooks;
 M4NativeProvider::Progress gProgress;
 std::atomic<bool> gCancel{false};
 TaskHandle_t gWorker = nullptr;
+
+// Legacy catalogs have no persisted row count. Keep the compatibility probe
+// bounded so a cold history reopen cannot scan a multi-megabyte TOC on the UI
+// task; the native catalog worker remains responsible for the full fetch.
+constexpr size_t kLegacyUiScanMaxBytes = 256u * 1024u;
 
 std::string keyOf(const std::string& p, const std::string& b) { return p + "\n" + b; }
 
@@ -177,6 +183,10 @@ bool loadPersisted(const std::string& providerId, const std::string& bookId,
 size_t countLines(const std::string& path, size_t cap = M4ContentProvider::kMaxCatalogChapters) {
   FsFile f;
   if (!SdMan.openFileForRead("NP-TOC", path.c_str(), f)) return 0;
+  if (f.fileSize() > kLegacyUiScanMaxBytes) {
+    f.close();
+    return 0;
+  }
   uint8_t buf[2048];
   size_t rows = 0;
   bool any = false;
@@ -529,6 +539,26 @@ bool ensureBook(const std::string& providerId, const std::string& bookId,
   StoredBook b;
   if (!loadPersisted(providerId, bookId, appId, b) && !inferLegacy(providerId, bookId, appId, title, b)) return false;
   if (!title.empty() && (b.spec.title.empty() || b.spec.title == b.spec.bookId)) b.spec.title = title;
+  // Legado-only TOC consistency gate: a stale shelf can persist a chapter
+  // count larger than what toc_rows.txt actually holds (interrupted refill).
+  // Clamp to readable rows and re-persist; zero readable rows fails the load
+  // so the caller falls back to a fresh catalog bootstrap instead of opening
+  // a hollow TOC.
+  if (providerId == "legado" &&
+      b.spec.catalog.kind == M4ContentProvider::ChapterCatalogKind::FileRows &&
+      !b.spec.catalog.fileRelPath.empty() && b.spec.catalog.chapterCount > 0) {
+    const size_t actualRows = countLines(b.appDataRoot + "/" + b.spec.catalog.fileRelPath);
+    const size_t clamped = M4LegadoTocPolicy::clampedChapterCount(b.spec.catalog.chapterCount, actualRows);
+    if (clamped != b.spec.catalog.chapterCount) {
+      Serial.printf("[NativeStore] legado count %u->%u rows=%u book=%s\n",
+                    static_cast<unsigned>(b.spec.catalog.chapterCount),
+                    static_cast<unsigned>(clamped), static_cast<unsigned>(actualRows),
+                    bookId.c_str());
+      if (clamped == 0) return false;
+      b.spec.catalog.chapterCount = clamped;
+      if (!persist(b)) return false;
+    }
+  }
   {
     std::lock_guard<std::mutex> lock(gMu);
     gBooks[keyOf(providerId, bookId)] = b;
@@ -551,6 +581,10 @@ bool findChapterIndex(const std::string& providerId, const std::string& bookId,
   const std::string path = b.appDataRoot + "/" + b.spec.catalog.fileRelPath;
   FsFile f;
   if (!SdMan.openFileForRead("NP-HISTORY", path.c_str(), f)) return false;
+  if (f.fileSize() > kLegacyUiScanMaxBytes) {
+    f.close();
+    return false;
+  }
   std::string line;
   line.reserve(256);
   int row = 0;
@@ -596,6 +630,38 @@ bool requestChapter(const std::string& providerId, const std::string& bookId, in
   if (!getBook(providerId, bookId, b) || index0 < 0 || static_cast<size_t>(index0) >= M4ContentProvider::bookChapterCount(b.spec)) {
     return false;
   }
+
+  // File-row catalogs can be large. Resolve the UID and cache path in the
+  // provider worker instead of scanning from row zero here when a user taps a
+  // late chapter or advances from the reader. A persisted Ready cache is the
+  // only fast-path that needs to be inspected on the UI task.
+  if (b.spec.catalog.kind == M4ContentProvider::ChapterCatalogKind::FileRows) {
+    M4ContentProvider::ChapterStatus cur =
+        M4ContentProviderSession::chapterAt(providerId, bookId, index0);
+    if (!foreground && cur.state == M4ContentProvider::ChapterReady::Error) return false;
+    if (cur.state == M4ContentProvider::ChapterReady::Ready) {
+      size_t cached = 0;
+      const bool usable = M4ContentProvider::isSafeCacheRelPath(cur.cacheRelPath.c_str()) &&
+                          cacheUsable(providerId, b.appDataRoot + "/" + cur.cacheRelPath, &cached);
+      if (usable) return true;
+      cur.state = M4ContentProvider::ChapterReady::Missing;
+      cur.cacheRelPath.clear();
+      cur.error.clear();
+      cur.pct = 0;
+      (void)M4ContentProviderSession::setChapterStatus(cur);
+    } else if (foreground && cur.state == M4ContentProvider::ChapterReady::Error) {
+      cur.state = M4ContentProvider::ChapterReady::Missing;
+      cur.cacheRelPath.clear();
+      cur.error.clear();
+      cur.pct = 0;
+      (void)M4ContentProviderSession::setChapterStatus(cur);
+    }
+    if (foreground) gCancel.store(false, std::memory_order_release);
+    const bool queued = M4ContentProviderSession::requestPrefetch(providerId, bookId, index0);
+    kickWorker();
+    return queued;
+  }
+
   M4ContentProvider::ChapterMeta ch;
   std::string raw;
   if (!resolveChapter(b, index0, ch, raw)) return false;
@@ -647,6 +713,29 @@ bool ensureChapter(const std::string& providerId, const std::string& bookId, int
 bool invalidateChapterCache(const std::string& providerId, const std::string& bookId, int index0) {
   StoredBook b;
   if (!getBook(providerId, bookId, b)) return false;
+
+  if (b.spec.catalog.kind == M4ContentProvider::ChapterCatalogKind::FileRows) {
+    M4ContentProvider::ChapterStatus cur =
+        M4ContentProviderSession::chapterAt(providerId, bookId, index0);
+    std::string rel = cur.cacheRelPath;
+    if (rel.empty() && !cur.chapterUid.empty()) rel = chapterRelPath(bookId, cur.chapterUid);
+    bool cleared = true;
+    if (!rel.empty() && M4ContentProvider::isSafeCacheRelPath(rel.c_str())) {
+      cleared = M4NativeProviderIo::clearCacheArtifacts(b.appDataRoot + "/" + rel);
+    }
+    cur.providerId = providerId;
+    cur.bookId = bookId;
+    cur.index0 = index0;
+    cur.state = M4ContentProvider::ChapterReady::Missing;
+    cur.cacheRelPath.clear();
+    cur.error.clear();
+    cur.pct = 0;
+    (void)M4ContentProviderSession::setChapterStatus(cur);
+    // A file-row cache without a known UID is cleaned by the worker after its
+    // bounded catalog resolve; do not block the retry tap on that scan.
+    return cleared;
+  }
+
   M4ContentProvider::ChapterMeta ch;
   std::string raw;
   if (!resolveChapter(b, index0, ch, raw)) return false;

@@ -19,6 +19,9 @@ class EpdFontLoader {
   static int getBestFontId(const char* familyName, int size);
   // Actual canonical promotion result for BOOT_SUMMARY (not header-only).
   static M4FontPolicy::LoadResult lastCanonicalLoadResult() { return lastCanonicalResult; }
+  // Rebind SMALL/UI_10/UI_12 to the current 系统字号 without a full SD rescan.
+  // Returns false when the CenterKernel chrome face is unavailable.
+  static bool applySystemChrome(GfxRenderer& renderer);
 
  private:
   static std::vector<int> loadedCustomIds;

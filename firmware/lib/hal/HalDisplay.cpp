@@ -119,45 +119,60 @@ void HalDisplay::drawImageTransparent(const uint8_t* imageData, uint16_t x, uint
 #endif
 }
 
-EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
-  switch (mode) {
-    case HalDisplay::FULL_REFRESH:
-      return EInkDisplay::FULL_REFRESH;
-    case HalDisplay::HALF_REFRESH:
-      return EInkDisplay::HALF_REFRESH;
-    case HalDisplay::UI_FAST_REFRESH:
-      // Murphy SSD1677 has no separate UI-fast LUT; map to FAST (DU-class) which is
-      // the proven low-latency path. Never silently no-op UI refreshes.
-      return EInkDisplay::FAST_REFRESH;
-    case HalDisplay::FAST_REFRESH:
-    default:
-      return EInkDisplay::FAST_REFRESH;
+HalDisplay::RefreshMode normalizeRefreshMode(HalDisplay::RefreshMode mode,
+                                              HalDisplay::RefreshContext context) {
+  if (mode == HalDisplay::READER_CLEANUP_REFRESH &&
+      context == HalDisplay::READER_BODY_CONTEXT) {
+    return mode;
   }
+  // FULL/HALF are retained as source-compatible enum names only. They must not
+  // reach the panel driver, because older drivers attach multi-phase waveforms
+  // to those names. UI/plugin/loading paths therefore always become FAST.
+  return HalDisplay::FAST_REFRESH;
 }
 
-void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen) {
+EInkDisplay::RefreshMode convertRefreshMode(HalDisplay::RefreshMode mode) {
+  if (mode == HalDisplay::READER_CLEANUP_REFRESH) {
+    // The generated SDK is intentionally not committed. Its policy-aware
+    // enum appends cleanup at slot 3; older SDKs reject no symbol here and
+    // route the unknown slot through their FAST/default case.
+    constexpr int kReaderCleanupRefreshSlot = 3;
+    return static_cast<EInkDisplay::RefreshMode>(kReaderCleanupRefreshSlot);
+  }
+  return EInkDisplay::FAST_REFRESH;
+}
+
+void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen,
+                               HalDisplay::RefreshContext context) {
+  const HalDisplay::RefreshMode effectiveMode = normalizeRefreshMode(mode, context);
+  Serial.printf("[%lu] [M4-DISP] display requested=%d effective=%d context=%d\n",
+                millis(), static_cast<int>(mode), static_cast<int>(effectiveMode),
+                static_cast<int>(context));
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
-  (void)mode;
   (void)turnOffScreen;
   if (!qemuFrameBuffer) return;
   memcpy(reinterpret_cast<void*>(kQemuEpdFrameAddress), qemuFrameBuffer, BUFFER_SIZE);
   *reinterpret_cast<volatile uint32_t*>(kQemuEpdRefreshAddress) = 1;
 #elif defined(M4_QEMU_BUILD)
-  (void)mode;
   (void)turnOffScreen;
   dumpQemuFrame(qemuFrameBuffer);
 #else
-  einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen);
+  einkDisplay.displayBuffer(convertRefreshMode(effectiveMode), turnOffScreen);
 #endif
 }
 
-void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {
+void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen,
+                                HalDisplay::RefreshContext context) {
+  const HalDisplay::RefreshMode effectiveMode = normalizeRefreshMode(mode, context);
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
-  displayBuffer(mode, turnOffScreen);
+  displayBuffer(effectiveMode, turnOffScreen, context);
 #elif defined(M4_QEMU_BUILD)
-  displayBuffer(mode, turnOffScreen);
+  displayBuffer(effectiveMode, turnOffScreen, context);
 #else
-  einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
+  Serial.printf("[%lu] [M4-DISP] refresh requested=%d effective=%d context=%d\n",
+                millis(), static_cast<int>(mode), static_cast<int>(effectiveMode),
+                static_cast<int>(context));
+  einkDisplay.refreshDisplay(convertRefreshMode(effectiveMode), turnOffScreen);
 #endif
 }
 
@@ -212,7 +227,7 @@ void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
 
 void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
 #ifdef HALDISPLAY_QEMU_FRAMEBUFFER
-  displayBuffer(HALF_REFRESH, turnOffScreen);
+  displayBuffer(FAST_REFRESH, turnOffScreen, UI_CONTEXT);
 #else
   einkDisplay.displayGrayBuffer(turnOffScreen);
 #endif
@@ -220,11 +235,17 @@ void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
 
 uint32_t HalDisplay::waveformLabRefresh(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
                                         bool turnOff) {
+  // The reader page-turn path owns this explicit differential waveform. The
+  // normal displayBuffer/refreshDisplay policy still normalizes generic UI to
+  // FAST; do not discard the reader's bounded window LUT here.
   return einkDisplay.waveformLabRefresh(prev, next, lut, turnOff);
 }
 
 void HalDisplay::waveformLabBaseline(const uint8_t* frame) {
-  einkDisplay.waveformLabBaseline(frame);
+  if (!frame) return;
+  // The SDK's legacy baseline helper selects FULL. A same-frame FAST pass
+  // establishes the lab baseline without a multi-phase absolute waveform.
+  (void)einkDisplay.waveformLabRefresh(frame, frame, nullptr, false);
 }
 
 uint32_t HalDisplay::waveformLabRefreshWindow(const uint8_t* prev, const uint8_t* next, const uint8_t* lut,
@@ -258,5 +279,7 @@ void HalDisplay::waveformLabEqualizeWindow(const uint8_t* frame, uint16_t x, uin
 }
 
 void HalDisplay::setCustomLUT(bool enabled, const unsigned char* lutData) {
+  // This is intentionally only called by the bounded reader page-turn lab
+  // path. Generic UI continues to use displayBuffer/refreshDisplay policy.
   einkDisplay.setCustomLUT(enabled, lutData);
 }

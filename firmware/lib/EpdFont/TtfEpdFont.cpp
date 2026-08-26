@@ -47,6 +47,7 @@ class SdTtfStream : public ttf::TtfStream {
   bool seek(uint32_t pos) override {
     bool ok = file_.isOpen() && file_.seekSet(pos);
     for (uint8_t attempt = 0; !ok && attempt < 3 && file_.isOpen(); ++attempt) {
+      if (m4YieldToDebugBridge) m4YieldToDebugBridge();
       delay(2);
       ok = file_.seekSet(pos);
     }
@@ -56,11 +57,16 @@ class SdTtfStream : public ttf::TtfStream {
       file_.rewind();
       uint8_t discard[512];
       uint32_t remaining = pos;
+      uint32_t chunksSinceYield = 0;
       while (remaining) {
         const uint32_t want = std::min<uint32_t>(remaining, sizeof(discard));
         const int got = file_.read(discard, want);
         if (got <= 0) break;
         remaining -= static_cast<uint32_t>(got);
+        if (++chunksSinceYield >= 8 && m4YieldToDebugBridge) {
+          m4YieldToDebugBridge();
+          chunksSinceYield = 0;
+        }
       }
       ok = remaining == 0;
       sequentialFallback = ok;
@@ -89,11 +95,14 @@ class SdTtfStream : public ttf::TtfStream {
     while (total < n) {
       int got = file_.read(out + total, n - total);
       for (uint8_t attempt = 0; got <= 0 && attempt < 3; ++attempt) {
+        if (m4YieldToDebugBridge) m4YieldToDebugBridge();
         delay(2);
         got = file_.read(out + total, n - total);
       }
       if (got <= 0) break;
       total += static_cast<uint32_t>(got);
+      // Conservative throttle: yield every 8KB (not every 4KB) to avoid excessive context switches
+      if ((total & 0x1FFF) == 0 && m4YieldToDebugBridge) m4YieldToDebugBridge();
     }
     if (traceOps_ < 100) {
       char line[180];
@@ -294,6 +303,28 @@ bool TtfEpdFont::backendHMetrics(uint16_t gid, int32_t& advUnits, int32_t& lsbUn
 
 int TtfEpdFont::lookupAdvancePx(uint32_t cp) const {
   if (!valid_) return 0;
+  // Spaces: prefer real hmtx advance (keeps per-font proportional), fallback to em/3 only on failure.
+  if (cp == 0x20 || cp == 0x3000 || cp == 0x00A0) {
+    const uint16_t slot = static_cast<uint16_t>(cp % kAdvanceCache);
+    if (advCp_[slot] == cp && advPx_[slot] != 0) return advPx_[slot];
+    uint16_t gid = 0;
+    int32_t advUnits = 0, lsb = 0;
+    if (backendFindGlyph(cp, gid) && gid != 0 && backendHMetrics(gid, advUnits, lsb)) {
+      const uint16_t upm = backendUnitsPerEm();
+      const int px = upm ? std::max(1, int(std::lround(float(advUnits) * float(sizePx_) / float(upm)))) : 0;
+      if (px > 0) {
+        const int clamped = std::max(1, std::min(255, px));
+        advCp_[slot] = cp;
+        advPx_[slot] = static_cast<uint8_t>(clamped);
+        return clamped;
+      }
+    }
+    const int sp = std::max(1, int(sizePx_) / 3);
+    const int clamped = std::max(1, std::min(255, sp));
+    advCp_[slot] = cp;
+    advPx_[slot] = static_cast<uint8_t>(clamped);
+    return clamped;
+  }
   for (uint16_t i = 0; i < maxSlots_ && entries_; ++i) {
     if (entries_[i].cp == cp) return entries_[i].glyph.advanceX;
   }
@@ -332,13 +363,13 @@ int TtfEpdFont::glyphAdvanceX(uint32_t cp, const EpdFontStyles::Style style) con
   return adv;
 }
 bool TtfEpdFont::backendRasterize(uint16_t gid, ttf::GlyphBitmap& out) const {
-  return usesCffBackend() ? cffFont_.rasterize(gid, sizePx_, out)
-                          : font_.rasterize(gid, sizePx_, out);
+  return usesCffBackend() ? cffFont_.rasterize(gid, renderSizePx_, out)
+                          : font_.rasterize(gid, renderSizePx_, out);
 }
 bool TtfEpdFont::backendPixelBox(uint16_t gid, int& x0, int& y0, int& x1, int& y1) const {
   return usesCffBackend()
-      ? cffFont_.glyphPixelBox(gid, sizePx_, x0, y0, x1, y1)
-      : font_.glyphPixelBox(gid, sizePx_, x0, y0, x1, y1);
+      ? cffFont_.glyphPixelBox(gid, renderSizePx_, x0, y0, x1, y1)
+      : font_.glyphPixelBox(gid, renderSizePx_, x0, y0, x1, y1);
 }
 void TtfEpdFont::backendVMetrics(int32_t& asc, int32_t& desc, int32_t& gap) const {
   if (usesCffBackend()) cffFont_.fontVMetrics(asc, desc, gap);
@@ -352,8 +383,12 @@ const char* TtfEpdFont::lastError() const {
   return runtimeError_.length() ? runtimeError_.c_str() : backendError();
 }
 bool TtfEpdFont::hasCodepoint(uint32_t cp) const {
+  if (!valid_) return false;
+  // Whitespace codepoints are considered present even if glyf slice is empty;
+  // callers use hasCodepoint to decide fallback to '?' - spaces must not become '?'.
+  if (cp == 0x20 || cp == 0x3000 || cp == 0x00A0 || cp == 0x09 || cp == 0x0A) return true;
   uint16_t gid = 0;
-  return valid_ && backendFindGlyph(cp, gid) && gid != 0;
+  return backendFindGlyph(cp, gid) && gid != 0;
 }
 
 bool TtfEpdFont::allocateEntries() {
@@ -388,7 +423,16 @@ bool TtfEpdFont::finishInit(const char* label) {
 
   const uint16_t upm = backendUnitsPerEm();
   if (!upm) return false;
-  const float scale = float(sizePx_) / float(upm);
+  // Preserve the configured nominal reader size. Do not rewrite raster size from
+  // a CJK bbox heuristic: that over-normalized many faces on hardware. Only the
+  // baseline is derived from a box reference; horizontal bearings stay native.
+  // renderSizePx_ tracks sizePx_ for API compatibility.
+  const int nominal = std::max(1, int(sizePx_));
+  renderSizePx_ = static_cast<uint16_t>(nominal);
+  visualScale_ = 1.0f;
+  visualReferenceCodepoint_ = 0;
+
+  const float scale = float(renderSizePx_) / float(upm);
   int32_t asc = 0, desc = 0, gap = 0;
   backendVMetrics(asc, desc, gap);
   const int rawAsc = int(std::lround(asc * scale));
@@ -397,10 +441,12 @@ bool TtfEpdFont::finishInit(const char* label) {
   const int bboxTop = std::max(0, int(std::lround(backendBBoxYMax() * scale)));
 
   bool refValid = false;
-  uint32_t refCp = 0;
   int refTop = 0, refBottom = 0;
-  static constexpr uint32_t samples[] = {0x56FD, 0x7530, 0x4E2D, 0x6C38, 0x4E00, 'H', 'M'};
-  for (uint32_t cp : samples) {
+  // Prefer a box-like visual reference for baseline metrics only. `口` is first
+  // because it gives a stable vertical ink box without changing the font's
+  // advances, bearings, or nominal raster size.
+  for (size_t i = 0; i < M4TtfVisualNormalization::kReferenceCodepointCount; ++i) {
+    const uint32_t cp = M4TtfVisualNormalization::kReferenceCodepoints[i];
     uint16_t gid = 0;
     if (!backendFindGlyph(cp, gid) || gid == 0) continue;
     int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
@@ -408,15 +454,14 @@ bool TtfEpdFont::finishInit(const char* label) {
     const int top = std::max(0, -y0);
     const int bottom = std::max(0, y1);
     const int height = top + bottom;
-    if (height < std::max(2, int(sizePx_) / 2) || height > 255) continue;
+    if (height < std::max(2, nominal / 2) || height > 255) continue;
     refValid = true;
-    refCp = cp;
+    visualReferenceCodepoint_ = cp;
     refTop = top;
     refBottom = bottom;
     break;
   }
 
-  const int nominal = std::max(1, int(sizePx_));
   int ascPx = refValid
       ? clampMetric(refTop,
                     std::max(1, int(std::lround(nominal * .55f))),
@@ -443,11 +488,11 @@ bool TtfEpdFont::finishInit(const char* label) {
   data_.is2Bit = true;
   valid_ = true;
 
-  Serial.printf("[TTF] Loaded %s backend=%s face=%lu @%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X slots=%u budget=%u\n",
-                label ? label : "?", backendName(),
-                static_cast<unsigned long>(faceOffset_), sizePx_, upm,
+  Serial.printf("[TTF] Loaded ptr=%p %s backend=%s face=%lu nominal=%upx raster=%upx upm=%u lineH=%u asc=%d desc=%d bboxTop=%d ref=U+%04X bearing=native slots=%u budget=%u\n",
+                static_cast<void*>(this), label ? label : "?", backendName(),
+                static_cast<unsigned long>(faceOffset_), sizePx_, renderSizePx_, upm,
                 data_.advanceY, data_.ascender, data_.descender, bboxTop,
-                static_cast<unsigned>(refValid ? refCp : 0),
+                static_cast<unsigned>(visualReferenceCodepoint_),
                 static_cast<unsigned>(maxSlots_), static_cast<unsigned>(cacheBudget_));
   return true;
 }
@@ -583,18 +628,56 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
     }
   }
 
+  // Spaces and controls: synthesize empty glyph, never fallback to '?'.
+  // Prefer real hmtx advance for proportional layout; fallback to em/3 only if metrics unavailable.
+  if (cp == 0x20 || cp == 0x3000 || cp == 0x00A0 || cp == 0x09 || cp == 0x0A || cp == 0x0D) {
+    int slot = -1;
+    uint32_t minAccess = 0xffffffffu;
+    for (uint16_t i = 0; i < maxSlots_; ++i) {
+      if (entries_[i].cp == 0xffffffffu) { slot = i; break; }
+      if (entries_[i].lastAccess < minAccess) { minAccess = entries_[i].lastAccess; slot = i; }
+    }
+    if (slot < 0) return -1;
+    evictSlot(slot);
+    int adv = 0;
+    uint16_t gid = 0;
+    int32_t advUnits = 0, lsb = 0;
+    if (backendFindGlyph(cp, gid) && gid != 0 && backendHMetrics(gid, advUnits, lsb)) {
+      const uint16_t upm = backendUnitsPerEm();
+      if (upm) adv = int(std::lround(float(advUnits) * float(sizePx_) / float(upm)));
+    }
+    if (adv <= 0) adv = std::max(1, int(sizePx_) / 3);
+    adv = std::max(1, std::min(255, adv));
+    entries_[slot].cp = cp;
+    entries_[slot].lastAccess = ++accessCounter_;
+    entries_[slot].glyph.width = 0;
+    entries_[slot].glyph.height = 0;
+    entries_[slot].glyph.advanceX = uint8_t(adv);
+    entries_[slot].glyph.left = 0;
+    entries_[slot].glyph.top = 0;
+    entries_[slot].glyph.dataLength = 0;
+    entries_[slot].glyph.dataOffset = cp;
+    entries_[slot].bitmap = nullptr;
+    entries_[slot].bitmapSize = 0;
+    return slot;
+  }
+
   uint16_t gid = 0;
   if (!backendFindGlyph(cp, gid)) return -1;
   if (gid == 0 && cp != '?') return ensureGlyph('?');
 
   ttf::GlyphBitmap gb;
   if (!backendRasterize(gid, gb)) {
+    char line[120];
+    snprintf(line, sizeof(line), "glyph_raster_fail cp=U+%04lX gid=%u err=%s",
+             static_cast<unsigned long>(cp), static_cast<unsigned>(gid), backendError());
+    m4AppendFontDiagnostic(line);
     if (gid == 0 || !backendRasterize(0, gb)) return -1;
   }
   // Owner-loop TTF first-paint can take hundreds of ms per CJK glyph on QEMU.
   // Yield so m4adb tap/key is ACKed instead of looking frozen until the page
   // finishes. Weak no-op on host tests; firmware overrides on the main task.
-  m4YieldToDebugBridge();
+  if (m4YieldToDebugBridge) m4YieldToDebugBridge();
 
   int slot = -1;
   uint32_t minAccess = 0xffffffffu;
@@ -619,11 +702,17 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
     std::memcpy(bitmap, gb.data, len);
   }
 
+  // Resolve hmtx before publishing this cache slot. lookupAdvancePx() first
+  // checks resident entries; publishing cp while advanceX is still zero makes
+  // it read this half-built entry and collapses every rendered glyph onto one x.
+  const int advance = std::max(0, std::min(255, lookupAdvancePx(cp)));
   entries_[slot].cp = cp;
   entries_[slot].lastAccess = ++accessCounter_;
   entries_[slot].glyph.width = uint8_t(gb.width);
   entries_[slot].glyph.height = uint8_t(gb.height);
-  entries_[slot].glyph.advanceX = uint8_t(std::max(0, std::min(255, int(gb.advance))));
+  // Advances and bearings both stay on the source font metrics at the
+  // configured reader px.
+  entries_[slot].glyph.advanceX = static_cast<uint8_t>(advance);
   entries_[slot].glyph.left = gb.xoff;
   entries_[slot].glyph.top = gb.yoff;
   entries_[slot].glyph.dataLength = len;
@@ -631,6 +720,15 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   entries_[slot].bitmap = bitmap;
   entries_[slot].bitmapSize = len;
   cacheBytes_ += len;
+
+  if (glyphDiagnosticsLogged_ < 12) {
+    Serial.printf("[TTF-GLYPH] ptr=%p cp=U+%04lX advance=%d bitmap=%ux%u left=%d top=%d nominal=%u raster=%u lineH=%u asc=%d desc=%d\n",
+                  static_cast<const void*>(this), static_cast<unsigned long>(cp), advance,
+                  static_cast<unsigned>(gb.width), static_cast<unsigned>(gb.height),
+                  static_cast<int>(entries_[slot].glyph.left), static_cast<int>(gb.yoff),
+                  sizePx_, renderSizePx_, data_.advanceY, data_.ascender, data_.descender);
+    ++glyphDiagnosticsLogged_;
+  }
 
   while (cacheBytes_ > cacheBudget_) {
     int victim = -1;
@@ -665,6 +763,15 @@ const uint8_t* TtfEpdFont::loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffe
                                            const EpdFontStyles::Style style) const {
   (void)style;
   if (!glyph) return nullptr;
+  // Empty glyphs (spaces) have zero dataLength - caller should treat as whitespace, not missing.
+  if (glyph->dataLength == 0 && glyph->width == 0 && glyph->height == 0) {
+    // Return non-null sentinel for explicit spaces so renderer does not fallback to '?'.
+    static const uint8_t kEmptySentinel = 0;
+    if (glyph->dataOffset == 0x20 || glyph->dataOffset == 0x3000 || glyph->dataOffset == 0x00A0) {
+      return &kEmptySentinel;
+    }
+    return nullptr;
+  }
   const uint32_t cp = glyph->dataOffset;
 #if defined(ESP32)
   if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);

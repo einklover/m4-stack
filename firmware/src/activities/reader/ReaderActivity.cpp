@@ -150,6 +150,7 @@ void ReaderActivity::onGoToXtcReader(std::unique_ptr<Xtc> xtc) {
 void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
   const auto txtPath = txt->getPath();
   constexpr auto cacheDir = "/.crosspoint";
+  constexpr size_t kLargeTxtDirectThreshold = 4 * 1024 * 1024;
 
   // Unsupported encoding (e.g. GB18030 4-byte / Unknown): do not open as UTF-8 garbage.
   if (txt && !txt->isEncodingSupported()) {
@@ -172,8 +173,15 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
     return;
   }
 
-  // 根据设置决定是直接读取TXT还是转换为EPUB
-  if (SETTINGS.directTxtRead) {
+  // Large books must not wait for a whole TXT→EPUB conversion. Keep the
+  // setting semantics for smaller books, but make the bounded native reader
+  // the critical path for large local TXT files.
+  const bool largeTxt = txt && txt->getFileSize() >= kLargeTxtDirectThreshold;
+  const bool useDirectTxt = SETTINGS.directTxtRead || largeTxt;
+  if (largeTxt && !SETTINGS.directTxtRead) {
+    Serial.printf("[%lu] [RDR] large_txt_auto_direct size=%zu\n", millis(), txt->getFileSize());
+  }
+  if (useDirectTxt) {
     // 直读TXT模式 — must clear Preparing from onEnter and reach Ready.
     currentBookPath = txtPath;
     indexTerminalReady("direct_txt");
@@ -201,9 +209,6 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
       if (!TxtToEpubConverter::convert(txtPath, cacheDir, [&](int pct) {
             if (pct - lastProgressPct >= 5 || pct >= 100) {
               GUI.fillPopupProgress(renderer, popupRect, pct);
-              if (M4IndexingState::shouldRefreshProgressUi(lastProgressPct, pct)) {
-                renderer.displayBuffer();
-              }
               lastProgressPct = pct;
               idx.reportProgress(pct, static_cast<uint32_t>(pct), millis() - t0, "txt_to_epub");
               Serial.printf("[%lu] %s\n", millis(), M4IndexingState::formatLogLine(idx.snap()).c_str());
@@ -305,19 +310,29 @@ void ReaderActivity::onEnter() {
       const auto apps = M4xRegistry::load();
       return M4xRegistry::find(apps, id) != nullptr;
     };
-    // Recover title + author(appId) from RecentBooksStore. Callbacks only pass
-    // path/originalSourcePath; author holds reverse-DNS app id for m4cp entries.
+    // Recover title/author from RecentBooksStore. App identity is resolved from
+    // provider URI + installed registry; author is only a legacy appId hint.
     std::string historyTitle;
-    std::string authorAppId;
+    std::string authorField;
     for (const auto& b : RECENT_BOOKS.getBooks()) {
       if (b.path == initialBookPath) {
         historyTitle = b.title;
-        authorAppId = b.author;
+        authorField = b.author;
         break;
       }
     }
+    const auto apps = M4xRegistry::load();
+    const M4HistoryReopen::ProviderAppIdResolver appIdForProvider = [apps](const std::string& providerId) {
+      std::string found;
+      for (const auto& app : apps) {
+        if (app.provider != providerId) continue;
+        if (!found.empty() && found != app.id) return std::string();
+        found = app.id;
+      }
+      return found;
+    };
     auto hist = M4HistoryReopen::resolveFromRecentBookFields(
-        initialBookPath, originalSourcePath, historyTitle, authorAppId, exists, appInstalled);
+        initialBookPath, originalSourcePath, historyTitle, authorField, appIdForProvider, exists, appInstalled);
 
     // Prefer in-session reopen metadata when still warm (same boot).
     if (M4ContentProvider::isHistoryUri(initialBookPath.c_str())) {
@@ -328,8 +343,8 @@ void ReaderActivity::onEnter() {
             st.state == M4ContentProvider::ChapterReady::Ready && !st.cacheRelPath.empty()) {
           if (hist.chapterUid.empty()) hist.chapterUid = st.chapterUid;
           if (hist.cacheRelPath.empty()) hist.cacheRelPath = st.cacheRelPath;
-          if (hist.appId.empty() && M4HistoryReopen::looksLikeAppId(authorAppId)) {
-            hist.appId = authorAppId;
+          if (hist.appId.empty() && M4HistoryReopen::looksLikeAppId(authorField)) {
+            hist.appId = authorField;
             hist.appDataRoot = M4HistoryReopen::appDataRootFor(hist.appId);
           }
           if (!hist.appId.empty() && hist.openPath.empty()) {
@@ -349,8 +364,8 @@ void ReaderActivity::onEnter() {
         const std::string cand = originalSourcePath.substr(4);
         if (M4HistoryReopen::looksLikeAppId(cand)) appId = cand;
       }
-      if (appId.empty() && M4HistoryReopen::looksLikeAppId(authorAppId)) {
-        appId = authorAppId;
+      if (appId.empty() && M4HistoryReopen::looksLikeAppId(authorField)) {
+        appId = authorField;
       }
       if (!appId.empty() && appInstalled(appId)) {
         M4ContentProviderSession::HistoryResume resume;
@@ -467,6 +482,7 @@ void ReaderActivity::onEnter() {
           sess.cacheRelPath = hist.cacheRelPath;
           sess.appDataRoot = hist.appDataRoot;
           sess.appId = appId;
+          sess.providerAuthor = authorField;
           sess.titleOverride = hist.title;
           sess.tocRelPath = "cache/" + hist.bookId + "/toc.json";
           if (!sess.appDataRoot.empty()) {
@@ -510,7 +526,7 @@ void ReaderActivity::onEnter() {
     } else {
       bookCacheDir = std::string(cacheBase) + "/epub_" + std::to_string(hashVal);
     }
-    if (!SdMan.exists(bookCacheDir.c_str())) {
+    if (!isTxtFile(initialBookPath) && !SdMan.exists(bookCacheDir.c_str())) {
       renderer.clearScreen();
       M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2, "正在加载...章节多的书耗时较长", true,
                                 EpdFontFamily::BOLD);

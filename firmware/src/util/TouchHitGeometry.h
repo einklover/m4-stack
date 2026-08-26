@@ -20,6 +20,32 @@ struct Rect {
   }
 };
 
+// Shared system chrome geometry. Drawing and touch routing must use the same
+// rectangles; keep these values host-testable and independent of Arduino.
+struct BottomNavigationLayout {
+  Rect back;
+  Rect home;
+
+  bool valid() const { return back.width > 0 && back.height > 0 && home.width > 0 && home.height > 0; }
+};
+
+inline BottomNavigationLayout makeBottomNavigationLayout(int screenWidth, int screenHeight, int barHeight = 50) {
+  if (screenWidth <= 1 || screenHeight <= 0 || barHeight <= 0 || barHeight > screenHeight) return {};
+  const int half = screenWidth / 2;
+  return {{0, screenHeight - barHeight, half, barHeight},
+          {half, screenHeight - barHeight, screenWidth - half, barHeight}};
+}
+
+// Chapter selectors reserve the first 65px for the title/list boundary, so a
+// 128x64 target makes the visible top Back control easy to hit without taking
+// any chapter row space.
+constexpr int kChapterHeaderBackWidth = 128;
+constexpr int kChapterHeaderBackHeight = 64;
+
+inline Rect chapterHeaderBackRect(int x = 0, int y = 0) {
+  return {x, y, kChapterHeaderBackWidth, kChapterHeaderBackHeight};
+}
+
 // ---------------------------------------------------------------------------
 // Fengyan home menu grid (shared by draw + hit-test)
 // ---------------------------------------------------------------------------

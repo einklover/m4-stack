@@ -60,7 +60,10 @@ bool probeUrl(const std::string& url) {
   M4NativeProviderHttp::Request req;
   req.method = "GET";
   req.url = url;
-  req.timeoutMs = 2500;
+  // Discovery is a LAN health check, not the chapter request itself. A dead
+  // saved phone address must fail quickly so the foreground can show a useful
+  // endpoint error instead of looking frozen for minutes.
+  req.timeoutMs = 1000;
   req.maxBytes = 8u * 1024u;
   req.headers = {{"User-Agent", "Mozilla/5.0 Murphy-M4 LegadoProbe/1"}, {"Connection", "close"}};
   std::string body;
@@ -75,9 +78,10 @@ bool probeUrl(const std::string& url) {
   return probeBodyLooksLikeLegado(body, net.status, net.error);
 }
 
-bool probeBase(const std::string& base) {
+bool probeBase(const std::string& base, uint32_t startedMs) {
   if (!baseUrlOk(base)) return false;
   for (size_t i = 0; i < kProbePathCount; ++i) {
+    if (!endpointProbeWithinBudget(startedMs, millis())) return false;
     if (probeUrl(base + kProbePaths[i])) return true;
   }
   return false;
@@ -90,17 +94,23 @@ std::string baseUrl() {
   return gBase.empty() ? std::string(kDefaultBase) : gBase;
 }
 
-void setBaseUrl(const std::string& appDataRoot, const std::string& base) {
+void setBaseUrl(const std::string& appDataRoot, const std::string& base, bool persist) {
   const std::string cleaned = trimTrailingSlash(base);
-  if (!baseUrlOk(cleaned)) return;
+  ParsedEndpoint parsed;
+  if (!parseEndpoint(cleaned, {}, parsed)) return;
   {
     std::lock_guard<std::mutex> lock(gMu);
-    gBase = cleaned;
+    gBase = parsed.base;
   }
-  if (!appDataRoot.empty()) {
-    (void)writeFileSmall(endpointPath(appDataRoot), cleaned);
+  if (persist && !appDataRoot.empty()) {
+    (void)writeFileSmall(endpointPath(appDataRoot), parsed.base);
   }
-  Serial.printf("[Legado] endpoint set %s\n", cleaned.c_str());
+  Serial.printf("[Legado] endpoint %s %s\n", persist ? "saved" : "staged", parsed.base.c_str());
+}
+
+void clearBaseUrl() {
+  std::lock_guard<std::mutex> lock(gMu);
+  gBase.clear();
 }
 
 std::string loadSavedBase(const std::string& appDataRoot) {
@@ -108,10 +118,15 @@ std::string loadSavedBase(const std::string& appDataRoot) {
   std::string raw;
   if (!readFileSmall(endpointPath(appDataRoot), raw)) return {};
   raw = trimTrailingSlash(raw);
-  return baseUrlOk(raw) ? raw : std::string();
+  ParsedEndpoint parsed;
+  return parseEndpoint(raw, {}, parsed) ? parsed.base : std::string();
 }
 
 bool ensureEndpoint(const std::string& appDataRoot) {
+  const uint32_t probeStartedMs = millis();
+  const auto probeBudgetAvailable = [&]() {
+    return endpointProbeWithinBudget(probeStartedMs, millis());
+  };
   // 1) In-memory base still good?
   {
     std::lock_guard<std::mutex> lock(gMu);
@@ -121,24 +136,28 @@ bool ensureEndpoint(const std::string& appDataRoot) {
     }
   }
 
-  // 2) Saved endpoint — verify with a short probe.
   const std::string saved = loadSavedBase(appDataRoot);
-  if (!saved.empty()) {
-    Serial.printf("[Legado] probing saved %s\n", saved.c_str());
-    if (probeBase(saved)) {
-      std::lock_guard<std::mutex> lock(gMu);
-      gBase = saved;
-      return true;
-    }
-  }
 
-  // 3) Need Wi-Fi for discovery.
+  // All endpoint probes require a ready Wi-Fi link. Do this before probing a
+  // saved endpoint so a cold launch does not discard a valid endpoint merely
+  // because the network interface was still coming up.
   const auto wifi = M4NativeWifi::ensureConnected(15000u, {});
   if (!wifi.ok) {
     Serial.printf("[Legado] endpoint discover: wifi not ready\n");
     return false;
   }
 
+  // 2) Saved endpoint — verify with a short probe.
+  if (!saved.empty()) {
+    Serial.printf("[Legado] probing saved %s\n", saved.c_str());
+    if (probeBudgetAvailable() && probeBase(saved, probeStartedMs)) {
+      std::lock_guard<std::mutex> lock(gMu);
+      gBase = saved;
+      return true;
+    }
+  }
+
+  // 3) Discover recent Wi-Fi-transfer visitor IPs.
   const String ssid = WiFi.SSID();
   std::vector<std::string> ips = M4LanVisitorStore::visitorsFor(ssid.c_str());
 
@@ -160,7 +179,7 @@ bool ensureEndpoint(const std::string& appDataRoot) {
     Serial.printf("[Legado] endpoint discover: no visitor IPs for SSID '%s'\n",
                   ssid.c_str());
     // Last resort: keep compile-time default if it answers (dev bench).
-    if (probeBase(kDefaultBase)) {
+    if (saved != kDefaultBase && probeBudgetAvailable() && probeBase(kDefaultBase, probeStartedMs)) {
       setBaseUrl(appDataRoot, kDefaultBase);
       return true;
     }
@@ -172,10 +191,14 @@ bool ensureEndpoint(const std::string& appDataRoot) {
 
   for (const auto& ip : ips) {
     for (size_t pi = 0; pi < kProbePortCount; ++pi) {
+      if (!probeBudgetAvailable()) {
+        Serial.printf("[Legado] endpoint discover: probe budget exhausted\n");
+        return false;
+      }
       const std::string base = makeBase(ip, kProbePorts[pi]);
       if (base.empty()) continue;
       Serial.printf("[Legado] probe %s\n", base.c_str());
-      if (probeBase(base)) {
+      if (probeBase(base, probeStartedMs)) {
         setBaseUrl(appDataRoot, base);
         return true;
       }

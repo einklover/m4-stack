@@ -5,6 +5,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "util/M4TxtIndexPolicy.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/M4ListTouchPolicy.h"
@@ -20,23 +21,20 @@ constexpr int SKIP_PAGE_MS = 700;
 constexpr int CHAPTER_BATCH = 25;
 constexpr int ITEM_SKIP_100_BACK = -2;
 constexpr int ITEM_SKIP_100_FORWARD = -1;
+
+M4TouchListMetrics::ChapterListLayout chapterLayout(const GfxRenderer& renderer, bool touch) {
+  const int layoutFont = touch ? UI_12_FONT_ID : UI_10_FONT_ID;
+  return M4TouchListMetrics::makeChapterListLayout(
+      renderer.getScreenWidth(), renderer.getScreenHeight(), touch,
+      static_cast<TouchHitGeometry::Orientation>(renderer.getOrientation()),
+      M4UiText::systemListLineHeight(renderer, layoutFont));
+}
 }  // namespace
 
 int TxtReaderChapterSelectionActivity::getPageItems() const {
   const bool touch = mappedInput.hasTouch();
-  const int lineHeight = M4TouchListMetrics::chapterLineHeight(touch);
-  // Keep the chapter picker on the same header/list/footer rhythm as the
-  // system library and reader menus. The former skip-chip row made this
-  // screen visually inconsistent and consumed almost 100 px of touch space.
-  const int startY = M4TouchListMetrics::chapterListTop(touch);
-
-  const int screenHeight = renderer.getScreenHeight();
-  const int availableHeight = screenHeight - startY - M4TouchListMetrics::chapterFooterReserve(touch);
-  int items = availableHeight / lineHeight;
-  if (items < 1) {
-    items = 1;
-  }
-  return items;
+  const auto layout = chapterLayout(renderer, touch);
+  return std::max(1, layout.list.height / layout.rowHeight);
 }
 
 int TxtReaderChapterSelectionActivity::chapterCount() const {
@@ -94,7 +92,11 @@ bool TxtReaderChapterSelectionActivity::ensureChapterBatch(int chapterIndex, boo
 
   const int batch = chapterBatchStart(chapterIndex);
   if (loadedBatchStart_ != batch) {
-    const bool cacheHit = txt->parseChapterIndexAndOffset(batch);
+    // Touch path: cache-only. A missing batch defers to the display task's
+    // quiet rebuild/prefetch; a full scan here froze input for seconds on
+    // large TXT books.
+    const bool cacheHit =
+        txt->parseChapterIndexAndOffset(batch, M4TxtIndexPolicy::kPickerBatchAllowScan);
     loadedBatchStart_ = batch;
     if (outFromCache) *outFromCache = cacheHit;
   } else if (outFromCache) {
@@ -103,40 +105,6 @@ bool TxtReaderChapterSelectionActivity::ensureChapterBatch(int chapterIndex, boo
   const bool ok = txt->isChapterExist(chapterIndex);
   if (locked) xSemaphoreGive(renderingMutex);
   return ok;
-}
-
-void TxtReaderChapterSelectionActivity::prefetchNextBatchQuiet() {
-  if (useExternal_ || !txt || loadedBatchStart_ < 0 || finished_) return;
-  // Also rebuild current batch if paint path left it empty (cache purged / miss).
-  const int cur = loadedBatchStart_;
-  if (cur >= 0 && !txt->isChapterExist(cur) && !txt->hasChapterBatchCache(cur)) {
-    Serial.printf("[ChapterPrefetch] rebuild empty current batch %d\n", cur);
-    txt->parseChapterIndexAndOffset(cur, /*allowScan=*/true);
-    loadedBatchStart_ = cur;
-    if (txt->isChapterExist(cur)) {
-      updateRequired = true;  // repaint with real titles
-    }
-  }
-  if (finished_) return;
-  const int next = loadedBatchStart_ + CHAPTER_BATCH;
-  if (next < 0 || next > 50000) return;
-  if (prefetchedBatch_ == next) return;
-  if (txt->hasChapterBatchCache(next)) {
-    prefetchedBatch_ = next;
-    return;
-  }
-  // Scan next batch to SD (clobbers RAM), then restore current batch from cache.
-  // If next is past EOF, parse returns immediately (m_emptyFromBatch_).
-  Serial.printf("[ChapterPrefetch] building batch %d (then restore %d)\n", next, cur);
-  const bool nextOk = txt->parseChapterIndexAndOffset(next, /*allowScan=*/true);
-  if (finished_) return;
-  // Only mark prefetched if we got data or known empty — avoid retry storms.
-  prefetchedBatch_ = next;
-  if (cur >= 0) {
-    txt->parseChapterIndexAndOffset(cur, /*allowScan=*/true);
-    loadedBatchStart_ = cur;
-  }
-  (void)nextOk;
 }
 
 void TxtReaderChapterSelectionActivity::materializePageTitles(int pagebegin, int pageItems,
@@ -226,25 +194,43 @@ void TxtReaderChapterSelectionActivity::skipChapters(int delta) {
       target = n - 1;
     }
   } else if (!ensureChapterBatch(target) || !chapterExists(target)) {
-    int batch = chapterBatchStart(target);
-    int found = -1;
-    while (batch >= 0) {
-      txt->parseChapterIndexAndOffset(batch);
-      loadedBatchStart_ = batch;
-      for (int i = 0; i < CHAPTER_BATCH; ++i) {
-        const int ch = batch + i;
-        if (chapterExists(ch)) found = ch;
+    // Cache-only skip fallback (same contract as ensureChapterBatch): answer
+    // from batches already in RAM/on SD and defer any missing-batch discovery
+    // to prefetchNextBatchQuiet. The former parseChapterIndexAndOffset(batch)
+    // default here triggered multi-second scans per skipped page. Units stay
+    // explicit: batch starts only to loadBatchFromCache, chapter indices only
+    // to existsInRam.
+    struct CachedBatchProber {
+      Txt* t;
+      int* loadedBatchStart;
+      // True only when the cache file exists AND the parse actually made
+      // chapters visible in RAM; otherwise skip-down would scan an unloaded
+      // batch and loadedBatchStart_ would point at stale content.
+      bool loadBatchFromCache(int batchStartValue) {
+        if (!t->hasChapterBatchCache(batchStartValue)) return false;
+        t->parseChapterIndexAndOffset(batchStartValue,
+                                      M4TxtIndexPolicy::kPickerBatchAllowScan);
+        for (int i = 24; i >= 0; --i) {
+          if (t->isChapterExist(batchStartValue + i)) {
+            *loadedBatchStart = batchStartValue;
+            return true;
+          }
+        }
+        return false;
       }
-      if (found >= 0) {
-        target = found;
-        break;
-      }
-      if (batch == 0) {
-        target = 0;
-        break;
-      }
-      batch -= CHAPTER_BATCH;
-    }
+      bool existsInRam(int chapter) const { return t->isChapterExist(chapter); }
+    } prober{txt.get(), &loadedBatchStart_};
+
+    const int found = M4TxtIndexPolicy::skipFallbackFromCachedBatches(
+        target, 0, chapterBatchStart,
+        [](void* ctx, int batchStartValue) -> bool {
+          return static_cast<CachedBatchProber*>(ctx)->loadBatchFromCache(batchStartValue);
+        },
+        [](void* ctx, int chapter) -> bool {
+          return static_cast<const CachedBatchProber*>(ctx)->existsInRam(chapter);
+        },
+        &prober);
+    target = found >= 0 ? found : 0;
   }
 
   page = target / pageItems + 1;
@@ -262,6 +248,7 @@ void TxtReaderChapterSelectionActivity::taskTrampoline(void* param) {
 
 void TxtReaderChapterSelectionActivity::onEnter() {
   Activity::onEnter();
+  M4TouchNavigation::activateForChapterSelection();
 
   // Full-CJK titles need reader IDs promoted from SD epdfont (not UI subset → '?').
   // ensure*: skip if boot/settings already loaded; full scan only when never done.
@@ -270,7 +257,6 @@ void TxtReaderChapterSelectionActivity::onEnter() {
   renderingMutex = xSemaphoreCreateMutex();
   loadedBatchStart_ = -1;
   firstPaint_ = true;
-  prefetchedBatch_ = -1;
   externalCacheBegin_ = -1;
   externalCacheCount_ = 0;
   externalCacheTitles_.clear();
@@ -347,8 +333,9 @@ void TxtReaderChapterSelectionActivity::loop() {
   };
 
   if (mappedInput.hasTouch()) {
-    const int BASE_Y_CHAPTER = M4TouchListMetrics::chapterListTop(true);
-    const int FIX_LINE_HEIGHT = M4TouchListMetrics::chapterLineHeight(true);
+    const auto layout = chapterLayout(renderer, true);
+    const int BASE_Y_CHAPTER = layout.list.y;
+    const int FIX_LINE_HEIGHT = layout.rowHeight;
     const int pagebegin = (page - 1) * pageItems;
     const int pagerTop = M4TouchListMetrics::chapterPagerTop(renderer.getScreenHeight(), true);
     const int pagerHeight = M4TouchListMetrics::chapterPagerButtonHeight(true);
@@ -526,17 +513,6 @@ void TxtReaderChapterSelectionActivity::displayTaskLoop() {
       firstPaint_ = false;
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
       displayBusy_ = false;
-    } else if (!useExternal_ && txt && loadedBatchStart_ >= 0 && !finished_) {
-      // Idle: rebuild purged batches + prefetch next (may scan seconds).
-      displayBusy_ = true;
-      if (renderingMutex) {
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        if (!finished_) {
-          prefetchNextBatchQuiet();
-        }
-        xSemaphoreGive(renderingMutex);
-      }
-      displayBusy_ = false;
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
@@ -545,19 +521,22 @@ void TxtReaderChapterSelectionActivity::displayTaskLoop() {
 void TxtReaderChapterSelectionActivity::drawScreen(const std::vector<std::string>& pageTitles,
                                                    const std::vector<uint8_t>& pagePresent,
                                                    int pagebegin, int pageItems) {
+  // Settings/menu children suppress the reader painter, but may have left a
+  // different status bar on the panel. Always build the complete TOC frame.
   renderer.clearScreen();
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
-  const char* header = headerTitle_.empty() ? "目  录" : headerTitle_.c_str();
-  const auto metrics = UITheme::getInstance().getMetrics();
+  const char* header = headerTitle_.empty() ? "目录" : headerTitle_.c_str();
   const bool touch = mappedInput.hasTouch();
-  const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int footerReserve = touch ? M4TouchListMetrics::chapterFooterReserve(true)
-                                  : metrics.buttonHintsHeight + metrics.verticalSpacing;
-  const int listHeight = std::max(1, pageHeight - listTop - footerReserve);
+  const auto layout = chapterLayout(renderer, touch);
+  const int layoutFont = touch ? UI_12_FONT_ID : UI_10_FONT_ID;
+  const int listTop = layout.list.y;
+  const int listHeight = std::max(1, layout.list.height);
+  const int rowHeight = layout.rowHeight;
+  const int systemLineHeight = layout.systemLineHeight;
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, header);
+  GUI.drawHeader(renderer, Rect{layout.header.x, layout.header.y, layout.header.width, layout.header.height}, header);
 
   auto titleForRow = [&](int row, int index) {
     if (row < 0 || row >= pageItems || row >= static_cast<int>(pageTitles.size()) ||
@@ -577,7 +556,6 @@ void TxtReaderChapterSelectionActivity::drawScreen(const std::vector<std::string
     // old theme list painted denser rows, so a finger could visually target one
     // chapter while the hit policy resolved another. Keep all content black on
     // white; focus is an outline + slim ink marker to minimize e-ink churn.
-    const int rowHeight = M4TouchListMetrics::chapterLineHeight(true);
     constexpr int side = 8;
     constexpr int markerWidth = 3;
     constexpr int textX = 24;
@@ -594,29 +572,29 @@ void TxtReaderChapterSelectionActivity::drawScreen(const std::vector<std::string
       }
       const auto weight = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
       const std::string raw = titleForRow(row, index);
-      const std::string title = M4UiText::truncated(
-          renderer, NOTOSANS_12_FONT_ID, raw.c_str(), std::max(40, pageWidth - textX - 24), weight);
-      M4UiText::draw(renderer, NOTOSANS_12_FONT_ID, textX, rowY + 14, title.c_str(), true, weight);
+      const std::string title = M4UiText::truncatedSystem(
+          renderer, layoutFont, raw.c_str(), std::max(40, pageWidth - textX - 24), weight);
+      M4UiText::drawSystem(renderer, layoutFont, textX, rowY + (rowHeight - systemLineHeight) / 2,
+                           title.c_str(), true, weight);
     }
   } else {
-    // Physical-button layouts retain the denser system-theme list behavior.
-    const int themePageItems = std::max(1, listHeight / std::max(1, metrics.listRowHeight));
-    const int listPageBegin = (selectorIndex / themePageItems) * themePageItems;
-    int drawCount = chapterCount();
-    if (!useExternal_) {
-      drawCount = pagebegin;
-      for (int row = 0; row < pageItems && row < static_cast<int>(pagePresent.size()); ++row) {
-        if (pagePresent[static_cast<size_t>(row)]) drawCount = pagebegin + row + 1;
-      }
+    // Physical-button layouts use the same explicit system-font row path as
+    // touch. This prevents GUI.drawList from resolving a reader TTF through
+    // the public UI font IDs.
+    for (int row = 0; row < pageItems; ++row) {
+      if (row >= static_cast<int>(pagePresent.size()) || !pagePresent[static_cast<size_t>(row)]) continue;
+      const int index = pagebegin + row;
+      const int rowY = listTop + row * rowHeight;
+      if (rowY + rowHeight > listTop + listHeight) break;
+      const bool selected = index == selectorIndex;
+      if (selected) renderer.drawRect(8, rowY + 2, std::max(1, pageWidth - 16), std::max(1, rowHeight - 4), true);
+      const auto weight = selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+      const std::string raw = titleForRow(row, index);
+      const std::string title = M4UiText::truncatedSystem(
+          renderer, layoutFont, raw.c_str(), std::max(40, pageWidth - 44), weight);
+      M4UiText::drawSystem(renderer, layoutFont, 24, rowY + (rowHeight - systemLineHeight) / 2,
+                           title.c_str(), true, weight);
     }
-    const int themeSelected = (selectorIndex >= 0 && selectorIndex < drawCount) ? selectorIndex : -1;
-    GUI.drawList(
-        renderer, Rect{0, listTop, pageWidth, listHeight}, drawCount, themeSelected,
-        [&](int index) {
-          const int row = index - listPageBegin;
-          return titleForRow(row, index);
-        },
-        nullptr, nullptr, nullptr);
   }
 
   char pageLabel[64];
@@ -641,18 +619,18 @@ void TxtReaderChapterSelectionActivity::drawScreen(const std::vector<std::string
       if (enabled && pagerWidth > 6 && pagerHeight > 6) {
         renderer.drawRect(x + 2, pagerTop + 2, pagerWidth - 4, pagerHeight - 4, true);
       }
-      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, pagerTop, pagerWidth, pagerHeight,
-                                  label, true,
-                                  enabled ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+      M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, x, pagerTop, pagerWidth, pagerHeight,
+                                        label, true,
+                                        enabled ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     };
-    drawPagerButton(leftX, "‹ 上一页", canPrev);
-    drawPagerButton(rightX, "下一页 ›", canNext);
-    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, 0,
-                                M4TouchListMetrics::chapterPagerLabelTop(pageHeight, true), pageWidth,
-                                M4TouchListMetrics::chapterPagerLabelHeight(true), pageLabel, true,
-                                EpdFontFamily::REGULAR, 8);
+    drawPagerButton(leftX, "上一页", canPrev);
+    drawPagerButton(rightX, "下一页", canNext);
+    M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, 0,
+                                      M4TouchListMetrics::chapterPagerLabelTop(pageHeight, true), pageWidth,
+                                      M4TouchListMetrics::chapterPagerLabelHeight(true), pageLabel, true,
+                                      EpdFontFamily::REGULAR, 8);
   } else {
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight - footerReserve - 4, pageLabel, true);
+    M4UiText::drawCenteredSystem(renderer, UI_10_FONT_ID, pageHeight - layout.footer.height - 4, pageLabel, true);
     const auto labels = mappedInput.mapLabels("« 返回", "选择", "向前100", "向后100");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }

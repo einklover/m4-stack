@@ -1,13 +1,13 @@
 {
   "id": "com.jjwxc.client",
   "name": "晋江文学",
-  "version": "0.2.2",
-  "versionCode": 24,
+  "version": "1.2.2",
+  "versionCode": 25,
   "runtime": "native",
   "entry": "main.xml",
   "provider": "jjwxc",
   "author": "einklover",
-  "description": "0.2.2 Native：主页支持可操作的分类推荐；VIP GB18030 映射表随包发布，正文网络、缓存与阅读不启动 Lua",
+  "description": "1.2.2 Native：主页支持可操作的分类推荐；VIP GB18030 映射表随包发布，正文网络、缓存与阅读不启动 Lua",
   "files": [
     "main.xml",
     "gbk_table.bin"

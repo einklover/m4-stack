@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "EpdFont.h"
+#include "TtfVisualNormalization.h"
 #include "TtfReader.h"
 #include "CffReader.h"
 
@@ -37,6 +38,9 @@ class TtfEpdFont : public EpdFont {
   bool valid() const { return valid_; }
   const char* lastError() const;
   uint16_t sizePx() const { return sizePx_; }
+  uint16_t rasterSizePx() const { return renderSizePx_; }
+  float visualScale() const { return visualScale_; }
+  uint32_t visualReferenceCodepoint() const { return visualReferenceCodepoint_; }
   uint16_t maxSlots() const { return maxSlots_; }
   size_t cacheBudget() const { return cacheBudget_; }
   bool hasCodepoint(uint32_t cp) const;
@@ -72,10 +76,13 @@ class TtfEpdFont : public EpdFont {
   String path_;
   String runtimeError_;
   uint16_t sizePx_ = 0;
+  uint16_t renderSizePx_ = 0;
   uint16_t maxSlots_ = kDefaultRuntimeSlots;
   size_t cacheBudget_ = kDefaultRuntimeBudget;
   bool valid_ = false;
   Backend backend_ = Backend::Glyf;
+  float visualScale_ = 1.0f;
+  uint32_t visualReferenceCodepoint_ = 0;
   // Absolute sfnt directory offset in the original stream. Zero for standalone
   // fonts; non-zero for glyf/CFF1/CFF2 faces inside TTC/OTC collections.
   uint32_t faceOffset_ = 0;
@@ -87,6 +94,7 @@ class TtfEpdFont : public EpdFont {
 
   mutable Entry* entries_ = nullptr;
   mutable uint32_t accessCounter_ = 0;
+  mutable uint8_t glyphDiagnosticsLogged_ = 0;
   mutable size_t cacheBytes_ = 0;
   // Advance-only cache: wrapping/index hit this and never touch glyf/CFF.
   static constexpr uint16_t kAdvanceCache = 256;

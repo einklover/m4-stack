@@ -73,6 +73,16 @@ inline std::vector<SettingInfo> getSettingsList() {
                       {L(Str::kValCornersOnly), L(Str::kValGrayBgOnly), L(Str::kValDashedBorderOnly),
                        L(Str::kValSolidBorderOnly), L(Str::kValCornersAndGrayBg)},
                       "homeIconStyle", "Display"),
+#ifdef CROSSPOINT_MURPHY_M4
+    SettingInfo::DynamicEnum(L(Str::kUiFontSize),
+                       {L(Str::kValSmall), L(Str::kValMedium), L(Str::kValLarge)},
+                       []() -> uint8_t { return SETTINGS.getUiFontSize(); },
+                       [](uint8_t index) {
+                         SETTINGS.setUiFontSize(index);
+                         SETTINGS.saveToFile();
+                       },
+                       "uiFontSize", "Display"),
+#endif
 
     // --- Reader ---
 #if 0  // 字号设置项暂时隐藏，当前只有一种字号
@@ -97,10 +107,29 @@ inline std::vector<SettingInfo> getSettingsList() {
             "fontSize", "Reader"),
 #endif  // 字号设置项隐藏结束
     SettingInfo::Toggle(L(Str::kFirstLineIndent), &CrossPointSettings::firstlineintented, "firstlineintented","Reader"),
-    // Runtime TTF reader font size (0 = follow the built-in 12/14/16/18 enum).
-    // Shown only for the reader; system/UI faces keep their fixed metrics.
-    // 0 = automatic; explicit TTF reader size is 12..48 px.
-    SettingInfo::Value(L(Str::kFontSize), &CrossPointSettings::customFontSize, 0, 48, 1, "customFontSize", "Reader"),
+    // One family-independent reader body size. Allowed body sizes are exactly
+    // {16,24,26,36,38,40,48} (default 26). 32 and 45 are excluded due to
+    // the 74/75 kernel split at N=32/45. Snap ties to larger.
+    SettingInfo::DynamicEnum(L(Str::kFontSize),
+                       {"16", "24", "26", "36", "38", "40", "48"},
+                       []() -> uint8_t {
+                         uint8_t cur = SETTINGS.getReaderPixelSize();
+                         for (uint8_t i = 0; i < CrossPointSettings::kReaderBodyPixelSizesCount; ++i) {
+                           if (CrossPointSettings::kReaderBodyPixelSizes[i] == cur) return i;
+                         }
+                         uint8_t snapped = CrossPointSettings::snapReaderPixelSize(cur);
+                         for (uint8_t i = 0; i < CrossPointSettings::kReaderBodyPixelSizesCount; ++i) {
+                           if (CrossPointSettings::kReaderBodyPixelSizes[i] == snapped) return i;
+                         }
+                         return 2;
+                       },
+                       [](uint8_t index) {
+                         if (index < CrossPointSettings::kReaderBodyPixelSizesCount) {
+                           SETTINGS.setReaderPixelSize(CrossPointSettings::kReaderBodyPixelSizes[index]);
+                           SETTINGS.saveToFile();
+                         }
+                       },
+                       "readerPixelSize", "Reader"),
     SettingInfo::Value(L(Str::kLineSpacing), &CrossPointSettings::customLineSpacing, 5, 20, 1, "lineSpacing", "Reader"),
     SettingInfo::SignedValue(L(Str::kWordSpacing), &CrossPointSettings::wordSpacing, -20, 20, 1, "wordSpacing", "Reader"),
     SettingInfo::Value(L(Str::kTopMargin), &CrossPointSettings::screenMargin_Top, 0,60,1, "screenMarginTop", "Reader"),

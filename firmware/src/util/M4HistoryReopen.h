@@ -32,6 +32,8 @@ struct Result {
   std::string overlayMessage; // non-blocking loading hint when NeedsFetch
 };
 
+using ProviderAppIdResolver = std::function<std::string(const std::string& providerId)>;
+
 // Extract appId from /apps_data/<appId> or /apps_data/<appId>/...
 inline bool appIdFromAppsDataAbs(const std::string& abs, std::string& appIdOut) {
   appIdOut.clear();
@@ -225,14 +227,23 @@ inline bool resolveHistoryAppId(const std::string& explicitAppId, const std::str
 }
 
 // Real history-selection path: inputs are exactly what Home/RecentBooks pass.
-// authorAppIdHint = RecentBook.author (must be appId for provider entries, not providerId).
+// URI/registry identity wins. authorAppIdHint is only the legacy fallback for
+// old records that persisted the app id in RecentBook.author.
 inline Result resolveFromRecentBookFields(const std::string& recentPath, const std::string& originalSourcePath,
                                           const std::string& title, const std::string& authorAppIdHint,
+                                          const ProviderAppIdResolver& appIdForProvider,
                                           const std::function<bool(const std::string&)>& exists,
                                           const std::function<bool(const std::string&)>& appInstalled) {
   Result r = resolveSelection(recentPath, originalSourcePath, title, exists, appInstalled);
   if (r.kind != Kind::ProviderNeedsFetch && r.kind != Kind::ProviderCached) return r;
 
+  if (r.appId.empty() && !r.providerId.empty() && appIdForProvider) {
+    const std::string resolved = appIdForProvider(r.providerId);
+    if (looksLikeAppId(resolved)) {
+      r.appId = resolved;
+      r.appDataRoot = appDataRootFor(r.appId);
+    }
+  }
   if (r.appId.empty() && looksLikeAppId(authorAppIdHint)) {
     r.appId = authorAppIdHint;
     r.appDataRoot = appDataRootFor(r.appId);
@@ -243,6 +254,33 @@ inline Result resolveFromRecentBookFields(const std::string& recentPath, const s
     }
   }
   return r;
+}
+
+inline Result resolveFromRecentBookFields(const std::string& recentPath, const std::string& originalSourcePath,
+                                          const std::string& title, const std::string& authorAppIdHint,
+                                          const std::function<bool(const std::string&)>& exists,
+                                          const std::function<bool(const std::string&)>& appInstalled) {
+  return resolveFromRecentBookFields(recentPath, originalSourcePath, title, authorAppIdHint, {}, exists,
+                                     appInstalled);
+}
+
+inline std::string appHintForRecentBook(const std::string& recentPath, const std::string& originalSourcePath,
+                                        const std::string& authorField,
+                                        const ProviderAppIdResolver& appIdForProvider) {
+  if (!M4ContentProvider::isHistoryUri(recentPath.c_str())) return originalSourcePath;
+  if (originalSourcePath.compare(0, 4, "app:") == 0) return originalSourcePath;
+  std::string ignoredAppId;
+  if (!originalSourcePath.empty() && appIdFromAppsDataAbs(originalSourcePath, ignoredAppId)) {
+    return originalSourcePath;
+  }
+  std::string providerId;
+  std::string bookId;
+  if (M4ContentProvider::parseHistoryUri(recentPath.c_str(), providerId, bookId) && appIdForProvider) {
+    const std::string appId = appIdForProvider(providerId);
+    if (looksLikeAppId(appId)) return std::string("app:") + appId;
+  }
+  if (looksLikeAppId(authorField)) return std::string("app:") + authorField;
+  return originalSourcePath;
 }
 
 }  // namespace M4HistoryReopen

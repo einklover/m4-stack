@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/SimKernel.h"
+#include "hardware/SimPanel.h"
 #include "memory/SimHeap.h"
 #include "model/SimChapterLifecycle.h"
 #include "storage/SimAtomicFileCommit.h"
@@ -160,12 +161,50 @@ void issue24_atomic_sd_commit_preserves_previous_generation() {
         "issue #24: size-verification failure never destroys the prior chapter");
 }
 
+void refresh_policy_counts_only_reader_cleanup_inversion() {
+  SimScheduler sched;
+  SimTrace trace;
+  SimPanel panel(&sched, &trace);
+
+  auto paint = [&](RefreshMode requested, int page) {
+    SimFrameTag tag;
+    tag.page = page;
+    tag.generation = static_cast<uint32_t>(page + 1);
+    panel.render(tag);
+    check(panel.submit(requested), "refresh policy: frame submission succeeds");
+    sched.runFor(2000);
+  };
+
+  auto paintWithContext = [&](RefreshMode requested, RefreshContext context, int page) {
+    SimFrameTag tag;
+    tag.page = page;
+    tag.generation = static_cast<uint32_t>(page + 1);
+    panel.render(tag);
+    check(panel.submit(requested, nullptr, context), "refresh policy: contextual frame submission succeeds");
+    sched.runFor(2000);
+  };
+
+  paint(RefreshMode::FULL_REFRESH, 0);
+  check(panel.lastVisibleInversionPhases() == 0 && panel.lastFullWaveformPhases() == 0,
+        "refresh policy: legacy FULL is normalized to FAST with no visible phases");
+  paint(RefreshMode::HALF_REFRESH, 1);
+  check(panel.lastVisibleInversionPhases() == 0 && panel.lastFullWaveformPhases() == 0,
+        "refresh policy: legacy HALF is normalized to FAST with no visible phases");
+  paintWithContext(RefreshMode::READER_CLEANUP_REFRESH, RefreshContext::READER_BODY_CONTEXT, 2);
+  check(panel.lastVisibleInversionPhases() == 1 && panel.lastFullWaveformPhases() == 0,
+        "refresh policy: reader cleanup has exactly one visible inversion and no full waveform");
+  paintWithContext(RefreshMode::READER_CLEANUP_REFRESH, RefreshContext::UI_CONTEXT, 3);
+  check(panel.lastVisibleInversionPhases() == 0 && panel.lastFullWaveformPhases() == 0,
+        "refresh policy: cleanup requested outside reader body is normalized to FAST");
+}
+
 }  // namespace
 
 int main() {
   issue9_tls_control_plane_must_stay_internal();
   issue5_chapter_switch_never_opens_empty_path_or_leaks_generations();
   issue24_atomic_sd_commit_preserves_previous_generation();
+  refresh_policy_counts_only_reader_cleanup_inversion();
   if (failures) {
     std::cerr << failures << " issue-contract test(s) failed\n";
     return EXIT_FAILURE;

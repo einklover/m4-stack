@@ -22,8 +22,7 @@
 #include "../../util/ImageCache.h"
 
 // ── 灰阶 4-阶渲染（BW + LSB + MSB 三轮）────────────────────────────────────
-// useHalfRefresh=true → 高清模式（HALF_REFRESH BW 基底，更稳定但较慢）
-// useHalfRefresh=false → 正常模式（FAST_REFRESH BW 基底，速度更快）
+// useHalfRefresh is retained for source compatibility; both BW bases use FAST.
 // 首次: 解码 JPEG/PNG (useDithering=false) → 存入 _hd.pxc 缓存
 // 后续: 直接从 _hd.pxc 三轮读取，无需重新解码
 static bool renderImageHD(GfxRenderer& renderer, const std::string& filename, uint32_t srcSize,
@@ -48,8 +47,8 @@ static bool renderImageHD(GfxRenderer& renderer, const std::string& filename, ui
   } else {
     if (!ImageCache::renderFromHdCache(filename, renderer)) return false;
   }
-  // ── BW base pass（据 sleepBeforeFullRefresh 决定 FULL/HALF_REFRESH，清除阅读页残影）──
-  renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  // ── BW base pass (always FAST; cleanup is reader-body-only) ──
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
   // ── GRAYSCALE_LSB pass ──
   renderer.clearScreen(0x00);
@@ -75,7 +74,7 @@ void SleepActivity::onEnter() {
   READING_STATS.saveToFile();
 
   // TRANSPARENT 模式须保留 framebuffer（阅读内容），不能清屏
-  // 其他模式：壁纸渲染时根据 sleepBeforeFullRefresh 决定是否 FULL_REFRESH 清除残影
+  // Other modes render the wallpaper through the same fast-only policy.
 
   switch (SETTINGS.sleepScreen) {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
@@ -163,7 +162,7 @@ void SleepActivity::renderpngtxtSleepScreen() const {
         
         // 绘制PNGTXT（灰阶分层绘制）
         renderer.drawPngFromTxtpng(filename.c_str());
-        renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
         renderer.clearScreen(0x00);
         renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
@@ -197,7 +196,7 @@ void SleepActivity::renderpngtxtSleepScreen() const {
       
       // 绘制PNGTXT（灰阶分层绘制）
       renderer.drawPngFromTxtpng(pngtxtPath.c_str());
-      renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
       renderer.clearScreen(0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
@@ -316,7 +315,7 @@ static void renderPngTransparentHD(GfxRenderer& renderer, const std::string& png
 
   // Pass 1 (BW)：不清屏，将PNG叠加到阅读内容上，然后必须先显示建立基底
   if (!decoder->decodeToFramebuffer(pngPath, renderer, rc)) return;
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   delay(200);
 
   // Pass 2 (LSB)：clearScreen(0x00)，只将 value=1 像素写入BW RAM
@@ -431,7 +430,7 @@ void SleepActivity::renderPngSleepScreen() const {
             rc.useDithering = true;
             ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(filename);
             if (decoder && decoder->decodeToFramebuffer(filename, renderer, rc)) {
-              renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
             }
           }
           dir.close();
@@ -452,7 +451,7 @@ void SleepActivity::renderPngSleepScreen() const {
           // 缓存命中：直接从 .pxc 渲染
           if (ImageCache::renderFromCache(filename, renderer)) {
             if (SETTINGS.sleepPngInvert) renderer.invertScreen();
-            renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
             dir.close();
             return;
           }
@@ -469,7 +468,7 @@ void SleepActivity::renderPngSleepScreen() const {
         ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(filename);
         if (decoder && decoder->decodeToFramebuffer(filename, renderer, rc)) {
           if (SETTINGS.sleepPngInvert) renderer.invertScreen();
-          renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
           if (srcSize > 0) ImageCache::commit(filename, srcSize);
           dir.close();
           return;
@@ -490,7 +489,7 @@ void SleepActivity::renderPngSleepScreen() const {
           // 缓存命中：直接从 .pxc 渲染
           if (ImageCache::renderFromCache(filename, renderer)) {
             if (SETTINGS.sleepPngInvert) renderer.invertScreen();
-            renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
             dir.close();
             return;
           }
@@ -507,7 +506,7 @@ void SleepActivity::renderPngSleepScreen() const {
         ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(filename);
         if (decoder && decoder->decodeToFramebuffer(filename, renderer, rc)) {
           if (SETTINGS.sleepPngInvert) renderer.invertScreen();
-          renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
           if (srcSize > 0) ImageCache::commit(filename, srcSize);
           dir.close();
           return;
@@ -543,7 +542,7 @@ void SleepActivity::renderPngSleepScreen() const {
           rc.useDithering = true;
           ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(candPath);
           if (decoder && decoder->decodeToFramebuffer(candPath, renderer, rc)) {
-            renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
           }
         }
         return;
@@ -562,7 +561,7 @@ void SleepActivity::renderPngSleepScreen() const {
       if (ImageCache::isValid(candPath, srcSize)) {
         if (ImageCache::renderFromCache(candPath, renderer)) {
           if (SETTINGS.sleepPngInvert) renderer.invertScreen();
-          renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
           return;
         }
       }
@@ -577,7 +576,7 @@ void SleepActivity::renderPngSleepScreen() const {
       ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(candPath);
       if (decoder && decoder->decodeToFramebuffer(candPath, renderer, rc)) {
         if (SETTINGS.sleepPngInvert) renderer.invertScreen();
-        renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         if (srcSize > 0) ImageCache::commit(candPath, srcSize);
         return;
       }
@@ -596,7 +595,7 @@ void SleepActivity::renderPngSleepScreen() const {
       if (ImageCache::isValid(candPath, srcSize)) {
         if (ImageCache::renderFromCache(candPath, renderer)) {
           if (SETTINGS.sleepPngInvert) renderer.invertScreen();
-          renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
           return;
         }
       }
@@ -611,7 +610,7 @@ void SleepActivity::renderPngSleepScreen() const {
       ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(candPath);
       if (decoder && decoder->decodeToFramebuffer(candPath, renderer, rc)) {
         if (SETTINGS.sleepPngInvert) renderer.invertScreen();
-        renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         if (srcSize > 0) ImageCache::commit(candPath, srcSize);
         return;
       }
@@ -636,7 +635,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
     renderer.invertScreen();
   }
 
-  renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
@@ -684,7 +683,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
     renderer.invertScreen();
   }
 
-  renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
   if (hasGreyscale) {
     bitmap.rewindToData();
@@ -781,7 +780,7 @@ void SleepActivity::renderCoverSleepScreen() const {
 
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
-  renderer.displayBuffer(SETTINGS.sleepBeforeFullRefresh ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
 // ── 透明叠加关机壁纸 ────────────────────────────────────────────────────────
@@ -794,20 +793,20 @@ void SleepActivity::renderTransparentSleepScreen() const {
   const char* pxcPath = SETTINGS.transparentOverlayPxc;
 
   if (pxcPath[0] == '\0') {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     return;
   }
 
   FsFile ovFile;
   if (!SdMan.openFileForRead("SLP-TR", pxcPath, ovFile)) {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     return;
   }
 
   uint16_t ovW = 0, ovH = 0;
   if (ovFile.read(&ovW, 2) != 2 || ovFile.read(&ovH, 2) != 2) {
     ovFile.close();
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     return;
   }
 
@@ -815,7 +814,7 @@ void SleepActivity::renderTransparentSleepScreen() const {
   auto* row = (uint8_t*)malloc(bpr);
   if (!row) {
     ovFile.close();
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     return;
   }
 
@@ -856,7 +855,7 @@ void SleepActivity::renderTransparentSleepScreen() const {
 
   // ── BW pass：阅读内容（framebuffer）+ overlay 非白像素 ───────────────────
   overlayPass();
-  // renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  // renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   delay(200);
 
   // ── LSB pass：overlay value=1 像素（阅读内容不需重画）─────────────────────

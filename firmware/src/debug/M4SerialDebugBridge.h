@@ -7,6 +7,7 @@
 #if defined(CROSSPOINT_MURPHY_M4)
 
 #include "debug/M4SerialDebugPolicy.h"
+#include "debug/M4SynthInputGate.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -72,6 +73,13 @@ class Bridge {
   // Call from main loop after beginFrame(), before activity->loop().
   void poll();
 
+  // Mark poll() as a yield-reentry (m4YieldToDebugBridge from inside an
+  // activity frame). Synthetic tap/swipe/key/back in this context are
+  // rejected as busy and are never queued — delayed replay after a slow
+  // first-page index produced surprise multi-page turns. Hosts retry once
+  // the regular (post-beginFrame) poll window is free again.
+  void setYieldContext(bool on) { yieldContext_ = on; }
+
   // Recent host frame activity — used to prevent auto-sleep during scripted sessions.
   // Never keeps awake when unauthorized.
   bool recentHostActivity(unsigned long nowMs,
@@ -121,8 +129,11 @@ class Bridge {
   bool enableRxDrainPending_ = false;
   bool inPoll_ = false;
 
+  // True only while poll() runs under m4YieldToDebugBridge (mid-frame).
+  bool yieldContext_ = false;
+
   // Stable copies for status snprintf (Activity::getName() is stable while activity lives;
-  // we still copy so StatusSnapshot pointers never dangle if activity switches mid-reply).
+  // we still copy so StatusSnapshot pointers never dangle if Activity switches mid-reply).
   char activityCopy_[48] = {};
   char appIdCopy_[72] = {};
 

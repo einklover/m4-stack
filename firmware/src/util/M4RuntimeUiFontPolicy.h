@@ -3,20 +3,21 @@
 #include <algorithm>
 
 #include "../fontIds.h"
+#include "M4FontPolicy.h"
 
-// Fixed physical-pixel policy for runtime-TTF chrome.
+// Fixed physical-pixel policy for system chrome (builtin native-grid).
 //
-// UI text is deliberately quantized to a tiny set of real raster sizes instead
-// of shrinking the Reader bitmap. This keeps small CJK strokes crisp and lets
-// system UI + Native plugins reuse exactly the same three faces/cache pools.
+// UI text uses CenterKernel CJK at 小/中/大 (16/24/26, default 24). Native-grid
+// remains Latin/punct fallback and the boot face before the M4CK blob binds.
+// Runtime TTF never owns chrome IDs.
 //
 // The legacy generated epdfont names are not pixel sizes (`m4_ui_cjk_13` is
 // 13pt @ 150 DPI), so never derive runtime-TTF chrome metrics from them.
 namespace M4RuntimeUiFontPolicy {
 
-constexpr int kSmallBasePx = 18;
-constexpr int kUi10BasePx = 22;
-constexpr int kUi12BasePx = 26;
+constexpr int kSmallBasePx = M4FontPolicy::kChromeSmallPx;
+constexpr int kUi10BasePx = M4FontPolicy::kChromeUi10Px;
+constexpr int kUi12BasePx = M4FontPolicy::kChromeUi12Px;
 
 inline int targetPxForFontId(int fontId) {
   if (fontId == SMALL_FONT_ID) return kSmallBasePx;

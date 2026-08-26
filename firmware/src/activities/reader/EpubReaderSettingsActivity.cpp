@@ -20,6 +20,7 @@ EpubReaderSettingsActivity::EpubReaderSettingsActivity(GfxRenderer& renderer, Ma
 void EpubReaderSettingsActivity::onEnter() {
   Activity::onEnter();
   firstPaint_ = true;
+  touchHandoffFrames_ = 2;
   renderingMutex = xSemaphoreCreateMutex();
 
   // Load only "Reader" category settings
@@ -65,7 +66,8 @@ void EpubReaderSettingsActivity::taskTrampoline(void* param) {
 
 void EpubReaderSettingsActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    // Deferred pump: never destroy a nested picker while its loop is on the stack.
+    pumpSubActivityFrame();
     return;
   }
 
@@ -79,7 +81,16 @@ void EpubReaderSettingsActivity::loop() {
   const int count = static_cast<int>(settings.size());
 
   // Touch: same list geometry as render() drawList
-  if (mappedInput.hasTouch() && count > 0) {
+  if (touchHandoffFrames_ > 0) {
+    --touchHandoffFrames_;
+    // Drain edge-triggered touch from the opener frame. Ignoring without
+    // consuming leaves the page-turn/menu tap pending for the next loop and
+    // can activate the first settings row immediately.
+    int dx = 0, dy = 0, tx = 0, ty = 0;
+    (void)mappedInput.wasSwipe();
+    (void)mappedInput.wasScreenTouchDown(dx, dy);
+    (void)mappedInput.wasScreenTapped(tx, ty);
+  } else if (mappedInput.hasTouch() && count > 0) {
     auto metrics = UITheme::getInstance().getMetrics();
     const int pageHeight = renderer.getScreenHeight();
     const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
@@ -196,11 +207,6 @@ void EpubReaderSettingsActivity::toggleCurrentSetting() {
       config.displayFormatter = [](int v) -> std::string {
         return std::to_string(v / 10) + "." + std::to_string(v % 10) + "倍";
       };
-    } else if (setting.key && strcmp(setting.key, "customFontSize") == 0) {
-      // 0 = auto (follow the built-in size enum); 12-48 = explicit TTF px size.
-      config.displayFormatter = [](int v) -> std::string {
-        return v == 0 ? "自动" : std::to_string(v);
-      };
     }
     
     auto valuePtr = setting.valuePtr;
@@ -257,8 +263,6 @@ void EpubReaderSettingsActivity::render() const {
           const int v = SETTINGS.*(settings[i].valuePtr);
           if (strcmp(settings[i].name, "行间距") == 0) {
             valueText = std::to_string(v / 10) + "." + std::to_string(v % 10) + "倍";
-          } else if (settings[i].key && strcmp(settings[i].key, "customFontSize") == 0) {
-            valueText = (v == 0) ? "自动" : std::to_string(v);
           } else {
             valueText = std::to_string(v);
           }
@@ -271,8 +275,7 @@ void EpubReaderSettingsActivity::render() const {
 
   if (firstPaint_) {
     firstPaint_ = false;
-    // HALF clears residual reader AA/gray plane that FAST differential leaves behind.
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }

@@ -72,7 +72,7 @@ class GfxRenderer {
   void replaceFont(int fontId, EpdFontFamily font);
   bool hasFont(int fontId) const;
   // Borrow the currently mapped font object. Used by the M4 runtime-TTF loader
-  // to capture the compact builtin UI faces before installing scaled views.
+  // to capture the builtin UI faces before installing scaled reader views.
   // The renderer keeps ownership of the family mapping; callers must not free
   // the returned font.
   const EpdFont* getFontPtr(int fontId,
@@ -108,9 +108,12 @@ class GfxRenderer {
   // Screen ops
   int getScreenWidth() const;
   int getScreenHeight() const;
-  void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
-  // Arm a one-shot animated transition for the next frame drawn by any activity.
-  // Only the touch gesture path uses this; button navigation never arms it.
+  void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH,
+                     HalDisplay::RefreshContext context = HalDisplay::UI_CONTEXT) const;
+  // Callers pass HalDisplay::READER_BODY_CONTEXT only for the configured
+  // reader-body cleanup; all UI callers stay in UI_CONTEXT.
+  // Legacy entry-transition hook. Navigation surfaces are fast/partial only;
+  // reader-body pagination owns its separate windowed animation path.
   void armEntryAnimation(int direction);
   void cancelEntryAnimation();
   void ageEntryAnimation();
@@ -157,7 +160,7 @@ class GfxRenderer {
   int getLineHeight(int fontId) const;
   std::string truncatedText(int fontId, const char* text, int maxWidth,
                             EpdFontFamily::Style style = EpdFontFamily::REGULAR, float scale = 1.0f) const;
-  // Scale body/reader face metrics down to match a compact UI face (never upscales).
+  // Scale body/reader face metrics down to match a builtin UI face (never upscales).
   float scaleFontToMatch(int srcFontId, int targetFontId) const;
 
   // Helper for drawing rotated text (90 degrees clockwise, for side buttons)

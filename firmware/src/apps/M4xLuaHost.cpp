@@ -604,8 +604,8 @@ int l_gui_lineHeight(lua_State* L) {
     return 1;
   }
   const int font = static_cast<int>(luaL_checknumber(L, 1));
-  // Keep layout geometry on the compact UI face so plugin rows do not grow
-  // when the reader epdfont is taller than UI chrome.
+  // Keep layout geometry on the builtin 15x16 UI face so plugin rows do not
+  // grow when the reader face is taller than UI chrome.
   const int layout = layoutFontForSemantic(font);
   const int height = h->renderer_->getLineHeight(layout);
   lua_pushnumber(L, height > 0 ? height : 24);

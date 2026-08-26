@@ -336,11 +336,11 @@ for (int n=0; n<8; n++) {
     drawSliceContent(n, false, true); // 仍调用原函数，仅内部适配竖切
 }
 
-// 全页BW刷新 — 周期性完整刷新以清除残影
+// 全页BW刷新 — 周期性 reader cleanup to clear residual ghosting
 // 开启抗锯齿时，限制最大间隔为 3 页，避免灰度累积导致文字变淡
 const int maxRefreshInterval = (bitDepth == 2 && SETTINGS.textAntiAliasing) ? 3 : SETTINGS.getRefreshFrequency();
 if (pagesUntilFullRefresh <= 1) {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::READER_CLEANUP_REFRESH, HalDisplay::READER_BODY_CONTEXT);
     pagesUntilFullRefresh = maxRefreshInterval;
 } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -407,9 +407,9 @@ else{
         }
         drawSliceContent(n, false, true); 
     }
-    // 1-bit 刷新 — 周期性完整刷新以清除残影
+    // 1-bit 刷新 — 周期性 reader cleanup to clear residual ghosting
     if (pagesUntilFullRefresh <= 1) {
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        renderer.displayBuffer(HalDisplay::READER_CLEANUP_REFRESH, HalDisplay::READER_BODY_CONTEXT);
         pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
     } else {
         renderer.displayBuffer(HalDisplay::FAST_REFRESH);

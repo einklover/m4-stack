@@ -1,0 +1,11 @@
+{
+  "data": [
+    {
+      "bookUrl": "https://example.invalid/book/1",
+      "name": "无封面书",
+      "author": "作者",
+      "totalChapterNum": 10,
+      "latestChapterTitle": "第十章"
+    }
+  ]
+}

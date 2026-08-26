@@ -14,6 +14,24 @@ struct RecentBook {
   bool operator==(const RecentBook& other) const { return path == other.path; }
 };
 
+inline bool mergeProviderMetadata(RecentBook& book, const std::string& title, const std::string& author,
+                                  const std::string& coverBmpPath) {
+  bool changed = false;
+  if (!title.empty() && book.title != title) {
+    book.title = title;
+    changed = true;
+  }
+  if (!author.empty() && book.author != author) {
+    book.author = author;
+    changed = true;
+  }
+  if (!coverBmpPath.empty() && book.coverBmpPath != coverBmpPath) {
+    book.coverBmpPath = coverBmpPath;
+    changed = true;
+  }
+  return changed;
+}
+
 class RecentBooksStore {
   // Static instance
   static RecentBooksStore instance;
@@ -33,6 +51,12 @@ class RecentBooksStore {
 
   void updateBook(const std::string& path, const std::string& title, const std::string& author,
                   const std::string& coverBmpPath);
+
+  // Provider metadata is best-effort and arrives after the history row may
+  // already exist. Empty values preserve the current row, so failed cover
+  // acquisition is non-fatal and cannot erase good metadata.
+  void updateProviderBook(const std::string& path, const std::string& title, const std::string& author,
+                          const std::string& coverBmpPath);
 
   // Get the list of recent books (most recent first)
   const std::vector<RecentBook>& getBooks() const { return recentBooks; }

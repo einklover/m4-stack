@@ -4,7 +4,9 @@
 //
 // Rules:
 //  A) Only the verified canonical family "NotoSansCJKsc" may be auto-promoted
-//     onto NOTOSANS reader/content IDs. UI / SMALL keep compact builtin metrics.
+//     onto NOTOSANS reader/content IDs. UI / SMALL stay on the builtin 15x16
+//     1-bit native-grid system font (logical 16x16 cell, integer-N scale) and
+//     never follow a reader TTF/size.
 //     Never use families.front() as fallback.
 //  B) SYSTEM_FONT + canonical present: promote canonical for content without
 //     mutating settings to FONT_CUSTOM.
@@ -38,8 +40,9 @@ struct Decision {
   std::string loadCustomFamily;
 
   // Promote this family onto NOTOSANS reader/content IDs via replaceFont.
-  // UI_10/UI_12/SMALL remain compact. Empty = leave all offline subsets.
-  // Only ever the canonical name, never an arbitrary Latin-only first file.
+  // UI_10/UI_12/SMALL remain the builtin 15x16 1-bit native-grid face.
+  // Empty = leave all offline subsets. Only ever the canonical name, never
+  // an arbitrary Latin-only first file.
   std::string promoteSystemFamily;
 
   // Whether settings should be mutated (should always stay false for auto canonical).
@@ -74,8 +77,8 @@ inline Decision decide(const Inputs& in) {
     d.loadCustomFamily.clear();
     if (!in.hasCanonical) {
       d.diagnostic =
-          "no canonical /fonts/NotoSansCJKsc.epdfont; offline m4_ui_cjk subset only "
-          "(other epdfonts are not auto-promoted)";
+          "no canonical /fonts/NotoSansCJKsc.epdfont; offline native-grid 15x16 "
+          "system UI + reader fallback (other epdfonts are not auto-promoted)";
     }
     return d;
   }
@@ -108,6 +111,64 @@ inline Decision decide(const Inputs& in) {
 // Size enum still selects hash IDs / layout metrics intent, but the bitmap metrics
 // are those of the single 16pt epdfont until multi-size artifacts ship.
 constexpr int kCanonicalEpdfontPixelSize = 16;
+
+// Logical system pixel cell is 16x16. The ROM corpus stays 15x16 1-bit (32
+// outliers are already 16x16). Ordinary full-width CJK treats the extra column
+// as a right-side metric/render gap — the blank column is not stored in flash.
+constexpr int kLogicalCellPx = 16;
+constexpr int kNativeGridSourcePx = 16;  // 16-row raster / logical cell
+
+// Built-in 1-bit native-grid may only scale by integer N (Kronecker N x N).
+// Every source/logical pixel becomes exactly N x N destination pixels.
+// Nominal reader sizes snap to N; TTF/OTF must NOT use this mapping.
+// UI may still display the user's numeric size (18/22/31); the builtin face
+// renders at 16/32/48. Chosen from reader range 12–48 and the diagnosed 31px:
+//   12–20 → 1x (16px cell)  includes default readerPixelSize=18
+//   21–39 → 2x (32px cell)  includes the real-device 31px setting
+//   40–48 → 3x (48px cell)
+constexpr int nativeGridIntegerScale(int requestedPx) {
+  if (requestedPx <= 20) return 1;
+  if (requestedPx <= 39) return 2;
+  return 3;
+}
+
+constexpr int nativeGridCellPx(int requestedPx) {
+  return kLogicalCellPx * nativeGridIntegerScale(requestedPx);
+}
+
+// Native-grid integer fallback (only used if the CenterKernel blob is missing).
+// SMALL stays 1x. UI no longer uses 2x/32px — that overflowed Lyra
+// listRowHeight=40 and looked oversized next to the 26px reader default.
+constexpr int kChromeSmallScale = 1;
+constexpr int kChromeUi10Scale = 1;
+constexpr int kChromeUi12Scale = 1;
+constexpr int kChromeSmallPx = 16;
+
+// System UI size tiers (settings 小/中/大). Default 中=24 is smaller than the
+// previous fixed 32px native-grid chrome. 大=26 matches the reader default
+// and still fits Lyra rows. SMALL/status stays 16 regardless of the tier.
+constexpr int kUiFontTierSmall = 0;
+constexpr int kUiFontTierMedium = 1;
+constexpr int kUiFontTierLarge = 2;
+constexpr int kDefaultUiFontTier = kUiFontTierMedium;
+constexpr int kChromeUiPxSmall = 16;
+constexpr int kChromeUiPxMedium = 24;
+constexpr int kChromeUiPxLarge = 26;
+
+constexpr int chromeUiPxFromTier(int tier) {
+  if (tier <= kUiFontTierSmall) return kChromeUiPxSmall;
+  if (tier >= kUiFontTierLarge) return kChromeUiPxLarge;
+  return kChromeUiPxMedium;
+}
+
+// Layout/policy default = 中. Native-grid integer fallback at boot is 1x/16
+// until CenterKernel chrome rebinds at the selected tier.
+constexpr int kChromeUi10Px = kChromeUiPxMedium;
+constexpr int kChromeUi12Px = kChromeUiPxMedium;
+
+inline int systemReaderSourcePx() {
+  return kNativeGridSourcePx;
+}
 
 // RC1 expected SHA-256 of the release canonical SD artifact (document only;
 // runtime does not require matching hash to boot — invalid header still fails).

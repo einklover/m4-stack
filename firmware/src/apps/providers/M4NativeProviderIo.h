@@ -14,6 +14,21 @@ namespace M4NativeProviderIo {
 
 bool ensureParentDirs(const std::string& absPath);
 
+// Bounded text helpers for small native sidecars/configuration. These do not
+// load shelf/catalog bodies; shelf rows remain streamed through their sink.
+bool readSmallText(const std::string& path, std::string& out, size_t cap = 16u * 1024u);
+bool writeTextFile(const std::string& path, const std::string& body);
+
+// Replace two closed generations as one recoverable transaction. Distinct
+// three-letter backup extensions avoid FAT 8.3 alias collisions.
+bool commitTempFilesPair(const std::string& firstTemp, const std::string& firstFinal,
+                         size_t firstBytes, const std::string& secondTemp,
+                         const std::string& secondFinal, size_t secondBytes);
+
+// Recover only the bounded pair backups left by an interrupted shelf commit.
+// If both finals survived, the backups are merely completed-generation debris.
+void recoverTempFilesPair(const std::string& firstFinal, const std::string& secondFinal);
+
 // Replace the last path extension (`toc_rows.txt` → `toc_rows.part`).
 // Do not append `.tmp` onto an existing `.txt`: FatFS 8.3 aliases
 // `toc_rows.txt.tmp` to `TOC_ROWS.TXT` and catalog commit then fails.
@@ -34,7 +49,8 @@ bool clearCacheArtifacts(const std::string& absPath);
 // verified streaming copy is used before the old generation is discarded.
 // `expectedBytes` must be non-zero and is verified on the committed file.
 bool commitTempFile(const std::string& tempAbsPath, const std::string& finalAbsPath,
-                    size_t expectedBytes, bool preserveOld = true);
+                    size_t expectedBytes, bool preserveOld = true,
+                    bool allowAlreadyFinal = true);
 
 bool commitPart(const std::string& absPath, size_t* sizeOut = nullptr);
 

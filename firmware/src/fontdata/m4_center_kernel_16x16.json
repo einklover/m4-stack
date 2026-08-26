@@ -1,0 +1,47 @@
+{
+  "font": "标准像素粗.ttf",
+  "font_sha256": "9507b4d3e915455afadfa688e8ea515abf816bce06f76346ee356f0f38810574",
+  "font_file_bytes": 16081052,
+  "format": "M4CK v1 ranked-bitset + 16x16 absolute occupancy + 2-bit joint class",
+  "grid": "16x16 absolute center occupancy; not LSB/bbox left-normalized",
+  "supported_count": 28985,
+  "joint_class_histogram": {
+    "0": 18376,
+    "1": 10604,
+    "2": 4,
+    "3": 1
+  },
+  "supported_corpus_sha256": "585eaec2fb0d198ad54d0c622fb90de7e35e9f18b5b2a3cbb99b0ed31b7a5513",
+  "cjk_range": [
+    "U+3400",
+    "U+9FFF"
+  ],
+  "latin_and_other_count": 1432,
+  "no_epd_glyph_table": true,
+  "lookup": "BMP ranked bitset; 2-bit joint class packed by rank",
+  "occupancy_source": "geometry-exact run-deconvolution 60-UPM (axis-aligned interval and slab-own-span evidence, winding-aware, clean plus endpoint anchors, full-containment AND (x_support OR y_support), class-independent source, class-aware storage Xcanon=80+PHASE_DELTA+60*col, no threshold)",
+  "y_lattice_phases": {
+    "A": 31.5,
+    "B": 1.5,
+    "A_top": 751.5,
+    "B_top": 721.5
+  },
+  "y_lattice_note": "Dual Y lattices are rectangle-center lattices (center = edge + K/2, edge residues 9/54 vs 24/39) 30 apart (half-pitch), not arbitrary sampling phases. X lattices per class via PHASE_DELTA.",
+  "axis_proof": {
+    "total_contours": 169944,
+    "axis_aligned": 169944,
+    "rect_4pt": 82666,
+    "orthogonal": 87278,
+    "non_axis": 0,
+    "winding": "outer -1, holes +1, filled winding !=0"
+  },
+  "clipping_stats": {},
+  "blob_bytes": 939815,
+  "blob_sha256": "3584128056dbe4c1fe7e7995344ba92f06f0890ab22544aedb721393025ecc99",
+  "header_bytes": 48,
+  "index_bytes": 5000,
+  "occupied_pages": 132,
+  "bitmap_bytes": 927520,
+  "class_bytes": 7247,
+  "regenerate": "python3 firmware/scripts/generate_m4_center_kernel.py --font <path-to-标准像素粗.ttf>"
+}

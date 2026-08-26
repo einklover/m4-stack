@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,13 @@ def content_hash_dir(src: Path) -> str:
         h.update(b"\0")
         h.update(p.read_bytes())
         h.update(b"\0")
+    # JJWXC declares a generated binary table that is intentionally absent
+    # from Git. Include its canonical source in the cache key so a table
+    # update cannot reuse an older .m4x.
+    table_src = src.parents[1] / "firmware" / "lib" / "Txt" / "gbk_table.inc"
+    if not (src / "gbk_table.bin").is_file() and table_src.is_file():
+        h.update(b"derived:gbk_table.bin\0")
+        h.update(table_src.read_bytes())
     return h.hexdigest()
 
 
@@ -37,16 +46,66 @@ def read_manifest(src: Path) -> dict:
     return json.loads(mf.read_text(encoding="utf-8"))
 
 
+def _resolve_payload(src: Path, rel: Path, staging: Path) -> Path:
+    """Resolve a declared payload, deriving the canonical JJWXC table if needed."""
+    path = src / rel
+    if path.is_file():
+        return path
+    if rel.as_posix() != "gbk_table.bin":
+        return path
+
+    table_src = src.parents[1] / "firmware" / "lib" / "Txt" / "gbk_table.inc"
+    if not table_src.is_file():
+        return path
+    values = re.findall(r"0x([0-9A-Fa-f]{4})(?:,|$)", table_src.read_text(encoding="utf-8"))
+    if len(values) != 126 * 190:
+        raise ValueError(f"unexpected GBK table size: {len(values)}")
+    generated = staging / rel
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    raw = bytearray()
+    for value in values:
+        raw.extend(int(value, 16).to_bytes(2, "big"))
+    generated.write_bytes(raw)
+    return generated
+
+
 def build_m4x(src: Path, out: Path) -> Path:
-    """Zip source directory into .m4x (stored or deflated)."""
+    """Zip a manifest allowlist into .m4x (stored or deflated)."""
     src = src.resolve()
     if not (src / "manifest.json").is_file():
         raise FileNotFoundError("manifest.json required")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for p in sorted(src.rglob("*")):
-            if p.is_file():
-                zf.write(p, p.relative_to(src).as_posix())
+    manifest = read_manifest(src)
+    declared = manifest.get("files")
+    with tempfile.TemporaryDirectory(prefix="m4-plugin-package-") as tmp:
+        staging = Path(tmp)
+        if isinstance(declared, list):
+            entry = manifest.get("entry", "main.lua")
+            rels = [Path("manifest.json"), Path(str(entry)), *(Path(str(name)) for name in declared)]
+            payloads = {}
+            for rel in rels:
+                if rel.is_absolute() or ".." in rel.parts:
+                    raise ValueError(f"manifest path escapes source: {rel}")
+                payload = _resolve_payload(src, rel, staging)
+                if not payload.is_file():
+                    raise FileNotFoundError(f"manifest file missing: {rel}")
+                payloads[rel] = payload
+        else:
+            rels = sorted(p.relative_to(src) for p in src.rglob("*") if p.is_file())
+            payloads = {rel: src / rel for rel in rels}
+        out.parent.mkdir(parents=True, exist_ok=True)
+        # Large/binary payloads are stored so the device extractor does not
+        # need compressed and inflated copies at once. The canonical table is
+        # generated only in this temporary staging area, never committed.
+        with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for rel in sorted(set(rels), key=lambda p: p.as_posix()):
+                path = payloads[rel]
+                size = path.stat().st_size if path.is_file() else 0
+                use_store = (
+                    rel.suffix.lower() in {".bin", ".png", ".jpg", ".jpeg", ".gif"}
+                    or size >= 48 * 1024
+                )
+                comp = zipfile.ZIP_STORED if use_store else zipfile.ZIP_DEFLATED
+                zf.write(path, rel.as_posix(), compress_type=comp)
     return out
 
 

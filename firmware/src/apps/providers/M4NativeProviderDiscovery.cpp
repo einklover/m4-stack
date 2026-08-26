@@ -8,6 +8,8 @@
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderIo.h"
+#include "apps/providers/M4NativeProviderLogin.h"
+#include "apps/providers/M4ProviderShelfCache.h"
 #include "apps/providers/M4Psram.h"
 #include "util/M4WereadAuthPolicy.h"
 
@@ -18,6 +20,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -71,11 +74,86 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
  public:
   ~AtomicRowsSink() override { close(); }
 
-  bool open(const std::string& finalPath) {
+  bool open(const std::string& finalPath, bool deferFileOpen = false) {
     close();
     finalPath_ = finalPath;
     tmpPath_ = M4NativeProviderIo::replacedExtension(finalPath_, "part");
     written_ = 0;
+    used_ = 0;
+    writeFailed_ = false;
+    // Fanqie can be launched while the preceding app/install path is still
+    // finishing an SD transaction. Let its DNS/TLS request get underway and
+    // take the first response chunk before touching the card.
+    if (deferFileOpen) return true;
+    return ensureFile();
+  }
+
+  bool write(const uint8_t* data, size_t len) override {
+    // Some Weread shelf-sync responses include virtual shelf/category objects
+    // with no bookId (their TSV starts with a tab). They are not openable books;
+    // dropping them here keeps the persisted shelf index aligned with rows the
+    // UI can actually render.
+    if (!data || len == 0) return true;
+    if (data[0] == '\t' || data[0] == '\n') return true;
+    if (!ensureFile()) return false;
+    written_ += len;
+    while (len > 0) {
+      const size_t take = std::min(len, kBufferBytes - used_);
+      std::memcpy(buffer_ + used_, data, take);
+      used_ += take;
+      data += take;
+      len -= take;
+      if (used_ == kBufferBytes && !flushBuffer()) {
+        writeFailed_ = true;
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Direct raw write used by the Legado shelf parser after buffering. Same
+  // file handle as write(), bypasses the Sink protocol.
+  bool rawWrite(const char* data, size_t len) {
+    return write(reinterpret_cast<const uint8_t*>(data), len);
+  }
+
+  bool close() {
+    bool ok = true;
+    if (open_) {
+      ok = flushBuffer();
+      f_.close();
+      open_ = false;
+    }
+    used_ = 0;
+    return ok && !writeFailed_;
+  }
+
+  bool stageEmpty() {
+    if (written_ != 0) return true;
+    return ensureFile() && close();
+  }
+
+  const std::string& tempPath() const { return tmpPath_; }
+  size_t written() const { return written_; }
+
+  void discard() {
+    close();
+    if (!tmpPath_.empty() && SdMan.exists(tmpPath_.c_str())) SdMan.remove(tmpPath_.c_str());
+  }
+
+ private:
+  static constexpr size_t kBufferBytes = 4096;
+
+  bool flushBuffer() {
+    if (!open_ || used_ == 0) return true;
+    const int n = f_.write(buffer_, used_);
+    if (n != static_cast<int>(used_)) return false;
+    used_ = 0;
+    return true;
+  }
+
+  bool ensureFile() {
+    if (open_) return true;
     if (!M4NativeProviderIo::ensureParentDirs(finalPath_)) return false;
     // Stale zero-byte sibling from a previous aborted discovery can block FatFS
     // open-for-write on some cards; force-remove then retry once.
@@ -93,46 +171,13 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     }
     return open_;
   }
-
-  bool write(const uint8_t* data, size_t len) override {
-    if (!open_ || !data) return false;
-    const int n = f_.write(data, len);
-    if (n != static_cast<int>(len)) return false;
-    written_ += len;
-    return true;
-  }
-
-  // Direct raw write used by the Legado shelf parser after buffering. Same
-  // file handle as write(), bypasses the Sink protocol.
-  bool rawWrite(const char* data, size_t len) {
-    return write(reinterpret_cast<const uint8_t*>(data), len);
-  }
-
-  void close() {
-    if (open_) {
-      f_.close();
-      open_ = false;
-    }
-  }
-
-  bool commit() {
-    close();
-    if (tmpPath_.empty() || finalPath_.empty() || written_ == 0) return false;
-    // replacedExtension bak (not final+".bak"): FatFS 8.3 aliases
-    // shelf_rows.tsv.bak onto SHELF_ROWS.TSV. already-final is success.
-    return M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true);
-  }
-
-  void discard() {
-    close();
-    if (!tmpPath_.empty() && SdMan.exists(tmpPath_.c_str())) SdMan.remove(tmpPath_.c_str());
-  }
-
- private:
   FsFile f_;
   std::string finalPath_;
   std::string tmpPath_;
+  uint8_t buffer_[kBufferBytes] = {};
+  size_t used_ = 0;
   size_t written_ = 0;
+  bool writeFailed_ = false;
   bool open_ = false;
 };
 
@@ -156,7 +201,8 @@ class RecordExtractorSink final : public M4xJsonStream::Sink {
   std::string prefix_;
 };
 
-// Legado shelf rewrite sink: RecordExtractor emits bookUrl\tname\tauthor\n;
+// Legado shelf rewrite sink: RecordExtractor emits the selected shelf fields;
+// the source cover URL stays in the append-only row for endpoint-aware proxying.
 // we map bookUrl → short FNV id (M4-safe) and keep the locator in a sidecar
 // for later getChapterList/getBookContent. Sidecar is best-effort: a shelf
 // without locators still renders; catalog/content will then report
@@ -263,6 +309,11 @@ struct DiscoverySpec {
 DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
                        const std::string& category) {
   DiscoverySpec s;
+  const M4ProviderShelfCache::Schema* shelfSchema = M4ProviderShelfCache::schema(providerId);
+  if (!shelfSchema) {
+    s.error = "provider_not_supported";
+    return s;
+  }
   s.request.timeoutMs = 30000;
 
   if (providerId == "fanqie") {
@@ -280,7 +331,9 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.request.headers = {{"User-Agent", kFanqieUa}, {"Referer", "https://fanqienovel.com/"}};
     s.request.maxBytes = 4u * 1024u * 1024u;
     s.path = {"data", "data"};
-    s.fields = {"book_id", "book_name", "author", "_m4_progress"};
+    // Keep the legacy first four TSV columns stable; cover is optional and
+    // appended so old shelf rows remain readable.
+    s.fields = shelfSchema->columns;
     s.maxRows = 24;
     return s;
   }
@@ -302,7 +355,9 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.request.headers.clear();
     s.request.maxBytes = 512u * 1024u;
     s.path = {channel};
-    s.fields = {"novelId", "novelName", "authorName", "_m4_progress"};
+    // getFullPage is streamed through RecordExtractor; selecting cover does
+    // not materialize the response or the large intro payload in Lua/native.
+    s.fields = shelfSchema->columns;
     s.maxRows = 24;
     return s;
   }
@@ -322,7 +377,11 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
     s.request.maxBytes = 4u * 1024u * 1024u;
     s.path = {"data"};
     // totalChapterNum powers progressive catalog placeholders (fast open).
-    s.fields = {"bookUrl", "name", "author", "totalChapterNum"};
+    // latestChapterTitle and intro are reused by the detail page so opening a
+    // book never re-fetches / parses the whole bookshelf on the UI thread.
+    // coverUrl remains before intro; the rewrite keeps the source URL so
+    // endpoint changes can rebuild the local /cover proxy URL at row/detail time.
+    s.fields = shelfSchema->columns;
     s.maxRows = 64;
     return s;
   }
@@ -340,7 +399,9 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
                          {"Referer", "https://weread.qq.com/"}, {"Cookie", cookie}};
     s.request.maxBytes = 2u * 1024u * 1024u;
     s.path = {"books"};
-    s.fields = {"bookId", "title", "author", "progress"};
+    // cover is an optional fifth column; the first four columns are the
+    // persisted shelf contract used by older SD caches.
+    s.fields = shelfSchema->columns;
     // First window only. Waiting for a 4096-row / no-Content-Length body
     // wedges QEMU TLS the same way JJWXC did. More rows stay on Refresh.
     s.maxRows = 64;
@@ -349,6 +410,27 @@ DiscoverySpec makeSpec(const std::string& providerId, const std::string& appId,
 
   s.error = "provider_not_supported";
   return s;
+}
+
+bool commitShelfGeneration(AtomicRowsSink& file, const std::string& providerId,
+                           const std::string& appId) {
+  if (!file.close()) return false;
+  if (file.written() == 0 && !file.stageEmpty()) return false;
+  const std::string rows = rowsPath(appId);
+  const std::string meta = M4ProviderShelfCache::metadataPath(rows);
+  const std::string metaTemp = M4ProviderShelfCache::metadataTempPath(rows);
+  const std::string metadata = M4ProviderShelfCache::metadataJson(providerId);
+  if (!M4NativeProviderIo::writeTextFile(metaTemp, metadata)) {
+    file.discard();
+    return false;
+  }
+  const bool committed = M4NativeProviderIo::commitTempFilesPair(
+      file.tempPath(), rows, file.written(), metaTemp, meta, metadata.size());
+  if (!committed) {
+    file.discard();
+    if (SdMan.exists(metaTemp.c_str())) SdMan.remove(metaTemp.c_str());
+  }
+  return committed;
 }
 
 void taskMain(void*) {
@@ -361,13 +443,20 @@ void taskMain(void*) {
                 job.providerId.c_str(), job.appId.c_str(), job.category.c_str());
 
   DiscoverySpec spec = makeSpec(job.providerId, job.appId, job.category);
+  bool wereadRenewed = false;
+  if (spec.authRequired && job.providerId == "weread") {
+    if (M4NativeProviderLogin::tryRenewSession(appRoot(job.appId))) {
+      wereadRenewed = true;
+      spec = makeSpec(job.providerId, job.appId, job.category);
+    }
+  }
   if (spec.authRequired) {
     publish(Phase::AuthRequired, 0, 0, spec.error);
   } else if (!spec.error.empty()) {
     publish(Phase::Error, 0, 0, spec.error);
   } else {
     AtomicRowsSink file;
-    if (!file.open(rowsPath(job.appId))) {
+    if (!file.open(rowsPath(job.appId), job.providerId == "fanqie")) {
       writeDiscoveryDiag(job.appId, "sd_open_failed", false, 0, "sd_open_failed", 0, 0, false);
       publish(Phase::Error, 0, 0, "sd_open_failed");
     } else if (job.providerId == "legado") {
@@ -382,7 +471,7 @@ void taskMain(void*) {
           [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); });
       const bool finished = net.ok && rows.finish();
       const size_t rowCount = rewrite.written();
-      const bool parsed = finished && rowCount > 0;
+      const bool parsed = finished;
       const bool hadSidecar = rewrite.sidecarOpen();
       rewrite.closeSidecar();
       Serial.printf(
@@ -405,7 +494,7 @@ void taskMain(void*) {
         writeDiscoveryDiag(job.appId, "error", net.ok, net.bytes, error, rowCount, rewrite.skipped(),
                            hadSidecar);
         publish(Phase::Error, net.bytes, rowCount, error);
-      } else if (!file.commit()) {
+      } else if (!commitShelfGeneration(file, job.providerId, job.appId)) {
         file.discard();
         writeDiscoveryDiag(job.appId, "commit_fail", net.ok, net.bytes, "discovery_commit_failed",
                            rowCount, rewrite.skipped(), hadSidecar);
@@ -416,59 +505,86 @@ void taskMain(void*) {
         publish(Phase::Ready, net.bytes, rowCount);
       }
     } else {
-      M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, file, spec.maxRows);
-      RecordExtractorSink jsonSink(rows);
-      publish(Phase::Connecting);
-      M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
-      bool sawBody = false;
-      writeDiscoveryDiag(job.appId, "http_started", false, 0, "-", 0, 0, false);
-      const auto net = M4NativeProviderHttp::requestToSink(
-          spec.request, jsonSink,
-          [&](size_t bytes) {
-            publish(Phase::Receiving, bytes, rows.recordCount());
-            if (!sawBody) {
-              sawBody = true;
-              writeDiscoveryDiag(job.appId, "http_progress", false, bytes, "-",
-                                 rows.recordCount(), 0, false);
-            }
-          },
-          [&]() { return rows.recordCount() >= spec.maxRows; });
-      const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
-      const bool parsed = rows.recordCount() > 0 &&
-                          ((net.ok && rows.finish()) || boundedWindow);
-      const bool wereadLoginExpired =
-          job.providerId == "weread" && M4WereadAuthPolicy::responseIndicatesLoginRequired(jsonSink.prefix());
-      if (!parsed) {
-        file.discard();
-        if (wereadLoginExpired) {
-          writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, "login_required", 0, 0, false);
-          publish(Phase::AuthRequired, net.bytes, 0, "login_required");
-        } else {
-          const std::string error = !net.ok
-                                        ? (net.error.empty() ? "discovery_http" : net.error)
-                                        : (rows.recordCount() == 0
-                                               ? "discovery_empty"
-                                               : M4xJsonStream::errorString(rows.error()));
-          if (job.providerId == "weread" &&
-              (error == "http_401" || error == "http_403" || error == "login_required")) {
-            writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, error, rows.recordCount(), 0, false);
-            publish(Phase::AuthRequired, net.bytes, 0, error);
+      for (int attempt = 0; attempt < 2; ++attempt) {
+        if (attempt > 0) {
+          spec = makeSpec(job.providerId, job.appId, job.category);
+          if (spec.authRequired) {
+            publish(Phase::AuthRequired, 0, 0, spec.error);
+            break;
+          }
+          if (!spec.error.empty()) {
+            publish(Phase::Error, 0, 0, spec.error);
+            break;
+          }
+          if (!file.open(rowsPath(job.appId), job.providerId == "fanqie")) {
+            writeDiscoveryDiag(job.appId, "sd_open_failed", false, 0, "sd_open_failed", 0, 0, false);
+            publish(Phase::Error, 0, 0, "sd_open_failed");
+            break;
+          }
+        }
+        M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, file, spec.maxRows);
+        RecordExtractorSink jsonSink(rows);
+        publish(Phase::Connecting);
+        M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
+        bool sawBody = false;
+        if (job.providerId != "fanqie") {
+          writeDiscoveryDiag(job.appId, "http_started", false, 0, "-", 0, 0, false);
+        }
+        const auto net = M4NativeProviderHttp::requestToSink(
+            spec.request, jsonSink,
+            [&](size_t bytes) {
+              publish(Phase::Receiving, bytes, rows.recordCount());
+              if (!sawBody) {
+                sawBody = true;
+                if (job.providerId != "fanqie") {
+                  writeDiscoveryDiag(job.appId, "http_progress", false, bytes, "-",
+                                     rows.recordCount(), 0, false);
+                }
+              }
+            },
+            [&]() { return rows.recordCount() >= spec.maxRows; });
+        const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
+        const bool finished = net.ok && rows.finish();
+        const bool parsed = (finished && (rows.recordCount() > 0 || job.providerId == "weread")) ||
+                            boundedWindow;
+        const std::string error = !net.ok
+                                      ? (net.error.empty() ? "discovery_http" : net.error)
+                                      : (rows.recordCount() == 0
+                                             ? "discovery_empty"
+                                             : M4xJsonStream::errorString(rows.error()));
+        const bool wereadLoginExpired =
+            job.providerId == "weread" &&
+            (M4WereadAuthPolicy::responseIndicatesLoginRequired(jsonSink.prefix()) ||
+             M4WereadAuthPolicy::httpStatusMeansLoginRequired(error));
+        if (!parsed) {
+          file.discard();
+          if (wereadLoginExpired && !wereadRenewed &&
+              M4NativeProviderLogin::tryRenewSession(appRoot(job.appId))) {
+            wereadRenewed = true;
+            continue;
+          }
+          if (wereadLoginExpired) {
+            writeDiscoveryDiag(job.appId, "auth", net.ok, net.bytes, "login_required", 0, 0, false);
+            publish(Phase::AuthRequired, net.bytes, 0, "login_required");
           } else {
             writeDiscoveryDiag(job.appId, "error", net.ok || boundedWindow, net.bytes, error,
                                rows.recordCount(), 0, false);
             publish(Phase::Error, net.bytes, rows.recordCount(), error);
           }
+          break;
         }
-      } else if (!file.commit()) {
-        file.discard();
-        writeDiscoveryDiag(job.appId, "commit_fail", net.ok || boundedWindow, net.bytes,
-                           "discovery_commit_failed",
-                           rows.recordCount(), 0, false);
-        publish(Phase::Error, net.bytes, rows.recordCount(), "discovery_commit_failed");
-      } else {
-        writeDiscoveryDiag(job.appId, "ready", net.ok || boundedWindow, net.bytes, "-",
-                           rows.recordCount(), 0, false);
-        publish(Phase::Ready, net.bytes, rows.recordCount());
+        if (!commitShelfGeneration(file, job.providerId, job.appId)) {
+          file.discard();
+          writeDiscoveryDiag(job.appId, "commit_fail", net.ok || boundedWindow, net.bytes,
+                             "discovery_commit_failed",
+                             rows.recordCount(), 0, false);
+          publish(Phase::Error, net.bytes, rows.recordCount(), "discovery_commit_failed");
+        } else {
+          writeDiscoveryDiag(job.appId, "ready", net.ok || boundedWindow, net.bytes, "-",
+                             rows.recordCount(), 0, false);
+          publish(Phase::Ready, net.bytes, rows.recordCount());
+        }
+        break;
       }
     }
   }

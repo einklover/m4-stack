@@ -17,7 +17,24 @@ enum class RefreshMode {
   HALF_REFRESH,
   FULL_REFRESH,
   UI_FAST_REFRESH,
+  READER_CLEANUP_REFRESH,
 };
+
+enum class RefreshContext {
+  UI_CONTEXT,
+  READER_BODY_CONTEXT,
+};
+
+// Legacy FULL/HALF names remain source-compatible with older simulator
+// callers, but they are never a physical waveform. Only the explicit reader
+// cleanup can request the one-inversion mode.
+constexpr RefreshMode normalizeRefreshMode(RefreshMode mode,
+                                            RefreshContext context = RefreshContext::UI_CONTEXT) {
+  return mode == RefreshMode::READER_CLEANUP_REFRESH &&
+                 context == RefreshContext::READER_BODY_CONTEXT
+             ? RefreshMode::READER_CLEANUP_REFRESH
+             : RefreshMode::FAST_REFRESH;
+}
 
 struct FrameTag {
   uint32_t generation = 0;
@@ -39,7 +56,8 @@ public:
   // Submit the most recently rendered frame. Returns false if the backend
   // cannot accept it (for example because an EPD refresh is already in flight).
   virtual bool submit(RefreshMode mode,
-                      std::function<void()> onCommitted = nullptr) = 0;
+                      std::function<void()> onCommitted = nullptr,
+                      RefreshContext context = RefreshContext::UI_CONTEXT) = 0;
 };
 
 }  // namespace m4platform

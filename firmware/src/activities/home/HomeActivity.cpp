@@ -15,14 +15,15 @@
 #include <vector>
 
 #include <HalPowerManager.h>
-#include "debug/M4WaveformLab.h"
 #include "CrossPointSettings.h"
 #include "I18n.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "apps/M4xRegistry.h"
 #include "util/M4ContentProviderContract.h"
 #include "util/M4HistoryReopen.h"
+#include "util/M4HomeBookDetailMeta.h"
 #include "BookmarkStore.h"
 #include "components/UITheme.h"
 #include "components/themes/BaseTheme.h"
@@ -52,6 +53,16 @@ int HomeActivity::getMenuItemCount() const {
 
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
+  {
+    std::vector<M4HomeBookDetailMeta::InstalledPlugin> plugins;
+    const auto apps = M4xRegistry::load();
+    plugins.reserve(apps.size());
+    for (const auto& app : apps) {
+      plugins.push_back({app.id, app.name, app.provider});
+    }
+    M4HomeBookDetailMeta::setInstalledPlugins(std::move(plugins));
+  }
+
   recentBooks.clear();
   const auto& books = RECENT_BOOKS.getBooks();
   recentBooks.reserve(std::min(static_cast<int>(books.size()), maxBooks));
@@ -64,10 +75,6 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
 
     if (M4ContentProvider::isHistoryUri(book.path.c_str())) {
       // Keep provider entries for history reopen (cache or app launch).
-      if (!book.originalSourcePath.empty() && book.originalSourcePath.compare(0, 4, "app:") != 0 &&
-          !SdMan.exists(book.originalSourcePath.c_str()) && book.author.find('.') == std::string::npos) {
-        continue;
-      }
       book.progress = loadBookProgress(book.originalSourcePath.empty() ? book.path : book.originalSourcePath);
       recentBooks.push_back(book);
       continue;
@@ -493,11 +500,18 @@ void HomeActivity::loop() {
 
     if (selectorIndex < static_cast<int>(recentBooks.size())) {
       const auto& b = recentBooks[selectorIndex];
-      std::string src = b.originalSourcePath;
-      if (M4ContentProvider::isHistoryUri(b.path.c_str()) &&
-          (src.empty() || !SdMan.exists(src.c_str())) && b.author.find('.') != std::string::npos) {
-        src = std::string("app:") + b.author;
-      }
+      const auto apps = M4xRegistry::load();
+      const M4HistoryReopen::ProviderAppIdResolver appIdForProvider = [apps](const std::string& providerId) {
+        std::string found;
+        for (const auto& app : apps) {
+          if (app.provider != providerId) continue;
+          if (!found.empty() && found != app.id) return std::string();
+          found = app.id;
+        }
+        return found;
+      };
+      const std::string src = M4HistoryReopen::appHintForRecentBook(
+          b.path, b.originalSourcePath, b.author, appIdForProvider);
       onSelectBook(b.path, src);
     } else if (menuSelectedIndex == myLibraryIdx) {
       onMyLibraryOpen();
@@ -687,19 +701,9 @@ void HomeActivity::render() {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
-  // Keep the currently visible frame before drawing Home.  The requested
-  // direction is logical; GfxRenderer maps it to the physical 800x480 frame.
-  uint8_t* oldFrame = nullptr;
+  // Navigation surfaces use a single fast/partial frame. Reader-body page
+  // pagination owns the only windowed animation path.
   const bool animateHomeEntry = animateEntry && !firstRenderDone;
-  if (animateHomeEntry) {
-    const uint8_t* currentFrame = renderer.getFrameBuffer();
-    if (!currentFrame) currentFrame = renderer.getLastShown();
-    if (currentFrame) {
-      oldFrame = static_cast<uint8_t*>(
-          heap_caps_malloc(HalDisplay::BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-      if (oldFrame) std::memcpy(oldFrame, currentFrame, HalDisplay::BUFFER_SIZE);
-    }
-  }
 
   renderer.clearScreen();
   // Only restore the saved cover buffer when covers don't need re-rendering.
@@ -775,53 +779,8 @@ void HomeActivity::render() {
   const auto labels = mappedInput.mapLabels("", L(Str::kSelect), L(Str::kMoveUp), L(Str::kMoveDown));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  bool animated = false;
-  if (animateHomeEntry && SETTINGS.systemAnimationEnabled != 0 && oldFrame && renderer.getFrameBuffer()) {
-    extern HalDisplay display;
-    M4WaveformLab::setDisplay(&display);
-    uint8_t lut[M4WaveformLab::kLutBytes] = {};
-    lut[10] = 0x80;
-    lut[20] = 0x40;
-    uint8_t tp = SETTINGS.pageTurnAnimationTp;
-    if (tp < 1) tp = 1;
-    if (tp > 16) tp = 16;
-    lut[50] = tp;
-    lut[51] = 0x01;
-    uint8_t fr = SETTINGS.pageTurnAnimationFrameRate;
-    if (fr != 0x22 && fr != 0x44 && fr != 0x88) fr = 0x88;
-    for (int i = 100; i < 105; ++i) lut[i] = fr;
-    lut[105] = 0x17;
-    lut[106] = 0x41;
-    lut[107] = 0xA8;
-    lut[108] = 0x32;
-    lut[109] = 0x30;
-    if (M4WaveformLab::setLutBytes(lut, sizeof(lut))) {
-      int steps = static_cast<int>(SETTINGS.pageTurnAnimationSteps);
-      if (steps < 2) steps = 2;
-      if (steps > 64) steps = 64;
-      int mult = static_cast<int>(SETTINGS.pageTurnAnimationMult);
-      if (mult < 1) mult = 1;
-      if (mult > 16) mult = 16;
-      if (mult > steps) mult = steps;
-      // Reuse the reader's animation parameters; only override direction.
-      // Home receives logical bottom→top, then the renderer maps it for the
-      // physical panel. Back gestures use their logical edge direction too.
-      const int direction = renderer.logicalToPhysicalAnimationDirection(entryAnimationDirection);
-      animated = M4WaveformLab::runAnimateMemWindow(oldFrame, renderer.getFrameBuffer(),
-                                                    steps, mult,
-                                                    direction) != 0;
-    }
-  }
-  if (oldFrame) free(oldFrame);
-  if (animateHomeEntry) {
-    // Home return deliberately avoids the old BW/HALF flash. If the animation
-    // cannot allocate a temporary frame, FAST is the non-flashing fallback.
-    if (!animated) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-  } else if (!firstRenderDone) {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-  } else {
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-  }
+  (void)animateHomeEntry;
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   (void)renderer.storeLastShown();
 
   if (!firstRenderDone) {

@@ -24,7 +24,7 @@ from m4adb_lib.client import BridgeError, Client  # noqa: E402
 from m4adb_lib.daemon import BridgeDaemon, DaemonTransport, daemon_alive, socket_path_for_port, stop_daemon  # noqa: E402
 from m4adb_lib.journey import load_journey, run_journey  # noqa: E402
 from m4adb_lib.mock_device import MockDevice  # noqa: E402
-from m4adb_lib.transport import MockTransport, SerialTransport, auto_port, list_serial_devices  # noqa: E402
+from m4adb_lib.transport import MockTransport, auto_port, list_serial_devices, make_transport  # noqa: E402
 from m4adb_lib.watch import watch_loop  # noqa: E402
 
 DEFAULT_CACHE = ROOT / "build" / "m4adb" / "cache"
@@ -58,7 +58,7 @@ def _open_direct_client(args: argparse.Namespace, ready_timeout: float | None = 
     if not port:
         raise SystemExit("未找到串口设备。请用 --port 指定，或先运行 devices / doctor。")
     baud = int(getattr(args, "baud", 115200))
-    client = Client(SerialTransport(port, baud), default_timeout=float(getattr(args, "timeout", 10)))
+    client = Client(make_transport(port, baud), default_timeout=float(getattr(args, "timeout", 10)))
     # ESP32-S3 USB Serial/JTAG may reset when macOS establishes the CDC
     # session. Keep this same handle open and retry the idempotent handshake
     # until the firmware bridge is ready.

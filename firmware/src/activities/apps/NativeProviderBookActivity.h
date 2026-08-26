@@ -2,6 +2,7 @@
 
 #include "../ActivityWithSubactivity.h"
 #include "apps/providers/M4NovelProviderContract.h"
+#include "util/M4NativeProviderDetailTouchPolicy.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,16 +20,18 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
                              std::string providerId, std::string bookId,
                              std::string appId, std::string title, std::string author,
                              const std::function<void()>& onExitBook,
-                             bool autoStartReading = false, int autoOpenIndex = -1);
+                             bool autoStartReading = false, int autoOpenIndex = -1,
+                             std::string coverUrl = {});
 
   NativeProviderBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                              std::string providerId, std::string bookId,
                              std::string appId, std::string title,
                              const std::function<void()>& onExitBook,
-                             bool autoStartReading = false, int autoOpenIndex = -1)
+                             bool autoStartReading = false, int autoOpenIndex = -1,
+                             std::string coverUrl = {})
       : NativeProviderBookActivity(renderer, mappedInput, providerId, bookId, appId,
                                    title, std::string(), onExitBook, autoStartReading,
-                                   autoOpenIndex) {}
+                                   autoOpenIndex, std::move(coverUrl)) {}
 
   void onEnter() override;
   void onExit() override;
@@ -38,7 +41,9 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   bool isFullscreenActivity() const override { return true; }
   int uiTextScalePercent() const override { return M4UiRuntimePolicy::kNativePluginTextScalePercent; }
   uint8_t touchFooterButtonsMask() const override {
-    return M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm | M4FooterTouchPolicy::Left;
+    return state_ == State::Detail
+               ? M4FooterTouchPolicy::Back
+               : M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm | M4FooterTouchPolicy::Left;
   }
 
  private:
@@ -49,6 +54,8 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   bool startCatalogBootstrap(PendingCatalogAction action);
   void continueAfterCatalogReady();
   void loadBookDetail();
+  void pollDetailLoading();
+  void cancelDetailLoading();
   void renderDetail();
   void openToc();
   void startReading();
@@ -65,6 +72,7 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   std::string appId_;
   std::string title_;
   std::string author_;
+  std::string coverUrl_;
   std::string appDataRoot_;
   std::string error_;
   std::function<void()> onExitBook_;
@@ -89,12 +97,18 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   bool loginSucceeded_ = false;
   uint32_t lastCatalogPaintMs_ = 0;
   uint32_t lastLoadingPaintMs_ = 0;
+  uint32_t catalogStartAtMs_ = 0;
+  uint32_t chapterStartAtMs_ = 0;
+  uint32_t chapterLoadStartedAtMs_ = 0;
+  bool catalogStartPending_ = false;
+  bool chapterStartPending_ = false;
   std::string lastCatalogSignature_;
   std::string lastLoadingSignature_;
 
   M4NovelProvider::BookDetail detail_;
   bool detailLoading_ = false;
   bool detailAttempted_ = false;
-  int detailReadButtonTop_ = 0;
-  int detailReadButtonHeight_ = 0;
+  std::string detailError_;
+  std::string providerCoverBmpPath_;
+  M4NativeProviderDetailTouchPolicy::Layout detailTouch_;
 };

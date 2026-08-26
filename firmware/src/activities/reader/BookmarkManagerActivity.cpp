@@ -64,8 +64,9 @@ void BookmarkManagerActivity::taskTrampoline(void* param) {
 void BookmarkManagerActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   // Bookmark titles come from arbitrary book/chapter/body text. Keep fixed UI
-  // chrome on the compact UI face, but make sure the full reader CJK face is
-  // available before rendering user content so uncommon characters never '?'.
+  // chrome on the builtin 15x16 system font, but make sure the full reader
+  // CJK face is available before rendering user content so uncommon
+  // characters never '?'.
   EpdFontLoader::ensureFontsFromSd(renderer);
   renderingMutex = xSemaphoreCreateMutex();
   selectorIndex = 0;
@@ -377,7 +378,7 @@ void BookmarkManagerActivity::renderScreen() {
 
   if (firstPaint_) {
     firstPaint_ = false;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }

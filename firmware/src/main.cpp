@@ -7,11 +7,11 @@
 #include <SDCardManager.h>
 #include <SPI.h>
 #ifdef OMIT_FONTS
-// Murphy M4: APP1 is 7.14 MiB — full notosans_13_bold CJK tables do not fit.
-// Built-in UI subset covers all shipped zh-CN/zh-TW I18n strings + ASCII.
-// Full-book CJK still uses SD /fonts/*.epdfont via EpdFontLoader (not .cpfont).
-#include <builtinFonts/m4_ui_cjk_13.h>
-#include <builtinFonts/m4_ui_cjk_16.h>
+// Murphy M4: one CenterKernel occupancy blob (CJK + Latin). Chrome never
+// follows a reader TTF. Reader body may still bind runtime sfnt from /FONT.
+#include "fontdata/m4_center_kernel_16x16.h"
+#include "util/M4FontPolicy.h"
+#include <CenterKernelEpdFont.h>
 #else
 #include <builtinFonts/all.h>
 #endif
@@ -116,7 +116,13 @@ static std::string gDebugActiveAppId;
 
 extern "C" void m4YieldToDebugBridge() {
   if (!gM4MainTask || xTaskGetCurrentTaskHandle() != gM4MainTask) return;
+  // Yield re-entry happens mid-frame (activity loop owns the task). Synthetic
+  // page-turn input received here is rejected as busy (not queued): a deferred
+  // FIFO previously replayed taps after the slow first-page index and produced
+  // surprise multi-page turns. Hosts retry on the next regular poll window.
+  gM4DebugBridge.setYieldContext(true);
   gM4DebugBridge.poll();
+  gM4DebugBridge.setYieldContext(false);
 }
 
 namespace {
@@ -337,43 +343,26 @@ EpdFont ui10RegularFont(&notosans_13_bold);
 EpdFont ui10BoldFont(&notosans_13_bold);
 EpdFont ui12RegularFont(&notosans_13_bold);
 EpdFont ui12BoldFont(&notosans_13_bold);
-#else
-// Size-safe Chinese UI subset (I18n charset). Reader full-CJK needs SD epdfont.
-EpdFont notosans12RegularFont(&m4_ui_cjk_13);
-EpdFont notosans12BoldFont(&m4_ui_cjk_13);
-EpdFont notosans12ItalicFont(&m4_ui_cjk_13);
-EpdFont notosans12BoldItalicFont(&m4_ui_cjk_13);
-EpdFontFamily notosans12FontFamily(&notosans12RegularFont, &notosans12BoldFont, &notosans12ItalicFont,
-                                   &notosans12BoldItalicFont);
-EpdFont notosans14RegularFont(&m4_ui_cjk_13);
-EpdFont notosans14BoldFont(&m4_ui_cjk_13);
-EpdFont notosans14ItalicFont(&m4_ui_cjk_13);
-EpdFont notosans14BoldItalicFont(&m4_ui_cjk_13);
-EpdFontFamily notosans14FontFamily(&notosans14RegularFont, &notosans14BoldFont, &notosans14ItalicFont,
-                                   &notosans14BoldItalicFont);
-EpdFont notosans16RegularFont(&m4_ui_cjk_16);
-EpdFont notosans16BoldFont(&m4_ui_cjk_16);
-EpdFont notosans16ItalicFont(&m4_ui_cjk_16);
-EpdFont notosans16BoldItalicFont(&m4_ui_cjk_16);
-EpdFontFamily notosans16FontFamily(&notosans16RegularFont, &notosans16BoldFont, &notosans16ItalicFont,
-                                   &notosans16BoldItalicFont);
-EpdFont notosans18RegularFont(&m4_ui_cjk_16);
-EpdFont notosans18BoldFont(&m4_ui_cjk_16);
-EpdFont notosans18ItalicFont(&m4_ui_cjk_16);
-EpdFont notosans18BoldItalicFont(&m4_ui_cjk_16);
-EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
-                                   &notosans18BoldItalicFont);
-
-EpdFont smallFont(&m4_ui_cjk_13);
-EpdFont ui10RegularFont(&m4_ui_cjk_13);
-EpdFont ui10BoldFont(&m4_ui_cjk_13);
-EpdFont ui12RegularFont(&m4_ui_cjk_13);
-EpdFont ui12BoldFont(&m4_ui_cjk_13);
-#endif  // OMIT_FONTS
-
 EpdFontFamily smallFontFamily(&smallFont);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
+#else
+// Built-in CenterKernel occupancy (CJK + Latin) is the single system face.
+// EpdFontLoader rebinds SMALL/UI to the settings 小/中/大 pixel size.
+extern const uint8_t m4_center_kernel_16x16_bin_start[] asm("_binary_src_fontdata_m4_center_kernel_16x16_bin_start");
+extern const uint8_t m4_center_kernel_16x16_bin_end[] asm("_binary_src_fontdata_m4_center_kernel_16x16_bin_end");
+static CenterKernelEpdFont bootCkFont(
+    m4_center_kernel_16x16_bin_start,
+    static_cast<size_t>(m4_center_kernel_16x16_bin_end - m4_center_kernel_16x16_bin_start),
+    16);
+EpdFontFamily notosans12FontFamily(&bootCkFont, &bootCkFont, &bootCkFont, &bootCkFont);
+EpdFontFamily notosans14FontFamily(&bootCkFont, &bootCkFont, &bootCkFont, &bootCkFont);
+EpdFontFamily notosans16FontFamily(&bootCkFont, &bootCkFont, &bootCkFont, &bootCkFont);
+EpdFontFamily notosans18FontFamily(&bootCkFont, &bootCkFont, &bootCkFont, &bootCkFont);
+EpdFontFamily smallFontFamily(&bootCkFont);
+EpdFontFamily ui10FontFamily(&bootCkFont, &bootCkFont);
+EpdFontFamily ui12FontFamily(&bootCkFont, &bootCkFont);
+#endif  // OMIT_FONTS
 
 
 // measurement of power button press duration calibration value
@@ -604,7 +593,8 @@ void setupDisplayAndFonts() {
   renderer.begin();
   Serial.printf("[%lu] [M4-DISP] Display initialized\n", millis());
   // Mandatory IDs (NOTOSANS_*, UI_*, SMALL) always registered so SYSTEM_FONT /
-  // UI drawing never no-ops. OMIT_FONTS builds use the M4 UI CJK subset.
+  // UI drawing never no-ops. OMIT_FONTS builds bind chrome and the default
+  // reader face to the builtin 15x16 1-bit native-grid.
   renderer.insertFont(NOTOSANS_12_FONT_ID, notosans12FontFamily);
   renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
   renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
@@ -613,9 +603,9 @@ void setupDisplayAndFonts() {
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 #ifdef OMIT_FONTS
-  Serial.printf("[%lu] [M4-FONT] Registered mandatory IDs with m4_ui_cjk subset "
-                "(UI strings offline; full-book CJK needs SD /fonts/*.epdfont)\n",
-                millis());
+  Serial.printf("[%lu] [M4-FONT] Boot CenterKernel valid=%d glyphs=%u px=16 (CJK+Latin)\n",
+                millis(), bootCkFont.valid() ? 1 : 0,
+                static_cast<unsigned>(bootCkFont.glyphCount()));
 #else
   Serial.printf("[%lu] [FONT] Builtin NotoSans full CJK registered\n", millis());
 #endif
@@ -904,7 +894,7 @@ void setup() {
 #ifdef OMIT_FONTS
     Serial.printf("[%lu] [M4-FONT] SD custom fonts are optional. Format: /fonts/*.epdfont "
                   "(Fengyan EpdFontLoader V0/V1). .cpfont is NOT supported in this tree. "
-                  "Builtin m4_ui_cjk covers UI strings; full-book CJK requires SD epdfont.\n",
+                  "Compact common-CJK fallback is built in; full-book CJK uses SD/runtime font when available.\n",
                   millis());
 #endif
 #ifdef CROSSPOINT_MURPHY_M4
@@ -1297,12 +1287,14 @@ void loop() {
   if (gpio.wasReleased(HalGPIO::BTN_POWER)) {
     // 检查短按电源键的设置
     if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FULL_REFRESH) {
-      // 全刷功能：在阅读器中跳过（阅读器有自己的刷新管理，避免双重全刷）
+      // Legacy cleanup action: the reader owns its cadence; do not double-refresh.
       if (currentActivity && currentActivity->isReaderActivity()) {
-        Serial.printf("[%lu] [PWR] Full refresh skipped (reader manages its own refresh)\n", millis());
+        Serial.printf("[%lu] [PWR] Legacy refresh skipped (reader manages its own cleanup)\n", millis());
       } else {
-        Serial.printf("[%lu] [PWR] Full refresh triggered by power button\n", millis());
-        renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+        Serial.printf("[%lu] [PWR] Legacy refresh action uses fast path\n", millis());
+        // Legacy "full refresh" setting is now a fast/partial request; the
+        // reader body owns its explicit single-pass cleanup cadence.
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
       }
     } else if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::CONFIRM) {
       // 确认功能：模拟确认键按下和释放

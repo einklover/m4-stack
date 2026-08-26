@@ -30,6 +30,8 @@ firmware/artifacts/
 release-*/
 *.bin
 !**/partitions*.bin
+!firmware/src/fontdata/m4_native_grid_15x16.bin
+!firmware/src/fontdata/m4_center_kernel_16x16.bin
 
 # Simulator local
 simulator/build/

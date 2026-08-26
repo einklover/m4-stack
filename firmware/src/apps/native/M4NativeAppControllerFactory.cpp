@@ -1,12 +1,13 @@
 #include "apps/native/M4NativeAppControllerFactory.h"
 #include "apps/native/M4ScreenBridgeController.h"
 
-#include "apps/M4xJsonStream.h"
 #include "apps/providers/M4NativeLoadUi.h"
+#include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4NativeProviderDiscovery.h"
 #include "apps/providers/M4NativeProviderExplore.h"
-#include "apps/providers/M4NativeProviderIo.h"
 #include "apps/providers/M4NativeProviderManager.h"
+#include "apps/providers/M4ProviderShelfCache.h"
+#include "apps/providers/M4NativeProviderIo.h"
 #include "util/M4ContentProviderContract.h"
 #include "util/M4ProviderShelfIndex.h"
 
@@ -33,22 +34,6 @@ bool fieldAt(const std::string& line, int field, std::string& out) {
     start = i + 1;
   }
   return false;
-}
-
-size_t buildShelfIndex(const std::string& path, std::vector<uint32_t>& anchors) {
-  anchors.clear();
-  FsFile f;
-  if (!SdMan.openFileForRead("NA-SHELF", path.c_str(), f)) return 0;
-  M4ProviderShelfIndex::Builder index;
-  uint8_t buf[1024];
-  while (f.available()) {
-    const int n = f.read(buf, sizeof(buf));
-    if (n <= 0) break;
-    index.feed(buf, static_cast<size_t>(n));
-  }
-  f.close();
-  anchors = std::move(index.anchors);
-  return index.finish();
 }
 
 bool readLineAt(const std::string& path, size_t target, const std::vector<uint32_t>& anchors,
@@ -94,61 +79,10 @@ bool readLineAt(const std::string& path, size_t target, const std::vector<uint32
   return row == target && !line.empty();
 }
 
-class ShelfSink final : public M4xJsonStream::Sink {
- public:
-  ~ShelfSink() override {
-    if (open_) f_.close();
-  }
-
-  bool open(const std::string& path) {
-    M4NativeProviderIo::ensureParentDirs(path);
-    if (SdMan.exists(path.c_str())) SdMan.remove(path.c_str());
-    open_ = SdMan.openFileForWrite("NA-SHELF", path.c_str(), f_);
-    return open_;
-  }
-
-  bool write(const uint8_t* data, size_t len) override {
-    if (!open_ || !data) return false;
-    return f_.write(data, len) == static_cast<int>(len);
-  }
-
- private:
-  FsFile f_;
-  bool open_ = false;
-};
-
-bool projectLegacyShelf(const M4xInstalledApp& app, const std::string& rowsPath) {
-  const std::string root = std::string("/apps_data/") + app.id;
-  std::string source = root + "/shelf_cache.json";
-  if (!SdMan.exists(source.c_str())) source = root + "/shelf.json";
-  if (!SdMan.exists(source.c_str())) return false;
-  FsFile in;
-  if (!SdMan.openFileForRead("NA-SHELF", source.c_str(), in) || in.fileSize() > 4u * 1024u * 1024u) {
-    if (in.isOpen()) in.close();
-    return false;
-  }
-  ShelfSink sink;
-  if (!sink.open(rowsPath)) {
-    in.close();
-    return false;
-  }
-  M4xJsonStream::RecordExtractor rows({"books"}, {"bookId", "title", "author", "progress"}, sink, 4096);
-  uint8_t buf[2048];
-  bool ok = true;
-  while (in.available()) {
-    const int n = in.read(buf, sizeof(buf));
-    if (n <= 0) {
-      ok = false;
-      break;
-    }
-    if (!rows.feed(buf, static_cast<size_t>(n))) {
-      ok = false;
-      break;
-    }
-  }
-  in.close();
-  return ok && rows.finish() && rows.recordCount() > 0;
-}
+constexpr size_t kMaxShelfBytes = 8u * 1024u * 1024u;
+constexpr size_t kMaxShelfRows = 200000;
+constexpr size_t kShelfPumpBytes = 4096;
+constexpr uint32_t kShelfRevisionIntervalMs = 300;
 
 class BaseController : public M4NativeUi::Controller {
  public:
@@ -190,16 +124,17 @@ class ProviderController final : public BaseController {
   explicit ProviderController(M4xInstalledApp app) : BaseController(std::move(app)) {
     root_ = std::string("/apps_data/") + app_.id;
     shelfRows_ = root_ + "/provider/shelf_rows.tsv";
-    shelfCount_ = buildShelfIndex(shelfRows_, shelfAnchors_);
-    if (shelfCount_ == 0) {
-      (void)projectLegacyShelf(app_, shelfRows_);
-      shelfCount_ = buildShelfIndex(shelfRows_, shelfAnchors_);
-    }
+    shelfIndexBuilder_.maxRows = kMaxShelfRows;
+    beginShelfIndex();
     M4NativeProviderExplore::Category first{};
     if (M4NativeProviderExplore::at(app_.provider, 0, first)) {
       selectedCategoryKey_ = first.key;
       selectedCategoryTitle_ = first.title;
     }
+  }
+
+  ~ProviderController() override {
+    if (shelfIndexFile_.isOpen()) shelfIndexFile_.close();
   }
 
   bool scalar(const std::string& key, std::string& out) const override {
@@ -241,7 +176,7 @@ class ProviderController final : public BaseController {
           // Surface the machine error so LAN/parse failures are diagnosable on-device
           // instead of a generic "network failed" (often not a network problem).
           if (d.error == "legado_endpoint_missing") {
-            out = "未找到阅读服务 · 请用手机打开传书页后刷新";
+            out = "未找到阅读服务 · 请打开连接设置";
           } else if (!d.error.empty() && d.error.size() <= 40) {
             out = std::string("失败 · ") + d.error;
           } else {
@@ -251,6 +186,14 @@ class ProviderController final : public BaseController {
         }
       }
 
+      if (shelfIndexing_) {
+        out = "正在整理书目…";
+        return true;
+      }
+      if (shelfIndexFailed_) {
+        out = "书目读取失败 · 刷新重试";
+        return true;
+      }
       if (shelfCount_ == 0) {
         out = (app_.provider == "weread" || app_.provider == "legado") ? "暂无书目" : "暂无热推";
       } else if (!selectedCategoryTitle_.empty()) {
@@ -274,7 +217,9 @@ class ProviderController final : public BaseController {
   size_t rowCount(const std::string& source) const override {
     syncDiscovery();
     if (source == "provider.categories") return M4NativeProviderExplore::count(app_.provider);
-    if (source == "provider.books" || source == "provider.shelf" || source == "provider.recommend") return shelfCount_;
+    if (source == "provider.books" || source == "provider.shelf" || source == "provider.recommend") {
+      return shelfIndexReady_ ? shelfCount_ : 0;
+    }
     return 0;
   }
 
@@ -290,7 +235,9 @@ class ProviderController final : public BaseController {
       return true;
     }
 
-    if ((source != "provider.books" && source != "provider.shelf" && source != "provider.recommend") || index0 >= shelfCount_) return false;
+    if (!shelfIndexReady_ ||
+        (source != "provider.books" && source != "provider.shelf" && source != "provider.recommend") ||
+        index0 >= shelfCount_) return false;
     std::string line;
     if (!readLineAt(shelfRows_, index0, shelfAnchors_, line)) return false;
     std::string rawKey;
@@ -301,6 +248,16 @@ class ProviderController final : public BaseController {
     fieldAt(line, 1, out.title);
     fieldAt(line, 2, out.subtitle);
     fieldAt(line, 3, out.value);
+    if (app_.provider == "legado") {
+      std::string legadoCover;
+      // Column 4 is Legado latestChapterTitle. Cover is the append-only
+      // zero-based field 5 (the sixth TSV column) and is converted using the
+      // current configured endpoint.
+      fieldAt(line, 5, legadoCover);
+      out.coverUrl = M4LegadoBridge::coverProxyUrl(M4LegadoBridge::baseUrl(), legadoCover);
+    } else if (app_.provider == "fanqie" || app_.provider == "jjwxc" || app_.provider == "weread") {
+      fieldAt(line, 4, out.coverUrl);
+    }
     if (out.title.empty()) out.title = out.key;
     if (!out.value.empty()) out.value += "%";
     return !out.key.empty();
@@ -334,6 +291,16 @@ class ProviderController final : public BaseController {
       return r;
     }
 
+    if (action == "provider.endpoint") {
+      if (app_.provider != "legado") {
+        M4NativeUi::ActionResult r;
+        r.kind = M4NativeUi::ActionKind::Error;
+        r.error = "endpoint_not_supported";
+        return r;
+      }
+      return M4NativeUi::ActionResult::openEndpoint();
+    }
+
     if (action == "provider.selectCategory") {
       M4NativeProviderExplore::Category category{};
       if (!M4NativeProviderExplore::find(app_.provider, ctx.rowKey, category)) {
@@ -342,7 +309,16 @@ class ProviderController final : public BaseController {
         r.error = "bad_category";
         return r;
       }
-      if (M4NativeProviderDiscovery::busy()) return M4NativeUi::ActionResult::repaint();
+      if (M4NativeProviderDiscovery::busy()) {
+        const auto active = M4NativeProviderDiscovery::snapshot();
+        if (active.providerId == app_.provider && active.appId == app_.id) {
+          return M4NativeUi::ActionResult::repaint();
+        }
+        M4NativeUi::ActionResult r;
+        r.kind = M4NativeUi::ActionKind::Error;
+        r.error = "provider_busy";
+        return r;
+      }
       selectedCategoryKey_ = category.key;
       selectedCategoryTitle_ = category.title;
       if (!M4NativeProviderDiscovery::startCategory(app_.provider, app_.id, selectedCategoryKey_)) {
@@ -356,6 +332,17 @@ class ProviderController final : public BaseController {
     }
 
     if (action == "provider.refresh") {
+      if (M4NativeProviderDiscovery::busy()) {
+        const auto active = M4NativeProviderDiscovery::snapshot();
+        if (active.providerId == app_.provider && active.appId == app_.id) {
+          autoDiscoveryAttempted_ = true;
+          return M4NativeUi::ActionResult::repaint();
+        }
+        M4NativeUi::ActionResult r;
+        r.kind = M4NativeUi::ActionKind::Error;
+        r.error = "provider_busy";
+        return r;
+      }
       bool started = false;
       if (!selectedCategoryKey_.empty()) started = M4NativeProviderDiscovery::startCategory(app_.provider, app_.id, selectedCategoryKey_);
       else started = M4NativeProviderDiscovery::startDefault(app_.provider, app_.id);
@@ -375,7 +362,7 @@ class ProviderController final : public BaseController {
   uint32_t revision() const override {
     const auto d = M4NativeProviderDiscovery::snapshot();
     const auto p = M4NativeProviderManager::progress();
-    uint32_t rev = 0;
+    uint32_t rev = revision_;
     if (d.providerId == app_.provider && d.appId == app_.id) rev ^= (static_cast<uint32_t>(d.phase) << 28) ^ ((d.updatedMs / 1000u) & 0x0FFFFFFFu);
     if (p.providerId == app_.provider) rev ^= (static_cast<uint32_t>(p.phase) << 24) ^ (p.updatedMs & 0x00FFFFFFu);
     return rev;
@@ -383,7 +370,19 @@ class ProviderController final : public BaseController {
 
   void pollAsync() override {
     syncDiscovery();
-    if (shelfCount_ != 0 || autoDiscoveryAttempted_ || M4NativeProviderDiscovery::busy()) return;
+    if (shelfIndexing_) {
+      pumpShelfIndex();
+      return;
+    }
+    if (!shelfIndexReady_) {
+      beginShelfIndex();
+      if (shelfIndexing_) pumpShelfIndex();
+      if (!shelfIndexReady_) return;
+    }
+    if (!M4ProviderShelfCache::shouldAutoDiscover(shelfCacheNeedsRefresh_, autoDiscoveryAttempted_,
+                                                   M4NativeProviderDiscovery::busy())) {
+      return;
+    }
     // One-shot auto fill for public discovery providers (fanqie/jjwxc) and
     // account shelves (weread/legado). Kept out of scalar()/render().
     autoDiscoveryAttempted_ = true;
@@ -395,20 +394,129 @@ class ProviderController final : public BaseController {
   }
 
  private:
+  void beginShelfIndex() const {
+    if (shelfIndexing_) return;
+    if (shelfIndexFile_.isOpen()) shelfIndexFile_.close();
+    shelfIndexBuilder_ = {};
+    shelfIndexBuilder_.maxRows = kMaxShelfRows;
+    shelfAnchors_.clear();
+    shelfCount_ = 0;
+    shelfIndexFailed_ = false;
+    shelfIndexError_.clear();
+    shelfIndexReady_ = false;
+
+    const std::string shelfMetaPath = M4ProviderShelfCache::metadataPath(shelfRows_);
+    M4NativeProviderIo::recoverTempFilesPair(shelfRows_, shelfMetaPath);
+    if (!SdMan.exists(shelfRows_.c_str())) {
+      shelfCacheNeedsRefresh_ = true;
+      shelfIndexReady_ = true;
+      return;
+    }
+    std::string shelfMeta;
+    if (!M4NativeProviderIo::readSmallText(shelfMetaPath, shelfMeta, 1024) ||
+        M4ProviderShelfCache::cacheNeedsRefresh(app_.provider, true, shelfMeta)) {
+      // Keep the legacy/current TSV in place for rollback and diagnostics, but
+      // never let it block the one-shot discovery refresh or render as fresh.
+      shelfCacheNeedsRefresh_ = true;
+      shelfIndexReady_ = true;
+      ++revision_;
+      return;
+    }
+    shelfCacheNeedsRefresh_ = false;
+    if (!SdMan.openFileForRead("NA-SHELF", shelfRows_.c_str(), shelfIndexFile_)) {
+      shelfCacheNeedsRefresh_ = true;
+      shelfIndexFailed_ = true;
+      shelfIndexReady_ = true;
+      shelfIndexError_ = "shelf_open_failed";
+      ++revision_;
+      return;
+    }
+    if (shelfIndexFile_.fileSize() == 0) {
+      shelfIndexFile_.close();
+      shelfIndexReady_ = true;
+      return;
+    }
+    if (shelfIndexFile_.fileSize() > kMaxShelfBytes) {
+      shelfIndexFile_.close();
+      shelfCacheNeedsRefresh_ = true;
+      shelfIndexFailed_ = true;
+      shelfIndexReady_ = true;
+      shelfIndexError_ = "shelf_too_large";
+      ++revision_;
+      return;
+    }
+    shelfIndexing_ = true;
+    shelfIndexLastRevisionMs_ = millis();
+    ++revision_;
+  }
+
+  void finishShelfIndex(bool failed) const {
+    if (shelfIndexFile_.isOpen()) shelfIndexFile_.close();
+    shelfIndexing_ = false;
+    shelfIndexReady_ = true;
+    const size_t count = shelfIndexBuilder_.finish();
+    if (failed || shelfIndexBuilder_.overflow || count > kMaxShelfRows) {
+      shelfCacheNeedsRefresh_ = true;
+      shelfCount_ = 0;
+      shelfAnchors_.clear();
+      shelfIndexFailed_ = true;
+      shelfIndexError_ = shelfIndexBuilder_.overflow || count > kMaxShelfRows
+                             ? "shelf_too_many_rows"
+                             : "shelf_read_failed";
+    } else {
+      shelfCount_ = count;
+      shelfAnchors_ = std::move(shelfIndexBuilder_.anchors);
+    }
+    ++revision_;
+  }
+
+  void pumpShelfIndex() const {
+    if (!shelfIndexing_) return;
+    uint8_t buf[kShelfPumpBytes];
+    const int n = shelfIndexFile_.read(buf, sizeof(buf));
+    if (n <= 0) {
+      finishShelfIndex(true);
+      return;
+    }
+    shelfIndexBuilder_.feed(buf, static_cast<size_t>(n));
+    if (shelfIndexBuilder_.overflow) {
+      finishShelfIndex(true);
+      return;
+    }
+    if (!shelfIndexFile_.available()) {
+      finishShelfIndex(false);
+      return;
+    }
+    const uint32_t now = millis();
+    if (now - shelfIndexLastRevisionMs_ >= kShelfRevisionIntervalMs) {
+      shelfIndexLastRevisionMs_ = now;
+      ++revision_;
+    }
+  }
+
   void syncDiscovery() const {
     const auto d = M4NativeProviderDiscovery::snapshot();
     if (d.providerId != app_.provider || d.appId != app_.id) return;
     if (d.phase == M4NativeProviderDiscovery::Phase::Ready && d.updatedMs != discoveryAppliedMs_) {
-      shelfCount_ = buildShelfIndex(shelfRows_, shelfAnchors_);
       discoveryAppliedMs_ = d.updatedMs;
+      beginShelfIndex();
     }
   }
 
   std::string root_;
   std::string shelfRows_;
+  mutable FsFile shelfIndexFile_;
+  mutable M4ProviderShelfIndex::Builder shelfIndexBuilder_;
   mutable size_t shelfCount_ = 0;
   mutable std::vector<uint32_t> shelfAnchors_;
   mutable uint32_t discoveryAppliedMs_ = 0;
+  mutable uint32_t shelfIndexLastRevisionMs_ = 0;
+  mutable uint32_t revision_ = 0;
+  mutable bool shelfIndexing_ = false;
+  mutable bool shelfIndexReady_ = false;
+  mutable bool shelfIndexFailed_ = false;
+  mutable bool shelfCacheNeedsRefresh_ = false;
+  mutable std::string shelfIndexError_;
   bool autoDiscoveryAttempted_ = false;
   std::string selectedCategoryKey_;
   std::string selectedCategoryTitle_;

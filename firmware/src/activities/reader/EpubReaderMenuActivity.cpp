@@ -49,34 +49,6 @@ bool matchesLayout(const LayoutPreset& p) {
          SETTINGS.customLineSpacing == p.lineSpacing;
 }
 
-int customAutoFontPx(uint8_t fontSize) {
-  switch (fontSize) {
-    case CrossPointSettings::SMALL:
-      return 12;
-    case CrossPointSettings::MEDIUM:
-      return 14;
-    case CrossPointSettings::LARGE:
-      return 16;
-    case CrossPointSettings::EXTRA_LARGE:
-      return 18;
-    default:
-      return 16;
-  }
-}
-
-int systemFontPx(uint8_t fontSize) {
-  switch (fontSize) {
-    case CrossPointSettings::SMALL:
-      return 12;
-    case CrossPointSettings::MEDIUM:
-      return 16;
-    case CrossPointSettings::LARGE:
-    case CrossPointSettings::EXTRA_LARGE:
-    default:
-      return 18;
-  }
-}
-
 int quickIndexFromPoint(int x, int y, int width, int height) {
   if (y < height - kOverlayBottomBarH || y >= height || x < 0 || x >= width) return -1;
   const int cellW = std::max(1, width / 4);
@@ -266,32 +238,11 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
 
   if (action == InternalAction::FONT_DECREASE || action == InternalAction::FONT_INCREASE) {
     const bool increase = action == InternalAction::FONT_INCREASE;
-    bool changed = false;
-
-    if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM) {
-      const int current = SETTINGS.customFontSize == 0
-                              ? customAutoFontPx(SETTINGS.fontSize)
-                              : std::max(12, std::min(48, static_cast<int>(SETTINGS.customFontSize)));
-      const int target = std::max(12, std::min(48, current + (increase ? 2 : -2)));
-      if (target != current) {
-        SETTINGS.customFontSize = static_cast<uint8_t>(target);
-        changed = true;
-      }
-    } else {
-      const uint8_t oldSize = SETTINGS.fontSize;
-      uint8_t newSize = oldSize;
-      if (increase) {
-        if (oldSize == CrossPointSettings::SMALL) newSize = CrossPointSettings::MEDIUM;
-        else if (oldSize == CrossPointSettings::MEDIUM) newSize = CrossPointSettings::LARGE;
-      } else {
-        if (oldSize >= CrossPointSettings::LARGE) newSize = CrossPointSettings::MEDIUM;
-        else if (oldSize == CrossPointSettings::MEDIUM) newSize = CrossPointSettings::SMALL;
-      }
-      if (newSize != oldSize) {
-        SETTINGS.fontSize = newSize;
-        changed = true;
-      }
-    }
+    const uint8_t oldSize = SETTINGS.getReaderPixelSize();
+    const uint8_t target = increase ? CrossPointSettings::nextReaderPixelSize(oldSize)
+                                   : CrossPointSettings::prevReaderPixelSize(oldSize);
+    const bool changed = target != oldSize;
+    if (changed) SETTINGS.setReaderPixelSize(target);
 
     if (changed) {
       readerStyleDirty_ = true;
@@ -322,15 +273,7 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
 }
 
 std::string EpubReaderMenuActivity::currentFontSizeLabel() const {
-  int px = 16;
-  if (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM) {
-    px = SETTINGS.customFontSize == 0
-             ? customAutoFontPx(SETTINGS.fontSize)
-             : std::max(12, std::min(48, static_cast<int>(SETTINGS.customFontSize)));
-  } else {
-    px = systemFontPx(SETTINGS.fontSize);
-  }
-  return std::to_string(px) + "px";
+  return std::to_string(SETTINGS.getReaderPixelSize()) + "px";
 }
 
 std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
@@ -420,7 +363,8 @@ void EpubReaderMenuActivity::closeToReader() {
 
 void EpubReaderMenuActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    // Deferred pump: never destroy a nested picker while its loop is on the stack.
+    pumpSubActivityFrame();
     return;
   }
 
@@ -977,7 +921,7 @@ void EpubReaderMenuActivity::renderScreen() {
 
   if (forceHalfRefresh_) {
     forceHalfRefresh_ = false;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }

@@ -20,7 +20,7 @@ inline const char* xmlFor(const std::string& providerId) {
     <text text="书架" class="hero inset"/>
     <text text="@page.status" class="meta inset"/>
     <list id="books" source="provider.recommend" titleField="title" subtitleField="author" onActivate="provider.openBook" class="ranked inset compact"/>
-    <buttons back="返回" primary="详情" right="刷新" onBack="system.back" onPrimary="provider.openSelected" onRight="provider.refresh"/>
+    <buttons back="返回" left="连接设置" right="刷新" onBack="system.back" onLeft="provider.endpoint" onRight="provider.refresh"/>
   </screen>
 </m4ui>)XML";
   }
@@ -29,14 +29,14 @@ inline const char* xmlFor(const std::string& providerId) {
 <m4ui version="1" start="home" theme="wap" fullscreen="true">
   <screen id="home" title="@app.name" class="compact">
     <text text="分类热推" class="hero inset"/>
-    <!-- Runtime TTF chrome is quantized to the same fixed system UI faces
-         (18/22/26px). No plugin-only uiScale is needed. Tiles render as a flat
+    <!-- System chrome is the builtin integer-N native-grid (16/32/32px).
+         No plugin-only uiScale is needed. Tiles render as a flat
          text grid; selection is conveyed by a subtle dithered background. -->
-    <tiles id="categories" source="provider.categories" pageSize="8" height="116" onActivate="provider.selectCategory" class="compact"/>
+    <tiles id="categories" source="provider.categories" pageSize="8" height="152" onActivate="provider.selectCategory" class="compact"/>
     <text text="@page.status" class="meta inset"/>
     <text text="@page.heading" class="section inset"/>
     <list id="books" source="provider.recommend" titleField="title" subtitleField="author" onActivate="provider.openBook" class="ranked inset compact"/>
-    <buttons back="返回" primary="详情" right="刷新" onBack="system.back" onPrimary="provider.openSelected" onRight="provider.refresh"/>
+    <buttons back="返回" right="刷新" onBack="system.back" onRight="provider.refresh"/>
   </screen>
 </m4ui>)XML";
 }

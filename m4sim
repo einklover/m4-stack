@@ -14,5 +14,13 @@ if [[ "${1:-}" == "test" && "${2:-}" == "reader-ui" ]]; then
   shift 2
   exec python3 "$ROOT/simulator/tests/reader_ui_e2e.py" "$@"
 fi
+if [[ "${1:-}" == "test" && "${2:-}" == "synth-burst" ]]; then
+  shift 2
+  exec python3 "$ROOT/simulator/tests/synth_input_burst_e2e.py" "$@"
+fi
+if [[ "${1:-}" == "test" && "${2:-}" == "large-txt" ]]; then
+  shift 2
+  exec python3 "$ROOT/simulator/tests/large_txt_first_open_e2e.py" "$@"
+fi
 
 exec python3 "$ROOT/simulator/m4sim.py" "$@"

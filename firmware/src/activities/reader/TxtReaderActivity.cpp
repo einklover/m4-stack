@@ -20,6 +20,7 @@
 #include "util/M4PluginTocList.h"
 #include "util/M4PluginTidxCodec.h"
 #include "util/M4PluginReaderStatePolicy.h"
+#include "util/M4TxtIndexPolicy.h"
 #include "util/M4ProgressiveTxtIndex.h"
 #include "debug/M4WaveformLab.h"
 #include <HalDisplay.h>
@@ -69,6 +70,10 @@ constexpr int progressBarBottomGap = 5;      // 进度条距屏幕底部间距�
 constexpr int progressBarTextGap = 1;        // 文字底部距进度条顶部间距（与 EPUB 一致）
 constexpr size_t CHUNK_SIZE = 8 * 1024;           // default per-call read window
 constexpr size_t kMaxPageReadBytes = 48 * 1024;  // hard cap for first-page adaptive buffer (heap; no PSRAM)
+constexpr size_t kLargeTxtDirectThreshold = 4 * 1024 * 1024;
+constexpr size_t kLegacyProgressDataBytes = 8;
+constexpr size_t kProgressDataBytes = 20;
+constexpr uint32_t kChapterDiscoveryPauseMs = 250;
 
 // PSRAM-first scratch for GBK/UTF-16 decode windows (up to ~144KB). On
 // internal RAM these resizes fail while the TTF face is resident (~70-130KB
@@ -333,6 +338,18 @@ void TxtReaderActivity::onEnter() {
   renderingMutex = xSemaphoreCreateMutex();
 
   txt->setupCacheDir();
+  largeTxtFastOpen_ = !pluginSession_.active && txt->getFileSize() >= kLargeTxtDirectThreshold;
+  fastOpenChapter_ = -1;
+  activeChapterBegin_ = 0;
+  activeChapterEnd_ = 0;
+  resumeRangeBegin_ = 0;
+  resumeRangeEnd_ = 0;
+  progressSavePending_ = false;
+  openHistorySavePending_ = false;
+  chapterDiscoveryBatch_ = largeTxtFastOpen_ ? 0 : -1;
+  chapterDiscoveryDone_ = !largeTxtFastOpen_;
+  chapterDiscoveryNotBeforeMs_ = largeTxtFastOpen_ ? millis() + kChapterDiscoveryPauseMs : 0;
+  chapterDiscoveryNextMs_ = chapterDiscoveryNotBeforeMs_;
   // Plugin sessions: bridge raw-byte progress is authoritative — do not load
   // library progress.bin (would contradict plugin restore).
   if (!pluginSession_.active) {
@@ -351,6 +368,12 @@ void TxtReaderActivity::onEnter() {
     }
   }
 
+  if (largeTxtFastOpen_) {
+    fastOpenChapter_ = chapternum;
+    Serial.printf("[%lu] [WR05] large_txt_reader size=%zu saved_chapter=%d\n", millis(),
+                  txt->getFileSize(), fastOpenChapter_);
+  }
+
   // 重新进入时强制重新初始化章节（屏幕方向/字体可能已变化）
   // 不调用 onSettingsChanged 因为它会重置 currentPage
   chapter_initialized = false;
@@ -362,54 +385,19 @@ void TxtReaderActivity::onEnter() {
     APP_STATE.pendingBookmarkPercent = -1.0f;
   }
 
-  // Library path: remember last book + Recent Books.
-  // Plugin/transient sessions must not pollute library state.
-  // Keep onEnter short: openEpubPath only; Recent Books save is deferred until
-  // after first paint (was ~1s SD write blocking the UI thread).
+  // Library path: remember last book + Recent Books. Both writes can block on
+  // SD; keep only the in-memory open path on the critical path and flush after
+  // the first readable page reaches the panel (or from onExit as a fallback).
   if (!pluginSession_.active || !pluginSession_.suppressOpenEpubPath) {
-    auto filePath = txt->getPath();
-    APP_STATE.openEpubPath = filePath;
-    APP_STATE.saveToFile();
+    APP_STATE.openEpubPath = txt->getPath();
+    openHistorySavePending_ = true;
   }
   if (!pluginSession_.active || !pluginSession_.suppressRecentBooks) {
-    auto filePath = txt->getPath();
-    auto fileName = filePath.substr(filePath.rfind('/') + 1);
-    // Provider books use stable history URI so reopen bypasses plugin shelf.
-    if (pluginSession_.providerManaged && !pluginSession_.providerId.empty()) {
-      const std::string uri = M4ContentProvider::makeHistoryUri(pluginSession_.providerId.c_str(),
-                                                                pluginSession_.bookId.c_str());
-      // Metadata contract: RecentBook.author = m4x appId (com.weread.client), never
-      // providerId ("weread"). originalSourcePath = last chapter cache abs path.
-      std::string appId;
-      if (!M4HistoryReopen::resolveHistoryAppId(pluginSession_.appId, pluginSession_.appDataRoot, filePath,
-                                                appId)) {
-        Serial.printf("[WRCP] history_skip_uri no_appId provider=%s book=%s\n",
-                      pluginSession_.providerId.c_str(), pluginSession_.bookId.c_str());
-        RECENT_BOOKS.addBook(filePath, fileName, "", "");
-      } else if (!uri.empty()) {
-        // titleOverride is normally the current chapter title.  Provider
-        // metadata owns the book title and must win for Home/Recent history;
-        // otherwise cache-backed books regress to ch_<uid>.txt or chapter names.
-        const auto providerHistory =
-            M4ContentProviderSession::makeHistorySnapshot(pluginSession_.providerId, pluginSession_.bookId);
-        const std::string historyTitle = !providerHistory.title.empty()
-                                             ? providerHistory.title
-                                             : (pluginSession_.titleOverride.empty() ? fileName
-                                                                                       : pluginSession_.titleOverride);
-        RECENT_BOOKS.addBook(uri, historyTitle,
-                             appId, "", filePath);
-        M4ContentProviderSession::markHistoryRegistered(pluginSession_.providerId, pluginSession_.bookId);
-        Serial.printf("[WRCP] history_uri=%s appId=%s cache=%s\n", uri.c_str(), appId.c_str(), filePath.c_str());
-      } else {
-        RECENT_BOOKS.addBook(filePath, fileName, "", "");
-      }
-    } else {
-      // addBook may flush to SD — do it after first frame is scheduled.
-      RECENT_BOOKS.addBook(filePath, fileName, "", "");
-    }
+    openHistorySavePending_ = true;
   }
 
   firstPageReady_ = false;
+  firstReadableLogged_ = false;
   // Progressive first-page for plugin and library; filled in chapter_initializeReader.
   indexComplete_ = false;
   pluginCloseRequested_ = false;
@@ -461,10 +449,64 @@ void TxtReaderActivity::onEnter() {
   );
 }
 
+void TxtReaderActivity::persistOpenHistory() {
+  if (!openHistorySavePending_ || !txt) return;
+
+  if (!pluginSession_.active || !pluginSession_.suppressOpenEpubPath) {
+    APP_STATE.saveToFile();
+  }
+  if (!pluginSession_.active || !pluginSession_.suppressRecentBooks) {
+    const auto filePath = txt->getPath();
+    const auto fileName = filePath.substr(filePath.rfind('/') + 1);
+    // Provider books use stable history URI so reopen bypasses plugin shelf.
+    if (pluginSession_.providerManaged && !pluginSession_.providerId.empty()) {
+      const std::string uri = M4ContentProvider::makeHistoryUri(pluginSession_.providerId.c_str(),
+                                                                pluginSession_.bookId.c_str());
+      // New provider history stores the human author. App identity is recovered
+      // from the URI/registry; old rows still reopen through the legacy fallback.
+      std::string appId;
+      if (!M4HistoryReopen::resolveHistoryAppId(pluginSession_.appId, pluginSession_.appDataRoot, filePath,
+                                                appId)) {
+        Serial.printf("[WRCP] history_skip_uri no_appId provider=%s book=%s\n",
+                      pluginSession_.providerId.c_str(), pluginSession_.bookId.c_str());
+        RECENT_BOOKS.addBook(filePath, fileName, "", "");
+      } else if (!uri.empty()) {
+        // Metadata contract: provider title wins over chapter/cache filenames.
+        const auto providerHistory =
+            M4ContentProviderSession::makeHistorySnapshot(pluginSession_.providerId, pluginSession_.bookId);
+        const std::string historyTitle = !providerHistory.title.empty()
+                                             ? providerHistory.title
+                                             : (pluginSession_.titleOverride.empty() ? fileName
+                                                                                       : pluginSession_.titleOverride);
+        RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor,
+                             pluginSession_.providerCoverBmpPath, filePath);
+        M4ContentProviderSession::markHistoryRegistered(pluginSession_.providerId, pluginSession_.bookId);
+        Serial.printf("[WRCP] history_uri=%s appId=%s cache=%s\n", uri.c_str(), appId.c_str(), filePath.c_str());
+      } else {
+        RECENT_BOOKS.addBook(filePath, fileName, "", "");
+      }
+    } else {
+      RECENT_BOOKS.addBook(filePath, fileName, "", "");
+    }
+  }
+  openHistorySavePending_ = false;
+}
+
 void TxtReaderActivity::waitPhysicalEpdIdle(uint32_t maxMs) {
   const uint32_t t0 = millis();
   while (physicalEpdBusy_ && (millis() - t0) < maxMs) {
     vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
+
+void TxtReaderActivity::cancelPendingPageTurnForChild() {
+  const int pending = pendingTurnDelta_.exchange(0, std::memory_order_relaxed);
+  const bool wasQuick = quickMode_;
+  quickMode_ = false;
+  lastPageTurnMs_ = 0;
+  if (pending != 0 || wasQuick) {
+    Serial.printf("[TRS] child handoff cleared page-turn delta=%d quick=%d\n", pending,
+                  wasQuick ? 1 : 0);
   }
 }
 
@@ -475,13 +517,18 @@ void TxtReaderActivity::onExit() {
   READING_STATS.endSession();
 
   // Stop display task from starting another AA/e-ink pass, then wait so we do
-  // not vTaskDelete mid-displayGrayBuffer (left panel in gray → Home "全刷" flash).
+  // not vTaskDelete mid-displayGrayBuffer (left panel in gray → Home cleanup flash).
   // Chapter switch: Lua paints loading next — short wait so UI feels responsive.
   suppressDisplay_ = true;
   updateRequired = false;
+  cancelPendingPageTurnForChild();
   const uint32_t epdWaitMs =
       (pluginSession_.active && pluginSwitchChapterIndex_ >= 0) ? 400u : 2500u;
   waitPhysicalEpdIdle(epdWaitMs);
+
+  // If the reader is closed before its first physical page, preserve the
+  // existing history semantics before tearing down the TXT object.
+  persistOpenHistory();
 
   // Persist page/chapter while txt is still alive.
   saveProgress();
@@ -599,10 +646,9 @@ int TxtReaderActivity::pageIndexForByteLocked(size_t byteOffset) const {
 }
 
 void TxtReaderActivity::applyPendingRestoreIfReady() {
-  // Caller holds renderingMutex.
-  M4PluginReaderStatePolicy::IndexState s;
-  s.pageOffsets = pageOffsets;  // share vector content via assign
-  // Work on live fields without full copy of vector for apply:
+  // Caller holds renderingMutex. pageIndexForByteLocked already reads live
+  // pageOffsets under the lock; the former full-vector IndexState copy here
+  // was dead work on every progressive-index tick.
   if (!hasPendingRestore_ || userMovedPage_ || pageOffsets.empty()) return;
   const size_t target = pendingRestoreByte_;
   if (!indexComplete_) {
@@ -689,8 +735,18 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
   cachedPage = -1;
   indexComplete_ = false;
   firstPageReady_ = false;
+  firstReadableLogged_ = false;
   indexCursor_ = 0;
   tidxSaved_ = false;
+  largeTxtFastOpen_ = false;
+  fastOpenChapter_ = -1;
+  activeChapterBegin_ = 0;
+  activeChapterEnd_ = 0;
+  progressSavePending_ = false;
+  chapterDiscoveryBatch_ = -1;
+  chapterDiscoveryDone_ = true;
+  chapterDiscoveryNotBeforeMs_ = 0;
+  chapterDiscoveryNextMs_ = 0;
   hasPendingRestore_ = false;
   userMovedPage_ = false;
   pluginNeedsClearRefresh_ = false;
@@ -727,7 +783,8 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
           !snap.title.empty() ? snap.title
                               : (pluginSession_.titleOverride.empty() ? pluginSession_.bookId
                                                                       : pluginSession_.titleOverride);
-      RECENT_BOOKS.addBook(uri, historyTitle, appId, "", abs);
+      RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor,
+                           pluginSession_.providerCoverBmpPath, abs);
     }
   }
 
@@ -812,11 +869,31 @@ bool TxtReaderActivity::tryProviderNextChapterAdvance() {
 }
 
 void TxtReaderActivity::pageTurnLocked(int delta) {
+  // Layout readiness is earlier than physical readiness: the first page can
+  // already be in the framebuffer while the entry refresh still owns the
+  // panel. Drop taps in that gap so they cannot replay as page 2 before page 1
+  // is visible.
+  if (!firstPhysicalShown_.load(std::memory_order_acquire)) {
+    pendingTurnDelta_.store(0, std::memory_order_relaxed);
+    return;
+  }
   // Never block the owner loop on the display-task lock. TTF first-paint on
   // QEMU can hold that lock for many seconds; waiting here starves m4adb poll
   // and makes every tap look frozen.
   if (!lockState(0)) {
+    // Slow first-page index / loading holds the lock for seconds. Queuing
+    // deltas here would replay as surprise multi-page turns after the window.
+    // Drop while the first page is not ready; once ready, keep the prior
+    // coalesce so mid-refresh taps still catch up.
+    if (!firstPageReady_) return;
     pendingTurnDelta_.fetch_add(delta, std::memory_order_relaxed);
+    return;
+  }
+  // First-page index may briefly release the lock between phases. Ignore
+  // turns and clear any stale pending so nothing replays after the window.
+  if (!firstPageReady_) {
+    pendingTurnDelta_.store(0, std::memory_order_relaxed);
+    unlockState();
     return;
   }
   const int totalDelta = delta + pendingTurnDelta_.exchange(0, std::memory_order_relaxed);
@@ -1431,6 +1508,7 @@ void TxtReaderActivity::openMenu(EpubReaderMenuActivity::MenuLayer layer) {
   // Do not let reader AA/e-ink race menu/settings paints (residual overlay).
   suppressDisplay_ = true;
   updateRequired = false;
+  cancelPendingPageTurnForChild();
   waitPhysicalEpdIdle(2500);
   renderer.setRenderMode(GfxRenderer::BW);
 
@@ -1887,11 +1965,15 @@ void TxtReaderActivity::goToPercentAlreadyLocked(int percent) {
 
   int targetChapter = chapternum;
   if (!pluginSession_.active) {
-    // Library multi-chapter: resolve chapter for byte (may touch SD chapter index).
+    // Library multi-chapter: resolve the target chapter from CACHE only.
+    // The former allowScan=true path could run multi-second full-file scans on
+    // this UI-thread site for any uncached batch; a missing batch defers to
+    // idle discovery and the jump lands once the batch exists.
     {
       const int page = chapternum / 25 + 1;
       const int pagebegin = (page - 1) * 25;
-      txt->parseChapterIndexAndOffset(pagebegin);
+      txt->parseChapterIndexAndOffset(pagebegin,
+                                      M4TxtIndexPolicy::kGoToPercentBatchAllowScan);
     }
     for (int ch = 0; ch < 10000; ch++) {
       size_t chBegin = txt->getChapterOffsetByIndex(ch);
@@ -1900,7 +1982,8 @@ void TxtReaderActivity::goToPercentAlreadyLocked(int percent) {
       if (chEnd == 0) chEnd = fileSize;
       if (chBegin == 0 && ch > 0) {
         const int pg = ch / 25 + 1;
-        txt->parseChapterIndexAndOffset((pg - 1) * 25);
+        txt->parseChapterIndexAndOffset((pg - 1) * 25,
+                                        M4TxtIndexPolicy::kGoToPercentBatchAllowScan);
         chBegin = txt->getChapterOffsetByIndex(ch);
         chEnd = txt->getChapterendOffsetByIndex(ch);
         if (chBegin == 0 && chEnd == 0) break;
@@ -2017,10 +2100,10 @@ void TxtReaderActivity::displayTaskLoop() {
       updateRequired = false;
       if (suppressDisplay_ || subActivity) continue;
 
-      // --- Entry white seed (before any content layout) ---
-      // From shelf/menu/loading the RED plane still holds foreign UI. Page-turn
-      // anim would wipe from that residual. Keep the absolute HALF seed, but
-      // show an explicit opening/chapter placeholder instead of bare white.
+      // --- Entry seed (before any content layout) ---
+      // Keep the explicit opening/chapter placeholder, but use the same fast
+      // path as every other non-reader-body operation. The panel abstraction
+      // no longer permits a legacy HALF/FULL waveform here.
       if (entryWhiteSeedPending_) {
         physicalEpdBusy_ = true;
         const uint32_t tW = millis();
@@ -2042,7 +2125,9 @@ void TxtReaderActivity::displayTaskLoop() {
           }
           M4UiText::drawCentered(renderer, UI_10_FONT_ID, 365, "请稍候");
         }
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);  // BYPASS_RED absolute
+        Serial.printf("[WR05] t=%lu open_refresh phase=entry mode=fast\n",
+                      static_cast<unsigned long>(millis()));
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         (void)renderer.storeBwBuffer();
         (void)renderer.storeLastShown();  // animation baseline = this clean frame
         entryWhiteSeedPending_ = false;
@@ -2075,6 +2160,8 @@ void TxtReaderActivity::displayTaskLoop() {
       // handle keys/touch for ~1.5s per page (open/turn freezes).
       bool doHalfFlush = false;
       bool doLibraryPhysical = false;
+      bool firstLibraryFrame = false;
+      bool firstFrameJustReady = false;
       bool firstFrameHasLines = false;
       if (lockState(portMAX_DELAY)) {
         // Always defer e-ink + AA out of the state lock — plugin AND library.
@@ -2088,15 +2175,38 @@ void TxtReaderActivity::displayTaskLoop() {
         firstFrameHasLines = !currentPageLines.empty();
         // Ready only when we actually laid out glyphs — empty first paint is not ready.
         if (chapter_initialized && !pageOffsets.empty() && firstFrameHasLines) {
+          firstFrameJustReady = !firstReadableLogged_;
           firstPageReady_ = true;
+          emptyFirstFrameRetries_ = 0;
         } else if (chapter_initialized && !pageOffsets.empty() && !firstFrameHasLines) {
           // Retry next tick instead of flushing a blank buffer (looks like "page 1 empty").
-          // cachedPage was already set to currentPage → force a reload next tick, or
-          // the retry spins forever on the same empty lines (busy loop, page never shows).
-          firstPageReady_ = false;
-          pluginPendingHalfFlush_ = false;
-          cachedPage = -1;
-          updateRequired = true;
+          // cachedPage was already set to currentPage → force a reload next tick.
+          // BOUNDED: a chapter with no renderable content in any window (e.g. a
+          // whitespace-only provider body that passed the fetch-time written()>0
+          // guard) used to re-arm this branch every ~10ms forever — SD re-read +
+          // full word-wrap + serial spam while the screen stayed frozen on the
+          // entry placeholder. Past the budget: paint one recoverable message,
+          // then stop re-arming (loop goes quiet).
+          ++emptyFirstFrameRetries_;
+          if (M4TxtIndexPolicy::emptyFirstFrameShouldRetry(emptyFirstFrameRetries_)) {
+            firstPageReady_ = false;
+            pluginPendingHalfFlush_ = false;
+            cachedPage = -1;
+            updateRequired = true;
+          } else if (emptyFirstFrameRetries_ ==
+                     M4TxtIndexPolicy::kEmptyFirstFrameMaxRetries + 1) {
+            physicalEpdBusy_ = true;
+            renderer.setRenderMode(GfxRenderer::BW);
+            renderer.clearScreen(0xFF);
+            M4UiText::drawCentered(renderer, UI_12_FONT_ID, 280, "本章无可显示内容", true,
+                                   EpdFontFamily::BOLD);
+            M4UiText::drawCentered(renderer, UI_10_FONT_ID, 330, "请返回重新选择章节");
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            (void)renderer.storeLastShown();
+            physicalEpdBusy_ = false;
+            Serial.printf("[WR05] t=%lu empty_frame_terminal retries=%d\n",
+                          static_cast<unsigned long>(millis()), emptyFirstFrameRetries_);
+          }
         }
         doHalfFlush = pluginPendingHalfFlush_ && firstFrameHasLines;
         pluginPendingHalfFlush_ = false;
@@ -2109,6 +2219,12 @@ void TxtReaderActivity::displayTaskLoop() {
         // Post-paint idle path in this task starts N+1 once the panel is free.
         unlockState();
       }
+      if (firstFrameJustReady) {
+        firstReadableLogged_ = true;
+        Serial.printf("[WR05] t=%lu first_page_ready kind=%s index_complete=%d\n",
+                      static_cast<unsigned long>(millis()), pluginSession_.active ? "plugin" : "library",
+                      indexComplete_ ? 1 : 0);
+      }
       if (suppressDisplay_ || subActivity) {
         // Child opened while we were laying out — skip physical (child will paint).
         APP_STATE.isRenderComplete = true;
@@ -2120,8 +2236,8 @@ void TxtReaderActivity::displayTaskLoop() {
         overlayReturnFlush_ = false;
         physicalEpdBusy_ = true;
         const uint32_t tFlush = millis();
-        // Same FAST LUT as the overlay itself. HALF/FULL here is the black
-        // invert flash the user sees when tapping the page to dismiss the bar.
+        // Same FAST LUT as the overlay itself. Strong/full modes are not used
+        // for overlay dismissal, which is outside the page-turn cleanup policy.
         renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         firstPhysicalShown_ = true;
         lastPhysicalBodyPage_ = (pendingPhysicalPage_ >= 0) ? pendingPhysicalPage_ : currentPage;
@@ -2132,29 +2248,18 @@ void TxtReaderActivity::displayTaskLoop() {
                       static_cast<unsigned long>(millis() - tFlush), lastPhysicalBodyPage_);
         physicalEpdBusy_ = false;
       } else if (doHalfFlush) {
-        // One absolute clean after plugin loading residual — not multi-flash FULL.
-        // SSD1677: FAST is differential; HALF is BYPASS_RED single-pass (0xD7);
-        // FULL is multi-inversion OTP (0xF7). Policy: exactly one guarded handoff
-        // HALF; later turns use finishPhysicalDisplay (page-turn anim / FAST).
-        //
-        // Must seed the same PTA baseline as library firstPhysical HALF:
+        // Plugin handoff stays on the fast path. It must seed the same PTA
+        // baseline as the library first content frame:
         // storeLastShown + firstPhysicalShown_. Without that, the first user
         // page-turn re-enters the firstPhysical HALF path (looks like a full
         // flash, no wipe), and lastShown can still hold a previous book's
         // frame → multipass RED≠truth → inverted residual / slow gray ghost.
         physicalEpdBusy_ = true;
         const uint32_t tFlush = millis();
-        Serial.printf("[WR05] t=%lu first_frame_half_refresh gen=%u mode=half\n",
+        Serial.printf("[WR05] t=%lu first_frame_fast gen=%u mode=fast\n",
                       static_cast<unsigned long>(tFlush),
                       static_cast<unsigned>(pluginSession_.generation));
-        const auto handoffMode = M4PluginReaderStatePolicy::pluginFirstHandoffRefreshMode();
-        if (handoffMode == M4PluginReaderStatePolicy::PluginFirstHandoffRefresh::Full) {
-          renderer.displayBuffer(HalDisplay::FULL_REFRESH);
-        } else if (handoffMode == M4PluginReaderStatePolicy::PluginFirstHandoffRefresh::Fast) {
-          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        } else {
-          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-        }
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         // Seed PTA/old-page baseline (library path does this in finishPhysicalDisplay).
         firstPhysicalShown_ = true;
         lastPhysicalBodyPage_ = (pendingPhysicalPage_ >= 0) ? pendingPhysicalPage_ : currentPage;
@@ -2167,9 +2272,19 @@ void TxtReaderActivity::displayTaskLoop() {
                       static_cast<unsigned>(pluginSession_.generation));
         physicalEpdBusy_ = false;
       } else if (doLibraryPhysical) {
+        firstLibraryFrame = !firstPhysicalShown_;
         physicalEpdBusy_ = true;
         finishPhysicalDisplay();
         physicalEpdBusy_ = false;
+        if (firstLibraryFrame) {
+          Serial.printf("[WR05] t=%lu first_physical_done kind=library\n",
+                        static_cast<unsigned long>(millis()));
+        }
+      }
+      if (firstLibraryFrame || (firstPluginFrame && (doHalfFlush || doLibraryPhysical))) {
+        // History is intentionally after the first physical page: this SD
+        // write must never delay the initial readable frame.
+        persistOpenHistory();
       }
       APP_STATE.isRenderComplete = true;
       // Do NOT rewrite global state JSON every page — thrashing SD (was every frame).
@@ -2192,6 +2307,10 @@ void TxtReaderActivity::displayTaskLoop() {
       bool needSave = false;
       bool wantRedraw = false;
       if (lockState(0)) {
+        if (progressSavePending_) {
+          saveProgress();
+          progressSavePending_ = false;
+        }
         doIndex = !indexComplete_;
         if (doIndex) {
           const bool wasComplete = indexComplete_;
@@ -2244,6 +2363,11 @@ void TxtReaderActivity::displayTaskLoop() {
         libraryIdlePrefetchNextChapter();
         unlockState();
       }
+      if (!pluginSession_.active && largeTxtFastOpen_ && !chapterDiscoveryDone_ &&
+          !physicalEpdBusy_.load() && !updateRequired && lockState(pdMS_TO_TICKS(50))) {
+        libraryIdleDiscoverChapterBatch();
+        unlockState();
+      }
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
@@ -2258,6 +2382,7 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
 
   // 章节重新初始化时清除页面缓存
   cachedPage = -1;
+  emptyFirstFrameRetries_ = 0;
 
   // 校验章节索引合法性
   if (chapter_num < 0 ) {
@@ -2311,6 +2436,8 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
   if (pluginSession_.active) {
     const size_t fileSize = txt->getFileSize();
     indexRangeEnd_ = fileSize;
+    activeChapterBegin_ = 0;
+    activeChapterEnd_ = fileSize;
     // Validate pending restore against opened file size.
     if (hasPendingRestore_ && fileSize > 0 && pendingRestoreByte_ >= fileSize) {
       pendingRestoreByte_ = fileSize - 1;
@@ -2359,6 +2486,74 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
       tidxSaved_ = true;
     }
     chapter_initialized = true;
+    return;
+  }
+
+  // Large local TXT: open the current raw byte range immediately. Chapter
+  // metadata is deliberately cache-only here; missing 25-row batches are
+  // discovered from the idle display loop after the first page is usable.
+  if (largeTxtFastOpen_ && chapter_num == fastOpenChapter_) {
+    const size_t fileSize = txt->getFileSize();
+    indexRangeEnd_ = fileSize;
+    if (fileSize == 0) {
+      pageOffsets = {0};
+      totalPages = 1;
+      indexComplete_ = true;
+      firstPageReady_ = true;
+      hasPendingRestore_ = false;
+      chapter_initialized = true;
+      return;
+    }
+
+    const int cachedBatch = std::max(0, (chapter_num / 25) * 25);
+    if (txt->hasChapterBatchCache(cachedBatch)) {
+      txt->parseChapterIndexAndOffset(cachedBatch, /*allowScan=*/false);
+      if (txt->isChapterExist(chapter_num)) {
+        const size_t cachedBegin = txt->getChapterOffsetByIndex(chapter_num);
+        size_t cachedEnd = txt->getChapterendOffsetByIndex(chapter_num);
+        if (cachedEnd == 0 || cachedEnd <= cachedBegin) cachedEnd = fileSize;
+        activeChapterBegin_ = cachedBegin;
+        activeChapterEnd_ = cachedEnd;
+        if (chapter_loadPageIndexCache(chapter_num)) {
+          indexRangeEnd_ = cachedEnd;
+          indexCursor_ = cachedEnd;
+          indexComplete_ = true;
+          firstPageReady_ = !pageOffsets.empty();
+          applyPendingRestoreIfReady();
+          chapter_initialized = true;
+          Serial.printf("[%lu] [WR05] large_txt_fast_open cache ch=%d pages=%d\n", millis(),
+                        chapter_num, totalPages);
+          return;
+        }
+      }
+    }
+
+    size_t begin = 0;
+    size_t end = fileSize;
+    if (resumeRangeEnd_ > 0 && resumeRangeEnd_ <= fileSize) {
+      activeChapterBegin_ = std::min(resumeRangeBegin_, fileSize);
+      activeChapterEnd_ = std::max(activeChapterBegin_, resumeRangeEnd_);
+      if (activeChapterEnd_ > fileSize) activeChapterEnd_ = fileSize;
+      begin = hasPendingRestore_ ? pendingRestoreByte_ : activeChapterBegin_;
+      if (begin < activeChapterBegin_ || begin >= activeChapterEnd_) begin = activeChapterBegin_;
+      end = activeChapterEnd_;
+    } else {
+      activeChapterBegin_ = 0;
+      activeChapterEnd_ = fileSize;
+      if (hasPendingRestore_ && pendingRestoreByte_ < fileSize) begin = pendingRestoreByte_;
+    }
+    if (begin >= end) begin = 0;
+    currentPage = 0;
+    const uint32_t tIdx0 = millis();
+    Serial.printf("[%lu] [WR05] large_txt_fast_open begin=%zu end=%zu saved=%d\n", tIdx0, begin, end,
+                  hasPendingRestore_ ? 1 : 0);
+    buildPageIndexFirstPage(begin, end);
+    firstPageReady_ = !pageOffsets.empty();
+    applyPendingRestoreIfReady();
+    chapter_initialized = true;
+    Serial.printf("[%lu] [WR05] large_txt_fast_open_ready ms=%lu pages=%d complete=%d\n",
+                  static_cast<unsigned long>(millis()), static_cast<unsigned long>(millis() - tIdx0),
+                  totalPages, indexComplete_ ? 1 : 0);
     return;
   }
 
@@ -2487,24 +2682,24 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
       chapter_initialized = true;
       return;
     }
+    activeChapterBegin_ = chapterOffsetbegin;
+    activeChapterEnd_ = chapterOffsetend;
     // Fast open (esp. next-chapter): first page only, rest in displayTaskLoop.
     // Full buildPageIndex under the render lock made large chapters multi-second lag.
     const uint32_t tIdx0 = millis();
     Serial.printf("[%lu] [TRS] library first_page_index_begin ch=%d range=%zu..%zu\n", millis(),
                   chapter_num, chapterOffsetbegin, chapterOffsetend);
     buildPageIndexFirstPage(chapterOffsetbegin, chapterOffsetend);
-    // Resume mid-chapter (saved page N) or prev-chapter last page: need enough
-    // index before first paint. Next-chapter opens with currentPage=0 → no wait.
-    if (!indexComplete_ && currentPage != 0) {
-      if (currentPage < 0) {
-        while (!indexComplete_) {
-          if (continuePageIndex(16, 256 * 1024) == 0 && !indexComplete_) break;
-        }
-      } else {
-        while (!indexComplete_ && totalPages <= currentPage) {
-          if (continuePageIndex(16, 256 * 1024) == 0 && !indexComplete_) break;
-        }
-      }
+    // Saved mid-page resume: one bounded sync slice so the saved page usually
+    // exists before first paint. The former unbounded loops here serialized a
+    // whole-range catch-up under the render lock on large TXT (currentPage<0
+    // prev-chapter opens indexed the ENTIRE range synchronously). Anything past
+    // this budget defers to renderScreen/displayTaskLoop progressive index +
+    // applyPendingRestoreIfReady, which re-arm updateRequired until covered.
+    if (M4TxtIndexPolicy::resumeCatchupNeeded(indexComplete_, currentPage,
+                                              static_cast<int>(pageOffsets.size()))) {
+      (void)continuePageIndex(M4TxtIndexPolicy::kResumeCatchupMaxPages,
+                              M4TxtIndexPolicy::kResumeCatchupMaxBytes);
     }
     Serial.printf("[%lu] [TRS] library first_page_index_end ch=%d ms=%lu pages=%d complete=%d\n",
                   millis(), chapter_num, static_cast<unsigned long>(millis() - tIdx0), totalPages,
@@ -2518,6 +2713,11 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
   } else {
     indexComplete_ = true;
     tidxSaved_ = true;
+    activeChapterBegin_ = txt->getChapterOffsetByIndex(chapter_num);
+    activeChapterEnd_ = txt->getChapterendOffsetByIndex(chapter_num);
+    if (activeChapterEnd_ == 0 || activeChapterEnd_ <= activeChapterBegin_) {
+      activeChapterEnd_ = txt->getFileSize();
+    }
   }
 
   firstPageReady_ = !pageOffsets.empty();
@@ -2612,6 +2812,9 @@ void TxtReaderActivity::buildPageIndex(size_t beginByte, size_t endByte) {
 size_t TxtReaderActivity::chapterContentEnd() const {
   if (!txt) return 0;
   if (pluginSession_.active) return txt->getFileSize();
+  if (largeTxtFastOpen_ && chapternum == fastOpenChapter_ && activeChapterEnd_ > 0) {
+    return activeChapterEnd_;
+  }
   size_t endoffset = txt->getChapterendOffsetByIndex(chapternum);
   if (endoffset > 0) return endoffset;  // existing call sites subtract 1 for inclusive
   return txt->getFileSize();
@@ -2736,6 +2939,13 @@ int TxtReaderActivity::continuePageIndex(int maxPages, size_t maxBytes) {
     const size_t before = indexCursor_;
     if (!loadPageAtOffset(indexCursor_, indexRangeEnd_, tempLines, nextOffset,
                           nullptr, 0, 0, 0, &justifyScratch)) {
+      // Generic page-load failure (alloc / SD read / decode) is NOT chapter
+      // end. Marking complete here persisted a truncated index (.tidx /
+      // chapterN.bin) that could never be extended. Only cursor >= rangeEnd is
+      // real EOF; leave incomplete so the next idle slice resumes here.
+      if (!M4TxtIndexPolicy::loadFailureIsChapterEnd(indexCursor_, indexRangeEnd_)) {
+        break;
+      }
       indexComplete_ = true;
       break;
     }
@@ -3404,8 +3614,13 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
 
   if (needFree) free(buffer);
 
-  logPerf("loadPage", millis() - tLoad0, currentPage,
-          static_cast<uint32_t>(outLines.size()));
+  // Hot indexing calls this hundreds of times; an SD append per call stalled
+  // the very path being measured. Slow pages always log; fast pages at most
+  // once per interval (see M4TxtIndexPolicy).
+  if (loadPageLogGate_.shouldLog(millis(), millis() - tLoad0)) {
+    logPerf("loadPage", millis() - tLoad0, currentPage,
+            static_cast<uint32_t>(outLines.size()));
+  }
   return !outLines.empty();
 }
 
@@ -3709,6 +3924,8 @@ void TxtReaderActivity::finishPhysicalDisplay() {
   if (firstContent) {
     firstPhysicalShown_ = true;
     lastPhysicalBodyPage_ = (pendingPhysicalPage_ >= 0) ? pendingPhysicalPage_ : currentPage;
+    Serial.printf("[WR05] t=%lu open_refresh phase=content mode=%s\n",
+                  static_cast<unsigned long>(millis()), wantAnim ? "animation" : "fast");
     Serial.printf("[%lu] [PTA] first content frame (after white seed) anim=%d\n", millis(),
                   wantAnim ? 1 : 0);
   }
@@ -3817,8 +4034,8 @@ void TxtReaderActivity::finishPhysicalDisplay() {
       Serial.printf("[%lu] [TRS] BW display: FAST (AA on, counter reset)\n", millis());
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
-      Serial.printf("[%lu] [TRS] BW display: HALF_REFRESH (counter=%d)\n", millis(), pagesUntilFullRefresh);
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      Serial.printf("[%lu] [TRS] BW display: READER_CLEANUP (counter=%d)\n", millis(), pagesUntilFullRefresh);
+      renderer.displayBuffer(HalDisplay::READER_CLEANUP_REFRESH, HalDisplay::READER_BODY_CONTEXT);
     }
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
@@ -3941,7 +4158,7 @@ void TxtReaderActivity::renderDualPage() {
     if (SETTINGS.textAntiAliasing) {
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      renderer.displayBuffer(HalDisplay::READER_CLEANUP_REFRESH, HalDisplay::READER_BODY_CONTEXT);
     }
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
@@ -4035,6 +4252,8 @@ void TxtReaderActivity::renderScreen() {
     size_t endoffset;
     if (pluginSession_.active) {
       endoffset = txt->getFileSize();  // exclusive end for whole-file plugin chapter
+    } else if (largeTxtFastOpen_ && chapternum == fastOpenChapter_ && activeChapterEnd_ > 0) {
+      endoffset = activeChapterEnd_;
     } else {
       endoffset = txt->getChapterendOffsetByIndex(chapternum);
       if (endoffset > 0) endoffset -= 1;  // 与 buildPageIndex 保持一致
@@ -4072,8 +4291,8 @@ void TxtReaderActivity::renderScreen() {
       std::vector<std::string> nextPageLines;
       std::vector<bool> nextPageJustify;
       size_t nextOff = pageOffsets[currentPage + 1];
-      size_t nextEnd = txt->getChapterendOffsetByIndex(chapternum);
-      if (nextEnd > 0) nextEnd -= 1;  // 与 buildPageIndex 保持一致
+      size_t nextEnd = chapterContentEnd();
+      if (nextEnd > 0 && !(largeTxtFastOpen_ && chapternum == fastOpenChapter_)) nextEnd -= 1;
       loadPageAtOffset(nextOff, nextEnd, nextPageLines, nextOff,
                        nullptr, 0, 0, 0, &nextPageJustify);
       
@@ -4119,7 +4338,7 @@ void TxtReaderActivity::renderScreen() {
       
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
       if (pagesUntilFullRefresh > 0) pagesUntilFullRefresh--;
-      saveProgress();
+      progressSavePending_ = true;
       return;
     }
   }
@@ -4136,8 +4355,10 @@ void TxtReaderActivity::renderScreen() {
     renderPage();
   }
 
-  // Save progress
-  saveProgress();
+  // Persist after the first physical frame / next idle slice. Writing the
+  // progress file here held the render lock on first open and delayed the
+  // readable page by an SD sync.
+  progressSavePending_ = true;
 }
 
 
@@ -4299,6 +4520,10 @@ void TxtReaderActivity::renderStatusBar(const int orientedMarginRight, const int
       }
     } else {
       title = txt->getChapterTitleByIndex(chapternum);
+      if (title.empty() && largeTxtFastOpen_ && chapternum == fastOpenChapter_) {
+        title = txt->getTitle();
+        if (title.empty()) title = "TXT";
+      }
       titleWidth = M4UiText::textWidth(renderer, SMALL_FONT_ID, title.c_str());
       if (titleWidth > availableTitleSpace) {
         availableTitleSpace = rendererableScreenWidth - titleMarginLeft - titleMarginRight;
@@ -4332,7 +4557,7 @@ void TxtReaderActivity::saveProgress() const {
   const std::string legacy = dir + "/progress.bin";
   const std::string tmp = dir + "/progress.tmp";
 
-  uint8_t data[8] = {0};
+  uint8_t data[kProgressDataBytes] = {0};
   int page = currentPage;
   const int chRaw = M4ContentProvider::resolveProgressChapterIndex(
       pluginSession_.active, pluginSession_.chapterIndex, chapternum);
@@ -4345,6 +4570,22 @@ void TxtReaderActivity::saveProgress() const {
   data[1] = static_cast<uint8_t>((page >> 8) & 0xFF);
   data[4] = static_cast<uint8_t>(ch & 0xFF);
   data[5] = static_cast<uint8_t>((ch >> 8) & 0xFF);
+
+  auto progressOffset = [](size_t offset) -> uint32_t {
+    return offset > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<uint32_t>(offset);
+  };
+  size_t resumeByte = 0;
+  if (currentPage >= 0 && currentPage < static_cast<int>(pageOffsets.size())) {
+    resumeByte = pageOffsets[static_cast<size_t>(currentPage)];
+  } else if (hasPendingRestore_) {
+    resumeByte = pendingRestoreByte_;
+  }
+  const uint32_t resumeByte32 = progressOffset(resumeByte);
+  const uint32_t rangeBegin32 = progressOffset(activeChapterBegin_);
+  const uint32_t rangeEnd32 = progressOffset(activeChapterEnd_ > 0 ? activeChapterEnd_ : txt->getFileSize());
+  std::memcpy(data + 8, &resumeByte32, sizeof(resumeByte32));
+  std::memcpy(data + 12, &rangeBegin32, sizeof(rangeBegin32));
+  std::memcpy(data + 16, &rangeEnd32, sizeof(rangeEnd32));
 
   auto forceRemove = [](const char* p) {
     if (!SdMan.exists(p)) return;
@@ -4394,6 +4635,10 @@ void TxtReaderActivity::loadProgress() {
   chapter_initialized = false;
   currentPage = 0;
   chapternum = 0;
+  hasPendingRestore_ = false;
+  pendingRestoreByte_ = 0;
+  resumeRangeBegin_ = 0;
+  resumeRangeEnd_ = 0;
 
   if (!txt) return;
   txt->setupCacheDir();
@@ -4403,21 +4648,29 @@ void TxtReaderActivity::loadProgress() {
   const std::string pathBin = dir + "/progress.bin";
   const std::string pathTmp = dir + "/progress.tmp";
 
-  auto read8 = [](const char* p, uint8_t* data) -> bool {
+  auto readProgress = [](const char* p, uint8_t* data, size_t& bytesRead) -> bool {
+    bytesRead = 0;
     FsFile f;
     if (!SdMan.openFileForRead("TRS", p, f)) return false;
-    const size_t n = f.read(data, 8);
+    const size_t available = static_cast<size_t>(f.fileSize());
+    if (available < kLegacyProgressDataBytes) {
+      f.close();
+      return false;
+    }
+    const size_t wanted = std::min(available, kProgressDataBytes);
+    bytesRead = f.read(data, wanted);
     f.close();
-    return n == 8;
+    return bytesRead >= kLegacyProgressDataBytes;
   };
 
-  uint8_t data[8];
+  uint8_t data[kProgressDataBytes] = {0};
+  size_t bytesRead = 0;
   const char* used = nullptr;
-  if (read8(pathDat.c_str(), data)) {
+  if (readProgress(pathDat.c_str(), data, bytesRead)) {
     used = "progress.dat";
-  } else if (read8(pathTmp.c_str(), data)) {
+  } else if (readProgress(pathTmp.c_str(), data, bytesRead)) {
     used = "progress.tmp";  // interrupted rename recovery
-  } else if (read8(pathBin.c_str(), data)) {
+  } else if (readProgress(pathBin.c_str(), data, bytesRead)) {
     used = "progress.bin";  // legacy
   } else {
     Serial.printf("[%lu] [TRS] no progress file yet in %s\n", millis(), dir.c_str());
@@ -4442,10 +4695,31 @@ void TxtReaderActivity::loadProgress() {
   }
   currentPage = page;
   chapternum = ch;
-  Serial.printf("[%lu] [TRS] Loaded progress: page %d chapter %d (from %s)\n", millis(), currentPage,
-                chapternum, used);
+  if (largeTxtFastOpen_ && bytesRead >= kProgressDataBytes) {
+    uint32_t resumeByte = 0;
+    uint32_t rangeBegin = 0;
+    uint32_t rangeEnd = 0;
+    std::memcpy(&resumeByte, data + 8, sizeof(resumeByte));
+    std::memcpy(&rangeBegin, data + 12, sizeof(rangeBegin));
+    std::memcpy(&rangeEnd, data + 16, sizeof(rangeEnd));
+    const size_t fileSize = txt->getFileSize();
+    if (fileSize > 0 && resumeByte < fileSize) {
+      pendingRestoreByte_ = resumeByte;
+      hasPendingRestore_ = true;
+      resumeRangeBegin_ = std::min<size_t>(rangeBegin, fileSize);
+      resumeRangeEnd_ = rangeEnd > 0 ? std::min<size_t>(rangeEnd, fileSize) : fileSize;
+      if (resumeRangeEnd_ <= resumeRangeBegin_) resumeRangeEnd_ = fileSize;
+      Serial.printf("[%lu] [WR05] large_txt_resume byte=%u range=%u..%u\n", millis(), resumeByte,
+                    static_cast<unsigned>(resumeRangeBegin_), static_cast<unsigned>(resumeRangeEnd_));
+    }
+  }
+  Serial.printf("[%lu] [TRS] Loaded progress: page %d chapter %d bytes=%zu (from %s)\n", millis(), currentPage,
+                chapternum, bytesRead, used);
   // Migrate legacy/tmp → progress.dat; rewrite if we clamped garbage.
-  if (repaired || std::strcmp(used, "progress.dat") != 0) {
+  // Do not overwrite an 8-byte legacy record with a zero-offset extended
+  // record before the first fast page has been laid out.
+  if ((repaired || std::strcmp(used, "progress.dat") != 0) &&
+      (!largeTxtFastOpen_ || bytesRead >= kProgressDataBytes)) {
     saveProgress();
   }
 }
@@ -4460,6 +4734,50 @@ void TxtReaderActivity::libraryPrefetchReset() {
   prefetchRangeEnd_ = 0;
   prefetchComplete_ = false;
   prefetchSkipped_ = false;
+}
+
+void TxtReaderActivity::libraryIdleDiscoverChapterBatch() {
+  // REQUIRES: state lock held. One batch per idle pass keeps the first page
+  // independent from chapter parsing and lets the picker consume cache files
+  // progressively instead of waiting for a full TOC copy.
+  if (pluginSession_.active || !largeTxtFastOpen_ || !txt || chapterDiscoveryDone_) return;
+  // The first page is intentionally independent from the chapter parser.  A
+  // dense book can require thousands of on-disk batches; never let that work
+  // run while the first physical frame is still pending.
+  if (!firstPhysicalShown_.load(std::memory_order_acquire)) return;
+  const uint32_t now = millis();
+  if (static_cast<int32_t>(now - chapterDiscoveryNotBeforeMs_) < 0 ||
+      static_cast<int32_t>(now - chapterDiscoveryNextMs_) < 0) {
+    return;
+  }
+  const int batch = chapterDiscoveryBatch_;
+  if (batch < 0 || batch > 50000) {
+    chapterDiscoveryDone_ = true;
+    return;
+  }
+
+  const uint32_t t0 = millis();
+  const bool fromCache = txt->hasChapterBatchCache(batch);
+  const bool loaded = txt->parseChapterIndexAndOffset(batch, /*allowScan=*/!fromCache);
+  bool any = false;
+  for (int i = 0; i < 25; ++i) {
+    if (txt->isChapterExist(batch + i)) {
+      any = true;
+      break;
+    }
+  }
+  if (!loaded || !any) {
+    chapterDiscoveryDone_ = true;
+    chapterDiscoveryNextMs_ = millis() + kChapterDiscoveryPauseMs;
+    Serial.printf("[%lu] [WR05] large_txt_chapter_batch_done batch=%d any=%d ms=%lu\n", millis(), batch,
+                  any ? 1 : 0, static_cast<unsigned long>(millis() - t0));
+    return;
+  }
+
+  chapterDiscoveryBatch_ = batch + 25;
+  chapterDiscoveryNextMs_ = millis() + kChapterDiscoveryPauseMs;
+  Serial.printf("[%lu] [WR05] large_txt_chapter_batch batch=%d cache=%d next=%d ms=%lu\n", millis(), batch,
+                fromCache ? 1 : 0, chapterDiscoveryBatch_, static_cast<unsigned long>(millis() - t0));
 }
 
 bool TxtReaderActivity::chapter_pageIndexCacheExists(int ch) const {
@@ -4599,6 +4917,11 @@ void TxtReaderActivity::libraryIdlePrefetchNextChapter() {
     const size_t before = prefetchCursor_;
     if (!loadPageAtOffset(prefetchCursor_, prefetchRangeEnd_, tempLines, nextOffset, nullptr, 0, 0, 0,
                           &justifyScratch)) {
+      // Mirror continuePageIndex: a failed read is not chapter end — retry on
+      // a later idle pass instead of persisting a truncated N+1 cache.
+      if (!M4TxtIndexPolicy::loadFailureIsChapterEnd(prefetchCursor_, prefetchRangeEnd_)) {
+        break;
+      }
       prefetchComplete_ = true;
       break;
     }

@@ -10,13 +10,13 @@
 //   lut_run    {mode:"fast"}                      refresh prev->next with current LUT
 //   lut_swap                                     swap slots (next becomes prev)
 //   lut_stats                                    {last_ms, lut_set, frames}
-//   lut_clear  {mode:"full"}                      safe recovery refresh
+//   lut_clear  {mode:"fast"}                      safe recovery refresh
 //   lut_end                                      leave experiment mode
 //
 // Chunks uploaded after lut_begin land in the PSRAM frame slot; the bridge's
 // chunk session writes here instead of SD. Safety: voltage bytes (105..109)
 // are force-kept at the board's factory values unless explicitly unlocked;
-// a full-refresh recovery is always available.
+// all lab refreshes are normalized to the standard fast waveform.
 
 #include <cstddef>
 #include <cstdint>
@@ -51,10 +51,10 @@ void endFrameUpload(int slot);
 void swapSlots();
 // SD-backed frames: run reads prev/next from SD instead of uploaded slots.
 bool setSdFrames(const char* prevPath, const char* nextPath);
-// Establish the physical baseline: FULL-refresh the panel to the given SD
-// frame so subsequent FAST differential runs start from a known state.
+// Establish the physical baseline with a fast refresh to the given SD frame so
+// subsequent differential runs start from a known state.
 bool baselineFromSd(const char* framePath);
-// Kindle-style multipass wipe (full-frame):
+// Kindle-style multipass wipe (full-frame fast updates):
 //   each step: RED = original page1, BW = composeWipe(page1, page2, edge)
 // Covered region keeps being driven page1→page2 every step (ink settles);
 // uncovered stays page1. New page enters from the right; `feather` dithers
@@ -92,14 +92,13 @@ bool startAnimate(const char* prevPath, const char* nextPath, int steps, int fea
                   int winMult = 1, int dir = 0);
 bool pumpAnimateWindow(uint32_t& stepMsOut);
 bool animateActive();
-// Post-animation settle: full-frame RED=oldPage, BW=newPage with the current
-// LUT (a stronger multi-phase waveform) so every changed pixel gets one more
-// directional drive — clears residual old content, deepens new ink, and
-// leaves O==N pixels untouched. Returns ms or 0.
+// Post-animation settle: one final fast differential update. Caller-supplied
+// LUTs are ignored by the display facade, so this cannot arm a multi-phase
+// waveform. Returns ms or 0.
 uint32_t runSettle(const char* prevPath, const char* nextPath);
 bool setLut(const uint8_t* lut, size_t len, bool unlockVoltages);
 uint32_t runRefresh(bool swapAfter);   // returns last run ms (0 on failure)
-void clearAll();                       // safe full refresh + reset state
+void clearAll();                       // safe fast refresh + reset state
 Stats stats();
 
 }  // namespace M4WaveformLab

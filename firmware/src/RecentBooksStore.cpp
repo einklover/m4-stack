@@ -7,6 +7,7 @@
 #include <Xtc.h>
 
 #include <algorithm>
+#include <utility>
 
 #include "util/StringUtils.h"
 
@@ -20,15 +21,22 @@ RecentBooksStore RecentBooksStore::instance;
 
 void RecentBooksStore::addBook(const std::string& path, const std::string& title, const std::string& author,
                                const std::string& coverBmpPath, const std::string& originalSourcePath) {
-  // Remove existing entry if present
+  RecentBook replacement{path, title, author, coverBmpPath, originalSourcePath};
+
+  // Re-opening a provider book can race cover/detail acquisition. Keep known
+  // metadata when the replacement only has partial provider fields; progress
+  // and reading-time fields intentionally remain reset as before.
   auto it =
       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
   if (it != recentBooks.end()) {
+    if (replacement.title.empty()) replacement.title = it->title;
+    if (replacement.author.empty()) replacement.author = it->author;
+    if (replacement.coverBmpPath.empty()) replacement.coverBmpPath = it->coverBmpPath;
     recentBooks.erase(it);
   }
 
   // Add to front
-  recentBooks.insert(recentBooks.begin(), {path, title, author, coverBmpPath, originalSourcePath});
+  recentBooks.insert(recentBooks.begin(), std::move(replacement));
 
   // Trim to max size
   if (recentBooks.size() > MAX_RECENT_BOOKS) {
@@ -49,6 +57,16 @@ void RecentBooksStore::updateBook(const std::string& path, const std::string& ti
     book.coverBmpPath = coverBmpPath;
     saveToFile();
   }
+}
+
+void RecentBooksStore::updateProviderBook(const std::string& path, const std::string& title,
+                                          const std::string& author, const std::string& coverBmpPath) {
+  auto it = std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) {
+    return book.path == path;
+  });
+  if (it == recentBooks.end()) return;
+  RecentBook& book = *it;
+  if (mergeProviderMetadata(book, title, author, coverBmpPath)) saveToFile();
 }
 
 bool RecentBooksStore::saveToFile() const {

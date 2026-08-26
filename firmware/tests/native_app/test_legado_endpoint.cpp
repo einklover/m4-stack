@@ -34,11 +34,42 @@ int main() {
 
   // --- endpoint helpers ---
   assert(M4LegadoBridge::baseUrlOk("http://192.168.0.118:1122"));
+  assert(M4LegadoBridge::baseUrlOk("http://reader.local:8080"));
   assert(!M4LegadoBridge::baseUrlOk("https://192.168.0.118:1122"));
   assert(!M4LegadoBridge::baseUrlOk("http://192.168.0.118:1122/path"));
-  assert(!M4LegadoBridge::baseUrlOk("http://evil.com:1122"));
+  assert(!M4LegadoBridge::baseUrlOk("http://999.1.1.1:1122"));
   assert(M4LegadoBridge::makeBase("10.0.0.2", 4396) == "http://10.0.0.2:4396");
-  assert(M4LegadoBridge::makeBase("bad", 1122).empty());
+  assert(M4LegadoBridge::makeBase("bad host", 1122).empty());
+
+  M4LegadoBridge::ParsedEndpoint parsed;
+  std::string error;
+  assert(M4LegadoBridge::parseEndpoint("192.168.1.20", "1122", parsed, &error));
+  assert(parsed.base == "http://192.168.1.20:1122");
+  assert(M4LegadoBridge::parseEndpoint(" http://reader.local:8080/ ", "1122", parsed, &error));
+  assert(parsed.base == "http://reader.local:8080");
+  assert(M4LegadoBridge::parseEndpoint("reader.local", "8081", parsed, &error));
+  assert(parsed.base == "http://reader.local:8081");
+  assert(!M4LegadoBridge::parseEndpoint("https://reader.local:8080", "1122", parsed, &error));
+  assert(error == "unsupported_scheme");
+  assert(!M4LegadoBridge::parseEndpoint("reader.local", "65536", parsed, &error));
+  assert(error == "invalid_port");
+  assert(!M4LegadoBridge::parseEndpoint("http://reader.local:8080/path", "1122", parsed, &error));
+  assert(error == "unsupported_path");
+
+  // A failed candidate must not replace the persisted/successful endpoint;
+  // only the verified transition records it.
+  M4LegadoBridge::ManualEndpointState endpointState;
+  endpointState.lastSuccessful = "http://old.local:1122";
+  endpointState.begin("http://new.local:8080");
+  endpointState.fail("连接超时");
+  assert(endpointState.phase == M4LegadoBridge::ManualEndpointPhase::Error);
+  assert(endpointState.lastSuccessful == "http://old.local:1122");
+  endpointState.begin("http://new.local:8080");
+  endpointState.succeed();
+  assert(endpointState.phase == M4LegadoBridge::ManualEndpointPhase::Ready);
+  assert(endpointState.lastSuccessful == "http://new.local:8080");
+  assert(M4LegadoBridge::endpointPath("/apps_data/com.legado.client") ==
+         "/apps_data/com.legado.client/provider/endpoint.txt");
 
   assert(M4LegadoBridge::probeBodyLooksLikeLegado(
       R"({"data":[],"isSuccess":true})", 200, ""));
@@ -49,6 +80,15 @@ int main() {
   // Port table must include the official default first.
   assert(M4LegadoBridge::kProbePortCount >= 4);
   assert(M4LegadoBridge::kProbePorts[0] == 1122);
+
+  // A dead saved phone address must not make every chapter tap probe forever.
+  // The firmware discovery loop uses this same bounded predicate between
+  // endpoint/port attempts.
+  assert(M4LegadoBridge::endpointProbeWithinBudget(1000, 1000));
+  assert(M4LegadoBridge::endpointProbeWithinBudget(
+      1000, 1000 + M4LegadoBridge::kEndpointProbeBudgetMs - 1));
+  assert(!M4LegadoBridge::endpointProbeWithinBudget(
+      1000, 1000 + M4LegadoBridge::kEndpointProbeBudgetMs));
 
   printf("legado endpoint + lan visitor helpers: PASS\n");
   return 0;

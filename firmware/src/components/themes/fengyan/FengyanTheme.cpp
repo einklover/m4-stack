@@ -15,6 +15,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "components/themes/BaseTheme.h"
+#include "util/M4HomeBookDetailMeta.h"
 #include "util/TouchHitGeometry.h"
 #include "components/icons/book24.h"
 #include "components/icons/cover.h"
@@ -49,6 +50,8 @@
 #include "components/icons/theme3/wifi32.h"
 #include "components/icons/cog.h"
 #include "fontIds.h"
+#include "util/M4TouchListMetrics.h"
+#include "util/M4TouchNavigation.h"
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
 
@@ -125,13 +128,15 @@ const uint8_t* iconForName(UIIcon icon) {
 void FengyanTheme::drawBattery(const GfxRenderer& renderer, Rect rect, const bool showPercentage) const {
   const uint16_t percentage = powerManager.getBatteryPercentage();
   
-  const int fontHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  const auto smallFace = M4UiText::resolveSystem(renderer, SMALL_FONT_ID);
+  const int fontHeight = renderer.getLineHeight(smallFace.fontId);
   const int batteryYOffset = (fontHeight - rect.height) / 2;
   
   if (showPercentage) {
     const auto percentageText = std::to_string(percentage) + "%";
-    renderer.drawText(SMALL_FONT_ID, rect.x + batteryPercentSpacing + FengyanMetrics::values.batteryWidth, rect.y,
-                      percentageText.c_str());
+    M4UiText::drawSystem(renderer, SMALL_FONT_ID,
+                          rect.x + batteryPercentSpacing + FengyanMetrics::values.batteryWidth, rect.y,
+                          percentageText.c_str());
   }
 
   const int x = rect.x;
@@ -182,17 +187,23 @@ void FengyanTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char
   if (showBatteryPercentage) {
     const uint16_t percentage = powerManager.getBatteryPercentage();
     const auto percentageText = std::to_string(percentage) + "%";
-    batteryX -= renderer.getTextWidth(SMALL_FONT_ID, percentageText.c_str());
+    batteryX -= M4UiText::systemTextWidth(renderer, SMALL_FONT_ID, percentageText.c_str());
   }
   drawBattery(renderer,
               Rect{batteryX, rect.y + 6, FengyanMetrics::values.batteryWidth, FengyanMetrics::values.batteryHeight},
               showBatteryPercentage);
 
   if (title) {
-    const int titleMaxWidth = batteryX - rect.x - FengyanMetrics::values.contentSidePadding * 2;
-    auto truncatedTitle = M4UiText::truncated(renderer, UI_12_FONT_ID, title, titleMaxWidth, EpdFontFamily::BOLD);
-    M4UiText::draw(renderer, UI_12_FONT_ID, rect.x + FengyanMetrics::values.contentSidePadding, rect.y + 6,
-                   truncatedTitle.c_str(), true, EpdFontFamily::BOLD);
+    const int titleX = M4TouchNavigation::enabled()
+                           ? std::max(rect.x + FengyanMetrics::values.contentSidePadding,
+                                      M4TouchNavigation::kHeaderHitWidth +
+                                          M4TouchListMetrics::kChapterBackTitleGap)
+                           : rect.x + FengyanMetrics::values.contentSidePadding;
+    const int titleMaxWidth = batteryX - titleX - FengyanMetrics::values.contentSidePadding;
+    auto truncatedTitle = M4UiText::truncatedSystem(renderer, UI_12_FONT_ID, title,
+                                                     std::max(1, titleMaxWidth), EpdFontFamily::BOLD);
+    M4UiText::drawSystem(renderer, UI_12_FONT_ID, titleX, rect.y + 6, truncatedTitle.c_str(), true,
+                         EpdFontFamily::BOLD);
     // 底部细线分隔
     renderer.drawLine(rect.x, rect.y + rect.height - 3, rect.x + rect.width, rect.y + rect.height - 3, 1, true);
   }
@@ -355,9 +366,9 @@ void FengyanTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, cons
       const int x = buttonPositions[i];
       renderer.fillRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, false);
       renderer.drawRect(x, pageHeight - buttonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
+      const int textWidth = M4UiText::systemTextWidth(renderer, SMALL_FONT_ID, labels[i]);
       const int textX = x + (buttonWidth - 1 - textWidth) / 2;
-      renderer.drawText(SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      M4UiText::drawSystem(renderer, SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
     }
   }
 
@@ -585,8 +596,13 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
         renderer.fillRectDither(infoBoxX, infoBoxY, totalCoversWidth, infoBoxHeight, Color::LightGray);
         renderer.drawRect(infoBoxX, infoBoxY, totalCoversWidth, infoBoxHeight, true);
         
+        const auto& selectedBook = recentBooks[selectorIndex];
+        const auto meta = M4HomeBookDetailMeta::presentCached(
+            selectedBook.path, selectedBook.title, selectedBook.author, selectedBook.progress,
+            {L(Str::kValNone), L(Str::kBookSourceLocal), L(Str::kBookSourceUnknown)});
+
         // 绘制书名行：左侧标题（带虚线下划线）+内容，右侧右对齐
-        const std::string& bookTitle = recentBooks[selectorIndex].title;
+        const std::string& bookTitle = meta.title;
         const char* bookNameLabel = L(Str::kBookTitle);
         M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + 12, currentY, bookNameLabel, true);
         int bookNameLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, bookNameLabel);
@@ -609,8 +625,7 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
         currentY += titleLineHeight + lineSpacing;
         
         // 绘制作者行：左侧标题（带虚线下划线）+内容，右侧右对齐
-        const std::string& bookAuthor = recentBooks[selectorIndex].author;
-        std::string authorDisplay = bookAuthor.empty() ? L(Str::kValNone) : bookAuthor;
+        const std::string& authorDisplay = meta.author;
         const char* bookAuthorLabel = L(Str::kBookAuthor);
         M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + 12, currentY, bookAuthorLabel, true);
         int bookAuthorLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, bookAuthorLabel);
@@ -626,26 +641,26 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
         M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + totalCoversWidth - 12 - authorTextWidth, currentY,
                        authorText.c_str(), true);
         currentY += normalLineHeight + lineSpacing;
-        
-        // 使用真实阅读进度
-        int bookProgress = recentBooks[selectorIndex].progress;
-        
-        // 绘制阅读进度行：左侧标题（带虚线下划线），右侧右对齐百分比
-        const char* bookProgressLabel = L(Str::kReadingProgressLabel);
-        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + 12, currentY, bookProgressLabel, true);
-        int bookProgressLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, bookProgressLabel);
-        // 绘制虚线下划线（4像素实线，2像素间隔）
-        for (int x = infoBoxX + 12; x < infoBoxX + 12 + bookProgressLabelWidth; x += 6) {
+
+        // 绘制来源行：插件展示名（或本地/未知来源），不用内部 id
+        const std::string& sourceDisplay = meta.source;
+        const char* bookSourceLabel = L(Str::kBookSource);
+        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + 12, currentY, bookSourceLabel, true);
+        int bookSourceLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, bookSourceLabel);
+        for (int x = infoBoxX + 12; x < infoBoxX + 12 + bookSourceLabelWidth; x += 6) {
           renderer.drawPixel(x, currentY + normalLineHeight - 2, true);
           renderer.drawPixel(x + 1, currentY + normalLineHeight - 2, true);
           renderer.drawPixel(x + 2, currentY + normalLineHeight - 2, true);
           renderer.drawPixel(x + 3, currentY + normalLineHeight - 2, true);
         }
-        std::string progressText = std::to_string(bookProgress) + "%";
-        int progressTextWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, progressText.c_str());
-        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + totalCoversWidth - 12 - progressTextWidth, currentY,
-                       progressText.c_str(), true);
+        auto sourceText = M4UiText::truncated(renderer, UI_10_FONT_ID, sourceDisplay.c_str(), totalCoversWidth - 120);
+        int sourceTextWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, sourceText.c_str());
+        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + totalCoversWidth - 12 - sourceTextWidth, currentY,
+                       sourceText.c_str(), true);
         currentY += normalLineHeight + lineSpacing;
+
+        // 阅读进度只由图形进度条表示；计算语义仍用 recentBooks[].progress
+        int bookProgress = recentBooks[selectorIndex].progress;
         
         // 绘制进度条背景
         renderer.fillRect(infoBoxX + 12, currentY, totalCoversWidth - 24, progressBarHeight, false);

@@ -52,7 +52,7 @@ bool parseKeyName(const char* name, MappedInputManager::Button& out) {
       {"Down", MappedInputManager::Button::Down},
       {"down", MappedInputManager::Button::Down},
       // Murphy M4 side body: KEY_LOCK / power (GPIO0). Short-press policy is
-      // SETTINGS.shortPwrBtn (full refresh / confirm / ignore / …).
+      // SETTINGS.shortPwrBtn (legacy refresh action / confirm / ignore / …).
       {"Power", MappedInputManager::Button::Power},
       {"power", MappedInputManager::Button::Power},
       {"PageBack", MappedInputManager::Button::PageBack},
@@ -317,6 +317,9 @@ void Bridge::poll() {
     }
     return;
   }
+  // Regular window: beginFrame() already ran, so injections here are visible
+  // to this frame's activity input phase. Yield-context polls reject synth
+  // input as busy (no deferred queue).
   int budget = kRxBudget;
   while (budget-- > 0 && Serial.available() > 0) {
     const int b = Serial.read();
@@ -1075,6 +1078,16 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     }
     const int x = doc["x"] | -1;
     const int y = doc["y"] | -1;
+    if (x < 0 || y < 0 || !renderer_ || x >= renderer_->getScreenWidth() ||
+        y >= renderer_->getScreenHeight()) {
+      replyErr(reqId, "tap_oob", "点击坐标越界");
+      return;
+    }
+    // Mid-frame (yield re-entry): reject — do not queue for later replay.
+    if (!M4SynthInputGate::acceptWhileOwnerIdle(yieldContext_)) {
+      replyErr(reqId, "busy", "输入忙，请稍后重试");
+      return;
+    }
     bool busy = false;
     if (!input_->injectSyntheticTap(x, y, busy)) {
       replyErr(reqId, busy ? "busy" : "tap_oob", busy ? "输入忙，请稍后重试" : "点击坐标越界");
@@ -1095,6 +1108,16 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     const int sy = doc["sy"] | -1;
     const int ex = doc["ex"] | -1;
     const int ey = doc["ey"] | -1;
+    if (!renderer_ || sx < 0 || sy < 0 || ex < 0 || ey < 0 || sx >= renderer_->getScreenWidth() ||
+        ex >= renderer_->getScreenWidth() || sy >= renderer_->getScreenHeight() ||
+        ey >= renderer_->getScreenHeight() || (sx == ex && sy == ey)) {
+      replyErr(reqId, "swipe_oob", "滑动坐标越界或轨迹为空");
+      return;
+    }
+    if (!M4SynthInputGate::acceptWhileOwnerIdle(yieldContext_)) {
+      replyErr(reqId, "busy", "输入忙，请稍后重试");
+      return;
+    }
     bool busy = false;
     if (!input_->injectSyntheticSwipe(sx, sy, ex, ey, busy)) {
       replyErr(reqId, busy ? "busy" : "swipe_oob",
@@ -1119,6 +1142,10 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
       replyErr(reqId, "bad_key", "不支持的按键名");
       return;
     }
+    if (!M4SynthInputGate::acceptWhileOwnerIdle(yieldContext_)) {
+      replyErr(reqId, "busy", "输入忙，请稍后重试");
+      return;
+    }
     bool busy = false;
     if (!input_->injectSyntheticKey(btn, busy)) {
       replyErr(reqId, busy ? "busy" : "key_fail", busy ? "输入忙，请稍后重试" : "按键注入失败");
@@ -1133,6 +1160,10 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
   if (strcmp(op, "back") == 0) {
     if (!input_) {
       replyErr(reqId, "no_input", "输入管理器不可用");
+      return;
+    }
+    if (!M4SynthInputGate::acceptWhileOwnerIdle(yieldContext_)) {
+      replyErr(reqId, "busy", "输入忙，请稍后重试");
       return;
     }
     bool busy = false;

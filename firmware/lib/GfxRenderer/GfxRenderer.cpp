@@ -11,7 +11,6 @@
 #include <esp_heap_caps.h>
 
 #include "../../src/CrossPointSettings.h"
-#include "../../src/debug/M4WaveformLab.h"
 #endif
 
 // Half-buffer geometry constants derived from display dimensions (orientation-aware).
@@ -50,7 +49,8 @@ bool GfxRenderer::hasTextGlyphs(const int fontId, const char* text,
   const char* p = text;
   uint32_t cp = 0;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&p))) != 0) {
-    if (cp <= 0x20 || cp == '?') continue;
+    // Whitespace and controls are synthetic empty glyphs, not missing coverage
+    if (cp <= 0x20 || cp == '?' || cp == 0x3000 || cp == 0x00A0 || cp == 0x09 || cp == 0x0A || cp == 0x0D) continue;
     const EpdGlyph* glyph = family.getGlyph(cp, style);
     if (!glyph || glyph->width == 0 || glyph->height == 0) return false;
     // SD-backed font implementations intentionally return the question glyph
@@ -751,19 +751,11 @@ void GfxRenderer::invertScreen() const {
 
 void GfxRenderer::armEntryAnimation(const int direction) {
 #ifdef CROSSPOINT_MURPHY_M4
+  (void)direction;
+  // Entry transitions used the waveform-lab multi-window animation, which is
+  // not part of reader pagination. Keep the API source-compatible but do not
+  // arm any flashing/multi-phase work for Home, menus, or back navigation.
   cancelEntryAnimation();
-  const uint8_t* source = frameBuffer ? frameBuffer : lastShownFrame;
-  if (!source) return;
-
-  pendingEntryFrame = static_cast<uint8_t*>(
-      heap_caps_malloc(HalDisplay::BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!pendingEntryFrame) return;
-  std::memcpy(pendingEntryFrame, source, HalDisplay::BUFFER_SIZE);
-  pendingEntryDirection = (direction >= 0 && direction <= 3) ? direction : 0;
-  // Back/Home can enter a new activity whose first paint waits on a worker.
-  // Keep the source alive long enough for that paint, but never let it leak
-  // into a later unrelated navigation action.
-  pendingEntryDeadlineMs = millis() + 1500;
 #else
   (void)direction;
 #endif
@@ -786,57 +778,28 @@ void GfxRenderer::ageEntryAnimation() {
 #endif
 }
 
-void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const {
+void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode,
+                                const HalDisplay::RefreshContext context) const {
+  const bool readerCleanup = context == HalDisplay::READER_BODY_CONTEXT &&
+                             refreshMode == HalDisplay::READER_CLEANUP_REFRESH;
+  // Only the explicit reader-body cleanup survives this boundary. In
+  // particular, a legacy FULL/HALF request cannot be promoted by a renderer
+  // cadence or accidentally reach the panel driver.
+  const HalDisplay::RefreshMode effectiveMode = readerCleanup
+                                                    ? HalDisplay::READER_CLEANUP_REFRESH
+                                                    : HalDisplay::FAST_REFRESH;
   auto elapsed = millis() - start_ms;
-  Serial.printf("[%lu] [GFX] Time = %lu ms from clearScreen to displayBuffer\n", millis(), elapsed);
+  Serial.printf("[%lu] [GFX] Time = %lu ms from clearScreen to displayBuffer mode=%d eff=%d context=%d\n",
+                millis(), elapsed, static_cast<int>(refreshMode), static_cast<int>(effectiveMode),
+                static_cast<int>(context));
 
 #ifdef CROSSPOINT_MURPHY_M4
-  if (pendingEntryFrame && frameBuffer && SETTINGS.systemAnimationEnabled != 0) {
-    uint8_t* oldFrame = pendingEntryFrame;
-    pendingEntryFrame = nullptr;
-    pendingEntryDeadlineMs = 0;
-
-    int steps = static_cast<int>(SETTINGS.pageTurnAnimationSteps);
-    if (steps < 2) steps = 2;
-    if (steps > 64) steps = 64;
-    int mult = static_cast<int>(SETTINGS.pageTurnAnimationMult);
-    if (mult < 1) mult = 1;
-    if (mult > 16) mult = 16;
-    if (mult > steps) mult = steps;
-    uint8_t tp = SETTINGS.pageTurnAnimationTp;
-    if (tp < 1) tp = 1;
-    if (tp > 16) tp = 16;
-    uint8_t fr = SETTINGS.pageTurnAnimationFrameRate;
-    if (fr != 0x22 && fr != 0x44 && fr != 0x88) fr = 0x88;
-
-    uint8_t lut[M4WaveformLab::kLutBytes] = {};
-    lut[10] = 0x80;
-    lut[20] = 0x40;
-    lut[50] = tp;
-    lut[51] = 0x01;
-    for (int i = 100; i < 105; ++i) lut[i] = fr;
-    lut[105] = 0x17;
-    lut[106] = 0x41;
-    lut[107] = 0xA8;
-    lut[108] = 0x32;
-    lut[109] = 0x30;
-
-    M4WaveformLab::setDisplay(&display);
-    const bool played = M4WaveformLab::setLutBytes(lut, sizeof(lut)) &&
-                        M4WaveformLab::runAnimateMemWindow(
-                            oldFrame, frameBuffer, steps, mult,
-                            logicalToPhysicalAnimationDirection(pendingEntryDirection)) != 0;
-    free(oldFrame);
-    if (played) {
-      (void)const_cast<GfxRenderer*>(this)->storeLastShown();
-      return;
-    }
-  } else {
-    const_cast<GfxRenderer*>(this)->cancelEntryAnimation();
-  }
+  // Any stale hook from a pre-policy caller is discarded before the fast
+  // frame; no navigation surface may run a waveform-lab animation here.
+  const_cast<GfxRenderer*>(this)->cancelEntryAnimation();
 #endif
 
-  display.displayBuffer(refreshMode, fadingFix);
+  display.displayBuffer(effectiveMode, fadingFix, context);
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,

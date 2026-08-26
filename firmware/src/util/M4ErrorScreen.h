@@ -172,7 +172,7 @@ inline void paint(GfxRenderer& renderer, const Snapshot& s, bool paintAndFlush =
   }
 
   if (paintAndFlush) {
-    renderer.displayBuffer(s.fastRefresh ? HalDisplay::FAST_REFRESH : HalDisplay::FULL_REFRESH);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
 }
 

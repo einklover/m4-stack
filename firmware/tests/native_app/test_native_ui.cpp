@@ -1,5 +1,6 @@
 #include "apps/M4xJsonStream.h"
 #include "apps/native/M4NativeUi.h"
+#include "apps/native/M4NativeProviderHomeTemplate.h"
 #include "apps/native/M4NativeUiController.h"
 #include "apps/providers/M4NativeLoadUi.h"
 #include "apps/providers/M4NativeProviderExplore.h"
@@ -87,6 +88,59 @@ void tilesComponent() {
 
   const char* bad = R"XML(<m4ui version="1"><screen id="x"><tiles id="t"/></screen></m4ui>)XML";
   assert(!M4NativeUi::parse(bad, std::char_traits<char>::length(bad)));
+}
+
+void providerUiContracts() {
+  for (const char* provider : {"fanqie", "jjwxc", "legado"}) {
+    const char* xml = M4NativeProviderHomeTemplate::xmlFor(provider);
+    assert(xml != nullptr);
+    const auto parsed = M4NativeUi::parse(xml, std::char_traits<char>::length(xml));
+    assert(parsed);
+    const auto* screen = M4NativeUi::findScreen(parsed.document, "home");
+    assert(screen != nullptr);
+    const M4NativeUi::Node* list = nullptr;
+    const M4NativeUi::Node* buttons = nullptr;
+    for (const auto& node : screen->nodes) {
+      if (node.type == M4NativeUi::NodeType::List) list = &node;
+      if (node.type == M4NativeUi::NodeType::Buttons) buttons = &node;
+    }
+    assert(list && list->action == "provider.openBook");
+    assert(buttons && buttons->labels[0] == "返回" && buttons->labels[1].empty());
+    assert(buttons->labels[3] == "刷新");
+    if (std::string(provider) == "legado") assert(buttons->labels[2] == "连接设置");
+    else assert(buttons->labels[2].empty());
+  }
+
+  const bool footerActive[4] = {true, false, false, true};
+  const auto footer = M4NativeUi::ProviderFooterLayout::make(480, 800, footerActive);
+  assert(footer.top == 736 && footer.height == 64 && footer.count == 2);
+  assert(footer.buttons[0].width >= 200 && footer.buttons[0].height == 64);
+  assert(footer.buttonAt(20, 740) == 0);
+  assert(footer.buttonAt(300, 740) == 3);
+  assert(footer.buttonAt(240, 740) == -1);
+  const char* labels[4] = {"返回", "", "连接设置", "刷新"};
+  assert(std::string(labels[footer.slots[0]]) == "返回");
+  assert(std::string(labels[footer.slots[1]]) == "刷新");
+  assert(footer.buttonAt(footer.buttons[0].x + footer.buttons[0].width / 2, 760) == footer.slots[0]);
+  assert(footer.buttonAt(footer.buttons[1].x + footer.buttons[1].width / 2, 760) == footer.slots[1]);
+
+  const bool legadoFooterActive[4] = {true, false, true, true};
+  const auto legadoFooter = M4NativeUi::ProviderFooterLayout::make(480, 800, legadoFooterActive);
+  assert(legadoFooter.count == 3);
+  assert(legadoFooter.slots[0] == 0 && legadoFooter.slots[1] == 2 && legadoFooter.slots[2] == 3);
+  assert(std::string(labels[legadoFooter.slots[0]]) == "返回");
+  assert(std::string(labels[legadoFooter.slots[1]]) == "连接设置");
+  assert(std::string(labels[legadoFooter.slots[2]]) == "刷新");
+  for (int i = 0; i < legadoFooter.count; ++i) {
+    const auto& button = legadoFooter.buttons[i];
+    assert(legadoFooter.buttonAt(button.x + button.width / 2, 760) == legadoFooter.slots[i]);
+  }
+
+  const auto tiles = M4NativeUi::ProviderTileLayout::make(480, 80, 152, 8, 20);
+  assert(tiles.rows == 3 && tiles.cellWidth >= 140 && tiles.cellHeight >= 44);
+  assert(tiles.labelMaxWidth() >= M4NativeUi::ProviderTileLayout::kFourCjkNominalWidth);
+  assert(tiles.indexAt(tiles.rectFor(0).x + 10, tiles.rectFor(0).y + 10) == 0);
+  assert(tiles.indexAt(tiles.rectFor(0).x + tiles.cellWidth + 1, tiles.rectFor(0).y + 10) == -1);
 }
 
 void exploreContract() {
@@ -256,6 +310,7 @@ void providerContract() {
 int main() {
   parseHappyPath();
   tilesComponent();
+  providerUiContracts();
   exploreContract();
   loadingPresentation();
   numericEntities();

@@ -72,15 +72,14 @@ inline bool backgroundIndexNeedsRedraw(const BackgroundIndexUpdate& u) {
   return u.pageChanged;
 }
 
-// First physical paint after plugin/native handoff.
-// Use absolute (non-differential) HALF — SSD1677 BYPASS_RED + single-pass 0xD7
-// clean — not OTP multi-flash FULL (0xF7). FAST is differential and can garble
-// residual plugin UI; FULL is the multi-inversion waveform that flashes the
-// whole panel several times. Exactly one handoff refresh; later pages FAST/HALF.
+// First physical paint after plugin/native handoff. Legacy enum values remain
+// source-compatible, but the global policy permits only the fast waveform
+// outside the reader body. The handoff is one fast paint; no implicit cleanup
+// or multi-phase waveform is allowed here.
 enum class PluginFirstHandoffRefresh : uint8_t { Half = 0, Full = 1, Fast = 2 };
 
 inline PluginFirstHandoffRefresh pluginFirstHandoffRefreshMode() {
-  return PluginFirstHandoffRefresh::Half;
+  return PluginFirstHandoffRefresh::Fast;
 }
 
 // --- Page base: convert exactly once at the native→Lua boundary ---

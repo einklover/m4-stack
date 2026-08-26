@@ -104,6 +104,7 @@
   STR(kIconSelectedStyle,       "图标选中风格",      "圖標選中風格") \
   /* --- 阅读设置项名称 --- */ \
   STR(kFontSize,                "字号",              "字號") \
+  STR(kUiFontSize,              "系统字号",          "系統字號") \
   STR(kValAuto,                 "自动",              "自動") \
   STR(kFirstLineIndent,         "首行缩进",          "首行縮進") \
   STR(kLineSpacing,             "行间距",            "行間距") \
@@ -286,6 +287,9 @@
   STR(kNoReadingHistory,        "暂无阅读记录",      "暫無閱讀記錄") \
   STR(kBookTitle,               "书籍名称",          "書籍名稱") \
   STR(kBookAuthor,              "书籍作者",          "書籍作者") \
+  STR(kBookSource,              "书籍来源",          "書籍來源") \
+  STR(kBookSourceLocal,         "本地",              "本地") \
+  STR(kBookSourceUnknown,       "未知来源",          "未知來源") \
   STR(kReadingProgressLabel,    "阅读进度",          "閱讀進度") \
   STR(kReadingStats,            "阅读统计",          "閱讀統計") \
   STR(kTotalReadingTime,        "累计阅读时长",      "累計閱讀時長") \

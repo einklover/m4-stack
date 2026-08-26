@@ -600,8 +600,14 @@ void EpubReaderActivity::loop() {
     if (subActivity) {
       const bool replaced = pumpSubActivityFrame();
       if (replaced) {
-        updateRequired = false;
         skipNextButtonCheck = true;
+        // 子页面退出时 onGoBack 已置 updateRequired=true 请求重绘；仅当替换出
+        // 新子页面时才清除，避免吞掉合法的阅读器重绘请求。
+        if (subActivity) {
+          updateRequired = false;
+        } else {
+          updateRequired = true;
+        }
       }
       // Deferred exit: process after subActivity->loop() returns to avoid use-after-free
       if (pendingSubactivityExit) {
@@ -848,10 +854,10 @@ void EpubReaderActivity::loop() {
     const bool powerPageTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
                               mappedInput.wasReleased(MappedInputManager::Button::Power);
     
-    // 处理电源键的全刷功能
+    // Legacy power-button refresh action; the global policy keeps it fast.
     if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FULL_REFRESH &&
         mappedInput.wasReleased(MappedInputManager::Button::Power)) {
-      renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
       return;
     }
     
@@ -1373,6 +1379,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             // 返回阅读器后重载当前章节以应用新设置（字体、边距等影响排版）
             exitActivity();
             section.reset();
+            // 设置期间 autoPageTurnEnabled 可能变化：重新对表，避免旧定时器
+            // 回到阅读器后立即触发一次翻页（与 onReaderMenuBack 一致）。
+            applyAutoPageTurnSettings();
             updateRequired = true;
           }));
       xSemaphoreGive(renderingMutex);
@@ -1577,7 +1586,7 @@ bool EpubReaderActivity::renderRollingHalfTurn(const int top, const int right, c
 
   // 7. Status bar and display — use FAST_REFRESH for smooth rolling experience
   //    Rolling mode triggers 2 FAST_REFRESHs per logical page turn (half-turn + full-turn),
-  //    so we decrement the counter here to ensure HALF_REFRESH triggers at the right frequency.
+  //    so we decrement the counter here to ensure cleanup triggers at the right frequency.
   renderStatusBar(right, bottom, top, left);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   // Decrement counter: rolling mode effectively does 2 refreshes per page turn
@@ -2024,8 +2033,8 @@ void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
-    // Force full refresh for pages with images when anti-aliasing is on,
-  // as grayscale tones require half refresh to display correctly
+  // Keep image pages on the fast BW pass; grayscale rendering follows through
+  // the driver’s fast-gray path without a legacy full/half waveform.
   bool forceFullRefresh = page->hasImages() && SETTINGS.textAntiAliasing;
   page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
   renderStatusBar(orientedMarginRight, orientedMarginBottom,orientedMarginTop, orientedMarginLeft);
@@ -2033,13 +2042,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   if (SETTINGS.epubDarkMode) {
     renderer.invertScreen();
   }
-  if (forceFullRefresh || pagesUntilFullRefresh <= 1) {
-    // 抗锯齿开启时，BW 阶段用 FAST_REFRESH 避免双重闪烁（灰度阶段会单独刷新）
-    if (SETTINGS.textAntiAliasing && !forceFullRefresh) {
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-    } else {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    }
+  if (!forceFullRefresh && pagesUntilFullRefresh <= 1) {
+    renderer.displayBuffer(HalDisplay::READER_CLEANUP_REFRESH, HalDisplay::READER_BODY_CONTEXT);
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -2102,12 +2106,8 @@ void EpubReaderActivity::renderDualContents(std::unique_ptr<Page> leftPage, std:
 
   // 显示 BW
   const bool forceFullRefresh = (leftPage->hasImages() || (rightPage && rightPage->hasImages())) && SETTINGS.textAntiAliasing;
-  if (forceFullRefresh || pagesUntilFullRefresh <= 1) {
-    if (SETTINGS.textAntiAliasing && !forceFullRefresh) {
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-    } else {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    }
+  if (!forceFullRefresh && pagesUntilFullRefresh <= 1) {
+    renderer.displayBuffer(HalDisplay::READER_CLEANUP_REFRESH, HalDisplay::READER_BODY_CONTEXT);
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -2409,7 +2409,7 @@ void EpubReaderActivity::renderPngSleepScreen(GfxRenderer& renderer) const {
       PngToFramebufferConverter pngConverter;
       if (pngConverter.decodeToFramebuffer(filename, renderer, renderConfig)) {
         // ========== 对齐txtpng的绘制完成后无额外操作，仅刷新 ==========
-        //renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        //renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         //delay(200); // 给屏幕刷新时间
         dir.close();
         Serial.printf("[%lu] [SLP] Png draw completed (mode: %d)\n", millis(), renderer.getRenderMode());

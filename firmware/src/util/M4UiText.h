@@ -2,10 +2,9 @@
 
 // Unified UI text helpers for Murphy M4.
 //
-// Runtime TTF chrome uses three real, fixed raster sizes shared by the whole
-// system and Native plugins (SMALL/UI_10/UI_12). Reader typography remains a
-// separate independently-sized TTF face. This avoids bitmap-downscaling Reader
-// glyphs for UI and keeps CJK strokes crisp at small sizes.
+// System chrome (SMALL/UI_10/UI_12) always stays on builtin faces, including
+// private aliases used by system-owned chapter lists. A user-selected Reader
+// font may remap only reader/content IDs; it must not leak into UI chrome.
 //
 // Pure policy: M4UiTextPolicy.h (host-testable).
 // Drawing helpers: this header (device / sim with GfxRenderer).
@@ -48,6 +47,11 @@ inline bool selectedRuntimeTtf() {
   return ext == ".ttf" || ext == ".ttc" || ext == ".otf" || ext == ".otc";
 }
 
+inline bool isReaderFontId(int fontId) {
+  return fontId == NOTOSANS_12_FONT_ID || fontId == NOTOSANS_14_FONT_ID ||
+         fontId == NOTOSANS_16_FONT_ID || fontId == NOTOSANS_18_FONT_ID;
+}
+
 inline bool startsWithNoCase(const std::string& s, size_t pos, const char* literal) {
   if (!literal || pos > s.size()) return false;
   const size_t n = std::strlen(literal);
@@ -87,11 +91,10 @@ inline std::string normalizeDisplayBreaks(const char* text) {
   return out;
 }
 
-// SMALL/UI_10/UI_12 are authoritative chrome IDs. For runtime TTF, ensure they
-// map to fixed native raster sizes (18/22/26px) shared by every system/plugin
-// surface. Activity uiScale is intentionally NOT applied to runtime TTF text:
-// arbitrary bitmap scaling is exactly what caused the poor small-font quality.
-// Legacy epdfont keeps its historical bounded draw-time scaling behavior.
+// SMALL/UI_10/UI_12 are authoritative chrome IDs and never leave the builtin
+// faces. Only NOTOSANS_* reader/content IDs may resolve to the selected custom
+// Reader face. Activity uiScale applies only to legacy (non-runtime-TTF)
+// drawing; runtime Reader text keeps native raster size.
 inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
   Face f;
   f.layoutFontId = (layoutFontId == 0) ? UI_12_FONT_ID : layoutFontId;
@@ -99,33 +102,13 @@ inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
   f.scale = 1.0f;
 
   if (selectedRuntimeTtf()) {
+    // Keep chrome on builtins even if an older build had promoted a custom face.
     auto& mutableRenderer = const_cast<GfxRenderer&>(renderer);
-    if (M4FixedRuntimeUiFonts::ensure(mutableRenderer, SETTINGS.customFontFamily)) {
-      const bool readerSized = layoutFontId == NOTOSANS_12_FONT_ID ||
-                               layoutFontId == NOTOSANS_14_FONT_ID ||
-                               layoutFontId == NOTOSANS_16_FONT_ID ||
-                               layoutFontId == NOTOSANS_18_FONT_ID;
-      if (readerSized) {
-        const int readerFontId = SETTINGS.getReaderFontId();
-        if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
-          f.fontId = readerFontId;
-          return f;
-        }
-      }
-      return f;
-    }
-
-    // Defensive fallback if a fixed UI face cannot be opened. Reader-sized
-    // IDs still use the runtime TTF so CJK body text does not become '?'.
-    const int readerFontId = SETTINGS.getReaderFontId();
-    if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
-      f.fontId = readerFontId;
-      if (layoutFontId != readerFontId &&
-          (layoutFontId == NOTOSANS_12_FONT_ID || layoutFontId == NOTOSANS_14_FONT_ID ||
-           layoutFontId == NOTOSANS_16_FONT_ID || layoutFontId == NOTOSANS_18_FONT_ID ||
-           layoutFontId == SMALL_FONT_ID || layoutFontId == UI_10_FONT_ID ||
-           layoutFontId == UI_12_FONT_ID)) {
-        f.scale = renderer.scaleFontToMatch(readerFontId, f.layoutFontId);
+    M4FixedRuntimeUiFonts::ensure(mutableRenderer, SETTINGS.customFontFamily);
+    if (isReaderFontId(f.layoutFontId)) {
+      const int readerFontId = SETTINGS.getReaderFontId();
+      if (readerFontId != -1 && renderer.hasFont(readerFontId)) {
+        f.fontId = readerFontId;
       }
     }
     return f;
@@ -133,6 +116,25 @@ inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
 
   M4FixedRuntimeUiFonts::releaseIfDetached(renderer);
   f.scale *= M4UiRuntimePolicy::textScale();
+  return f;
+}
+
+// System chrome has a separate path from Reader typography. In particular, a
+// selected Reader TTF may replace the public UI IDs, but it must never replace
+// the built-in font used by a TOC/chapter list.
+inline Face resolveSystem(const GfxRenderer& renderer, int layoutFontId) {
+  // With the normal system/legacy font configuration the public UI mapping is
+  // already the authoritative system face. Only a selected runtime Reader
+  // TTF needs the private aliases below; avoiding a capture here also keeps
+  // SD-reloaded canonical faces from becoming stale borrowed pointers.
+  if (!selectedRuntimeTtf()) return resolve(renderer, layoutFontId);
+
+  auto& mutableRenderer = const_cast<GfxRenderer&>(renderer);
+  M4FixedRuntimeUiFonts::ensureSystemFaces(mutableRenderer);
+  Face f;
+  f.layoutFontId = (layoutFontId == 0) ? UI_12_FONT_ID : layoutFontId;
+  f.fontId = M4FixedRuntimeUiFonts::systemFontId(f.layoutFontId);
+  f.scale = 1.0f;
   return f;
 }
 
@@ -144,17 +146,17 @@ inline Face resolveForText(const GfxRenderer& renderer, int layoutFontId, const 
     return f;
   }
 
-  if (selectedRuntimeTtf()) {
-    // Fixed runtime TTF chrome faces have full selected-font coverage.
+  // Chrome layout IDs stay on builtins. Only reader/content IDs may adopt a
+  // legacy custom epdfont with proven glyph coverage.
+  if (!isReaderFontId(f.layoutFontId) || selectedRuntimeTtf()) {
     return f;
   }
 
   const char* safeText = text ? text : "";
-  const int uiFont = EpdFontLoader::getBestFontId(
-      SETTINGS.customFontFamily, uiTtfSizeForLayout(f.layoutFontId));
-  if (uiFont != -1 && renderer.hasFont(uiFont) &&
-      renderer.hasTextGlyphs(uiFont, safeText, style)) {
-    f.fontId = uiFont;
+  const int readerFont = SETTINGS.getReaderFontId();
+  if (readerFont != -1 && renderer.hasFont(readerFont) &&
+      renderer.hasTextGlyphs(readerFont, safeText, style)) {
+    f.fontId = readerFont;
   }
   return f;
 }
@@ -165,9 +167,21 @@ inline int textWidth(const GfxRenderer& renderer, int layoutFontId, const char* 
   return renderer.getTextWidth(f.fontId, text ? text : "", style, f.scale);
 }
 
+inline int systemTextWidth(const GfxRenderer& renderer, int layoutFontId, const char* text,
+                           EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  const Face f = resolveSystem(renderer, layoutFontId);
+  return renderer.getTextWidth(f.fontId, text ? text : "", style, f.scale);
+}
+
 inline std::string truncated(const GfxRenderer& renderer, int layoutFontId, const char* text, int maxWidth,
                              EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
   const Face f = resolveForText(renderer, layoutFontId, text, style);
+  return renderer.truncatedText(f.fontId, text ? text : "", maxWidth, style, f.scale);
+}
+
+inline std::string truncatedSystem(const GfxRenderer& renderer, int layoutFontId, const char* text, int maxWidth,
+                                   EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  const Face f = resolveSystem(renderer, layoutFontId);
   return renderer.truncatedText(f.fontId, text ? text : "", maxWidth, style, f.scale);
 }
 
@@ -268,6 +282,13 @@ inline int listLineHeight(const GfxRenderer& renderer, int layoutFontId) {
   return std::max(1, std::max(advance, ascender));
 }
 
+inline int systemListLineHeight(const GfxRenderer& renderer, int layoutFontId) {
+  const Face f = resolveSystem(renderer, layoutFontId);
+  const int advance = static_cast<int>(std::lround(renderer.getLineHeight(f.fontId) * f.scale));
+  const int ascender = static_cast<int>(std::lround(renderer.getTextHeight(f.fontId) * f.scale));
+  return std::max(1, std::max(advance, ascender));
+}
+
 inline int listSubtitleTop(const GfxRenderer& renderer, int layoutFontId, int titleTop = 4) {
   constexpr int kLegacyTop = 30;
   constexpr int kLineGap = 4;
@@ -286,6 +307,12 @@ inline int listRowHeight(const GfxRenderer& renderer, int layoutFontId, int base
 inline void draw(const GfxRenderer& renderer, int layoutFontId, int x, int y, const char* text,
                  bool black = true, EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
   const Face f = resolveForText(renderer, layoutFontId, text, style);
+  renderer.drawText(f.fontId, x, y, text ? text : "", black, style, f.scale);
+}
+
+inline void drawSystem(const GfxRenderer& renderer, int layoutFontId, int x, int y, const char* text,
+                       bool black = true, EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  const Face f = resolveSystem(renderer, layoutFontId);
   renderer.drawText(f.fontId, x, y, text ? text : "", black, style, f.scale);
 }
 
@@ -377,6 +404,14 @@ inline void drawCentered(const GfxRenderer& renderer, int layoutFontId, int y, c
   renderer.drawText(f.fontId, x, y, text ? text : "", black, style, f.scale);
 }
 
+inline void drawCenteredSystem(const GfxRenderer& renderer, int layoutFontId, int y, const char* text,
+                               bool black = true, EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
+  const Face f = resolveSystem(renderer, layoutFontId);
+  const int w = renderer.getTextWidth(f.fontId, text ? text : "", style, f.scale);
+  const int x = (renderer.getScreenWidth() - w) / 2;
+  renderer.drawText(f.fontId, x, y, text ? text : "", black, style, f.scale);
+}
+
 // Draw a chrome label centered inside a touch target. GfxRenderer::drawText
 // takes a top-left y coordinate (not a baseline), so center from actual metrics.
 inline void drawCenteredInBox(const GfxRenderer& renderer, int layoutFontId, int x, int y, int width, int height,
@@ -384,6 +419,21 @@ inline void drawCenteredInBox(const GfxRenderer& renderer, int layoutFontId, int
                               EpdFontFamily::Style style = EpdFontFamily::REGULAR, int horizontalPadding = 12) {
   if (width <= 0 || height <= 0) return;
   const Face f = resolveForText(renderer, layoutFontId, text, style);
+  const int maxWidth = std::max(1, width - 2 * std::max(0, horizontalPadding));
+  const std::string label = renderer.truncatedText(f.fontId, text ? text : "", maxWidth, style, f.scale);
+  const int textWidth = renderer.getTextWidth(f.fontId, label.c_str(), style, f.scale);
+  const int textHeight = std::max(1, static_cast<int>(std::lround(renderer.getTextHeight(f.fontId) * f.scale)));
+  const int textX = x + std::max(0, (width - textWidth) / 2);
+  const int textY = y + std::max(0, (height - textHeight) / 2);
+  renderer.drawText(f.fontId, textX, textY, label.c_str(), black, style, f.scale);
+}
+
+inline void drawCenteredInBoxSystem(const GfxRenderer& renderer, int layoutFontId, int x, int y, int width,
+                                    int height, const char* text, bool black = true,
+                                    EpdFontFamily::Style style = EpdFontFamily::REGULAR,
+                                    int horizontalPadding = 12) {
+  if (width <= 0 || height <= 0) return;
+  const Face f = resolveSystem(renderer, layoutFontId);
   const int maxWidth = std::max(1, width - 2 * std::max(0, horizontalPadding));
   const std::string label = renderer.truncatedText(f.fontId, text ? text : "", maxWidth, style, f.scale);
   const int textWidth = renderer.getTextWidth(f.fontId, label.c_str(), style, f.scale);
@@ -409,7 +459,7 @@ inline int listIconTop(const GfxRenderer& renderer, int layoutFontId, int rowHei
 // Chapter-list style row uses the stable UI chrome mapping; changing reader
 // size no longer changes chapter/menu typography.
 inline Face resolveChapterRow(const GfxRenderer& renderer, int chromeFontId) {
-  return resolve(renderer, chromeFontId);
+  return resolveSystem(renderer, chromeFontId);
 }
 
 }  // namespace M4UiText

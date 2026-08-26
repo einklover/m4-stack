@@ -15,6 +15,7 @@
 #include "activities/ActivityWithSubactivity.h"
 #include "apps/M4PluginReaderSession.h"
 #include "util/M4ContentProviderContract.h"
+#include "util/M4TxtIndexPolicy.h"
 
 class TxtReaderActivity final : public ActivityWithSubactivity {
  public:
@@ -39,7 +40,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
     // ContentProvider-managed book (provider-agnostic; not a filesystem path).
     bool providerManaged = false;
     std::string providerId;    // e.g. "weread" (URI segment, NOT app id)
-    std::string appId;         // installed m4x id e.g. "com.weread.client" — history author field
+    std::string appId;         // installed m4x id e.g. "com.weread.client"
+    std::string providerAuthor;  // human author; never used as app identity
+    std::string providerCoverBmpPath;  // host-owned cached BMP template, optional
     std::string appDataRoot;   // /apps_data/<appId>
     std::string cacheRelPath;  // current chapter relative .txt
   };
@@ -146,6 +149,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
 
   void saveProgress() const;
   void loadProgress();
+  void persistOpenHistory();
   int chapternum = 0;
   bool chapter_loadPageIndexCache(int chapternum);
   void chapter_savePageIndexCache(int chapternum) const;
@@ -157,6 +161,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool chapter_pageIndexCacheExists(int ch) const;
   void chapter_savePageIndexCacheOffsets(int ch, const std::vector<size_t>& offsets) const;
   void libraryIdlePrefetchNextChapter();
+  // Large local TXT: discover one 25-chapter metadata batch per idle slice.
+  // The picker remains cache-only while these batches are materialized.
+  void libraryIdleDiscoverChapterBatch();
   // Diagnostic: append a page-load failure reason to the SD debug log (serial
   // channel is unreliable on M4) so "every-other-page refresh" root causes are
   // readable from the host.
@@ -165,6 +172,10 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // channel is unreliable on M4). Used to find which render step is slow
   // (TTF glyph rasterization vs SD read/decode vs physical refresh).
   void logPerf(const char* step, uint32_t ms, int page, uint32_t extra = 0) const;
+  // Rate gate for the per-page perf line: hot indexing calls loadPageAtOffset
+  // hundreds of times and an unconditional SD append stalls that path. State is
+  // touched from the display task only; mutable because logPerf callers are const.
+  mutable M4TxtIndexPolicy::LoadPageLogGate loadPageLogGate_;
   // Physical body rectangle (panel-native 800x480, byte-aligned) — the page-turn
   // wipe window covers exactly this so status/other regions are off-panel.
   bool computeBodyPhysicalWindow(uint16_t& x, uint16_t& y, uint16_t& w, uint16_t& h) const;
@@ -176,6 +187,10 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   int8_t wordSpacing = SETTINGS.wordSpacing;
 
   void openMenu(EpubReaderMenuActivity::MenuLayer layer = EpubReaderMenuActivity::MenuLayer::QUICK);
+  // A menu/settings handoff must not replay page taps that arrived while the
+  // physical page-turn animation was busy. Completed page progress remains;
+  // only unapplied input/quick-turn scheduling is discarded.
+  void cancelPendingPageTurnForChild();
   void enterChapterPicker();
   void handleMenuAction(EpubReaderMenuActivity::MenuAction action);
   void onSettingsChanged();
@@ -234,6 +249,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   PluginCloseFlag pluginCloseRequested_{&pendingGoBack, &pluginSwitchChapterIndex_};
 
   bool firstPageReady_ = false;
+  bool firstReadableLogged_ = false;
+  // Consecutive frames that laid out zero lines (M4TxtIndexPolicy budget gate).
+  int emptyFirstFrameRetries_ = 0;
   bool indexComplete_ = true;
   size_t indexRangeEnd_ = 0;   // exclusive file end for progressive index
   size_t indexCursor_ = 0;     // next page-start to discover
@@ -242,6 +260,25 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool hasPendingRestore_ = false;
   bool userMovedPage_ = false;
   bool tidxSaved_ = false;  // save completed .tidx once per layout generation
+  // Large local TXT opens directly into the progressive whole-file index. The
+  // fast path is limited to the chapter that was active at open; later chapter
+  // switches use the normal chapter/cache path.
+  bool largeTxtFastOpen_ = false;
+  int fastOpenChapter_ = -1;
+  size_t activeChapterBegin_ = 0;
+  size_t activeChapterEnd_ = 0;
+  size_t resumeRangeBegin_ = 0;
+  size_t resumeRangeEnd_ = 0;
+  bool progressSavePending_ = false;
+  bool openHistorySavePending_ = false;
+  int chapterDiscoveryBatch_ = -1;
+  bool chapterDiscoveryDone_ = true;
+  // High-density local TXT files can have tens of thousands of headings.  Do
+  // not let the first idle pass scan a batch before the first content frame is
+  // on the panel, and leave a short gap between SD/cache batches so UI input
+  // and the reader's own page/index work keep their time slices.
+  uint32_t chapterDiscoveryNotBeforeMs_ = 0;
+  uint32_t chapterDiscoveryNextMs_ = 0;
   // Next-chapter prefetch state (library). See libraryIdlePrefetchNextChapter.
   int prefetchChapter_ = -1;
   std::vector<size_t> prefetchOffsets_;
@@ -249,9 +286,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   size_t prefetchRangeEnd_ = 0;
   bool prefetchComplete_ = false;
   bool prefetchSkipped_ = false;
-  // First physical paint after openText handoff: layout under lock, then
-  // HALF_REFRESH outside the lock (absolute both-plane write — FAST is
-  // differential and keeps residual Lua "打开阅读器…" when RED is stale).
+  // First physical paint after openText handoff: layout under lock, then a
+  // fast refresh outside the lock.  Strong/full waveforms are globally
+  // forbidden outside the explicit reader-body cleanup cadence.
   bool pluginNeedsClearRefresh_ = false;
   bool pluginPendingHalfFlush_ = false;
   // Provider next-chapter overlay (footer/status); empty when idle.
@@ -275,7 +312,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // True while finishPhysicalDisplay / plugin half is on the panel (SPI busy).
   // Display task vs UI task: atomic, not volatile (ordering + visibility).
   std::atomic<bool> physicalEpdBusy_{false};
-  bool firstPhysicalShown_ = false;  // first content page has been driven to panel
+  std::atomic<bool> firstPhysicalShown_{false};  // first content page has been driven to panel
   // Enter/return to reader: flush pure white first so page-turn anim and FAST
   // never diff against the previous activity (shelf/menu/loading residual).
   bool entryWhiteSeedPending_ = false;
@@ -289,7 +326,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   int lastPhysicalBodyPage_ = -1;
   // Decoupled quick page skip: rapid taps advance currentPage (user target)
   // without loading/rendering; the physical refresh catches up once the
-  // in-flight animation finishes and the panel is idle (one full refresh
+  // in-flight animation finishes and the panel is idle (one fast refresh
   // straight to the target, intermediate pages skipped). No debounce — a slow
   // tap (panel idle) starts the animation immediately.
   bool quickMode_ = false;

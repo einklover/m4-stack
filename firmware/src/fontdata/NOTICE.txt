@@ -1,0 +1,8 @@
+The production builtin face is m4_center_kernel_16x16.bin, generated from
+the external pixel TTF 标准像素粗.ttf (SHA-256
+9507b4d3e915455afadfa688e8ea515abf816bce06f76346ee356f0f38810574) with
+firmware/scripts/generate_m4_center_kernel.py. CJK uses 16x16 center-kernel
+occupancy; Latin/punct uses 16x16 occupancy sampled from the same TTF.
+The TTF is not vendored. Runtime TTF/OTF from SD/FONT remain available for
+reader content only. m4_native_grid_15x16.bin is host-test residue and is
+not embedded in the device image.

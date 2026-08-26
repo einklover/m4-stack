@@ -16,7 +16,8 @@
 // System chapter list UI. Two data modes:
 //  1) Library TXT: parseChapterIndexAndOffset batches via shared_ptr<Txt>
 //  2) External titles: legacy JSON vector or a provider page loader
-// Always draws chapter names with reader full-CJK font (not UI subset).
+// Chapter-list chrome always uses the system UI font tier, independently of
+// the reader body font selected for the book.
 class TxtReaderChapterSelectionActivity final : public Activity {
   std::shared_ptr<Txt> txt;
   std::vector<std::string> externalTitles_;
@@ -28,8 +29,8 @@ class TxtReaderChapterSelectionActivity final : public Activity {
   std::vector<std::string> externalCacheTitles_;
   std::vector<uint8_t> externalCachePresent_;
   bool useExternal_ = false;
-  // Explicit label complements the existing 56px header-back hit target.
-  std::string headerTitle_ = "返回  目  录";
+  // The shared chapter-header Back control supplies the explicit affordance.
+  std::string headerTitle_ = "目录";
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   int chapternum = 0;
@@ -38,7 +39,6 @@ class TxtReaderChapterSelectionActivity final : public Activity {
   int loadedBatchStart_ = -1;
   bool updateRequired = false;
   bool firstPaint_ = true;
-  int prefetchedBatch_ = -1;
   std::atomic<bool> finished_{false};
   std::atomic<bool> displayBusy_{false};
   bool cancelled_ = true;
@@ -54,7 +54,6 @@ class TxtReaderChapterSelectionActivity final : public Activity {
   static int chapterBatchStart(int chapterIndex);
   bool ensureChapterBatch(int chapterIndex, bool* outFromCache = nullptr);
   void skipChapters(int delta);
-  void prefetchNextBatchQuiet();
   void materializePageTitles(int pagebegin, int pageItems, std::vector<std::string>& outTitles,
                              std::vector<uint8_t>& outPresent);
   void drawScreen(const std::vector<std::string>& pageTitles, const std::vector<uint8_t>& pagePresent,
@@ -79,7 +78,7 @@ class TxtReaderChapterSelectionActivity final : public Activity {
                                              std::vector<std::string> titles, int currentIndex,
                                              const std::function<void()>& onGoBack,
                                              const std::function<void(int newChapterNum)>& onSelectchapter,
-                                             std::string headerTitle = "返回  目  录")
+                                             std::string headerTitle = "目录")
       : Activity("TxtReaderChapterSelection", renderer, mappedInput),
         externalTitles_(std::move(titles)),
         externalCount_(static_cast<int>(externalTitles_.size())),
@@ -95,7 +94,7 @@ class TxtReaderChapterSelectionActivity final : public Activity {
                          std::vector<uint8_t>& present)> pageLoader,
       int currentIndex, const std::function<void()>& onGoBack,
       const std::function<void(int newChapterNum)>& onSelectchapter,
-      std::string headerTitle = "返回  目  录")
+      std::string headerTitle = "目录")
       : Activity("TxtReaderChapterSelection", renderer, mappedInput),
         externalPageLoader_(std::move(pageLoader)),
         externalCount_(chapterCount < 0 ? 0 : chapterCount),

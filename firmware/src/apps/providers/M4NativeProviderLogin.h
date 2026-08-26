@@ -31,4 +31,8 @@ Snapshot snapshot();
 void cancel();
 bool busy();
 
+// One POST /web/login/renewal. Absorbs Set-Cookie (wr_ql etc.). Does not open
+// a QR. False means the stored session cannot be refreshed — caller may QR.
+bool tryRenewSession(const std::string& appDataRoot);
+
 }  // namespace M4NativeProviderLogin

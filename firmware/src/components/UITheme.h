@@ -31,7 +31,7 @@ class UITheme {
     void drawBattery(const GfxRenderer& renderer, Rect rect, bool showPercentage = true) const {
       // Some theme code writes SMALL_FONT_ID directly instead of going through
       // M4UiText. Resolve once at the facade boundary so runtime TTF system UI
-      // and Native plugins share the same fixed 18/22/26px chrome faces.
+      // and Native plugins share the same fixed 16/32/32 integer-N chrome faces.
       (void)M4UiText::resolve(renderer, SMALL_FONT_ID);
       owner_.getTheme().drawBattery(renderer, rect, showPercentage);
     }
@@ -98,7 +98,7 @@ class UITheme {
       (void)M4UiText::resolve(renderer, SMALL_FONT_ID);
       (void)M4UiText::resolve(renderer, UI_12_FONT_ID);
       owner_.getTheme().drawHeader(renderer, rect, title);
-      M4TouchNavigation::drawHeaderBack(renderer, rect);
+      M4TouchNavigation::drawHeaderBack(renderer, rect, title);
     }
     void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs, bool selected) const {
       (void)M4UiText::resolve(renderer, UI_10_FONT_ID);

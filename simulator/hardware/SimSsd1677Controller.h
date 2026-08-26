@@ -123,6 +123,8 @@ class SimSsd1677Controller final : public SimSpiSink {
   uint32_t commitCount() const { return commits_; }
   size_t lastChangedBits() const { return lastChangedBits_; }
   size_t lastRamExpected() const { return ramExpected_; }
+  unsigned lastVisibleInversionPhases() const { return lastVisibleInversionPhases_; }
+  unsigned lastFullWaveformPhases() const { return lastFullWaveformPhases_; }
   const std::vector<uint8_t>& bwRam() const { return bwRam_; }
   const std::vector<uint8_t>& redRam() const { return redRam_; }
   const std::vector<uint8_t>& physical() const { return physical_; }
@@ -318,14 +320,18 @@ class SimSsd1677Controller final : public SimSpiSink {
     pending_ = bwRam_;
     lastChangedBits_ = diffBits(bwRam_, redRam_);
     const uint32_t duration = activationDuration(updateCtrl2_);
+    lastVisibleInversionPhases_ = visibleInversionPhases(updateCtrl2_);
+    lastFullWaveformPhases_ = fullWaveformPhases(updateCtrl2_);
     // 0x22 can contain clock/analog on/off bits. For digital simulation, any
     // activation with ON bits raises the logical rail; OFF bits clear it after
     // completion. The actual analog ramp remains hardware-calibrated territory.
     if (updateCtrl2_ & 0xC0) powered_ = true;
     const bool turnOff = (updateCtrl2_ & 0x03) != 0;
     char msg[128];
-    snprintf(msg, sizeof(msg), "ctrl2=0x%02x diff_bits=%zu duration=%u", updateCtrl2_,
-             lastChangedBits_, duration);
+    snprintf(msg, sizeof(msg),
+             "ctrl2=0x%02x diff_bits=%zu duration=%u visible_inversion_phases=%u full_waveform_phases=%u",
+             updateCtrl2_, lastChangedBits_, duration, lastVisibleInversionPhases_,
+             lastFullWaveformPhases_);
     if (trace_) trace_->emit(SimEventType::EPD_SUBMITTED, msg, now());
     startBusy(duration, "activation", true, turnOff);
   }
@@ -335,6 +341,16 @@ class SimSsd1677Controller final : public SimSpiSink {
     if (seq == 0xF7 || seq == 0x34 || seq == 0xC7) return timing_.fullMs;
     if (seq == 0xD7 || seq == 0xD4) return timing_.halfMs;
     return timing_.fastMs;
+  }
+
+  static unsigned visibleInversionPhases(uint8_t seq) {
+    if (seq == 0xF7 || seq == 0x34 || seq == 0xC7) return 2;
+    if (seq == 0xD7 || seq == 0xD4) return 1;
+    return 0;
+  }
+
+  static unsigned fullWaveformPhases(uint8_t seq) {
+    return (seq == 0xF7 || seq == 0x34 || seq == 0xC7) ? 2u : 0u;
   }
 
   void startBusy(uint32_t duration, const char* why, bool commit, bool turnOff = false) {
@@ -428,6 +444,8 @@ class SimSsd1677Controller final : public SimSpiSink {
   uint32_t activations_ = 0;
   uint32_t commits_ = 0;
   size_t lastChangedBits_ = 0;
+  unsigned lastVisibleInversionPhases_ = 0;
+  unsigned lastFullWaveformPhases_ = 0;
 };
 
 }  // namespace m4sim

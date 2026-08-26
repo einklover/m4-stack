@@ -562,7 +562,7 @@ void AppRuntimeActivity::tryLaunchPluginReader() {
   sess.tocAbsPath = req.tocAbsPath;
   sess.chapterIndex = req.chapterIndex;
   sess.providerId = req.providerId;
-  sess.appId = app_.id;  // reverse-DNS package id — history author field (never providerId)
+  sess.appId = app_.id;  // reverse-DNS package id; history identity is not author metadata
   sess.appDataRoot = host_.dataDir();
   sess.cacheRelPath = req.relPath;
   sess.providerManaged = !req.providerId.empty();

@@ -35,6 +35,14 @@ int main() {
   assert(M4ProviderShelfIndex::anchorRow(17) == 16);
   assert(M4ProviderShelfIndex::anchorRow(4095) == 4080);
 
+  // Native UI indexing is sliced and capped; malformed/unbounded shelf files
+  // must stop without growing the anchor table forever.
+  M4ProviderShelfIndex::Builder bounded;
+  bounded.maxRows = 2;
+  bounded.feed(reinterpret_cast<const uint8_t*>("a\nb\nc\n"), 6);
+  assert(bounded.overflow);
+  assert(bounded.finish() > bounded.maxRows);
+
   // NativeAppActivity uses the same page-step policy as the home shelf.
   constexpr int count = 4096;
   constexpr int pageItems = 6;

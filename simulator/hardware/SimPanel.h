@@ -19,6 +19,7 @@ namespace m4sim {
 // Backward-compatible names for existing scenarios. New shared code should
 // prefer the m4platform names directly.
 using RefreshMode = m4platform::RefreshMode;
+using RefreshContext = m4platform::RefreshContext;
 using SimFrameTag = m4platform::FrameTag;
 
 struct SimFrame {
@@ -34,11 +35,15 @@ struct EpdProfile {
   uint32_t fullMs = 1800;
   uint32_t animStepMs = 80;
   uint32_t modeMs(RefreshMode m) const {
+    // Submit() has already applied the context guard. Keep this helper safe
+    // for direct legacy callers too: FULL/HALF are fast, while the explicit
+    // reader cleanup retains its single-pass timing.
     switch (m) {
-      case RefreshMode::FAST_REFRESH: return fastMs;
-      case RefreshMode::HALF_REFRESH: return halfMs;
-      case RefreshMode::FULL_REFRESH: return fullMs;
-      case RefreshMode::UI_FAST_REFRESH: return fastMs;
+      case RefreshMode::READER_CLEANUP_REFRESH: return halfMs;
+      case RefreshMode::FAST_REFRESH:
+      case RefreshMode::UI_FAST_REFRESH:
+      case RefreshMode::HALF_REFRESH:
+      case RefreshMode::FULL_REFRESH: return fastMs;
     }
     return fastMs;
   }
@@ -55,6 +60,8 @@ public:
   const SimFrame& renderFB() const { return renderFB_; }
   const SimFrame& pending() const { return pending_; }
   const SimFrame& physical() const { return physical_; }
+  unsigned lastVisibleInversionPhases() const { return lastVisibleInversionPhases_; }
+  unsigned lastFullWaveformPhases() const { return lastFullWaveformPhases_; }
 
   // Renderer finished a frame. Records provenance; does NOT touch the panel.
   void render(const SimFrameTag& tag) override {
@@ -68,17 +75,22 @@ public:
 
   // Submit the renderFB to the SSD1677. If a refresh is already in flight,
   // reject (single pending frame — matches SSD1677). Returns true if accepted.
-  bool submit(RefreshMode mode, std::function<void()> onCommitted = nullptr) override {
+  bool submit(RefreshMode mode, std::function<void()> onCommitted = nullptr,
+              RefreshContext context = RefreshContext::UI_CONTEXT) override {
     if (busy_ || !renderFB_.valid) return false;
+    mode_ = m4platform::normalizeRefreshMode(mode, context);
     pending_ = renderFB_;
     pending_.valid = true;
     renderFB_.valid = false;
     busy_ = true;
-    mode_ = mode;
-    uint32_t dur = profile_.modeMs(mode);
-    char buf[96];
-    snprintf(buf, sizeof(buf), "page=%d gen=%u mode=%s duration=%ums",
-             pending_.tag.page, pending_.tag.generation, modeName(mode), dur);
+    lastVisibleInversionPhases_ = visibleInversionPhases(mode_);
+    lastFullWaveformPhases_ = fullWaveformPhases(mode_);
+    uint32_t dur = profile_.modeMs(mode_);
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+             "page=%d gen=%u mode=%s context=%d duration=%ums visible_inversion_phases=%u full_waveform_phases=%u",
+             pending_.tag.page, pending_.tag.generation, modeName(mode_), static_cast<int>(context), dur,
+             lastVisibleInversionPhases_, lastFullWaveformPhases_);
     trace_->emit(SimEventType::EPD_SUBMITTED, buf, sched_->now());
     trace_->emit(SimEventType::EPD_BUSY, buf, sched_->now());
     uint32_t t0 = sched_->now();
@@ -123,11 +135,24 @@ public:
       case RefreshMode::HALF_REFRESH: return "HALF";
       case RefreshMode::FULL_REFRESH: return "FULL";
       case RefreshMode::UI_FAST_REFRESH: return "UI_FAST";
+      case RefreshMode::READER_CLEANUP_REFRESH: return "READER_CLEANUP";
     }
     return "?";
   }
 
 private:
+  static unsigned visibleInversionPhases(RefreshMode mode) {
+    switch (mode) {
+      case RefreshMode::READER_CLEANUP_REFRESH: return 1;
+      default: return 0;
+    }
+  }
+
+  static unsigned fullWaveformPhases(RefreshMode mode) {
+    (void)mode;
+    return 0u;
+  }
+
   SimScheduler* sched_;
   SimTrace* trace_;
   EpdProfile profile_;
@@ -136,6 +161,8 @@ private:
   SimFrame physical_;
   bool busy_ = false;
   RefreshMode mode_ = RefreshMode::FAST_REFRESH;
+  unsigned lastVisibleInversionPhases_ = 0;
+  unsigned lastFullWaveformPhases_ = 0;
   uint32_t refreshToken_ = 0;
 };
 

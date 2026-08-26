@@ -30,7 +30,8 @@ public:
   }
 
   bool submit(m4platform::RefreshMode /*mode*/,
-              std::function<void()> onCommitted = nullptr) override {
+              std::function<void()> onCommitted = nullptr,
+              m4platform::RefreshContext /*context*/ = m4platform::RefreshContext::UI_CONTEXT) override {
     if (busy_ || !hasRendered_) return false;
     busy_ = true;
     pending_ = rendered_;

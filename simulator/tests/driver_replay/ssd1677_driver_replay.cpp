@@ -70,6 +70,8 @@ int main() {
         "real first-paint command stream is controller-valid");
   check(controller.commitCount() == 1,
         "real first paint produces exactly one physical activation commit");
+  check(controller.lastVisibleInversionPhases() == 0 && controller.lastFullWaveformPhases() == 0,
+        "first fast paint has no visible inversion/full-waveform phases");
   check(controller.physical().front() == 0x00 && controller.physical().back() == 0x00,
         "real first paint commits black framebuffer provenance");
 
@@ -84,6 +86,18 @@ int main() {
         "second real driver refresh adds exactly one commit");
   check(controller.physical().front() == 0xFF && controller.physical().back() == 0xFF,
         "real fast update lands the submitted white frame");
+
+  driver.display(bus, black.data(), white.data(), RefreshMode::Full, false);
+  check(controller.updateCtrl2() == 0xFC,
+        "legacy raw FULL request is normalized to the fast sequence");
+  check(controller.lastVisibleInversionPhases() == 0 && controller.lastFullWaveformPhases() == 0,
+        "legacy raw FULL request cannot trigger a visible/full waveform");
+
+  driver.display(bus, white.data(), black.data(), RefreshMode::ReaderCleanup, false);
+  check(controller.updateCtrl2() == 0xD7,
+        "explicit reader cleanup selects the single-pass D7 sequence");
+  check(controller.lastVisibleInversionPhases() == 1 && controller.lastFullWaveformPhases() == 0,
+        "reader cleanup has at most one visible inversion and no full waveform");
 
   check(spi.ok(), "real driver did not violate simulated SPI bus discipline");
 

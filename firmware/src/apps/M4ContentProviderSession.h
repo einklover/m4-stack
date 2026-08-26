@@ -181,6 +181,10 @@ inline bool setChapterStatus(const ChapterStatus& in) {
     }
   }
   if (idx < 0 || static_cast<size_t>(idx) >= st.chapterCount) return false;
+  // Validate before mutating: a rejected Ready must leave the previous status
+  // untouched, otherwise UI polling sees a phantom Ready with no openable
+  // cache path (host contract: test_fanqie_reader_handoff.cpp).
+  if (in.state == ChapterReady::Ready && !isSafeCacheRelPath(in.cacheRelPath.c_str())) return false;
   ChapterStatus& cs = st.chapters[idx];
   if (cs.chapterUid.empty() && static_cast<size_t>(idx) < st.spec.chapters.size()) {
     cs.chapterUid = st.spec.chapters[static_cast<size_t>(idx)].uid;
@@ -191,7 +195,6 @@ inline bool setChapterStatus(const ChapterStatus& in) {
   cs.pct = normalizePct(in.state, in.pct);
   cs.error = in.error;
   if (in.state == ChapterReady::Ready) {
-    if (!isSafeCacheRelPath(in.cacheRelPath.c_str())) return false;
     cs.cacheRelPath = in.cacheRelPath;
     cs.pct = 100;
     cs.error.clear();

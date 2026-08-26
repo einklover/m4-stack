@@ -96,6 +96,57 @@ class CrossPointSettings {
   enum FONT_FAMILY { SYSTEM_FONT = 0, FONT_CUSTOM = 1, FONT_FAMILY_COUNT };
   // Font size options
   enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
+  // Reader body size is one family-independent pixel setting. The old enum is
+  // retained only for binary/settings migration compatibility.
+  static constexpr uint8_t READER_PIXEL_SIZE_MIN = 12;
+  static constexpr uint8_t READER_PIXEL_SIZE_MAX = 48;
+  static constexpr uint8_t kReaderBodyPixelSizes[] = {16, 24, 26, 36, 38, 40, 48};
+  static constexpr uint8_t kReaderBodyPixelSizesCount = 7;
+  static constexpr uint8_t kReaderBodyDefaultPixelSize = 26;
+  static bool isAllowedReaderPixelSize(uint8_t px) {
+    for (uint8_t i = 0; i < kReaderBodyPixelSizesCount; ++i) {
+      if (kReaderBodyPixelSizes[i] == px) return true;
+    }
+    return false;
+  }
+  static uint8_t snapReaderPixelSize(int px) {
+    uint8_t best = kReaderBodyPixelSizes[0];
+    int bestDist = px - static_cast<int>(best);
+    if (bestDist < 0) bestDist = -bestDist;
+    for (uint8_t i = 1; i < kReaderBodyPixelSizesCount; ++i) {
+      uint8_t cand = kReaderBodyPixelSizes[i];
+      int d = px - static_cast<int>(cand);
+      if (d < 0) d = -d;
+      if (d < bestDist || (d == bestDist && cand > best)) {
+        best = cand;
+        bestDist = d;
+      }
+    }
+    return best;
+  }
+  static uint8_t nextReaderPixelSize(uint8_t cur) {
+    uint8_t snapped = snapReaderPixelSize(cur);
+    for (uint8_t i = 0; i < kReaderBodyPixelSizesCount; ++i) {
+      if (kReaderBodyPixelSizes[i] == snapped) {
+        if (i + 1 < kReaderBodyPixelSizesCount) return kReaderBodyPixelSizes[i + 1];
+        return kReaderBodyPixelSizes[i];
+      }
+    }
+    return snapped;
+  }
+  static uint8_t prevReaderPixelSize(uint8_t cur) {
+    uint8_t snapped = snapReaderPixelSize(cur);
+    for (uint8_t i = 0; i < kReaderBodyPixelSizesCount; ++i) {
+      if (kReaderBodyPixelSizes[i] == snapped) {
+        if (i > 0) return kReaderBodyPixelSizes[i - 1];
+        return kReaderBodyPixelSizes[i];
+      }
+    }
+    return snapped;
+  }
+  static uint8_t clampReaderPixelSize(int px) {
+    return snapReaderPixelSize(px);
+  }
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
   enum WORDS_COMPRESSION { WORD_TIGHT = 0, WORD_NORMAL = 1, WORD_WIDE = 2, WORD_COMPRESSION_COUNT };
   enum PARAGRAPH_ALIGNMENT {
@@ -117,7 +168,7 @@ class CrossPointSettings {
     SLEEP_TIMEOUT_COUNT
   };
 
-  // E-ink refresh frequency (pages between full refreshes)
+  // E-ink cleanup frequency (pages between reader-body cleanup passes)
   enum REFRESH_FREQUENCY {
     REFRESH_1 = 0,
     REFRESH_5 = 1,
@@ -166,9 +217,12 @@ class CrossPointSettings {
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
   // Reader font settings
   uint8_t fontFamily = SYSTEM_FONT;
-  uint8_t customFontSize = 0;  // 0 means use enum mapping
+  uint8_t readerPixelSize = 26;  // canonical reader body size, independent of family
+  uint8_t customFontSize = 0;  // legacy JSON/binary alias; runtime never uses this
   char customFontFamily[64] = "";
   uint8_t fontSize = LARGE;
+  // System chrome 小/中/大 (0/1/2). Default 中. Independent of readerPixelSize.
+  uint8_t uiFontSize = 1;
   uint8_t lineSpacing = NORMAL;   // Legacy: 0=TIGHT, 1=NORMAL, 2=WIDE
   uint8_t customLineSpacing = 10;  // Custom line spacing: 5-20 -> 0.5-2.0 (default 1.1)
   uint8_t firstlineintented = 1;
@@ -223,7 +277,7 @@ class CrossPointSettings {
   uint8_t hideBatteryPercentage = HIDE_ALWAYS;
   // Long press to boot (1=require 2s hold to wake from sleep, 0=short press ok)
   uint8_t longPressBoot = 1;
-  // Never trigger full refresh (1=disabled full refresh entirely, 0=use refreshFrequency)
+  // Never trigger reader-body cleanup (1=disabled cleanup, 0=use refreshFrequency)
   uint8_t neverFullRefresh = 0;
 
   // Long-press chapter skip on side buttons
@@ -360,6 +414,11 @@ class CrossPointSettings {
   uint8_t developerSerialDebugEnabled = 0;
 
   ~CrossPointSettings() = default;
+
+  uint8_t getReaderPixelSize() const { return clampReaderPixelSize(readerPixelSize); }
+  void setReaderPixelSize(uint8_t px) { readerPixelSize = clampReaderPixelSize(px); }
+  uint8_t getUiFontSize() const { return uiFontSize > 2 ? 1 : uiFontSize; }
+  void setUiFontSize(uint8_t tier) { uiFontSize = (tier > 2) ? 1 : tier; }
 
   // Get singleton instance
   static CrossPointSettings& getInstance() { return instance; }
