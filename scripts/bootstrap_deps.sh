@@ -1,41 +1,53 @@
 #!/usr/bin/env bash
-# Reconstruct unvendored FreeInk SDK + third-party libs (same pin as CI).
-# Run once after clone, from repo root:  bash scripts/bootstrap_deps.sh
+# Reconstruct unvendored FreeInk SDK + third-party libs from one pinned archive.
+# Run from repo root: bash scripts/bootstrap_deps.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FW="${ROOT}/firmware"
-# Pin must match firmware/.github/workflows/native-app-build.yml
-M4_DEVICE_SHA="${M4_DEVICE_SHA:-f86b134}"
+M4_DEVICE_SHA="f86b134"
 URL="https://github.com/einklover/m4-device/archive/${M4_DEVICE_SHA}.tar.gz"
 TMP="${TMPDIR:-/tmp}/m4-device-bootstrap-$$"
+
+REQUIRED_SENTINELS=(
+  "open-m4-sdk/libs/hardware/BatteryMonitor/library.json"
+  "open-m4-sdk/libs/hardware/InputManager/library.json"
+  "open-m4-sdk/libs/display/FreeInkDisplay/library.json"
+  "open-m4-sdk/libs/hardware/SDCardManager/library.json"
+  "open-m4-sdk/libs/hardware/BoardConfig/library.json"
+  "open-m4-sdk/libs/hardware/FrontlightManager/library.json"
+  "open-m4-sdk/libs/hardware/PowerManager/library.json"
+  "src/network/updater_fw.bin"
+  "lib/Epub/Epub.h"
+  "lib/Lua/src/lua.h"
+  "lib/expat/expat.h"
+  "lib/miniz/miniz.h"
+  "lib/picojpeg/picojpeg.h"
+  "lib/EpdFont/builtinFonts/all.h"
+)
 
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-echo "==> fetch m4-device @ ${M4_DEVICE_SHA}"
-mkdir -p "$TMP"
-curl -fL --retry 3 --retry-delay 2 "$URL" -o "$TMP/m4-device.tar.gz"
-mkdir -p "$TMP/src"
-tar -xzf "$TMP/m4-device.tar.gz" -C "$TMP/src" --strip-components=1
-DEVICE="$TMP/src"
+fail() {
+  echo "ERROR: $*" >&2
+  echo "       required archive: einklover/m4-device@${M4_DEVICE_SHA}" >&2
+  echo "       check network access, curl, tar, and the archive contents" >&2
+  exit 1
+}
 
-test -d "$DEVICE/open-m4-sdk" || { echo "missing open-m4-sdk in archive"; exit 2; }
-test -f "$DEVICE/src/network/updater_fw.bin" || { echo "missing updater_fw.bin in m4-device archive"; exit 2; }
+patch_qemu_input_manager() {
+  local im="$FW/open-m4-sdk/libs/hardware/InputManager/src/InputManager.cpp"
+  if [[ ! -f "$im" ]] || grep -q 'M4_QEMU_PLUGIN_DEBUG' "$im"; then
+    return
+  fi
 
-echo "==> install open-m4-sdk"
-rm -rf "$FW/open-m4-sdk"
-cp -a "$DEVICE/open-m4-sdk" "$FW/open-m4-sdk"
-
-# QEMU plugin-debug builds set M4_QEMU_PLUGIN_DEBUG=1. Without this skip, the
-# Arduino I2C-ng path hammers the QEMU I2C model every loop and starves m4adb
-# USB install chunking. Only active under that macro (production builds unchanged).
-IM="$FW/open-m4-sdk/libs/hardware/InputManager/src/InputManager.cpp"
-if [[ -f "$IM" ]] && ! grep -q 'M4_QEMU_PLUGIN_DEBUG' "$IM"; then
+  command -v python3 >/dev/null 2>&1 || fail "python3 is required to preserve the QEMU InputManager patch"
   echo "==> patch InputManager: skip touch poll under M4_QEMU_PLUGIN_DEBUG"
-  python3 - "$IM" <<'PY'
+  if ! python3 - "$im" <<'PY'
 from pathlib import Path
 import sys
+
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 old = """uint8_t InputManager::serviceTouch() {
@@ -59,19 +71,47 @@ if old not in text:
     raise SystemExit(f"InputManager serviceTouch anchor missing in {path}")
 path.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
+  then
+    fail "could not apply the QEMU InputManager patch to $im"
+  fi
+}
+
+missing=()
+for path in "${REQUIRED_SENTINELS[@]}"; do
+  [[ -f "$FW/$path" ]] || missing+=("$path")
+done
+if ((${#missing[@]} == 0)); then
+  patch_qemu_input_manager
+  echo "==> M4 dependencies already reconstructed from einklover/m4-device@${M4_DEVICE_SHA}; no download needed"
+  exit 0
 fi
 
-# platformio.ini embeds this helper image into every hardware build. It is an
-# unvendored production artifact from the same pinned m4-device snapshot, not a
-# generated placeholder; without restoring it a clean clone cannot build the
-# normal murphy_m4 profile.
+command -v curl >/dev/null 2>&1 || fail "curl is required to fetch ${URL}"
+command -v tar >/dev/null 2>&1 || fail "tar is required to unpack ${URL}"
+
+echo "==> fetch einklover/m4-device@${M4_DEVICE_SHA}"
+mkdir -p "$TMP"
+if ! curl -fL --retry 3 --retry-delay 2 "$URL" -o "$TMP/m4-device.tar.gz"; then
+  fail "could not download pinned archive ${URL}"
+fi
+mkdir -p "$TMP/src"
+if ! tar -xzf "$TMP/m4-device.tar.gz" -C "$TMP/src" --strip-components=1; then
+  fail "could not unpack pinned archive ${URL}"
+fi
+DEVICE="$TMP/src"
+
+for path in "${REQUIRED_SENTINELS[@]}"; do
+  [[ -f "$DEVICE/$path" ]] || fail "pinned archive is missing ${path}"
+done
+
+echo "==> install open-m4-sdk"
+rm -rf "$FW/open-m4-sdk"
+cp -a "$DEVICE/open-m4-sdk" "$FW/open-m4-sdk"
+patch_qemu_input_manager
+
 echo "==> install src/network/updater_fw.bin"
 mkdir -p "$FW/src/network"
 cp -a "$DEVICE/src/network/updater_fw.bin" "$FW/src/network/updater_fw.bin"
-
-for src in lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts; do
-  test -d "$DEVICE/$src" || { echo "missing m4-device $src"; exit 2; }
-done
 
 echo "==> install lib/{Epub,expat,miniz,picojpeg,Lua,EpdFont/builtinFonts}"
 rm -rf \
@@ -85,18 +125,14 @@ cp -a "$DEVICE/lib/picojpeg" "$FW/lib/picojpeg"
 cp -a "$DEVICE/lib/Lua" "$FW/lib/Lua"
 cp -a "$DEVICE/lib/EpdFont/builtinFonts" "$FW/lib/EpdFont/builtinFonts"
 
-for p in \
-  open-m4-sdk/libs/hardware/BatteryMonitor/library.json \
-  src/network/updater_fw.bin \
-  lib/Epub/Epub.h \
-  lib/Lua/src/lua.h \
-  lib/expat/expat.h \
-  lib/miniz/miniz.h \
-  lib/picojpeg/picojpeg.h \
-  lib/EpdFont/builtinFonts/all.h; do
-  test -f "$FW/$p" || { echo "missing reconstructed dependency: $p"; exit 2; }
+missing=()
+for path in "${REQUIRED_SENTINELS[@]}"; do
+  [[ -f "$FW/$path" ]] || missing+=("$path")
 done
+if ((${#missing[@]} != 0)); then
+  fail "bootstrap completed but reconstructed dependencies are missing: ${missing[*]}"
+fi
 
-echo "==> bootstrap OK"
+echo "==> bootstrap OK: einklover/m4-device@${M4_DEVICE_SHA}"
 echo "    next: cd firmware && pio run -e murphy_m4"
 echo "    sim:  cd simulator && cmake -B build && cmake --build build && ctest --test-dir build --output-on-failure"

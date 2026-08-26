@@ -11,7 +11,7 @@ compile_commands.json
 *.session.json
 **/session.json
 
-# Local reconstructed deps (bootstrap_deps.sh) — large, re-fetched from m4-device
+# Reconstructed dependencies from the pinned m4-device archive (generated; not committed)
 firmware/open-m4-sdk/
 firmware/lib/Epub/
 firmware/lib/expat/
