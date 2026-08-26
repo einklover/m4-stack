@@ -624,17 +624,7 @@ void SleepActivity::renderPngSleepScreen() const {
 
 
 void SleepActivity::renderDefaultSleepScreen() const {
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-
   drawCrosslinkDefaultWallpaper(renderer);
-  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, L(Str::kPoweredOff));
-
-  // Make sleep screen dark unless light is selected in settings
-  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::LIGHT) {
-    renderer.invertScreen();
-  }
-
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 

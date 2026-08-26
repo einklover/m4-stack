@@ -51,7 +51,6 @@ static volatile bool gM4QemuScreenMode = true;
 #include "MappedInputManager.h"
 #include "ReadingStatsStore.h"
 #include "RecentBooksStore.h"
-#include "activities/boot_sleep/BootActivity.h"
 #include "activities/boot_sleep/SleepActivity.h"
 #include "activities/browser/OpdsBookBrowserActivity.h"
 #include "activities/home/HomeActivity.h"
@@ -76,7 +75,9 @@ static volatile bool gM4QemuScreenMode = true;
 
 #ifdef CROSSPOINT_MURPHY_M4
 #include <FrontlightManager.h>
+#include <driver/gpio.h>
 #include <esp_attr.h>
+#include <esp32-hal-ledc.h>
 #include <esp32-hal.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
@@ -197,6 +198,32 @@ void flushM4PanicCapture() {
 FrontlightManager frontlightManager;
 static uint8_t appliedFrontlightBrightness = UINT8_MAX;
 static uint8_t appliedFrontlightWarmth = UINT8_MAX;
+
+// GPIO46 is the M4 active-high BUZ_PWM net. A previous image can leave its
+// GPIO-matrix/LEDC route or pad hold active across a software reset. This is
+// deliberately pin-local: do not reset the LEDC block or touch GPIO0, whose
+// reset-time strap also carries the physical lock/power input.
+static void sanitizeM4BuzzerEarly() {
+  constexpr uint8_t kM4BuzzerPin = 46;
+  constexpr gpio_num_t kM4BuzzerGpio = GPIO_NUM_46;
+  constexpr uint8_t kM4BuzzerInactiveLevel = LOW;
+
+  // Release only this pad's retained level. GPIO46 is not an RTC IO on S3, so
+  // there is no rtc_gpio hold to clear and no global deep-sleep hold change.
+  gpio_hold_dis(kM4BuzzerGpio);
+  // This cleans up a mapping known to the current Arduino runtime. The reset
+  // below is also required because the previous image's mapping is not in this
+  // image's per-pin bookkeeping.
+  (void)ledcDetach(kM4BuzzerPin);
+  gpio_reset_pin(kM4BuzzerGpio);
+  gpio_set_pull_mode(kM4BuzzerGpio, GPIO_PULLDOWN_ONLY);
+
+  // Preload the output latch before enabling the output, then write LOW again
+  // after direction setup. The external pulldown and this level are inactive.
+  gpio_set_level(kM4BuzzerGpio, kM4BuzzerInactiveLevel);
+  gpio_set_direction(kM4BuzzerGpio, GPIO_MODE_OUTPUT);
+  gpio_set_level(kM4BuzzerGpio, kM4BuzzerInactiveLevel);
+}
 
 static void applyFrontlightSettings(bool force = false) {
   const auto levels = M4FrontlightPolicy::normalize(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth);
@@ -614,6 +641,9 @@ void setupDisplayAndFonts() {
 
 
 void setup() {
+#ifdef CROSSPOINT_MURPHY_M4
+    sanitizeM4BuzzerEarly();
+#endif
     // force serial for debugging
     // USB CDC RX queue is small by default; the debug bridge sends control
     // frames up to ~800B (Waveform Lab LUT uploads) and the e-ink main loop
@@ -623,6 +653,9 @@ void setup() {
     Serial.setRxBufferSize(8192);
 #endif
     Serial.begin(115200);
+#ifdef CROSSPOINT_MURPHY_M4
+    Serial.printf("[%lu] [M4-BUZZER] early sanitize complete gpio=46 inactive=LOW\n", millis());
+#endif
 #ifdef CROSSPOINT_MURPHY_M4
     set_arduino_panic_handler(captureM4Panic, nullptr);
 #endif
@@ -1034,9 +1067,6 @@ void setup() {
 #endif
     }
 #endif
-
-    exitActivity();
-    enterNewActivity(new BootActivity(renderer, mappedInputManager));
 
     APP_STATE.loadFromFile();
     RECENT_BOOKS.loadFromFile();
