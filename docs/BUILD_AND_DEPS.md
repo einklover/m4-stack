@@ -49,6 +49,25 @@ pio run -e murphy_m4 -j1
 
 Manual bootstrap is supported; it is not required before a normal M4 build.
 
+## Custom M4 pixel source
+
+The original custom source TTF `标准像素粗.ttf` is intentionally not
+distributed because redistribution permission is unclear. Normal firmware
+builds do not need it: the tracked
+`firmware/src/fontdata/m4_center_kernel_16x16.bin` is already present.
+
+Only regenerate or customize the M4 pixel font when you have a legally usable, distributable Chinese-capable pixel-style TTF:
+
+```bash
+python3 firmware/scripts/generate_m4_center_kernel.py --font <path-to-font.ttf>
+```
+
+A different TTF changes glyph appearance and output hash and cannot reproduce
+the current artifact byte-for-byte. This is separate from
+`firmware/lib/EpdFont/builtinFonts/`: that ~159 MiB tree is a separate
+bootstrap-reconstructed dependency and is not the source for the custom M4
+center-kernel font.
+
 ## Prerequisites and caches
 
 The bootstrap requires Python 3, `curl`, and `tar`. The firmware build requires PlatformIO and its downloaded toolchain/packages. Install PlatformIO with your Python environment, then ensure its CLI is on `PATH`:

@@ -28,6 +28,24 @@ Firmware changes start with the production target and its narrowest relevant con
 
 Simulator changes use the root `./m4sim` entry point and the targeted journey exposed by its help. Do not invent a second QEMU command path; consult `docs/M4SIM_CLEAN_SETUP.md` and the simulator-owned guide when the task reaches simulator detail.
 
+### Center-kernel font source
+
+The original custom source TTF (`标准像素粗.ttf`) is intentionally not
+distributed because redistribution permission is unclear. Normal firmware
+builds do not need it: the tracked
+`firmware/src/fontdata/m4_center_kernel_16x16.bin` is already present. Only
+regeneration or customization needs a source font; use a legally
+usable/distributable Chinese-capable pixel-style TTF and run:
+
+```bash
+python3 firmware/scripts/generate_m4_center_kernel.py --font <path-to-font.ttf>
+```
+
+A different TTF changes glyph appearance and hash and cannot reproduce the
+current artifact byte-for-byte. The ~159 MiB
+`firmware/lib/EpdFont/builtinFonts/` tree is a separate
+bootstrap-reconstructed dependency, not the source for this custom font.
+
 Plugin changes stay inside the relevant `plugins/*` project and use that project's README and package tooling. Keep plugin packaging and installation detail in the plugin-owned documentation.
 
 ## Gather evidence
