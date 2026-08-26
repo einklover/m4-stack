@@ -91,7 +91,7 @@ bool probeBase(const std::string& base, uint32_t startedMs) {
 
 std::string baseUrl() {
   std::lock_guard<std::mutex> lock(gMu);
-  return gBase.empty() ? std::string(kDefaultBase) : gBase;
+  return gBase;
 }
 
 void setBaseUrl(const std::string& appDataRoot, const std::string& base, bool persist) {
@@ -178,11 +178,6 @@ bool ensureEndpoint(const std::string& appDataRoot) {
   if (ips.empty()) {
     Serial.printf("[Legado] endpoint discover: no visitor IPs for SSID '%s'\n",
                   ssid.c_str());
-    // Last resort: keep compile-time default if it answers (dev bench).
-    if (saved != kDefaultBase && probeBudgetAvailable() && probeBase(kDefaultBase, probeStartedMs)) {
-      setBaseUrl(appDataRoot, kDefaultBase);
-      return true;
-    }
     return false;
   }
 

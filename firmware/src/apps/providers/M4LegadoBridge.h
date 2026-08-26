@@ -10,7 +10,7 @@
 //   bookId = short FNV-1a hex of the bookUrl (16 chars, safe)
 //   sidecar row maps bookId -> full bookUrl for catalog/content requests.
 //
-// Endpoint base (phone web service) is no longer a compile-time constant:
+// Endpoint base (phone web service) is not a compile-time default:
 //   1. Last working base is persisted under the app data root.
 //   2. On miss/stale, ensureEndpoint() probes recent Wi-Fi-transfer visitor IPs
 //      on the current SSID against known Legado-family web ports.
@@ -24,9 +24,6 @@
 #include <string>
 
 namespace M4LegadoBridge {
-
-// Compile-time fallback only used before any discovery succeeds (dev default).
-inline constexpr const char* kDefaultBase = "http://192.168.0.118:1122";
 
 // Ports used by 开源阅读 / Legado app web service and common forks/server
 // editions. Order = probe priority (most common first).
@@ -318,9 +315,5 @@ inline bool probeBodyLooksLikeLegado(const std::string& body, int httpStatus,
 
 // Implemented in M4LegadoBridge.cpp (SDCardManager dependency).
 std::string readLocator(const std::string& appDataRoot, const std::string& bookId);
-
-// Deprecated name kept for any leftover call sites — same as baseUrl() once
-// ensureEndpoint has run; otherwise the compile-time default.
-inline constexpr const char* kBase = kDefaultBase;
 
 }  // namespace M4LegadoBridge

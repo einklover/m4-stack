@@ -87,13 +87,6 @@ void NativeProviderEndpointActivity::loadSavedEndpoint() {
     state_.lastSuccessful = parsed.base;
     return;
   }
-
-  if (M4LegadoBridge::parseEndpoint(M4LegadoBridge::kDefaultBase, {}, parsed)) {
-    host_ = parsed.host;
-    port_ = std::to_string(parsed.port);
-  } else {
-    host_ = "192.168.0.118";
-  }
 }
 
 void NativeProviderEndpointActivity::editField(Field field) {
