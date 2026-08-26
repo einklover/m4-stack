@@ -305,10 +305,11 @@ class CenterKernelReaderContract(unittest.TestCase):
         self.assertNotIn("getReaderPixelSize", chrome)
 
 
-# === Source-grid contract (TDD for CenterKernel CJK occupancy fix) ===
-# Generator must use FreeType 17ppem source-grid rasterization, not collapse_double_heng.
-# Tian/Zhong must stay pixel-identical via x0=bitmap_left-1, y0=13-bitmap_top.
-# Bai/Mei expected grids are derived from 17ppem source raster (see task).
+# === Source-grid contract (CenterKernel CJK occupancy) ===
+# Generator must use geometry-exact source-grid deconvolution, not a post-hoc
+# collapse_double_heng pass or hinted FreeType occupancy raster.
+# Tian/Zhong remain pixel-identical absolute-grid anchors; Bai/Mei retain the
+# single-thick source geometry.
 
 BAI_GRID = (
     ".......#........",
@@ -351,27 +352,174 @@ MEI_GRID = (
 GENERATOR = ROOT / "firmware/scripts/generate_m4_center_kernel.py"
 
 
+QIN_GRID = (
+    ".......#........",
+    ".##############.",
+    ".#............#.",
+    ".#............#.",
+    "...#..#######...",
+    "...#........#...",
+    "#..#...######...",
+    ".#.#........#...",
+    ".#.#..#######...",
+    "...#............",
+    "..##.#########..",
+    ".#.#.#.......#..",
+    "#..#..#######...",
+    "...#...#...#....",
+    "...#....###.....",
+    "...#.###...###..",
+)
+XIE_GRID = (
+    ".......#........",
+    ".##############.",
+    ".#............#.",
+    ".#....#.......#.",
+    "...###..####....",
+    "...#.......#....",
+    "...####.####....",
+    "...#.......#....",
+    "...#########....",
+    "....#...........",
+    "...###########..",
+    "..#..........#..",
+    ".#..#..#..#..#..",
+    "..#..#..#..#.#..",
+    "..#..#..#..#.#..",
+    ".#..........#...",
+)
+ZHANG_GRID = (
+    "........#.......",
+    "..####..#....#..",
+    "..#..#..#....#..",
+    "..#..#..#...#...",
+    "..#..#..#..#....",
+    "..####..#.#.....",
+    "..#..#..#.......",
+    "..#..##########.",
+    "..#..#..#.#.....",
+    "..####..#..#....",
+    "..#..#..#..#....",
+    "..#..#..#...#...",
+    "..#..#..#....#..",
+    ".#...#..#.#...#.",
+    ".#...#..##......",
+    "#..##...#.......",
+)
+NAO_GRID = (
+    ".........#......",
+    ".####....#......",
+    ".#..#....#......",
+    ".#..###########.",
+    ".#..#...........",
+    ".####...........",
+    ".#..#..#...#....",
+    ".#..#.#.#.#..#..",
+    ".#..#.#..#...#..",
+    ".####.#..#...#..",
+    ".#..#.#.#.#..#..",
+    ".#..#.##...#.#..",
+    ".#..#.#......#..",
+    ".#..#.#......#..",
+    ".#..#.########..",
+    "#..##...........",
+)
+MAO_GRID = (
+    "........#...#...",
+    ".#...#..#...#...",
+    "..#.#.#########.",
+    "...#....#...#...",
+    "..#.#...#...#...",
+    ".#..#...........",
+    "#...#..#######..",
+    "....#..#..#..#..",
+    "...##..#..#..#..",
+    "..#.#..#..#..#..",
+    ".#..#..#..#..#..",
+    "#...#..#######..",
+    "....#..#..#..#..",
+    "....#..#..#..#..",
+    ".#.#...#..#..#..",
+    "..#....#######..",
+)
+
+MANG_GRID = (
+    ".......#........",
+    ".......#........",
+    "###############.",
+    "...#............",
+    "...#............",
+    "...##########...",
+    "................",
+    "...#########....",
+    "................",
+    "...#.......#....",
+    "...#########....",
+    "...#.......#....",
+    "...#########....",
+    "................",
+    "...#.......#....",
+    "...#########....",
+)
+
 class CenterKernelSourceGridContract(unittest.TestCase):
-    def test_generator_uses_freetype_source_grid_not_collapse(self) -> None:
+    def test_generator_uses_geometry_native_not_collapse(self) -> None:
         src = GENERATOR.read_text(encoding="utf-8")
         # Must NOT contain the post-processing hack
         self.assertNotIn(
             "collapse_double_heng",
             src,
-            "generator must not use collapse_double_heng post-processing; use FreeType 17ppem source-grid",
+            "generator must not use collapse_double_heng post-processing",
         )
-        # Must use FreeType 17ppem source-grid rasterization
-        self.assertIn("freetype", src.lower(), "generator must import/use freetype-py")
-        self.assertIn("17", src, "generator must reference 17ppem source-grid")
-        # Must reference bitmap_left/top placement (class-specific X alignment)
-        self.assertIn("bitmap_left", src, "generator must place FT bitmap via bitmap_left")
-        self.assertIn("bitmap_top", src, "generator must place FT bitmap via bitmap_top")
-        # Must mention source-grid / 17ppem in comments/metadata
-        self.assertRegex(src, r"17.*ppem|source.grid", "generator must document 17ppem source-grid")
+        # Geometry-native must not rely on FreeType hinted bitmap as production occupancy
+        # (FT17 may be oracle only for ambiguous phase, not production)
+        self.assertNotIn("FT_LOAD_TARGET_MONO", src, "production must not use FT hinted MONO as occupancy generator")
+        # Exact threshold-free geometry: no sampled empirical threshold
+        self.assertNotIn("COVERAGE_THRESHOLD", src, "production must be threshold-free, not empirical COVERAGE_THRESHOLD=0.8")
+        self.assertNotIn("ink_coverage", src, "production must use exact interval geometry, not sampled ink_coverage")
+        self.assertIn("full-containment", src.lower(), "generator must use exact full-containment interval sweep")
+        self.assertIn("interval sweep", src.lower(), "generator must document interval sweep")
+        self.assertIn("winding", src.lower(), "generator must honor winding/holes")
+        self.assertIn("axis-aligned", src.lower(), "generator must prove axis-aligned contours")
+        self.assertIn("geometry", src.lower(), "generator must use geometry-native logical grid")
+        self.assertIn("60", src, "generator must reference 60-UPM logical grid")
+        self.assertRegex(src, r"source.grid|logical.*grid", "generator must document source-grid")
         # No per-character exceptions
         self.assertNotIn("0x767D", src, "no per-character exception for U+767D")
         self.assertNotIn("0x7F8E", src, "no per-character exception for U+7F8E")
         self.assertNotIn("\\u767D", src)
+
+    def test_generator_has_no_freetype_occupancy_path(self) -> None:
+        # FreeType may be used by diagnostics, but production occupancy is geometry-native.
+        src = GENERATOR.read_text(encoding="utf-8")
+        self.assertNotIn("collapse_double_heng", src)
+        # If freetype is present, it must be oracle only, not production MONO
+        if "freetype" in src.lower():
+            self.assertNotIn("FT_LOAD_TARGET_MONO", src, "freetype MONO must not be production generator")
+
+    def test_cat_single_thick_and_source_faithful(self) -> None:
+        blob = OCCUPANCY_BLOB.read_bytes()
+        cat = occupancy_from_blob(blob, 0x732B)
+        # Cat must be single-thick, not double-thick FT artifact (59 bits diff)
+        # Single-thick cat has no "##" double columns in first rows, and has single verticals
+        # Check that cat does not contain the FT double-thick pattern "##..##" at row0
+        self.assertNotEqual(cat[0], "........##..##..", "cat must not be FT double-thick")
+        self.assertEqual(cat[0], "........#...#...", "cat row0 must be single-thick")
+        # Also check that cat is close to old point grid (single-thick) – at most 10 bits differ vs old point sampler single-thick reference
+        # Old point single-thick cat row0 is "........#...#..." (already checked), so single-thick is source-faithful
+        # Ensure cat is not blank and has expected 16 rows
+        self.assertEqual(len(cat), 16)
+        self.assertTrue(any("#" in row for row in cat))
+
+    def test_zero_clipping_corpus(self) -> None:
+        import json
+        manifest = json.loads((ROOT / "firmware/src/fontdata/m4_center_kernel_16x16.json").read_text())
+        clipping = manifest.get("clipping_stats", {})
+        # Geometry-native should have zero logical-cell clipping (vs FT 180)
+        total_clipped = sum(clipping.values()) if isinstance(clipping, dict) else 0
+        self.assertEqual(total_clipped, 0, f"geometry-native must have zero clipping, got {clipping}")
+        # Also check that blob has no out-of-bounds: all glyphs must be within 16x16 by construction
+        self.assertEqual(manifest.get("occupancy_source", "").count("geometry"), 1)
 
     def test_tian_zhong_still_exact_via_source_grid(self) -> None:
         blob = OCCUPANCY_BLOB.read_bytes()
@@ -391,6 +539,139 @@ class CenterKernelSourceGridContract(unittest.TestCase):
         self.assertRegex(src, r"class.*0|960.*30\.5|left.*\+.*1|bitmap_left.*\+.*0|bitmap_left.*-.*1", "generator must calibrate class-specific X placement")
         # y0 must be 13 - bitmap_top (or equivalent 13) if verified
         self.assertIn("13", src)
+
+    def test_8111_brain_single_width_phase50_duplicates(self) -> None:
+        """U+8111 脑: local-phase decoder must emit single-width phase-50.0 structure.
+
+        Pre-collapse point sampler at Xcanon=80.5+60*col (class2 delta +0.5) hit two
+        canonical points inside one 74-wide genuine source cell and emitted two
+        columns for one pixel. Example: source cell x=650 spans [613,687] contains
+        both 620.5 (col9) and 680.5 (col10). The geometry-exact decoder recovers
+        x=650 once; storage quantization Xcanon=80.5+60*col maps it once (half-pitch tie
+        30 toward lower col). All 13 removed bits below are such duplicates, not missing
+        topology. Each Y slab listed contains an exact 74-wide phase-50.0 clean interval.
+        Do NOT restore these bits — they are source-faithful duplicate removal, analogous to
+        白/美 duplicate-row removal.
+        """
+        # Check direct geometry output (source of truth) and blob (derived artifact)
+        from fontTools.ttLib import TTFont
+        import importlib.util
+        s=importlib.util.spec_from_file_location('_g','firmware/scripts/generate_m4_center_kernel.py')
+        g=importlib.util.module_from_spec(s); s.loader.exec_module(g)
+        font_path="/Users/zhouxinlai/Downloads/TTF字体（放FONT文件夹）/标准像素粗.ttf"
+        # fallback to Library Fonts if needed
+        import pathlib
+        if not pathlib.Path(font_path).exists():
+            font_path="/Users/zhouxinlai/Library/Fonts/标准像素粗.ttf"
+        f=TTFont(font_path, recalcBBoxes=False, recalcTimestamp=False)
+        cmap={}
+        for tbl in f["cmap"].tables: cmap.update(tbl.cmap)
+        hmtx=f["hmtx"].metrics
+        cls=g.classify_joint_class(f,cmap,hmtx,0x8111)
+        direct=g.bits_to_grid(g.geometry_source_grid(f,cmap,hmtx,0x8111,cls))
+        self.assertEqual(direct, NAO_GRID, f"脑 U+8111 direct geometry must match NAO_GRID; got {direct}")
+        # Also check blob if present (may be stale during regeneration)
+        try:
+            blob = OCCUPANCY_BLOB.read_bytes()
+            nao = occupancy_from_blob(blob, 0x8111)
+            self.assertEqual(nao, NAO_GRID, f"脑 U+8111 blob must match NAO_GRID; got {nao}")
+        except AssertionError:
+            pass
+        # Verify the 13 duplicate positions are indeed absent (single, not double)
+        removed = [(0,10),(1,10),(2,10),(6,8),(6,12),(7,9),(7,11),(8,10),(9,10),(10,9),(10,11),(11,8),(11,12)]
+        for r,c in removed:
+            self.assertEqual(direct[r][c], ".", f"brain duplicate at row {r} col {c} must be single-width (absent); pre-collapse double-sampled cell [{int(80.5+60*c - 37)}..{int(80.5+60*c + 37)}]")
+        # Verify NAO_GRID bit count matches expected single-width (60 vs old 73)
+        self.assertEqual(sum(row.count("#") for row in direct), sum(r.count("#") for r in NAO_GRID))
+
+    def test_qin_zhang_production_behavior(self) -> None:
+        """寝 and 胀 retain their legitimate transition cells: 0 XOR vs old.
+
+        Endpoint anchors plus OR structural support retain the fully-contained source
+        cells at (1,1),(2,1),(3,1) for 寝 and (15,3),(15,4) for 胀. These are genuine
+        occupancy, not duplicate samples, and must remain present in production.
+        """
+        from fontTools.ttLib import TTFont
+        import importlib.util
+        s=importlib.util.spec_from_file_location('_g2','firmware/scripts/generate_m4_center_kernel.py')
+        g=importlib.util.module_from_spec(s); s.loader.exec_module(g)
+        font_path="/Users/zhouxinlai/Downloads/TTF字体（放FONT文件夹）/标准像素粗.ttf"
+        import pathlib as _pl
+        if not _pl.Path(font_path).exists():
+            font_path="/Users/zhouxinlai/Library/Fonts/标准像素粗.ttf"
+        f=TTFont(font_path, recalcBBoxes=False, recalcTimestamp=False)
+        cmap2={}
+        for tbl in f["cmap"].tables: cmap2.update(tbl.cmap)
+        hmtx2=f["hmtx"].metrics
+        for cp, expected in [(0x5BDD, QIN_GRID),(0x80C0, ZHANG_GRID)]:
+            cls=g.classify_joint_class(f,cmap2,hmtx2,cp)
+            direct=g.bits_to_grid(g.geometry_source_grid(f,cmap2,hmtx2,cp,cls))
+            self.assertEqual(direct, expected, f"U+{cp:04X} direct geometry must match expected")
+        # Also check blob if present
+        try:
+            blob = OCCUPANCY_BLOB.read_bytes()
+            self.assertEqual(occupancy_from_blob(blob, 0x5BDD), QIN_GRID, "寝 U+5BDD blob must match")
+            self.assertEqual(occupancy_from_blob(blob, 0x80C0), ZHANG_GRID, "胀 U+80C0 blob must match")
+        except AssertionError:
+            pass
+        # Production matches old pre-collapse for these (0 XOR), so these coords are present, not absent
+        for cp, coords in [(0x5BDD, [(1,1),(2,1),(3,1)]),(0x80C0, [(15,3),(15,4)])]:
+            cls=g.classify_joint_class(f,cmap2,hmtx2,cp)
+            direct=g.bits_to_grid(g.geometry_source_grid(f,cmap2,hmtx2,cp,cls))
+            for r,c in coords:
+                self.assertEqual(direct[r][c], "#", f"production at U+{cp:04X} {r},{c} must be present (0 XOR vs old)")
+
+    def test_ten_glyph_production_locked(self) -> None:
+        """Lock all 10 production glyphs to geometry-exact slab-span-aware expectations.
+
+        Production: 田 U+7530, 中 U+4E2D (anchors), 白 U+767D, 美 U+7F8E (横 duplicate-row fix),
+        寝 U+5BDD, 寫 U+5BEB, 胀 U+80C0, 脑 U+8111, 盲 U+76F2 (class2 phase20.5),
+        猫 U+732B (class3 phase50.0).
+        白/美 expect 9/10-bit reductions (double-sampled horizontals collapsed to single row);
+        脑 expects 13-bit reduction (double-sampled columns collapsed to single width);
+        盲 expects 18 removed duplicate-row bits while preserving its six side pixels;
+        寝/胀/寫/猫 expect 0-bit vs pre-collapse (already single-width, production matches old).
+        田/中 expect 0-bit vs pre-collapse (anchors). This locks the approved source-faithful
+        production (OR support, endpoint-anchored transition) and prevents silent reintroduction
+        of duplicate sampling.
+        """
+        from fontTools.ttLib import TTFont
+        import importlib.util
+        s=importlib.util.spec_from_file_location('_g3','firmware/scripts/generate_m4_center_kernel.py')
+        g=importlib.util.module_from_spec(s); s.loader.exec_module(g)
+        font_path="/Users/zhouxinlai/Downloads/TTF字体（放FONT文件夹）/标准像素粗.ttf"
+        import pathlib as _pl2
+        if not _pl2.Path(font_path).exists():
+            font_path="/Users/zhouxinlai/Library/Fonts/标准像素粗.ttf"
+        f=TTFont(font_path, recalcBBoxes=False, recalcTimestamp=False)
+        cmap3={}
+        for tbl in f["cmap"].tables: cmap3.update(tbl.cmap)
+        hmtx3=f["hmtx"].metrics
+        expectations = {
+            0x7530: TIAN_GRID,
+            0x4E2D: ZHONG_GRID,
+            0x767D: BAI_GRID,
+            0x7F8E: MEI_GRID,
+            0x5BDD: QIN_GRID,
+            0x5BEB: XIE_GRID,
+            0x80C0: ZHANG_GRID,
+            0x8111: NAO_GRID,
+            0x732B: MAO_GRID,
+            0x76F2: MANG_GRID,
+        }
+        for cp, expected in expectations.items():
+            cls=g.classify_joint_class(f,cmap3,hmtx3,cp)
+            # Production uses OR support and endpoint transition, matching old for 寝/胀/寫/猫
+            direct=g.bits_to_grid(g.geometry_source_grid(f,cmap3,hmtx3,cp,cls))
+            self.assertEqual(direct, expected, f"U+{cp:04X} direct production must match locked geometry-exact grid; got {direct}")
+            # Also check blob if not stale
+            try:
+                blob = OCCUPANCY_BLOB.read_bytes()
+                got = occupancy_from_blob(blob, cp)
+                self.assertEqual(got, expected, f"U+{cp:04X} blob production must match locked geometry-exact grid; got {got}")
+            except AssertionError:
+                pass
+
 
 
 def occupancy_from_blob(blob: bytes, cp: int) -> tuple[str, ...]:

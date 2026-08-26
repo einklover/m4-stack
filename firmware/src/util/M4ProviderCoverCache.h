@@ -44,12 +44,16 @@ struct Request {
   std::string coverUrl;
   int width = 0;
   int height = 0;
+  std::function<bool()> cancelled;
 };
 
 struct Backend {
   std::function<bool(const std::string&)> exists;
   std::function<bool(const std::string&)> makeDirs;
   std::function<bool(const std::string& url, const std::string& path, size_t maxBytes)> fetch;
+  std::function<bool(const std::string& url, const std::string& path, size_t maxBytes,
+                     const std::function<bool()>& cancelled)>
+      fetchCancellable;
   std::function<bool(const std::string& sourcePath, const std::string& targetPath, int width, int height)> convert;
   std::function<void(const std::string&)> remove;
 };
@@ -97,9 +101,11 @@ inline std::string concreteBmpPath(const std::string& providerId, const std::str
 inline Result acquire(const Request& request, const Backend& backend) {
   Result out;
   if (request.providerId.empty() || request.bookId.empty() || request.coverUrl.empty() || request.width <= 0 ||
-      request.height <= 0 || !backend.exists || !backend.makeDirs || !backend.fetch || !backend.convert) {
+      request.height <= 0 || !backend.exists || !backend.makeDirs ||
+      (!backend.fetch && !backend.fetchCancellable) || !backend.convert) {
     return out;
   }
+  if (request.cancelled && request.cancelled()) return out;
   out.coverBmpPath = bmpTemplatePath(request.providerId, request.bookId);
   const std::string target = concreteBmpPath(request.providerId, request.bookId, request.width, request.height);
   if (backend.exists(target)) {
@@ -111,11 +117,21 @@ inline Result acquire(const Request& request, const Backend& backend) {
     return out;
   }
   const std::string source = sourcePath(request.providerId, request.bookId);
-  if (!backend.exists(source) && !backend.fetch(request.coverUrl, source, kMaxDownloadBytes)) {
-    out.coverBmpPath.clear();
-    return out;
+  const bool sourceExisted = backend.exists(source);
+  if (!sourceExisted) {
+    const bool fetched = backend.fetchCancellable
+                             ? backend.fetchCancellable(request.coverUrl, source, kMaxDownloadBytes,
+                                                        request.cancelled)
+                             : backend.fetch(request.coverUrl, source, kMaxDownloadBytes);
+    if (!fetched || (request.cancelled && request.cancelled())) {
+      if (backend.remove) backend.remove(source);
+      out.coverBmpPath.clear();
+      return out;
+    }
   }
-  if (!backend.convert(source, target, request.width, request.height) || !backend.exists(target)) {
+  if ((request.cancelled && request.cancelled()) ||
+      !backend.convert(source, target, request.width, request.height) ||
+      (request.cancelled && request.cancelled()) || !backend.exists(target)) {
     if (backend.remove) backend.remove(source);
     if (backend.remove) backend.remove(target);
     out.coverBmpPath.clear();
@@ -127,7 +143,7 @@ inline Result acquire(const Request& request, const Backend& backend) {
 // Adapter for the exact provider model Track F consumes.
 inline Request requestFor(const std::string& providerId, const std::string& bookId,
                           const M4NovelProvider::BookDetail& detail, int width, int height) {
-  return {providerId, bookId, detail.coverUrl, width, height};
+  return {providerId, bookId, detail.coverUrl, width, height, {}};
 }
 
 // Production adapter: streamed HTTP download + existing PNGdec/JPEG converters + SD.

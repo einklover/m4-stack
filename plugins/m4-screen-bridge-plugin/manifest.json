@@ -1,13 +1,13 @@
 {
   "id": "com.m4screenbridge.client",
   "name": "屏幕桥",
-  "version": "0.2.0",
-  "versionCode": 2,
+  "version": "1.2.0",
+  "versionCode": 3,
   "runtime": "native",
   "entry": "main.xml",
   "provider": "screenbridge",
   "author": "einklover",
-  "description": "0.2.0 Native：手机应用目录与小红书图文笔记、正文、评论阅读",
+  "description": "1.2.0 Native：手机应用目录与小红书图文笔记、正文、评论阅读",
   "files": [
     "main.xml"
   ],

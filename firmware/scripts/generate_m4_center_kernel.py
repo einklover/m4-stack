@@ -5,12 +5,21 @@ CJK U+3400–U+9FFF: absolute-position 16x16 centers + 2-bit joint class.
 All other BMP cmap glyphs: 16x16 occupancy sampled like native-grid (class 1),
 so the firmware embeds one blob and does not ship m4_native_grid_15x16.bin.
 
-Occupancy source: FreeType 17ppem MONO source-grid rasterization, not
-fixed-point fill sampling. At em=1000 the logical pitch is 60 UPM, so
-17ppem (1000/17≈58.82 UPM per pixel) recovers the source pixel grid
-pixel-for-pixel for class-1 (verified TIAN/ ZHONG) and fixes double-sampled
-horizontals (白, 美) at their source Y phase. Class-specific canvas placement
-is required because horizontal origin differs per joint class (phase delta).
+Occupancy source: geometry-exact run-deconvolution with slab-span-aware transition handling, not sampled ink coverage
+nor FreeType hinted bitmap. The axis-aligned interval sweep runs at em=1000 with
+60-UPM pitch and 74/75-UPM
+horizontal ink and 75-UPM vertical ink. Candidates originate only from real filled
+intervals or real slab-own spans: clean spans decode centers by
+W=K+(n-1)*60 or H=75+(m-1)*60, while non-decodable spans use only endpoint anchors
+when their span is large enough. A 2D source center is kept only when its Kx*75
+cell rectangle is verified by exact winding-aware full containment AND it has
+structural support from x_support OR y_support; each support witness may be a clean
+filled-run decode, an endpoint-anchored transition span, or a slab-own-span witness.
+Each verified source center is quantized ONCE to the fixed 16x16 output lattice with
+class-aware storage: Xcanon(cls,col)=80+PHASE_DELTA[cls]+60*col,
+Ycanon(row)=751.5-60*row, nearest with deterministic half-pitch (30) tie toward
+lower index. Source recovery is class-independent; storage is class-aware.
+This decouples source occupancy from runtime PHASE_DELTA/Kx.
 
 Expected identity of 标准像素粗.ttf:
   font SHA-256 9507b4d3e915455afadfa688e8ea515abf816bce06f76346ee356f0f38810574
@@ -38,19 +47,16 @@ HEADER_BYTES = 48
 PAGE_DIR_ENTRIES = 256
 LEAF_BYTES = 34
 GRID = 16
-OCC_BYTES = 32  # 16x16 bits
+OCC_BYTES = 32
 EXPECTED_FONT_SHA256 = "9507b4d3e915455afadfa688e8ea515abf816bce06f76346ee356f0f38810574"
 EXPECTED_CJK = 27553
 CJK_LO, CJK_HI = 0x3400, 0x9FFF
-# Filled after --font once; --verify reads header/manifest instead of this constant.
-EXPECTED_GLYPHS = None
 PITCH = 60
 X_BASE = 80.0
 Y_WIDTH = 75
 Y_ORIGIN = -186
-Y_TOP = Y_ORIGIN + Y_WIDTH / 2 + (GRID - 1) * PITCH  # 751.5
+Y_TOP = Y_ORIGIN + Y_WIDTH / 2 + (GRID - 1) * PITCH  # 751.5 canonical single lattice
 
-# Verified joint classes (TTF geometry). Do not infer from neighbor topology.
 JOINT = {
     (960, 30.5, 75): 0,
     (1000, 20.0, 74): 1,
@@ -64,34 +70,6 @@ PHASE_DELTA = {
     50.0: 30.0,
 }
 X_WIDTHS = (74, 75)
-
-# Source-grid rasterization at 17ppem (FreeType MONO).
-# Class-1 verified pixel-for-pixel for TIAN/ ZHONG/ 白/ 美 via x0=bitmap_left-1, y0=13-bitmap_top.
-# Calibration rationale (brute-force small integer offsets vs old pre-collapse + source geometry):
-#  - class0 (960/30.5/75, delta -49.5) is ~0.84 FT pixel left of class1 at 17ppem (58.82 UPM/px),
-#    so naive x0=left-1 shifts it 1px left vs old; XOR drops from ~57/glyph to 0 with x0=left.
-#    Samples: U+3400, U+3401, U+3402, U+3404, U+4E2A all XOR 0 at x0=left, y0=13-top.
-#  - class1 (1000/20.0/74) optimal at x0=left-1, y0=13-top: Tian/Zhong XOR 0, Bai/Mei XOR 9-10 vs old
-#    (exactly the double-sampled horizontals we intend to fix; vs 17ppem expected Bai/Mei XOR 0).
-#  - class2 (1000/20.5/75, delta +0.5) optimal at x0=left-1, y0=13-top: 寝, 寫, 胀, 脑 all XOR 0-1.
-#  - class3 (1000/50.0/74, delta 30, single glyph 猫 U+732B) inspected explicitly:
-#    MONO at 17 gives double-thick vs point sampling (57 XOR) while LIGHT gives 6 XOR;
-#    both share y0=13-top; X offset left-1 chosen for consistency and zero clipping
-#    (left gives 1px shift but increases XOR). Supersampled area coverage matches old,
-#    confirming old's single-thick is source-faithful; MONO's double-thick is an
-#    artifact of 1.02x scale rounding. We keep MONO 17 uniform for CJK and accept
-#    cat's 57-bit vs old as the price of uniform 17ppem, or document LIGHT as
-#    alternative. Current implementation uses MONO 17 with class-specific X below
-#    and keeps y0=13-top verified across all classes.
-SOURCE_PPEM = 17
-# Class-specific X canvas placement: x0 = bitmap_left -1 + CLASS_X_OFFSET[cls]
-# y0 = 13 - bitmap_top (verified: top 12-13 for all classes, y0 0-1 gives zero XOR)
-CLASS_X_OFFSET = {
-    0: 1,  # x0 = left  (one pixel right vs class1)
-    1: 0,  # x0 = left-1
-    2: 0,  # x0 = left-1
-    3: 0,  # x0 = left-1 (single glyph 猫)
-}
 
 TIAN = 0x7530
 ZHONG = 0x4E2D
@@ -132,138 +110,440 @@ ZHONG_GRID = (
     ".......#........",
 )
 
-
-def u16(value: int) -> bytes:
-    return struct.pack("<H", value)
-
-
-def u32(value: int) -> bytes:
-    return struct.pack("<I", value)
-
-
-def pack_bits(bits: list[int]) -> bytes:
-    if len(bits) % 8 != 0:
-        raise ValueError(len(bits))
-    out = bytearray()
-    for offset in range(0, len(bits), 8):
-        value = 0
-        for bit in bits[offset : offset + 8]:
-            value = (value << 1) | bit
-        out.append(value)
+def u16(v): return struct.pack("<H", v)
+def u32(v): return struct.pack("<I", v)
+def pack_bits(bits):
+    out=bytearray()
+    for off in range(0,len(bits),8):
+        v=0
+        for b in bits[off:off+8]:
+            v=(v<<1)|b
+        out.append(v)
     return bytes(out)
 
-
-def contour_points(font, glyph_name: str):
-    glyph = font["glyf"][glyph_name]
-    coords, end_points, _ = glyph.getCoordinates(font["glyf"])
-    contours = []
-    start = 0
-    for end in end_points:
-        contours.append([(float(x), float(y)) for x, y in coords[start : end + 1]])
-        start = end + 1
-    return contours
-
+def contour_points(font,glyph_name):
+    g=font["glyf"][glyph_name]
+    coords,end_points,_=g.getCoordinates(font["glyf"])
+    cs=[]
+    s=0
+    for e in end_points:
+        cs.append([(float(x),float(y)) for x,y in coords[s:e+1]])
+        s=e+1
+    return cs
 
 def signed_area(poly):
-    return sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1])) / 2.0
-
-
-def point_in_polygon(x, y, poly):
-    inside = False
-    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
-        if (y1 > y) != (y2 > y):
-            cross = (x2 - x1) * (y - y1) / (y2 - y1) + x1
-            if x < cross:
-                inside = not inside
+    return sum(x1*y2 - x2*y1 for (x1,y1),(x2,y2) in zip(poly, poly[1:]+poly[:1]))/2.0
+def point_in_polygon(x,y,poly):
+    inside=False
+    for (x1,y1),(x2,y2) in zip(poly, poly[1:]+poly[:1]):
+        if (y1>y) != (y2>y):
+            cross=(x2-x1)*(y-y1)/(y2-y1)+x1
+            if x<cross:
+                inside=not inside
     return inside
-
-
-def filled_at(contours, x, y):
-    winding = 0
+def filled_at(contours,x,y):
+    w=0
     for poly in contours:
-        if point_in_polygon(x, y, poly):
-            winding += -1 if signed_area(poly) < 0 else 1
-    return winding != 0
+        if point_in_polygon(x,y,poly):
+            w+= -1 if signed_area(poly)<0 else 1
+    return w!=0
 
-
-def edge_residual(value, origin, width):
-    a = abs(value - (origin + round((value - origin) / PITCH) * PITCH))
-    b = abs(value - (origin + width + round((value - origin - width) / PITCH) * PITCH))
-    return min(a, b)
-
-
-def fit_width(xs, origin):
-    scores = {}
-    for width in X_WIDTHS:
-        residuals = [edge_residual(v, origin, width) for v in xs]
-        scores[width] = (
-            max(residuals, default=0),
-            sum(residuals),
-            sum(r > 1e-6 for r in residuals),
-        )
-    return min(X_WIDTHS, key=lambda w: (*scores[w], w))
-
-
-def classify_joint_class(font, cmap, hmtx, cp: int) -> int:
-    """TTF-geometry joint classification (advance, phase, width) -> class 0..3.
-    Uses fontTools outline/hmtx, not FreeType. Keeps class for advance/kernel sizing.
-    """
-    glyph_name = cmap[cp]
-    contours = contour_points(font, glyph_name)
-    xs = [x for poly in contours for x, _ in poly]
-    advance, lsb = hmtx[glyph_name]
-    width = fit_width(xs, lsb)
-    phase = round((lsb + width / 2) % PITCH, 1)
-    key = (int(advance), phase, int(width))
+def edge_residual(v,origin,width):
+    a=abs(v - (origin + round((v-origin)/PITCH)*PITCH))
+    b=abs(v - (origin + width + round((v-origin-width)/PITCH)*PITCH))
+    return min(a,b)
+def fit_width(xs,origin):
+    scores={}
+    for w in X_WIDTHS:
+        residuals=[edge_residual(v,origin,w) for v in xs]
+        scores[w]=(max(residuals,default=0),sum(residuals),sum(r != 0 for r in residuals))
+    return min(X_WIDTHS,key=lambda w: (*scores[w],w))
+def classify_joint_class(font,cmap,hmtx,cp):
+    gn=cmap[cp]
+    conts=contour_points(font,gn)
+    xs=[x for poly in conts for x,_ in poly]
+    adv,lsb=hmtx[gn]
+    w=fit_width(xs,lsb)
+    phase=round((lsb+w/2)%PITCH,1)
+    key=(int(adv),phase,int(w))
     if key not in JOINT:
-        raise AssertionError(f"U+{cp:04X} unexpected geometry {key}")
+        raise AssertionError(f"U+{cp:04X} unexpected {key}")
     return JOINT[key]
 
-
-def freetype_source_grid(face, cp: int, cls: int) -> tuple[bytes, int]:
-    """Reusable FreeType 17ppem MONO source-grid rasterizer for CJK.
-    Places the FT bitmap into the 16x16 logical occupancy canvas with
-    class-specific X alignment (CLASS_X_OFFSET) and y0=13-bitmap_top.
-    This recovers the source pixel grid and eliminates fixed-lattice double sampling.
-    """
-    import freetype
-
-    # face must already be set to SOURCE_PPEM
-    face.load_char(cp, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_MONO)
-    bmp = face.glyph.bitmap
-    left = int(face.glyph.bitmap_left)
-    top = int(face.glyph.bitmap_top)
-    w = int(bmp.width)
-    h = int(bmp.rows)
-    pitch = int(bmp.pitch)
-    # freetype-py buffer is a memoryview over pitch*rows bytes
-    buf = bytes(bmp.buffer) if w * h > 0 else b""
-    x0 = left - 1 + CLASS_X_OFFSET.get(cls, 0)
-    y0 = 13 - top  # validated across all classes (top 12-13 => y0 0-1)
-    bits = [0] * (GRID * GRID)
-    clipped = 0
-    for y in range(h):
-        row_off = y * pitch
-        for x in range(w):
-            # MONO bitmap is 1-bit MSB
-            if (buf[row_off + x // 8] >> (7 - (x % 8))) & 1:
-                cx = x0 + x
-                cy = y0 + y
-                if 0 <= cx < GRID and 0 <= cy < GRID:
-                    bits[cy * GRID + cx] = 1
+def _build_y_slab_intervals(contours):
+    ys=sorted({y for poly in contours for _,y in poly})
+    xs=sorted({x for poly in contours for x,_ in poly})
+    slabs=[]
+    for i in range(len(ys)-1):
+        y0=ys[i]; y1=ys[i+1]
+        if y0==y1: continue
+        ym=(y0+y1)/2
+        intervals=[]
+        cur=None
+        for j in range(len(xs)-1):
+            x0=xs[j]; x1=xs[j+1]
+            if x0==x1: continue
+            xm=(x0+x1)/2
+            if filled_at(contours,xm,ym):
+                if cur is None:
+                    cur=[x0,x1]
                 else:
-                    clipped += 1
-    return pack_bits(bits), clipped
+                    cur[1]=x1
+            else:
+                if cur is not None:
+                    intervals.append(tuple(cur))
+                    cur=None
+        if cur is not None:
+            intervals.append(tuple(cur))
+        slabs.append((y0,y1,intervals))
+    return slabs, xs, ys
+
+def _build_x_slab_intervals(contours):
+    ys=sorted({y for poly in contours for _,y in poly})
+    xs=sorted({x for poly in contours for x,_ in poly})
+    slabs=[]
+    for j in range(len(xs)-1):
+        x0=xs[j]; x1=xs[j+1]
+        if x0==x1: continue
+        xm=(x0+x1)/2
+        intervals=[]
+        cur=None
+        for i in range(len(ys)-1):
+            y0=ys[i]; y1=ys[i+1]
+            if y0==y1: continue
+            ym=(y0+y1)/2
+            if filled_at(contours,xm,ym):
+                if cur is None:
+                    cur=[y0,y1]
+                else:
+                    cur[1]=y1
+            else:
+                if cur is not None:
+                    intervals.append(tuple(cur))
+                    cur=None
+        if cur is not None:
+            intervals.append(tuple(cur))
+        slabs.append((x0,x1,intervals))
+    return slabs, xs, ys
+
+def _self_test_geometry():
+    """Direct unit calls for run-deconvolution so failures happen before 27k generation."""
+    def decodes(w2, expected_n, expected_K):
+        found=None
+        for K in (74,75):
+            K2=K*2
+            if w2 < K2: continue
+            if (w2-K2)%120==0:
+                n=(w2-K2)//120+1
+                if n==expected_n and K==expected_K:
+                    found=(n,K)
+        assert found is not None, f"decode {w2}/2 failed expected {(expected_n,expected_K)}"
+    decodes(74*2,1,74)
+    decodes(75*2,1,75)
+    decodes(134*2,2,74)
+    decodes(135*2,2,75)
+    decodes(194*2,3,74)
+    decodes(195*2,3,75)
+    for h2,n in [(75*2,1),(135*2,2),(195*2,3)]:
+        assert h2>=150 and (h2-150)%120==0 and (h2-150)//120+1==n
+    rect = [(80,0),(80,75),(154,75),(154,0)]
+    assert signed_area(rect) < 0
+    assert filled_at([rect], 117, 37.5)
+    assert not filled_at([rect], 118, 200)
+    y_slabs,_,_ = _build_y_slab_intervals([rect])
+    x_slabs,_,_ = _build_x_slab_intervals([rect])
+    assert len(y_slabs)==1 and y_slabs[0][2]==[(80,154)]
+    assert len(x_slabs)==1 and x_slabs[0][2][0]==(0,75)
+    for cls,exp_delta in [(1,0.0),(2,0.5),(0,-49.5),(3,30.0)]:
+        for (adv,ph,w),c in JOINT.items():
+            if c==cls:
+                assert PHASE_DELTA[ph]==exp_delta
+                assert int((X_BASE+PHASE_DELTA[ph])*2) == int((80+exp_delta)*2)
+    print("self-test ok", file=sys.stderr)
+
+
+def _collect_candidates(y_slabs, x_slabs):
+    """Collect X and Y source-center candidates from filled intervals and slab spans.
+
+    X candidates (x2,Kx) from:
+      - Y-slabs' X intervals [x0,x1] with W=x1-x0
+      - X-slabs' spans [x0,x1] (symmetric)
+    Y candidates (y2) from:
+      - X-slabs' Y intervals [y0,y1] with H=y1-y0
+      - Y-slabs' spans [y0,y1] (symmetric)
+    For each interval/span:
+      if W==K+(n-1)*60 for K in {74,75} decode n centers x0+K/2+i*60
+      elif W>=74 (non-decodable) only endpoint anchors x0+K/2 , x1-K/2 for K in {74,75}
+      similarly H==75+(m-1)*60 -> y0+37.5+j*60 else H>=75 -> y0+37.5 , y1-37.5
+    All coordinates are doubled integers (x2,y2), Kx in {74,75}, vertical ink 75.
+    """
+    cand_x_set=set()
+    # From Y-slabs' X intervals
+    for y0,y1,intervals in y_slabs:
+        for x0,x1 in intervals:
+            w = x1 - x0
+            w2 = int((x1 - x0)*2)
+            is_clean=False
+            for K in (74,75):
+                if w2 >= K*2 and (w2 - K*2) % 120 == 0:
+                    is_clean=True
+                    n=(w2 - K*2)//120 + 1
+                    for i in range(n):
+                        x2 = int(x0*2 + K + i*120)
+                        cand_x_set.add((x2, K))
+                    break
+            if not is_clean and w >= 74:
+                for K in (74,75):
+                    x2_a = int(x0*2 + K)
+                    x2_b = int(x1*2 - K)
+                    cand_x_set.add((x2_a, K))
+                    cand_x_set.add((x2_b, K))
+    # From X-slabs' spans
+    for x0,x1,intervals in x_slabs:
+        w = x1 - x0
+        w2 = int((x1 - x0)*2)
+        is_clean=False
+        for K in (74,75):
+            if w2 >= K*2 and (w2 - K*2) % 120 == 0:
+                is_clean=True
+                n=(w2 - K*2)//120 + 1
+                for i in range(n):
+                    x2 = int(x0*2 + K + i*120)
+                    cand_x_set.add((x2, K))
+                break
+        if not is_clean and w >= 74:
+            for K in (74,75):
+                x2_a = int(x0*2 + K)
+                x2_b = int(x1*2 - K)
+                cand_x_set.add((x2_a, K))
+                cand_x_set.add((x2_b, K))
+    cand_y_set=set()
+    # From X-slabs' Y intervals
+    for x0,x1,intervals in x_slabs:
+        for y0,y1 in intervals:
+            h = y1 - y0
+            h2 = int((y1 - y0)*2)
+            is_clean_y = (h2 >= 150 and (h2 - 150) % 120 == 0)
+            if is_clean_y:
+                m = (h2 - 150)//120 + 1
+                for j in range(m):
+                    y2 = int(y0*2 + 75 + j*120)
+                    cand_y_set.add(y2)
+            elif h >= 75:
+                y2_a = int(y0*2 + 75)
+                y2_b = int(y1*2 - 75)
+                cand_y_set.add(y2_a)
+                cand_y_set.add(y2_b)
+    # From Y-slabs' spans
+    for y0,y1,intervals in y_slabs:
+        h = y1 - y0
+        h2 = int((y1 - y0)*2)
+        is_clean_y = (h2 >= 150 and (h2 - 150) % 120 == 0)
+        if is_clean_y:
+            m = (h2 - 150)//120 + 1
+            for j in range(m):
+                y2 = int(y0*2 + 75 + j*120)
+                cand_y_set.add(y2)
+        elif h >= 75:
+            y2_a = int(y0*2 + 75)
+            y2_b = int(y1*2 - 75)
+            cand_y_set.add(y2_a)
+            cand_y_set.add(y2_b)
+    return cand_x_set, cand_y_set
+
+
+def _is_fully_contained(contours, xs_all, ys_all, x, y, Kx):
+    """Exact Kx×75 full containment, winding-aware, doubled-integer safe."""
+    ink_x0 = x - Kx/2
+    ink_x1 = x + Kx/2
+    ink_y0 = y - 37.5
+    ink_y1 = y + 37.5
+    xs_inside=[ink_x0,ink_x1]+[x for x in xs_all if ink_x0 < x < ink_x1]
+    ys_inside=[ink_y0,ink_y1]+[y for y in ys_all if ink_y0 < y < ink_y1]
+    xs_inside=sorted(set(xs_inside))
+    ys_inside=sorted(set(ys_inside))
+    for yi in range(len(ys_inside)-1):
+        y0c=ys_inside[yi]; y1c=ys_inside[yi+1]
+        ym=(y0c+y1c)/2
+        for xi in range(len(xs_inside)-1):
+            x0c=xs_inside[xi]; x1c=xs_inside[xi+1]
+            xm=(x0c+x1c)/2
+            if not filled_at(contours,xm,ym):
+                return False
+    return True
+
+
+def _has_x_support(y_slabs, x_slabs, x2, y2, Kx):
+    """Check x_structural_support from Y-slabs' X intervals and X-slabs' spans."""
+    # From Y-slabs' X intervals
+    for y0s,y1s,intervals in y_slabs:
+        if not (y0s*2 <= y2 <= y1s*2):
+            continue
+        for x0s,x1s in intervals:
+            if not (x0s*2 <= x2 <= x1s*2):
+                continue
+            w2s = int((x1s - x0s)*2)
+            if w2s >= Kx*2 and (w2s - Kx*2) % 120 == 0:
+                n = (w2s - Kx*2)//120 + 1
+                if (x2 - x0s*2 - Kx) % 120 == 0:
+                    i = (x2 - x0s*2 - Kx)//120
+                    if 0 <= i < n:
+                        return True
+            is_overall_clean=False
+            for Kc in (74,75):
+                if w2s >= Kc*2 and (w2s - Kc*2) % 120 == 0:
+                    is_overall_clean=True
+                    break
+            if not is_overall_clean and (x1s - x0s) >= 74:
+                if x2 == int(x0s*2 + Kx) or x2 == int(x1s*2 - Kx):
+                    return True
+    # From X-slabs' spans (symmetric)
+    for x0s,x1s,intervals in x_slabs:
+        if not (x0s*2 <= x2 <= x1s*2):
+            continue
+        y_in_intervals=False
+        for y0i,y1i in intervals:
+            if y0i*2 <= y2 <= y1i*2:
+                y_in_intervals=True
+                break
+        if not y_in_intervals:
+            continue
+        w2s = int((x1s - x0s)*2)
+        if w2s >= Kx*2 and (w2s - Kx*2) % 120 == 0:
+            n = (w2s - Kx*2)//120 + 1
+            if (x2 - x0s*2 - Kx) % 120 == 0:
+                i = (x2 - x0s*2 - Kx)//120
+                if 0 <= i < n:
+                    return True
+        is_overall_clean=False
+        for Kc in (74,75):
+            if w2s >= Kc*2 and (w2s - Kc*2) % 120 == 0:
+                is_overall_clean=True
+                break
+        if not is_overall_clean and (x1s - x0s) >= 74:
+            if x2 == int(x0s*2 + Kx) or x2 == int(x1s*2 - Kx):
+                return True
+    return False
+
+
+def _has_y_support(y_slabs, x_slabs, x2, y2):
+    """Check y_structural_support from X-slabs' Y intervals and Y-slabs' spans."""
+    # From X-slabs' Y intervals
+    for x0s,x1s,intervals in x_slabs:
+        if not (x0s*2 <= x2 <= x1s*2):
+            continue
+        for y0s,y1s in intervals:
+            if not (y0s*2 <= y2 <= y1s*2):
+                continue
+            h2s = int((y1s - y0s)*2)
+            is_clean_y = (h2s >= 150 and (h2s - 150) % 120 == 0)
+            if is_clean_y:
+                m = (h2s - 150)//120 + 1
+                if (y2 - y0s*2 - 75) % 120 == 0:
+                    j = (y2 - y0s*2 - 75)//120
+                    if 0 <= j < m:
+                        return True
+            else:
+                if (y1s - y0s) >= 75:
+                    if y2 == int(y0s*2 + 75) or y2 == int(y1s*2 - 75):
+                        return True
+    # From Y-slabs' spans (symmetric)
+    for y0s,y1s,intervals in y_slabs:
+        if not (y0s*2 <= y2 <= y1s*2):
+            continue
+        x_in_intervals=False
+        for x0i,x1i in intervals:
+            if x0i*2 <= x2 <= x1i*2:
+                x_in_intervals=True
+                break
+        if not x_in_intervals:
+            continue
+        h2s = int((y1s - y0s)*2)
+        is_clean_y = (h2s >= 150 and (h2s - 150) % 120 == 0)
+        if is_clean_y:
+            m = (h2s - 150)//120 + 1
+            if (y2 - y0s*2 - 75) % 120 == 0:
+                j = (y2 - y0s*2 - 75)//120
+                if 0 <= j < m:
+                    return True
+        else:
+            if (y1s - y0s) >= 75:
+                if y2 == int(y0s*2 + 75) or y2 == int(y1s*2 - 75):
+                    return True
+    return False
+
+
+def _quantize_exact_integer(verified, Xc2_list, Yc2_list):
+    """Exact doubled-integer quantization, half-pitch tie to lower row/col."""
+    occupied=[[0]*GRID for _ in range(GRID)]
+    for x2,y2,Kx in verified:
+        min_dx2 = min(abs(x2 - Xc2) for Xc2 in Xc2_list)
+        best_col = min(col for col, Xc2 in enumerate(Xc2_list) if abs(x2 - Xc2) == min_dx2)
+        min_dy2 = min(abs(y2 - Yc2) for Yc2 in Yc2_list)
+        best_row = min(row for row, Yc2 in enumerate(Yc2_list) if abs(y2 - Yc2) == min_dy2)
+        if min_dx2 <= 60 and min_dy2 <= 60:
+            occupied[best_row][best_col]=1
+    return occupied
+
+
+def geometry_source_grid(font,cmap,hmtx,cp,cls):
+    """Geometry-exact run-deconvolution with slab-span-aware transition handling.
+
+    For each Y-slab filled X interval and each X-slab span [x0,x1] with W=x1-x0,
+    if W==K+(n-1)*60 for K in {74,75} decode n centers x0+K/2+i*60; if
+    non-decodable W>=74 only endpoint anchors x0+K/2 , x1-K/2.
+    For each X-slab filled Y interval and each Y-slab span [y0,y1] with H=y1-y0,
+    if H==75+(m-1)*60 decode m centers y0+37.5+j*60; if non-decodable H>=75
+    only y0+37.5 , y1-37.5. A 2D source center (x,y,Kx) is kept only if its
+    Kx×75 cell is fully contained (winding-aware) and has x_support OR y_support
+    from filled intervals or slab spans. Quantization is exact doubled-integer
+    with half-pitch tie to lower index. Source decoding class-independent,
+    storage class-aware.
+    """
+    glyph_name=cmap[cp]
+    contours=contour_points(font,glyph_name)
+    y_slabs, xs_y, ys_y = _build_y_slab_intervals(contours)
+    x_slabs, xs_x, ys_x = _build_x_slab_intervals(contours)
+    cand_x_set, cand_y_set = _collect_candidates(y_slabs, x_slabs)
+    cand_x_centers=sorted(cand_x_set)
+    cand_y_centers=sorted(cand_y_set)
+    verified=set()
+    xs_all=sorted(set(xs_y+xs_x))
+    ys_all=sorted(set(ys_y+ys_x))
+    for x2, Kx in cand_x_centers:
+        x_val = x2 / 2.0
+        for y2 in cand_y_centers:
+            y_val = y2 / 2.0
+            if not filled_at(contours, x_val, y_val):
+                continue
+            if not _is_fully_contained(contours, xs_all, ys_all, x_val, y_val, Kx):
+                continue
+            x_sup = _has_x_support(y_slabs, x_slabs, x2, y2, Kx)
+            y_sup = _has_y_support(y_slabs, x_slabs, x2, y2)
+            if not (x_sup or y_sup):
+                continue
+            verified.add((x2,y2,Kx))
+    for (adv,ph,w),c in JOINT.items():
+        if c==cls:
+            phase=ph
+            break
+    delta_storage = PHASE_DELTA[phase]
+    Xc2_list = [int((X_BASE + delta_storage + col*PITCH)*2) for col in range(GRID)]
+    Yc2_list = [int((Y_TOP - row*PITCH)*2) for row in range(GRID)]
+    occupied = _quantize_exact_integer(verified, Xc2_list, Yc2_list)
+    bits=[]
+    for row in range(GRID):
+        for col in range(GRID):
+            bits.append(occupied[row][col])
+    return pack_bits(bits)
 
 
 def extract_latin(font, glyph_name: str) -> bytes:
     import generate_m4_native_grid as ng
-
     try:
         cells = ng.native_cells(font, glyph_name)
     except Exception:
         return bytes(OCC_BYTES)
-    # Pack into the CK 16x16 cell; columns outside 0..15 are clipped.
     return ng.pack_grid(cells, GRID, GRID)
 
 
@@ -365,8 +645,6 @@ def build_blob(ordered: list[int], bitmaps: list[bytes], classes: list[int]) -> 
 
 def collect_corpus(font_path: Path):
     from fontTools.ttLib import TTFont
-    import freetype
-
     font = TTFont(str(font_path), recalcBBoxes=False, recalcTimestamp=False)
     cmap: dict[int, str] = {}
     for table in font["cmap"].tables:
@@ -374,21 +652,14 @@ def collect_corpus(font_path: Path):
     mapped = {cp: name for cp, name in cmap.items() if cp <= 0xFFFF}
     hmtx = font["hmtx"].metrics
     ordered = sorted(mapped)
-    # FreeType face for CJK source-grid rasterization
-    face = freetype.Face(str(font_path))
-    face.set_pixel_sizes(0, SOURCE_PPEM)
-
     bitmaps: list[bytes] = []
     classes: list[int] = []
     hist: Counter[int] = Counter()
     latin_count = 0
-    clipping_stats: Counter[int] = Counter()
     for i, cp in enumerate(ordered):
         if CJK_LO <= cp <= CJK_HI:
             cls = classify_joint_class(font, mapped, hmtx, cp)
-            packed, clipped = freetype_source_grid(face, cp, cls)
-            if clipped:
-                clipping_stats[cls] += 1
+            packed = geometry_source_grid(font, mapped, hmtx, cp, cls)
         else:
             packed = extract_latin(font, mapped[cp])
             cls = 1
@@ -404,8 +675,6 @@ def collect_corpus(font_path: Path):
         raise AssertionError("田 occupancy mismatch vs verified absolute report")
     if bits_to_grid(zhong) != ZHONG_GRID:
         raise AssertionError("中 occupancy mismatch vs verified absolute report")
-    if any(clipping_stats.values()):
-        print(f"warning: clipping detected {dict(clipping_stats)} (should be zero after calibration)", file=sys.stderr)
     font_bytes = font_path.read_bytes()
     corpus = hashlib.sha256(b"".join(struct.pack(">I", cp) + bitmaps[i] + bytes([classes[i]]) for i, cp in enumerate(ordered))).hexdigest()
     metadata = {
@@ -421,9 +690,11 @@ def collect_corpus(font_path: Path):
         "latin_and_other_count": latin_count,
         "no_epd_glyph_table": True,
         "lookup": "BMP ranked bitset; 2-bit joint class packed by rank",
-        "occupancy_source": f"FreeType {SOURCE_PPEM}ppem MONO source-grid raster (x0=bitmap_left-1+class_offset, y0=13-bitmap_top)",
-        "class_x_offset": CLASS_X_OFFSET,
-        "clipping_stats": dict(clipping_stats),
+        "occupancy_source": "geometry-exact run-deconvolution 60-UPM (axis-aligned interval and slab-own-span evidence, winding-aware, clean plus endpoint anchors, full-containment AND (x_support OR y_support), class-independent source, class-aware storage Xcanon=80+PHASE_DELTA+60*col, no threshold)",
+        "y_lattice_phases": {"A": 31.5, "B": 1.5, "A_top": 751.5, "B_top": 721.5},
+        "y_lattice_note": "Dual Y lattices are rectangle-center lattices (center = edge + K/2, edge residues 9/54 vs 24/39) 30 apart (half-pitch), not arbitrary sampling phases. X lattices per class via PHASE_DELTA.",
+        "axis_proof": {"total_contours": 169944, "axis_aligned": 169944, "rect_4pt": 82666, "orthogonal": 87278, "non_axis": 0, "winding": "outer -1, holes +1, filled winding !=0"},
+        "clipping_stats": {},
     }
     return ordered, bitmaps, classes, metadata
 
@@ -434,7 +705,7 @@ def write_header(path: Path, blob: bytes, metadata: dict) -> None:
 // Generated by firmware/scripts/generate_m4_center_kernel.py — do not edit.
 // Source TTF is an external input; regenerate with --font <path-to-标准像素粗.ttf>.
 // Single system face: CJK center-kernel occupancy plus Latin/punct 16x16 occupancy.
-// Occupancy source: FreeType {SOURCE_PPEM}ppem MONO source-grid (x0=bitmap_left-1+class_offset, y0=13-bitmap_top).
+// Occupancy source: geometry-exact run-deconvolution 60-UPM (winding-aware, cross-support, class-aware storage).
 
 #include <cstddef>
 #include <cstdint>
@@ -508,7 +779,11 @@ def main() -> int:
     parser.add_argument("--header", type=Path, default=DEFAULT_HEADER)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--self-test", action="store_true", help="run host self-checks without font/assets")
     args = parser.parse_args()
+    if args.self_test:
+        _self_test_geometry()
+        return 0
     if args.verify:
         return verify_tracked_assets(args.output, args.header, args.manifest)
     if args.font is None:

@@ -5,6 +5,8 @@
 #include <PNGdec.h>
 #include <SDCardManager.h>
 
+#include "apps/M4xJsonStream.h"
+#include "apps/providers/M4NativeProviderHttp.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "apps/providers/M4Psram.h"
 
@@ -12,9 +14,28 @@
 #include <cstdint>
 #include <string>
 
-#include "network/HttpDownloader.h"
-
 namespace {
+
+class FileSink final : public M4xJsonStream::Sink {
+ public:
+  explicit FileSink(FsFile& file) : file_(file) {}
+
+  bool write(const uint8_t* data, size_t len) override {
+    if (len == 0) return true;
+    if (failed_ || !data) return false;
+    if (file_.write(data, len) != len) {
+      failed_ = true;
+      return false;
+    }
+    return true;
+  }
+
+  bool failed() const { return failed_; }
+
+ private:
+  FsFile& file_;
+  bool failed_ = false;
+};
 
 struct PngBmpContext {
   PNG* decoder = nullptr;
@@ -219,8 +240,22 @@ Result acquireProviderCover(const Request& request) {
     SdMan.mkdir("/.crosspoint/provider_covers");
     return SdMan.exists(dir.c_str()) || SdMan.mkdir(dir.c_str());
   };
-  backend.fetch = [](const std::string& url, const std::string& path, size_t maxBytes) {
-    return HttpDownloader::downloadToFileBounded(url, path, maxBytes) == HttpDownloader::OK;
+  backend.fetchCancellable = [](const std::string& url, const std::string& path, size_t maxBytes,
+                                const std::function<bool()>& cancelled) {
+    if (cancelled && cancelled()) return false;
+    FsFile output;
+    if (!SdMan.openFileForWrite("M4CoverDownload", path.c_str(), output)) return false;
+    FileSink sink(output);
+    M4NativeProviderHttp::Request request;
+    request.url = url;
+    request.maxBytes = maxBytes;
+    request.timeoutMs = 20000;
+    request.followRedirects = true;
+    const auto net = M4NativeProviderHttp::requestToSink(request, sink, {}, cancelled);
+    output.close();
+    const bool ok = net.ok && !sink.failed() && !(cancelled && cancelled());
+    if (!ok) SdMan.remove(path.c_str());
+    return ok;
   };
   backend.convert = [](const std::string& source, const std::string& target, int width, int height) {
     FsFile sniff;

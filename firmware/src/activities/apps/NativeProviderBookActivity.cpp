@@ -17,7 +17,6 @@
 #include "RecentBooksStore.h"
 #include "util/M4ErrorScreen.h"
 #include "util/M4FooterTouchPolicy.h"
-#include "util/M4ProviderCoverCache.h"
 #include "util/M4PluginReaderBridge.h"
 #include "util/M4PluginTocList.h"
 #include "util/M4UiText.h"
@@ -164,15 +163,12 @@ void appendMeta(std::string& out, const std::string& value) {
 }
 
 std::string updateRecentProviderMetadata(const std::string& providerId, const std::string& bookId,
-                                         const M4NovelProvider::BookDetail& detail) {
+                                         const M4NovelProvider::BookDetail& detail,
+                                         const std::string& coverBmpPath = {}) {
   const std::string uri = M4ContentProvider::makeHistoryUri(providerId.c_str(), bookId.c_str());
   if (uri.empty()) return {};
-  const auto metrics = UITheme::getInstance().getMetrics();
-  const auto cover = M4ProviderCoverCache::acquireProviderCover(
-      M4ProviderCoverCache::requestFor(providerId, bookId, detail, metrics.homeCoverWidth,
-                                       metrics.homeCoverThumbHeight));
-  RECENT_BOOKS.updateProviderBook(uri, detail.title, detail.author, cover.coverBmpPath);
-  return cover.coverBmpPath;
+  RECENT_BOOKS.updateProviderBook(uri, detail.title, detail.author, coverBmpPath);
+  return coverBmpPath;
 }
 
 std::string displayWordCount(const std::string& raw) {
@@ -329,17 +325,17 @@ void NativeProviderBookActivity::loadBookDetail() {
   req.author = author_;
   req.coverUrl = coverUrl_;
   req.maxBytes = 96u * 1024u;
+  const auto metrics = UITheme::getInstance().getMetrics();
   detail_ = M4NativeProviderBookDetail::seed(req);
   detailError_.clear();
-  const std::string coverPath = updateRecentProviderMetadata(providerId_, bookId_, detail_);
-  if (!coverPath.empty()) providerCoverBmpPath_ = coverPath;
+  updateRecentProviderMetadata(providerId_, bookId_, detail_);
 
   // Paint the immediately available discovery/history model first (FAST only).
   // Legado detail is local-only (shelf row + seed) and must not block on a
   // whole-shelf HTTP refetch or endpoint probe when the phone is unreachable.
   detailLoading_ = true;
   renderDetail();
-  if (!M4NativeProviderBookDetailAsync::start(req)) {
+  if (!M4NativeProviderBookDetailAsync::start(req, metrics.homeCoverWidth, metrics.homeCoverThumbHeight)) {
     detailLoading_ = false;
     detailError_ = "detail_busy";
     renderDetail();
@@ -361,11 +357,11 @@ void NativeProviderBookActivity::pollDetailLoading() {
     detailError_.clear();
     if (!detail_.title.empty()) title_ = detail_.title;
     if (!detail_.author.empty()) author_ = detail_.author;
-    const std::string coverPath = updateRecentProviderMetadata(providerId_, bookId_, detail_);
-    if (!coverPath.empty()) providerCoverBmpPath_ = coverPath;
   } else {
     detailError_ = snap.result.error.empty() ? "detail_http" : snap.result.error;
   }
+  const std::string coverPath = updateRecentProviderMetadata(providerId_, bookId_, detail_, snap.coverBmpPath);
+  if (!coverPath.empty()) providerCoverBmpPath_ = coverPath;
   renderDetail();
 }
 

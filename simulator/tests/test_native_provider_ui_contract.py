@@ -32,9 +32,36 @@ class NativeProviderUiContractTests(unittest.TestCase):
     def test_detail_enrichment_is_not_run_by_activity_task(self):
         source = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.cpp").read_text()
         self.assertNotIn("M4NativeProviderBookDetail::fetch(req)", source)
-        self.assertIn("M4NativeProviderBookDetailAsync::start(req)", source)
+        self.assertNotIn("M4ProviderCoverCache::acquireProviderCover", source)
+        self.assertIn(
+            "M4NativeProviderBookDetailAsync::start(req, metrics.homeCoverWidth, metrics.homeCoverThumbHeight)",
+            source,
+        )
         self.assertIn("pollDetailLoading", source)
         self.assertIn("detailError_", source)
+
+    def test_provider_cover_enrichment_runs_in_provider_worker(self):
+        activity = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.cpp").read_text()
+        async_worker = (ROOT / "firmware/src/apps/providers/M4NativeProviderBookDetailAsync.cpp").read_text()
+        cover = (ROOT / "firmware/src/util/M4ProviderCoverCache.cpp").read_text()
+        self.assertNotIn("M4ProviderCoverCache::acquireProviderCover", activity)
+        self.assertIn("M4ProviderCoverCache::acquireProviderCover", async_worker)
+        self.assertIn("publish(result.ok ? Phase::Ready : Phase::Error", async_worker)
+        self.assertIn("coverRequest.cancelled = cancelled", async_worker)
+        self.assertIn("constexpr uint32_t kCoverSettleMs = 650u", async_worker)
+        self.assertIn("waitForCoverSettle()", async_worker)
+        self.assertLess(async_worker.index("waitForCoverSettle()"),
+                        async_worker.index("M4ProviderCoverCache::acquireProviderCover"))
+        self.assertNotIn("UITheme::getInstance().getMetrics()", async_worker)
+        self.assertIn("int homeCoverWidth, int homeCoverThumbHeight", async_worker)
+        self.assertIn("snap.coverBmpPath", activity)
+        self.assertNotIn("HttpDownloader", cover)
+        self.assertIn("M4NativeProviderHttp::requestToSink", cover)
+
+    def test_provider_cover_sink_accepts_empty_chunks(self):
+        cover = (ROOT / "firmware/src/util/M4ProviderCoverCache.cpp").read_text()
+        self.assertIn("if (len == 0) return true;", cover)
+        self.assertIn("if (failed_ || !data) return false;", cover)
 
     def test_detail_has_single_back_footer_and_geometry_driven_touch_targets(self):
         source = (ROOT / "firmware/src/activities/apps/NativeProviderBookActivity.cpp").read_text()

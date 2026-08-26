@@ -623,8 +623,8 @@ void TxtReaderChapterSelectionActivity::drawScreen(const std::vector<std::string
                                         label, true,
                                         enabled ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     };
-    drawPagerButton(leftX, "‹ 上一页", canPrev);
-    drawPagerButton(rightX, "下一页 ›", canNext);
+    drawPagerButton(leftX, "上一页", canPrev);
+    drawPagerButton(rightX, "下一页", canNext);
     M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, 0,
                                       M4TouchListMetrics::chapterPagerLabelTop(pageHeight, true), pageWidth,
                                       M4TouchListMetrics::chapterPagerLabelHeight(true), pageLabel, true,

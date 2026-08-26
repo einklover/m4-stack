@@ -82,26 +82,19 @@ bool hitHome(int x, int y, int screenWidth, int screenHeight) {
   return TouchHitGeometry::makeBottomNavigationLayout(screenWidth, screenHeight, kBottomBarHeight).home.contains(x, y);
 }
 
-void drawHeaderBack(const GfxRenderer& renderer, const Rect& headerRect, const char* title) {
+void drawHeaderBack(const GfxRenderer& renderer, const Rect& headerRect, const char* /*title*/) {
 #if defined(CROSSPOINT_MURPHY_M4)
   if (!enabled() || headerRect.width <= 0 || headerRect.height <= 0) return;
   if (mode() == Mode::ChapterHeaderBack) {
     gChapterHeaderX.store(headerRect.x, std::memory_order_release);
     gChapterHeaderY.store(headerRect.y, std::memory_order_release);
-    constexpr int kVisibleWidth = 112;
-    renderer.fillRect(headerRect.x, headerRect.y, kVisibleWidth, headerRect.height, true);
-    M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, headerRect.x, headerRect.y, kVisibleWidth,
-                                headerRect.height, "返回", false, EpdFontFamily::BOLD, 8);
-    if (title && title[0]) {
-      const int titleX = headerRect.x + kChapterHeaderHitWidth + 16;
-      const int titleWidth = headerRect.width - kChapterHeaderHitWidth - 16;
-      if (titleWidth > 0) {
-        const auto label = M4UiText::truncated(renderer, UI_12_FONT_ID, title, titleWidth,
-                                               EpdFontFamily::BOLD);
-        M4UiText::draw(renderer, UI_12_FONT_ID, titleX, headerRect.y + 6, label.c_str(), true,
-                       EpdFontFamily::BOLD);
-      }
-    }
+    // Keep the back affordance inside the reserved hitbox. The theme already
+    // draws the chapter/book title; painting it here too caused two titles to
+    // overlap on the chapter list.
+    renderer.fillRect(headerRect.x, headerRect.y, kHeaderHitWidth, headerRect.height, false);
+    renderer.drawRect(headerRect.x, headerRect.y, kHeaderHitWidth, headerRect.height, true);
+    M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, headerRect.x, headerRect.y, kHeaderHitWidth,
+                                headerRect.height, "返回", true, EpdFontFamily::BOLD, 8);
     return;
   }
   // Visible icon stays inside the theme's existing left padding; hit area is

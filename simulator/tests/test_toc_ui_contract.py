@@ -67,6 +67,20 @@ def test_header_reserves_back_hitbox_before_title():
     assert "titleX" in theme
 
 
+def test_touch_chrome_keeps_header_title_single_and_uses_supported_pager_labels():
+    navigation = (FIRMWARE / "util/M4TouchNavigation.cpp").read_text()
+    assert 'renderer.fillRect(headerRect.x, headerRect.y, kVisibleWidth, headerRect.height, true)' not in navigation
+    assert 'drawCenteredInBox(renderer, UI_12_FONT_ID, headerRect.x, headerRect.y, kHeaderHitWidth' in navigation
+    assert 'headerRect.height, "返回", true' in navigation
+    assert 'M4UiText::draw(renderer, UI_12_FONT_ID, titleX' not in navigation
+
+    txt = (FIRMWARE / "activities/reader/TxtReaderChapterSelectionActivity.cpp").read_text()
+    assert 'drawPagerButton(leftX, "上一页", canPrev);' in txt
+    assert 'drawPagerButton(rightX, "下一页", canNext);' in txt
+    assert '‹' not in txt
+    assert '›' not in txt
+
+
 def test_geometry_contract_holds_for_all_orientations_and_ui_tiers():
     # Mirror the pure C++ layout inputs with representative measured system
     # line heights for small/medium/large UI configurations.

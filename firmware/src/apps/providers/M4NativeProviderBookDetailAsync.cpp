@@ -1,6 +1,7 @@
 #include "apps/providers/M4NativeProviderBookDetailAsync.h"
 
 #include "apps/providers/M4Psram.h"
+#include "util/M4ProviderCoverCache.h"
 
 #include <Arduino.h>
 
@@ -14,35 +15,66 @@ namespace {
 std::mutex gMu;
 Snapshot gSnapshot;
 M4NativeProviderBookDetail::Request gRequest;
+int gCoverWidth = 0;
+int gCoverHeight = 0;
 std::atomic<bool> gBusy{false};
 std::atomic<bool> gCancel{false};
 
 bool cancelled() { return gCancel.load(std::memory_order_acquire); }
 
-void publish(Phase phase, M4NativeProviderBookDetail::Result result = {}) {
+constexpr uint32_t kCoverSettleMs = 650u;
+constexpr uint32_t kCoverSettleSliceMs = 25u;
+
+bool waitForCoverSettle() {
+  const uint32_t startedMs = millis();
+  while (millis() - startedMs < kCoverSettleMs) {
+    if (cancelled()) return false;
+    vTaskDelay(pdMS_TO_TICKS(kCoverSettleSliceMs));
+  }
+  return !cancelled();
+}
+
+void publish(Phase phase, M4NativeProviderBookDetail::Result result = {}, std::string coverBmpPath = {}) {
   std::lock_guard<std::mutex> lock(gMu);
   gSnapshot.phase = phase;
   gSnapshot.result = std::move(result);
+  gSnapshot.coverBmpPath = std::move(coverBmpPath);
   gSnapshot.updatedMs = millis();
 }
 
 void taskMain(void*) {
   M4NativeProviderBookDetail::Request request;
+  int coverWidth = 0;
+  int coverHeight = 0;
   {
     std::lock_guard<std::mutex> lock(gMu);
     request = gRequest;
+    coverWidth = gCoverWidth;
+    coverHeight = gCoverHeight;
   }
 
   auto result = M4NativeProviderBookDetail::fetch(request, cancelled);
-  publish(result.ok ? Phase::Ready : Phase::Error, std::move(result));
+  std::string coverBmpPath;
+  if (waitForCoverSettle()) {
+    auto coverRequest = M4ProviderCoverCache::requestFor(
+        request.providerId, request.bookId, result.detail, coverWidth, coverHeight);
+    coverRequest.cancelled = cancelled;
+    const auto cover = M4ProviderCoverCache::acquireProviderCover(coverRequest);
+    if (!cancelled()) coverBmpPath = cover.coverBmpPath;
+  }
+  publish(result.ok ? Phase::Ready : Phase::Error, std::move(result), std::move(coverBmpPath));
   gBusy.store(false, std::memory_order_release);
   M4Psram::deleteTask(nullptr);
 }
 
 }  // namespace
 
-bool start(const M4NativeProviderBookDetail::Request& request) {
-  if (request.providerId.empty() || request.bookId.empty() || request.maxBytes == 0) return false;
+bool start(const M4NativeProviderBookDetail::Request& request,
+           int homeCoverWidth, int homeCoverThumbHeight) {
+  if (request.providerId.empty() || request.bookId.empty() || request.maxBytes == 0 ||
+      homeCoverWidth <= 0 || homeCoverThumbHeight <= 0) {
+    return false;
+  }
   bool expected = false;
   if (!gBusy.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return false;
 
@@ -50,6 +82,8 @@ bool start(const M4NativeProviderBookDetail::Request& request) {
   {
     std::lock_guard<std::mutex> lock(gMu);
     gRequest = request;
+    gCoverWidth = homeCoverWidth;
+    gCoverHeight = homeCoverThumbHeight;
     gSnapshot = {};
     gSnapshot.phase = Phase::Loading;
     gSnapshot.providerId = request.providerId;
