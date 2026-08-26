@@ -38,3 +38,6 @@ simulator/build/
 simulator/qemu/sdkconfig
 simulator/qemu/build*/
 .qemu-debug/
+
+# Local agent execution state
+.superpowers/
