@@ -1,66 +1,41 @@
-# HANDOFF — Murphy M4 session entry
+# Murphy M4 session entry
 
-Last updated: **2026-08-17**
+Last updated: **2026-08-26**
 
-This file is intentionally thin. **Active goals, progress, measurements and acceptance evidence live in GitHub Issues, not here.**
+This is a pointer for a new session. Detailed goals, progress, measurements, and acceptance evidence belong in the active work item or task report.
 
-## New conversation bootstrap
+## Start here
 
-Use `einklover/m4-stack` as the durable source of truth. Read in order:
+1. `AGENTS.md` — AI operating contract and safety rules
+2. `HANDOFF.md` — current branch and stable entry points
+3. `docs/FAST_FIRMWARE_DEV.md` — build/test/cache workflow
+4. the active task or issue named by the work request
+5. task-specific code and docs
 
-1. `AGENTS.md` — permanent rules / safety / architecture boundaries
-2. `HANDOFF.md` — this entry point
-3. `docs/FAST_FIRMWARE_DEV.md` — fast build/test/cache workflow
-4. the active GitHub Issue(s) below
-5. current branch HEAD / recent CI
-
-Do not reconstruct current project state from old chat history.
-
-## Active project tracking
-
-Umbrella production-readiness issue:
-
-- **#17 — Murphy M4 production readiness — fonts, streaming, device validation**
-
-Current execution issues:
-
-- **#18 — Real-device runtime OTF/OTC soak validation**
-- **#19 — JJWXC live long-catalog progressive-stream E2E**
-
-Detailed progress, commit SHAs, measurements, failures, fixes and acceptance evidence belong in those Issues. Update the relevant Issue during work instead of growing this file.
-
-## Current working branch
+## Current branch
 
 ```text
-main
+main-rebuild-20260826
 ```
 
-Stage 13 (`agent/m4-emulator-stage13-e2e-validation`) plus the 2026-08-17 QEMU AES/GDMA, TTF advance-cache, and native-provider first-window work was merged here. Start new work from `main`, not from the old validation branch.
+The current baseline is the Task 4 documentation point at `bc3038955108eb7573398894eeb63f522b3d0b8b` before the documentation commit.
 
-Always inspect HEAD before editing.
+## Stable entry points
 
-## Stable infrastructure checkpoint
+- Production build: `cd firmware && pio run -e murphy_m4 -j1`
+- Dependency contract: `python3 firmware/tests/test_m4_dependency_bootstrap_contract.py`
+- Manual dependency bootstrap: `bash scripts/bootstrap_deps.sh`
+- Simulator smoke: `./m4sim test smoke --plugin-debug`
+- Device flash: `firmware/scripts/flash_app1_once.sh` (APP1-only)
+- Device control: `python3 firmware/scripts/m4adb.py --help`
 
-- m4sim generic smoke: PASS
-- Network Manager real-Home 3-mode E2E: PASS
-- m4sim: frozen for ordinary firmware work
-- daily fast CI: `.github/workflows/m4-fast.yml`
-- checkpoint/full simulator gate: `.github/workflows/m4sim-smoke.yml`
-- Paseo remote subagent dispatcher: `.github/workflows/paseo-subagent.yml` (must live on `main`)
-- Dispatcher contract: `docs/PASEO_SUBAGENT_DISPATCHER.md`
-- verified warm fast-loop run `31704315361`: PASS in **2m09s**
-- warm QEMU rebuild: skipped via cache
-- warm plugin-debug firmware build: ~28s
+The production profile and both QEMU profiles are intentionally distinct. QEMU/m4sim is frozen for ordinary firmware work after the 2026-08-13 Network Manager checkpoint; expand it only when a production change demonstrates a simulator correctness gap.
 
-Do not expand m4sim unless a production firmware change proves a simulator fidelity gap.
+## Canonical guides
 
-## Management convention
-
-- **Issue** = goal / status / acceptance criteria / execution evidence
-- **PR + commit** = implementation
-- **CI** = test evidence
-- **docs** = stable how-to / architecture
-- **AGENTS.md** = permanent working rules
-- **HANDOFF.md** = only the pointer that tells a new session where to look
-
-When #18 or #19 changes materially, update the Issue. Only update this file when the active Issue set, branch strategy or stable infrastructure entry points change.
+- Human entry: `README.md`
+- AI workflow: `docs/AI_QUICKSTART.md`
+- Build/dependency behavior: `docs/BUILD_AND_DEPS.md`
+- Device and serial lifecycle: `docs/DEVICE_AND_M4ADB.md`
+- Known failures: `docs/TROUBLESHOOTING.md`
+- Fast loop: `docs/FAST_FIRMWARE_DEV.md`

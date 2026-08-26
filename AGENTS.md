@@ -1,105 +1,35 @@
-# Murphy M4 Stack — Agent rules
+# Murphy M4 AI operating contract
 
-This monorepo is the **default cwd and durable source of truth** for new AI / Codex work on Murphy M4.
+This monorepo is the source of truth for Murphy M4 firmware, simulator, and plugins. Work in the current worktree and preserve the repository's boundaries.
 
-Do not rely on previous chat history when the repository contains a current handoff and active GitHub Issues.
+## First five minutes
 
-## Mandatory first read for every new session
-
-Read in this order before changing code:
-
-1. `AGENTS.md` — rules and safety boundaries
-2. `HANDOFF.md` — thin entry point to the active work
-3. `docs/FAST_FIRMWARE_DEV.md` — fast build/test/cache workflow
-4. the active GitHub Issue(s) named by `HANDOFF.md`
-5. task-specific docs/code only after the above
-
-**Progress discipline:** update the relevant GitHub Issue with goals, status, measurements, failures, fixes and acceptance evidence. Update `HANDOFF.md` only when the active Issue set, branch strategy, or stable infrastructure entry points change.
-
-## Layout
-
-| Path | What |
-|------|------|
-| `firmware/` | m4-firmware (ESP32-S3 / PlatformIO `murphy_m4`) |
-| `simulator/` | Murphy M4 host/QEMU simulator + E2E journeys |
-| `plugins/` | fanqie / jjwxc / weread (+ legado) |
-| `scripts/` | bootstrap + cross-cutting helpers |
-| `docs/` | stable handoffs and development contracts |
-| `VERSIONS.md` | pinned upstream SHAs |
-
-Upstream component repos still exist (`einklover/m4-firmware` etc.). Prefer committing here for multi-component work; mirror important fixes back to component repos when releasing.
-
-## Non-negotiables
-
-1. **Main thread implements** unless user asks for subagents. Do not silently spawn other agents for implementation.
-2. **Firmware changes**: run the smallest relevant host/m4sim test first when possible; use the full gate only at checkpoints. Follow `docs/FAST_FIRMWARE_DEV.md`.
-3. **Production flash is APP1-only** via `firmware/scripts/murphy_m4_app1_flash.py` or `flash_app1_once.sh`. Never flash APP0 / bootloader / full erase without explicit user approval.
-4. **m4adb**: single global daemon; never `pkill -f m4adb.py`; device I/O only through repository m4adb tooling.
-5. **Never flash QEMU profiles to hardware** (`murphy_m4_qemu`, `murphy_m4_qemu_plugin`).
-6. **Do not commit** reconstructed `open-m4-sdk` / `builtinFonts` / `.pio` / firmware binaries / plugin `.m4x` binaries.
-7. **m4sim is frozen after the 2026-08-13 Network Manager gate.** Do not expand simulator scope unless a future production firmware change proves a simulator correctness gap.
-8. **Preserve constrained-device design**: large HTTP/font/catalog work must remain bounded-memory, streaming-first, PSRAM-aware, and must not reintroduce full-body/full-font heap loads.
-9. **Local-agent knowledge is durable.** Any dispatched Paseo/local-agent run must read `docs/PASEO_LOCAL_AGENT_KNOWLEDGE.md` (fall back to `origin/main` if the task branch predates it), report `knowledge_delta` in `[PASEO_RESULT v1]`, and commit/push genuinely reusable tool paths, debugging traps, verified root causes, fixes, or safety notes back into that document. Do not store secrets or raw task-log noise there.
-
-## First-time setup
+Run these checks before editing:
 
 ```bash
-bash scripts/bootstrap_deps.sh
-export PATH="$HOME/.local/bin:$HOME/.platformio/penv/bin:$PATH"
-export PLATFORMIO_BUILD_CACHE_DIR="$HOME/.cache/murphy-m4/platformio-build-cache"
+git status --short --branch
+git log -5 --oneline
+python3 firmware/tests/test_m4_dependency_bootstrap_contract.py
+cd firmware && pio run -e murphy_m4 -j1
 ```
 
-Do not bootstrap on every iteration if dependencies are already present.
+Read `HANDOFF.md`, `docs/FAST_FIRMWARE_DEV.md`, and the task-specific docs before choosing a broader test. Inspect the current branch and dirty state; never discard, reset, overwrite, or clean unknown user changes.
 
-## Fast build / test entry points
+## Build and test contract
 
-See `docs/FAST_FIRMWARE_DEV.md` for the full contract. The important rule is **build once, then reuse**.
+- `murphy_m4` is the production hardware environment and the default PlatformIO environment.
+- `murphy_m4_qemu` and `murphy_m4_qemu_plugin` are simulator-only profiles. Never flash either profile to a device.
+- Use the smallest relevant host, contract, simulator, or plugin test first. Reuse PlatformIO and patched-QEMU caches; build once and use `--skip-build` for subsequent journeys where supported.
+- A production compile is not hardware evidence. A host model or QEMU pass is not hardware evidence. Claim device behavior only with a real-device result and record the command and artifact.
+- Do not commit reconstructed SDK/library trees, `.pio`, firmware binaries, plugin `.m4x` packages, credentials, or device captures.
 
-```bash
-# Incremental QEMU-plugin firmware build
-cd firmware && pio run -e murphy_m4_qemu_plugin && cd ..
+## Device safety
 
-# Reuse the same firmware build for journeys
-./m4sim test smoke --plugin-debug --skip-build --ready-seconds 90
-./m4sim test network-manager --plugin-debug --skip-build --ready-seconds 90
+- Production flashing is APP1-only through `firmware/scripts/flash_app1_once.sh` or the checked helper `firmware/scripts/murphy_m4_app1_flash.py`.
+- Do not write APP0, the bootloader, partition table, NVS, or full flash without explicit human approval. The APP1 application offset is part of the production partition contract.
+- Keep one global `m4adb` daemon/serial owner. Use repository `m4adb` tooling for device I/O; do not start competing owners and do not use `pkill -f m4adb.py`.
+- USB re-enumeration after reset or slot changes is expected. Rediscover the port and reconnect the existing owner instead of launching another daemon.
 
-# Production compile gate
-cd firmware && pio run -e murphy_m4
-```
+## Evidence and scope
 
-Patched QEMU should normally be reused from:
-
-```text
-~/.cache/murphy-m4/espressif-qemu-v3/
-```
-
-Do not rebuild patched QEMU for ordinary firmware changes.
-
-## Current simulator checkpoint
-
-As of 2026-08-13:
-
-- patched QEMU `murphy-m4` machine boots the plugin-debug firmware
-- m4adb control path works
-- generic plugin-debug smoke passes
-- Network Manager real-Home 3-mode E2E passes
-- m4sim is therefore considered **frozen/stable enough for firmware development**
-
-Historical QEMU boot documents may describe earlier blockers; prefer `HANDOFF.md`, the active Issues, and `docs/FAST_FIRMWARE_DEV.md` for current state.
-
-## Where to start reading
-
-1. `HANDOFF.md` — active Issue pointers / current branch / stable infrastructure status
-2. active GitHub Issues — current goals, progress and acceptance evidence
-3. `docs/FAST_FIRMWARE_DEV.md` — fastest correct development loop
-4. `README.md` — repository map
-5. `simulator/docs/CODEX_FIRMWARE_DEBUG_GUIDE.md` — simulator debugging details
-6. historical docs only when investigating old regressions
-
-## Plugins / network pitfalls
-
-- Prefer host/native streaming paths for large JSON/catalogs; avoid monolithic bodies on constrained heap.
-- Do not send duplicate `User-Agent` if host transport already sets one.
-- Catalog/list row IDs: use stable provider IDs/index tables, not display title as identity.
-- Wi-Fi drops on device: use repository m4adb Wi-Fi preparation flow before HTTP install/debug.
-- Under QEMU plugin-debug, network availability may come from the existing QEMU/open_eth compatibility helper rather than ESP `WiFi.status()` alone.
+Keep firmware changes bounded-memory and streaming-first. Do not add private network endpoints to canonical configuration or docs. Update the relevant task/issue evidence when the task authorizes it; keep `HANDOFF.md` as a short pointer, not a history log. Do not flash hardware, publish, push, or modify GitHub unless the current task explicitly authorizes it.
