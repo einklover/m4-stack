@@ -1,9 +1,79 @@
 #pragma once
 
+#include <algorithm>
+
+#include "TouchHitGeometry.h"
+
 // Touch-friendly list/TOC metrics for M4 (host-testable pure helpers).
 // Physical-button builds keep denser rows; touch targets aim ~48–56px.
 
 namespace M4TouchListMetrics {
+
+constexpr int kChapterBackHitWidth = 56;
+constexpr int kChapterBackHitHeight = 56;
+constexpr int kChapterBackTitleGap = 8;
+
+inline int chapterFooterReserve(bool touch);
+
+struct ChapterListLayout {
+  TouchHitGeometry::Rect backVisual;
+  TouchHitGeometry::Rect backHitbox;
+  TouchHitGeometry::Rect header;
+  TouchHitGeometry::Rect headerText;
+  TouchHitGeometry::Rect list;
+  TouchHitGeometry::Rect firstRow;
+  TouchHitGeometry::Rect viewport;
+  TouchHitGeometry::Rect footer;
+  int rowHeight = 0;
+  int systemLineHeight = 0;
+  int headerHeight = 0;
+
+  bool valid() const { return list.width > 0 && list.height >= 0 && rowHeight > 0; }
+};
+
+inline bool disjoint(const TouchHitGeometry::Rect& a, const TouchHitGeometry::Rect& b) {
+  return a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y ||
+         b.y + b.height <= a.y;
+}
+
+// Build the complete chapter-picker frame from the measured system UI face.
+// `systemLineHeight` is supplied by M4UiText::systemListLineHeight(), so the
+// row/header model follows the actual active small/medium/large system tier.
+inline ChapterListLayout makeChapterListLayout(int screenWidth, int screenHeight, bool touch,
+                                               TouchHitGeometry::Orientation orientation,
+                                               int systemLineHeight, int topPadding = 5,
+                                               int themeHeaderHeight = 44, int verticalSpacing = 16) {
+  ChapterListLayout layout;
+  layout.systemLineHeight = std::max(1, systemLineHeight);
+  layout.headerHeight = std::max(themeHeaderHeight, layout.systemLineHeight + 12);
+  layout.rowHeight = std::max(touch ? 52 : 30, layout.systemLineHeight + (touch ? 20 : 8));
+
+  const bool landscapeCw = orientation == TouchHitGeometry::Orientation::LandscapeClockwise;
+  const bool invertedPortrait = orientation == TouchHitGeometry::Orientation::PortraitInverted;
+  const int contentX = landscapeCw ? 30 : 0;
+  const int contentY = invertedPortrait ? 50 : 0;
+  const int contentWidth = std::max(0, screenWidth - contentX);
+  const int headerTop = contentY + topPadding;
+  const int listTop = headerTop + layout.headerHeight + verticalSpacing;
+  const int footerReserve = chapterFooterReserve(touch);
+  const int footerTop = std::max(listTop, screenHeight - footerReserve);
+  const int listHeight = std::max(0, footerTop - listTop);
+
+  layout.backHitbox = {0, 0, std::min(kChapterBackHitWidth, std::max(0, screenWidth)),
+                       std::min(kChapterBackHitHeight, std::max(0, screenHeight))};
+  layout.backVisual = {contentX + 4, headerTop + (layout.headerHeight - 18) / 2, 12, 18};
+  layout.header = {contentX, headerTop, contentWidth, layout.headerHeight};
+  const int titleX = std::max(contentX + 20, kChapterBackHitWidth + kChapterBackTitleGap);
+  layout.headerText = {titleX, headerTop + 6, std::max(0, contentX + contentWidth - titleX),
+                       std::max(0, layout.headerHeight - 12)};
+  layout.list = {contentX, listTop, contentWidth, listHeight};
+  layout.viewport = layout.list;
+  layout.firstRow = {layout.list.x, layout.list.y, layout.list.width,
+                     std::min(layout.rowHeight, layout.list.height)};
+  layout.footer = {0, footerTop, std::max(0, screenWidth),
+                   std::max(0, screenHeight - footerTop)};
+  return layout;
+}
 
 // Standard settings/library-style list row (Fengyan baseline is 40).
 inline int listRowHeight(bool touch) { return touch ? 52 : 40; }
@@ -29,7 +99,7 @@ inline int chapterPagerLabelGap(bool touch) { return touch ? 4 : 0; }
 inline int chapterFooterReserve(bool touch) {
   return touch ? chapterPagerButtonHeight(true) + chapterPagerBottomMargin(true) +
                      chapterPagerLabelGap(true) + chapterPagerLabelHeight(true)
-               : 10;
+               : 56;  // 40px button-hint bar plus 16px breathing room
 }
 inline int chapterPagerTop(int screenHeight, bool touch) {
   return screenHeight - chapterPagerBottomMargin(touch) - chapterPagerButtonHeight(touch);

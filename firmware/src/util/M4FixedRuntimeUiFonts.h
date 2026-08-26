@@ -21,6 +21,12 @@
 // system-tier binder and retains boot-face fallback safety.
 namespace M4FixedRuntimeUiFonts {
 
+// Keep the original built-in UI faces addressable after a reader TTF replaces
+// the public UI IDs. These IDs are private to the renderer and deliberately do
+// not enter the generated font-id list.
+inline constexpr int kSystemSmallFontId = 0x4D345301;
+inline constexpr int kSystemUi10FontId = 0x4D345302;
+inline constexpr int kSystemUi12FontId = 0x4D345303;
 struct Originals {
   bool captured = false;
   const EpdFont* smallRegular = nullptr;
@@ -35,6 +41,11 @@ inline Originals& originals() {
   return o;
 }
 
+inline int systemFontId(int layoutFontId) {
+  if (layoutFontId == SMALL_FONT_ID) return kSystemSmallFontId;
+  if (layoutFontId == UI_10_FONT_ID) return kSystemUi10FontId;
+  return kSystemUi12FontId;
+}
 inline void captureOriginals(const GfxRenderer& renderer) {
   Originals& o = originals();
   if (o.captured) return;
@@ -46,6 +57,17 @@ inline void captureOriginals(const GfxRenderer& renderer) {
   o.captured = o.smallRegular || o.ui10Regular || o.ui12Regular;
 }
 
+inline void mapSystemFaces(GfxRenderer& renderer) {
+  const Originals& o = originals();
+  if (o.smallRegular) renderer.replaceFont(kSystemSmallFontId, EpdFontFamily(o.smallRegular));
+  if (o.ui10Regular) renderer.replaceFont(kSystemUi10FontId, EpdFontFamily(o.ui10Regular, o.ui10Bold));
+  if (o.ui12Regular) renderer.replaceFont(kSystemUi12FontId, EpdFontFamily(o.ui12Regular, o.ui12Bold));
+}
+
+inline void ensureSystemFaces(GfxRenderer& renderer) {
+  captureOriginals(renderer);
+  mapSystemFaces(renderer);
+}
 inline void restore(GfxRenderer& renderer) {
   Originals& o = originals();
   if (!o.captured) captureOriginals(renderer);

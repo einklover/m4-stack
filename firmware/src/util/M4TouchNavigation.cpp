@@ -132,10 +132,10 @@ void drawBottomBar(GfxRenderer& renderer) {
   renderer.drawLine(0, top, w - 1, top, true);
   renderer.drawLine(w / 2, top + 7, w / 2, h - 7, true);
 
-  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, layout.back.x, layout.back.y, layout.back.width,
-                              layout.back.height, "返回", true, EpdFontFamily::BOLD, 0);
-  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, layout.home.x, layout.home.y, layout.home.width,
-                              layout.home.height, "主页", true, EpdFontFamily::BOLD, 0);
+  M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, layout.back.x, layout.back.y, layout.back.width,
+                                    layout.back.height, "返回", true, EpdFontFamily::BOLD, 0);
+  M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, layout.home.x, layout.home.y, layout.home.width,
+                                    layout.home.height, "主页", true, EpdFontFamily::BOLD, 0);
 #else
   (void)renderer;
 #endif

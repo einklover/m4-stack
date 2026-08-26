@@ -50,6 +50,8 @@
 #include "components/icons/theme3/wifi32.h"
 #include "components/icons/cog.h"
 #include "fontIds.h"
+#include "util/M4TouchListMetrics.h"
+#include "util/M4TouchNavigation.h"
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
 
@@ -126,13 +128,15 @@ const uint8_t* iconForName(UIIcon icon) {
 void FengyanTheme::drawBattery(const GfxRenderer& renderer, Rect rect, const bool showPercentage) const {
   const uint16_t percentage = powerManager.getBatteryPercentage();
   
-  const int fontHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  const auto smallFace = M4UiText::resolveSystem(renderer, SMALL_FONT_ID);
+  const int fontHeight = renderer.getLineHeight(smallFace.fontId);
   const int batteryYOffset = (fontHeight - rect.height) / 2;
   
   if (showPercentage) {
     const auto percentageText = std::to_string(percentage) + "%";
-    renderer.drawText(SMALL_FONT_ID, rect.x + batteryPercentSpacing + FengyanMetrics::values.batteryWidth, rect.y,
-                      percentageText.c_str());
+    M4UiText::drawSystem(renderer, SMALL_FONT_ID,
+                          rect.x + batteryPercentSpacing + FengyanMetrics::values.batteryWidth, rect.y,
+                          percentageText.c_str());
   }
 
   const int x = rect.x;
@@ -183,17 +187,23 @@ void FengyanTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char
   if (showBatteryPercentage) {
     const uint16_t percentage = powerManager.getBatteryPercentage();
     const auto percentageText = std::to_string(percentage) + "%";
-    batteryX -= renderer.getTextWidth(SMALL_FONT_ID, percentageText.c_str());
+    batteryX -= M4UiText::systemTextWidth(renderer, SMALL_FONT_ID, percentageText.c_str());
   }
   drawBattery(renderer,
               Rect{batteryX, rect.y + 6, FengyanMetrics::values.batteryWidth, FengyanMetrics::values.batteryHeight},
               showBatteryPercentage);
 
   if (title) {
-    const int titleMaxWidth = batteryX - rect.x - FengyanMetrics::values.contentSidePadding * 2;
-    auto truncatedTitle = M4UiText::truncated(renderer, UI_12_FONT_ID, title, titleMaxWidth, EpdFontFamily::BOLD);
-    M4UiText::draw(renderer, UI_12_FONT_ID, rect.x + FengyanMetrics::values.contentSidePadding, rect.y + 6,
-                   truncatedTitle.c_str(), true, EpdFontFamily::BOLD);
+    const int titleX = M4TouchNavigation::enabled()
+                           ? std::max(rect.x + FengyanMetrics::values.contentSidePadding,
+                                      M4TouchNavigation::kHeaderHitWidth +
+                                          M4TouchListMetrics::kChapterBackTitleGap)
+                           : rect.x + FengyanMetrics::values.contentSidePadding;
+    const int titleMaxWidth = batteryX - titleX - FengyanMetrics::values.contentSidePadding;
+    auto truncatedTitle = M4UiText::truncatedSystem(renderer, UI_12_FONT_ID, title,
+                                                     std::max(1, titleMaxWidth), EpdFontFamily::BOLD);
+    M4UiText::drawSystem(renderer, UI_12_FONT_ID, titleX, rect.y + 6, truncatedTitle.c_str(), true,
+                         EpdFontFamily::BOLD);
     // 底部细线分隔
     renderer.drawLine(rect.x, rect.y + rect.height - 3, rect.x + rect.width, rect.y + rect.height - 3, 1, true);
   }
@@ -356,9 +366,9 @@ void FengyanTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, cons
       const int x = buttonPositions[i];
       renderer.fillRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, false);
       renderer.drawRect(x, pageHeight - buttonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
+      const int textWidth = M4UiText::systemTextWidth(renderer, SMALL_FONT_ID, labels[i]);
       const int textX = x + (buttonWidth - 1 - textWidth) / 2;
-      renderer.drawText(SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      M4UiText::drawSystem(renderer, SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
     }
   }
 

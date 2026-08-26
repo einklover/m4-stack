@@ -1,5 +1,6 @@
 #include "XtcReaderChapterSelectionActivity.h"
 
+#include <algorithm>
 #include <EpdFontLoader.h>
 #include <GfxRenderer.h>
 
@@ -17,20 +18,20 @@
 namespace {
 constexpr int SKIP_PAGE_MS = 700;
 int page = 1;
+
+M4TouchListMetrics::ChapterListLayout chapterLayout(const GfxRenderer& renderer, bool touch) {
+  const int layoutFont = touch ? UI_12_FONT_ID : UI_10_FONT_ID;
+  return M4TouchListMetrics::makeChapterListLayout(
+      renderer.getScreenWidth(), renderer.getScreenHeight(), touch,
+      static_cast<TouchHitGeometry::Orientation>(renderer.getOrientation()),
+      M4UiText::systemListLineHeight(renderer, layoutFont));
+}
 }  // namespace
 
 int XtcReaderChapterSelectionActivity::getPageItems() const {
   const bool touch = mappedInput.hasTouch();
-  const int startY = M4TouchListMetrics::chapterListTop(touch);
-  const int lineHeight = M4TouchListMetrics::chapterLineHeight(touch);
-
-  const int screenHeight = renderer.getScreenHeight();
-  const int availableHeight = screenHeight - startY - (touch ? 16 : 0);
-  int items = availableHeight / lineHeight;
-  if (items < 1) {
-    items = 1;
-  }
-  return items;
+  const auto layout = chapterLayout(renderer, touch);
+  return std::max(1, layout.list.height / layout.rowHeight);
 }
 
 void XtcReaderChapterSelectionActivity::taskTrampoline(void* param) {
@@ -101,8 +102,9 @@ void XtcReaderChapterSelectionActivity::loop() {
 
   // Touch: chapterListTop + chapterLineHeight (matches renderScreen).
   if (mappedInput.hasTouch() && totalChapters > 0) {
-    const int BASE_Y = M4TouchListMetrics::chapterListTop(true);
-    const int FIX_LINE_HEIGHT = M4TouchListMetrics::chapterLineHeight(true);
+    const auto chapterFrame = chapterLayout(renderer, true);
+    const int BASE_Y = chapterFrame.list.y;
+    const int FIX_LINE_HEIGHT = chapterFrame.rowHeight;
     M4ListTouchPolicy::Event te{};
     te.backGesture = mappedInput.wasBackGesture();
     const auto sw = mappedInput.wasSwipe();
@@ -200,6 +202,8 @@ void XtcReaderChapterSelectionActivity::displayTaskLoop() {
 }
 
 void XtcReaderChapterSelectionActivity::renderScreen() {
+  // Keep standalone XTC chapter-list entry consistent with EPUB/TXT: clear
+  // and redraw the whole logical frame before the full-frame FAST submit.
   renderer.clearScreen();
   const int pagebegin=(page-1)*getPageItems();
   int page_chapter=getPageItems();
@@ -214,14 +218,11 @@ void XtcReaderChapterSelectionActivity::renderScreen() {
 
   const bool touch = mappedInput.hasTouch();
   const int layoutFont = touch ? UI_12_FONT_ID : UI_10_FONT_ID;
-  const auto rowFace = M4UiText::resolveChapterRow(renderer, layoutFont);
-  const int rowFont = rowFace.fontId;
-  const float rowScale = rowFace.scale;
-  const auto metrics = UITheme::getInstance().getMetrics();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight}, "目录");
-
-  const int FIX_LINE_HEIGHT = M4TouchListMetrics::chapterLineHeight(touch);
-  const int BASE_Y = M4TouchListMetrics::chapterListTop(touch);
+  const auto chapterFrame = chapterLayout(renderer, touch);
+  const int FIX_LINE_HEIGHT = chapterFrame.rowHeight;
+  const int BASE_Y = chapterFrame.list.y;
+  GUI.drawHeader(renderer, Rect{chapterFrame.header.x, chapterFrame.header.y,
+                                chapterFrame.header.width, chapterFrame.header.height}, "目录");
 
   for (int i = pagebegin; i <= pagebegin + page_chapter - 1 && i < totalChapters; i++) {
       int localIdx = i - pagebegin; 
@@ -237,12 +238,16 @@ void XtcReaderChapterSelectionActivity::renderScreen() {
       int drawY = BASE_Y + localIdx * FIX_LINE_HEIGHT;
       if (i == selectorIndex) {
         renderer.fillRect(0, drawY, renderer.getScreenWidth(), FIX_LINE_HEIGHT);
-        renderer.drawText(rowFont, 20, drawY + (touch ? 10 : 0), title, 0, EpdFontFamily::REGULAR, rowScale);
+        M4UiText::drawSystem(renderer, layoutFont, 20,
+                             drawY + (FIX_LINE_HEIGHT - chapterFrame.systemLineHeight) / 2,
+                             title, false, EpdFontFamily::REGULAR);
       } else {
         if (touch) renderer.drawRect(4, drawY + 2, renderer.getScreenWidth() - 8, FIX_LINE_HEIGHT - 4);
-        renderer.drawText(rowFont, 20, drawY + (touch ? 10 : 0), title, 1, EpdFontFamily::REGULAR, rowScale);
+        M4UiText::drawSystem(renderer, layoutFont, 20,
+                             drawY + (FIX_LINE_HEIGHT - chapterFrame.systemLineHeight) / 2,
+                             title, true, EpdFontFamily::REGULAR);
       }
   }
 
-  renderer.displayBuffer();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

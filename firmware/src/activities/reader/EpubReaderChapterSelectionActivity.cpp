@@ -13,22 +13,22 @@
 
 namespace {
 constexpr int SKIP_PAGE_MS = 700;
+
+M4TouchListMetrics::ChapterListLayout chapterLayout(const GfxRenderer& renderer, bool touch) {
+  const int layoutFont = touch ? UI_12_FONT_ID : UI_10_FONT_ID;
+  return M4TouchListMetrics::makeChapterListLayout(
+      renderer.getScreenWidth(), renderer.getScreenHeight(), touch,
+      static_cast<TouchHitGeometry::Orientation>(renderer.getOrientation()),
+      M4UiText::systemListLineHeight(renderer, layoutFont));
+}
 }  // namespace
 
 int EpubReaderChapterSelectionActivity::getTotalItems() const { return epub->getTocItemsCount(); }
 
 int EpubReaderChapterSelectionActivity::getPageItems() const {
   const bool touch = mappedInput.hasTouch();
-  const int lineHeight = M4TouchListMetrics::chapterLineHeight(touch);
-
-  const int screenHeight = renderer.getScreenHeight();
-  const auto orientation = renderer.getOrientation();
-  const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int startY = M4TouchListMetrics::chapterListTop(touch) + hintGutterHeight;
-  const int footerReserve = touch ? M4TouchListMetrics::chapterFooterReserve(true) : lineHeight;
-  const int availableHeight = screenHeight - startY - footerReserve;
-  return std::max(1, availableHeight / lineHeight);
+  const auto layout = chapterLayout(renderer, touch);
+  return std::max(1, layout.list.height / layout.rowHeight);
 }
 
 void EpubReaderChapterSelectionActivity::taskTrampoline(void* param) {
@@ -78,12 +78,10 @@ void EpubReaderChapterSelectionActivity::loop() {
   const int totalItems = getTotalItems();
 
   if (mappedInput.hasTouch() && totalItems > 0) {
-    const auto orientation = renderer.getOrientation();
-    const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-    const int contentY = isPortraitInverted ? 50 : 0;
-    const int lineHeight = M4TouchListMetrics::chapterLineHeight(true);
-    const int listTop = M4TouchListMetrics::chapterListTop(true) + contentY;
-    const int listH = pageItems * lineHeight;
+    const auto chapterFrame = chapterLayout(renderer, true);
+    const int lineHeight = chapterFrame.rowHeight;
+    const int listTop = chapterFrame.list.y;
+    const int listH = chapterFrame.list.height;
 
     const int pagerTop = M4TouchListMetrics::chapterPagerTop(renderer.getScreenHeight(), true);
     const int pagerHeight = M4TouchListMetrics::chapterPagerButtonHeight(true);
@@ -193,31 +191,24 @@ void EpubReaderChapterSelectionActivity::displayTaskLoop() {
 }
 
 void EpubReaderChapterSelectionActivity::renderScreen() {
+  // TOC entry follows either the reader/menu or reader-settings path. Start a
+  // complete logical frame so no parent status-bar pixels can be retained.
   renderer.clearScreen();
 
   const auto pageWidth = renderer.getScreenWidth();
-  const auto orientation = renderer.getOrientation();
-  const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
-  const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
-  const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
-  const int contentX = isLandscapeCw ? hintGutterWidth : 0;
-  const int contentWidth = pageWidth - hintGutterWidth;
-  const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int contentY = hintGutterHeight;
   const int pageItems = getPageItems();
   const int totalItems = getTotalItems();
 
   const bool touch = mappedInput.hasTouch();
-  const int lineHeight = M4TouchListMetrics::chapterLineHeight(touch);
-  const int listTop = M4TouchListMetrics::chapterListTop(touch) + contentY;
+  const auto layout = chapterLayout(renderer, touch);
+  const int contentX = layout.list.x;
+  const int contentWidth = layout.list.width;
+  const int lineHeight = layout.rowHeight;
+  const int listTop = layout.list.y;
   const int layoutFont = touch ? UI_12_FONT_ID : UI_10_FONT_ID;
-  const auto rowFace = M4UiText::resolveChapterRow(renderer, layoutFont);
-  const int rowFont = rowFace.fontId;
-  const float rowScale = rowFace.scale;
+  (void)M4UiText::resolveSystem(renderer, layoutFont);
 
-  const auto metrics = UITheme::getInstance().getMetrics();
-  GUI.drawHeader(renderer, Rect{contentX, contentY, contentWidth, metrics.headerHeight}, "目录");
+  GUI.drawHeader(renderer, Rect{layout.header.x, layout.header.y, layout.header.width, layout.header.height}, "目录");
 
   const int pageStartIndex = selectorIndex / pageItems * pageItems;
   const int currentTocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
@@ -246,8 +237,8 @@ void EpubReaderChapterSelectionActivity::renderScreen() {
     const int availableTextWidth = std::max(24, contentX + contentWidth - 20 - indentSize);
     const auto weight = (isSelected || isCurrent) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
     const std::string chapterName =
-        renderer.truncatedText(rowFont, item.title.c_str(), availableTextWidth, weight, rowScale);
-    renderer.drawText(rowFont, indentSize, displayY, chapterName.c_str(), true, weight, rowScale);
+        M4UiText::truncatedSystem(renderer, layoutFont, item.title.c_str(), availableTextWidth, weight);
+    M4UiText::drawSystem(renderer, layoutFont, indentSize, displayY, chapterName.c_str(), true, weight);
   }
 
   if (touch) {
@@ -266,19 +257,21 @@ void EpubReaderChapterSelectionActivity::renderScreen() {
       if (enabled && pagerWidth > 6 && pagerHeight > 6) {
         renderer.drawRect(x + 2, pagerTop + 2, pagerWidth - 4, pagerHeight - 4, true);
       }
-      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, x, pagerTop, pagerWidth, pagerHeight,
-                                  label, true, enabled ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
+      M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, x, pagerTop, pagerWidth, pagerHeight,
+                                         label, true, enabled ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR, 8);
     };
     drawPagerButton(leftX, "上一页", currentPage > 1);
     drawPagerButton(rightX, "下一页", currentPage < totalPages);
-    M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, 0,
-                                M4TouchListMetrics::chapterPagerLabelTop(renderer.getScreenHeight(), true), pageWidth,
-                                M4TouchListMetrics::chapterPagerLabelHeight(true), pageLabel, true,
-                                EpdFontFamily::REGULAR, 8);
+    M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, 0,
+                                      M4TouchListMetrics::chapterPagerLabelTop(renderer.getScreenHeight(), true), pageWidth,
+                                      M4TouchListMetrics::chapterPagerLabelHeight(true), pageLabel, true,
+                                      EpdFontFamily::REGULAR, 8);
   } else {
     const auto labels = mappedInput.mapLabels("« 返回", "选择", "向上", "向下");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 
-  renderer.displayBuffer();
+  // displayBuffer submits the complete framebuffer; FAST is sufficient because
+  // the frame above explicitly redraws the entire header/list/footer.
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

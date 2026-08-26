@@ -16,7 +16,8 @@
 // System chapter list UI. Two data modes:
 //  1) Library TXT: parseChapterIndexAndOffset batches via shared_ptr<Txt>
 //  2) External titles: legacy JSON vector or a provider page loader
-// Always draws chapter names with reader full-CJK font (not UI subset).
+// Chapter-list chrome always uses the system UI font tier, independently of
+// the reader body font selected for the book.
 class TxtReaderChapterSelectionActivity final : public Activity {
   std::shared_ptr<Txt> txt;
   std::vector<std::string> externalTitles_;
