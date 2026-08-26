@@ -29,7 +29,7 @@ The current baseline is the Task 4 documentation point at `bc3038955108eb7573398
 - Device flash: `firmware/scripts/flash_app1_once.sh` (APP1-only)
 - Device control: `python3 firmware/scripts/m4adb.py --help`
 
-The production profile and both QEMU profiles are intentionally distinct. QEMU/m4sim is frozen for ordinary firmware work after the 2026-08-13 Network Manager checkpoint; expand it only when a production change demonstrates a simulator correctness gap.
+The production profile and both QEMU profiles are intentionally distinct. Use `murphy_m4` for hardware and `murphy_m4_qemu` / `murphy_m4_qemu_plugin` only through the simulator workflow. Treat QEMU and host-test results as simulator evidence, not hardware validation.
 
 ## Canonical guides
 
