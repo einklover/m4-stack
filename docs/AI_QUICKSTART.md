@@ -35,14 +35,17 @@ distributed because redistribution permission is unclear. Normal firmware
 builds do not need it: the tracked
 `firmware/src/fontdata/m4_center_kernel_16x16.bin` is already present. Only
 regeneration or customization needs a source font; use a legally
-usable/distributable Chinese-capable pixel-style TTF and run:
+usable/distributable Chinese-capable pixel-style TTF. The current generator
+rejects a different TTF because it enforces the known source-font SHA-256, so
+that validation must be intentionally updated before customization; the
+command syntax is:
 
 ```bash
 python3 firmware/scripts/generate_m4_center_kernel.py --font <path-to-font.ttf>
 ```
 
-A different TTF changes glyph appearance and hash and cannot reproduce the
-current artifact byte-for-byte. The ~159 MiB
+A different TTF would change glyph appearance and hash and cannot reproduce
+the current artifact byte-for-byte. The ~159 MiB
 `firmware/lib/EpdFont/builtinFonts/` tree is a separate
 bootstrap-reconstructed dependency, not the source for this custom font.
 
