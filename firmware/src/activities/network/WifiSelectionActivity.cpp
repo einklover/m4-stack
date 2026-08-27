@@ -1,8 +1,6 @@
 #include "WifiSelectionActivity.h"
 
 #include "util/M4ListTouchPolicy.h"
-#include "util/TouchHitGeometry.h"
-
 #include <GfxRenderer.h>
 #include <WiFi.h>
 
@@ -16,6 +14,7 @@
 #include "fontIds.h"
 #include "util/M4UiText.h"
 #include "BluetoothHIDManager.h"
+#include "qemu/M4QemuNet.h"
 
 void WifiSelectionActivity::taskTrampoline(void* param) {
   auto* self = static_cast<WifiSelectionActivity*>(param);
@@ -41,8 +40,7 @@ void WifiSelectionActivity::onEnter() {
   connectionError.clear();
   enteredPassword.clear();
   usedSavedPassword = false;
-  savePromptSelection = 0;
-  forgetPromptSelection = 0;
+  failureTracker.reset();
 
   // Cache MAC address for display
   uint8_t mac[6];
@@ -233,6 +231,7 @@ void WifiSelectionActivity::attemptConnection() {
   connectionStartTime = millis();
   connectedIP.clear();
   connectionError.clear();
+  failureTracker.reset();
   updateRequired = true;
     // CRITICAL: Disable Bluetooth when enabling WiFi
   // ESP32-C3 cannot have both WiFi and BLE enabled simultaneously
@@ -262,7 +261,7 @@ void WifiSelectionActivity::checkConnectionStatus() {
 
   const wl_status_t status = WiFi.status();
 
-  if (status == WL_CONNECTED) {
+  if (M4QemuNet::staConnected()) {
     // Successfully connected
     IPAddress ip = WiFi.localIP();
     char ipStr[16];
@@ -273,24 +272,45 @@ void WifiSelectionActivity::checkConnectionStatus() {
     configTime(8 * 3600, 0, "pool.ntp.org", "time.cloudflare.com");
     Serial.printf("[%lu] [WIFI] NTP sync started (UTC+8)\n", millis());
 
-    // If we entered a new password, ask if user wants to save it
-    // Otherwise, immediately complete so parent can start web server
     if (!usedSavedPassword && !enteredPassword.empty()) {
-      state = WifiSelectionState::SAVE_PROMPT;
-      savePromptSelection = 0;  // Default to "Yes"
-      updateRequired = true;
-    } else {
-      // Using saved password or open network - complete immediately
-      Serial.printf("[%lu] [WIFI] Connected with saved/open credentials, completing immediately\n", millis());
-      onComplete(true);
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      const bool saved = WIFI_STORE.addCredential(selectedSSID, enteredPassword);
+      xSemaphoreGive(renderingMutex);
+      if (!saved) {
+        connectionError = "Connected, but could not save Wi-Fi";
+        state = WifiSelectionState::CONNECTION_FAILED;
+        updateRequired = true;
+        return;
+      }
     }
+    Serial.printf("[%lu] [WIFI] Connected with durable credentials, completing immediately\n", millis());
+    onComplete(true);
     return;
   }
 
-  if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) {
-    connectionError = "Error: General failure";
+  if (failureTracker.authenticationFailed()) {
+    if (usedSavedPassword) {
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      const bool removed = WIFI_STORE.removeCredential(selectedSSID);
+      xSemaphoreGive(renderingMutex);
+      const auto network = find_if(networks.begin(), networks.end(),
+                                   [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
+      if (removed && network != networks.end()) network->hasSavedPassword = false;
+      connectionError = removed ? "Password rejected. Enter it again."
+                                : "Password rejected. Re-enter it in Settings.";
+    } else {
+      connectionError = "Password rejected. Enter it again.";
+    }
+    state = WifiSelectionState::CONNECTION_FAILED;
+    updateRequired = true;
+    return;
+  }
+
+  if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL || status == WL_CONNECTION_LOST) {
     if (status == WL_NO_SSID_AVAIL) {
       connectionError = "Error: Network not found";
+    } else {
+      connectionError = "Error: Wi-Fi connection failed";
     }
     state = WifiSelectionState::CONNECTION_FAILED;
     updateRequired = true;
@@ -299,7 +319,7 @@ void WifiSelectionActivity::checkConnectionStatus() {
 
   // Check for timeout
   if (millis() - connectionStartTime > CONNECTION_TIMEOUT_MS) {
-    WiFi.disconnect();
+    WiFi.disconnect(false);
     connectionError = "Error: Connection timeout";
     state = WifiSelectionState::CONNECTION_FAILED;
     updateRequired = true;
@@ -335,21 +355,6 @@ void WifiSelectionActivity::loop() {
     e = M4ListTouchPolicy::mergeFrame(e.backGesture, e.swipe, down, dx, dy, tap, tx, ty);
   };
 
-  auto dialogLayoutForSave = [this]() {
-    const int pageWidth = renderer.getScreenWidth();
-    const int pageHeight = renderer.getScreenHeight();
-    const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-    const auto top = (pageHeight - height * 3) / 2;
-    return M4ListTouchPolicy::makeCenteredTwoButtons(pageWidth, top + 80, 60, 28, 30, 2);
-  };
-  auto dialogLayoutForForget = [this]() {
-    const int pageWidth = renderer.getScreenWidth();
-    const int pageHeight = renderer.getScreenHeight();
-    const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-    const auto top = (pageHeight - height * 3) / 2;
-    return M4ListTouchPolicy::makeCenteredTwoButtons(pageWidth, top + 80, 120, 28, 30, 2);
-  };
-
   // Check scan progress — allow cancel via back / edge gesture
   if (state == WifiSelectionState::SCANNING) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
@@ -365,7 +370,7 @@ void WifiSelectionActivity::loop() {
   if (state == WifiSelectionState::CONNECTING) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         (mappedInput.hasTouch() && mappedInput.wasBackGesture())) {
-      WiFi.disconnect();
+      WiFi.disconnect(false);
       state = WifiSelectionState::NETWORK_LIST;
       updateRequired = true;
       return;
@@ -377,122 +382,6 @@ void WifiSelectionActivity::loop() {
   if (state == WifiSelectionState::PASSWORD_ENTRY) {
     // Reach here once password entry finished in subactivity
     attemptConnection();
-    return;
-  }
-
-  // Handle save prompt state
-  if (state == WifiSelectionState::SAVE_PROMPT) {
-    M4ListTouchPolicy::Event te;
-    fillTouchEvent(te);
-    int hit = -1;
-    const auto act = M4ListTouchPolicy::resolveDialog(te, dialogLayoutForSave(), hit);
-    if (act == M4ListTouchPolicy::Action::Back) {
-      onComplete(true);
-      return;
-    }
-    if (act == M4ListTouchPolicy::Action::Select && hit >= 0) {
-      savePromptSelection = hit;
-      updateRequired = true;
-      return;
-    }
-    if (act == M4ListTouchPolicy::Action::DialogPick && hit >= 0) {
-      savePromptSelection = hit;
-      if (savePromptSelection == 0) {
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        WIFI_STORE.addCredential(selectedSSID, enteredPassword);
-        xSemaphoreGive(renderingMutex);
-      }
-      onComplete(true);
-      return;
-    }
-
-    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Left)) {
-      if (savePromptSelection > 0) {
-        savePromptSelection--;
-        updateRequired = true;
-      }
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-               mappedInput.wasPressed(MappedInputManager::Button::Right)) {
-      if (savePromptSelection < 1) {
-        savePromptSelection++;
-        updateRequired = true;
-      }
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (savePromptSelection == 0) {
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        WIFI_STORE.addCredential(selectedSSID, enteredPassword);
-        xSemaphoreGive(renderingMutex);
-      }
-      onComplete(true);
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      onComplete(true);
-    }
-    return;
-  }
-
-  // Handle forget prompt state (connection failed with saved credentials)
-  if (state == WifiSelectionState::FORGET_PROMPT) {
-    M4ListTouchPolicy::Event te;
-    fillTouchEvent(te);
-    int hit = -1;
-    const auto act = M4ListTouchPolicy::resolveDialog(te, dialogLayoutForForget(), hit);
-    if (act == M4ListTouchPolicy::Action::Back) {
-      state = WifiSelectionState::NETWORK_LIST;
-      updateRequired = true;
-      return;
-    }
-    if (act == M4ListTouchPolicy::Action::Select && hit >= 0) {
-      forgetPromptSelection = hit;
-      updateRequired = true;
-      return;
-    }
-    if (act == M4ListTouchPolicy::Action::DialogPick && hit >= 0) {
-      forgetPromptSelection = hit;
-      if (forgetPromptSelection == 1) {
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        WIFI_STORE.removeCredential(selectedSSID);
-        xSemaphoreGive(renderingMutex);
-        const auto network = find_if(networks.begin(), networks.end(),
-                                     [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
-        if (network != networks.end()) {
-          network->hasSavedPassword = false;
-        }
-      }
-      state = WifiSelectionState::NETWORK_LIST;
-      updateRequired = true;
-      return;
-    }
-
-    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Left)) {
-      if (forgetPromptSelection > 0) {
-        forgetPromptSelection--;
-        updateRequired = true;
-      }
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-               mappedInput.wasPressed(MappedInputManager::Button::Right)) {
-      if (forgetPromptSelection < 1) {
-        forgetPromptSelection++;
-        updateRequired = true;
-      }
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (forgetPromptSelection == 1) {
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        WIFI_STORE.removeCredential(selectedSSID);
-        xSemaphoreGive(renderingMutex);
-        const auto network = find_if(networks.begin(), networks.end(),
-                                     [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
-        if (network != networks.end()) {
-          network->hasSavedPassword = false;
-        }
-      }
-      state = WifiSelectionState::NETWORK_LIST;
-      updateRequired = true;
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      state = WifiSelectionState::NETWORK_LIST;
-      updateRequired = true;
-    }
     return;
   }
 
@@ -509,12 +398,7 @@ void WifiSelectionActivity::loop() {
         mappedInput.hasTouch() && (mappedInput.wasBackGesture() || mappedInput.wasScreenTapped(tx, ty));
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         mappedInput.wasPressed(MappedInputManager::Button::Confirm) || touchDismiss) {
-      if (usedSavedPassword) {
-        state = WifiSelectionState::FORGET_PROMPT;
-        forgetPromptSelection = 0;
-      } else {
-        state = WifiSelectionState::NETWORK_LIST;
-      }
+      state = WifiSelectionState::NETWORK_LIST;
       updateRequired = true;
       return;
     }
@@ -656,14 +540,8 @@ void WifiSelectionActivity::render() const {
     case WifiSelectionState::CONNECTED:
       renderConnected();
       break;
-    case WifiSelectionState::SAVE_PROMPT:
-      renderSavePrompt();
-      break;
     case WifiSelectionState::CONNECTION_FAILED:
       renderConnectionFailed();
-      break;
-    case WifiSelectionState::FORGET_PROMPT:
-      renderForgetPrompt();
       break;
   }
 
@@ -790,48 +668,6 @@ void WifiSelectionActivity::renderConnected() const {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
-void WifiSelectionActivity::renderSavePrompt() const {
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto top = (pageHeight - height * 3) / 2;
-
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, top - 40, "Connected!", true, EpdFontFamily::BOLD);
-
-  std::string ssidInfo = "Network: " + selectedSSID;
-  if (ssidInfo.length() > 28) {
-    ssidInfo.replace(25, ssidInfo.length() - 25, "...");
-  }
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, top, ssidInfo.c_str());
-
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, top + 40, "Save password for next time?");
-
-  // Draw Yes/No buttons
-  const int buttonY = top + 80;
-  constexpr int buttonWidth = 60;
-  constexpr int buttonSpacing = 30;
-  constexpr int totalWidth = buttonWidth * 2 + buttonSpacing;
-  const int startX = (pageWidth - totalWidth) / 2;
-
-  // Draw "Yes" button
-  if (savePromptSelection == 0) {
-    M4UiText::draw(renderer, UI_10_FONT_ID, startX, buttonY, "[Yes]");
-  } else {
-    M4UiText::draw(renderer, UI_10_FONT_ID, startX + 4, buttonY, "Yes");
-  }
-
-  // Draw "No" button
-  if (savePromptSelection == 1) {
-    M4UiText::draw(renderer, UI_10_FONT_ID, startX + buttonWidth + buttonSpacing, buttonY, "[No]");
-  } else {
-    M4UiText::draw(renderer, UI_10_FONT_ID, startX + buttonWidth + buttonSpacing + 4, buttonY, "No");
-  }
-
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kSelect), L(Str::kLeftArrow), L(Str::kRightArrow));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-}
-
 void WifiSelectionActivity::renderConnectionFailed() const {
   const auto pageHeight = renderer.getScreenHeight();
   const auto height = renderer.getLineHeight(UI_10_FONT_ID);
@@ -842,47 +678,5 @@ void WifiSelectionActivity::renderConnectionFailed() const {
 
   // Use centralized button hints
   const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kContinue), "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-}
-
-void WifiSelectionActivity::renderForgetPrompt() const {
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto top = (pageHeight - height * 3) / 2;
-
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, top - 40, "Connection Failed", true, EpdFontFamily::BOLD);
-
-  std::string ssidInfo = "Network: " + selectedSSID;
-  if (ssidInfo.length() > 28) {
-    ssidInfo.replace(25, ssidInfo.length() - 25, "...");
-  }
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, top, ssidInfo.c_str());
-
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, top + 40, "Forget network and remove saved password?");
-
-  // Draw Cancel/Forget network buttons
-  const int buttonY = top + 80;
-  constexpr int buttonWidth = 120;
-  constexpr int buttonSpacing = 30;
-  constexpr int totalWidth = buttonWidth * 2 + buttonSpacing;
-  const int startX = (pageWidth - totalWidth) / 2;
-
-  // Draw "Cancel" button
-  if (forgetPromptSelection == 0) {
-    M4UiText::draw(renderer, UI_10_FONT_ID, startX, buttonY, "[Cancel]");
-  } else {
-    M4UiText::draw(renderer, UI_10_FONT_ID, startX + 4, buttonY, "Cancel");
-  }
-
-  // Draw "Forget network" button
-  if (forgetPromptSelection == 1) {
-    M4UiText::draw(renderer, UI_10_FONT_ID, startX + buttonWidth + buttonSpacing, buttonY, "[Forget network]");
-  } else {
-    M4UiText::draw(renderer, UI_10_FONT_ID, startX + buttonWidth + buttonSpacing + 4, buttonY, "Forget network");
-  }
-
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kSelect), L(Str::kLeftArrow), L(Str::kRightArrow));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }

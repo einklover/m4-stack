@@ -37,13 +37,16 @@ inline constexpr const char* kErrNoSavedWifi = "no_saved_wifi";
 inline constexpr const char* kErrTimeout = "timeout";
 inline constexpr const char* kErrCancelled = "cancelled";
 inline constexpr const char* kErrConnectFailed = "connect_failed";
+inline constexpr const char* kErrAuthFailed = "auth_failed";
+inline constexpr const char* kErrAuthStoreFailed = "auth_credential_not_cleared";
 inline constexpr const char* kErrAlreadyConnected = "";  // success path
 
 enum class RadioStatus : uint8_t {
   Idle = 0,
   Connecting,
   Connected,
-  Failed,  // hard fail for current attempt (no_ssid / connect_failed)
+  Failed,      // generic failure; credentials are preserved
+  AuthFailed,  // platform explicitly reported authentication failure
 };
 
 // Abstract radio for production WiFi and host-test mocks.
@@ -68,6 +71,7 @@ struct ConnectResult {
   bool ok = false;
   // True only when this session established a new link (caller must release on exit).
   bool owned = false;
+  bool credentialInvalidationFailed = false;
   std::string ssid;
   std::string error;  // stable code; empty on success
 };
@@ -77,6 +81,9 @@ struct Hooks {
   std::function<uint32_t()> nowMs;           // required
   std::function<void(uint32_t)> sleepMs;     // required
   std::function<bool()> isCancelled;         // optional; null => never
+  // Called only for an explicit platform authentication failure. Returning
+  // false means the credential could not be invalidated durably.
+  std::function<bool(const std::string&)> onAuthFailure;
 };
 
 // Try credentials in order until connected, deadline, cancel, or exhaustion.
@@ -92,6 +99,8 @@ inline ConnectResult connectSaved(IRadio& radio, const std::vector<Credential>& 
   const uint32_t deadline = hooks.nowMs() + static_cast<uint32_t>(timeoutMs);
 
   auto cancelled = [&]() -> bool { return hooks.isCancelled && hooks.isCancelled(); };
+  bool sawAuthFailure = false;
+  bool authInvalidationFailed = false;
 
   if (radio.isConnected()) {
     r.ok = true;
@@ -143,6 +152,11 @@ inline ConnectResult connectSaved(IRadio& radio, const std::vector<Credential>& 
         return r;
       }
       const RadioStatus st = radio.status();
+      if (st == RadioStatus::AuthFailed) {
+        sawAuthFailure = true;
+        if (hooks.onAuthFailure && !hooks.onAuthFailure(creds[i].ssid)) authInvalidationFailed = true;
+        break;
+      }
       if (st == RadioStatus::Failed) {
         break;  // try next credential
       }
@@ -159,7 +173,12 @@ inline ConnectResult connectSaved(IRadio& radio, const std::vector<Credential>& 
     r.error = kErrTimeout;
   } else {
     // All credentials exhausted before global deadline.
-    r.error = kErrConnectFailed;
+    if (sawAuthFailure) {
+      r.error = authInvalidationFailed ? kErrAuthStoreFailed : kErrAuthFailed;
+      r.credentialInvalidationFailed = authInvalidationFailed;
+    } else {
+      r.error = kErrConnectFailed;
+    }
   }
   return r;
 }
@@ -176,6 +195,8 @@ inline const char* userHintAscii(const std::string& err) {
   if (err == kErrNoSavedWifi) return "No saved Wi-Fi. Connect in Settings.";
   if (err == kErrTimeout) return "Wi-Fi timeout. Retry or check Settings.";
   if (err == kErrCancelled) return "Wi-Fi connect cancelled.";
+  if (err == kErrAuthFailed) return "Wi-Fi password rejected. Re-enter it in Settings.";
+  if (err == kErrAuthStoreFailed) return "Wi-Fi password rejected; saved password was kept.";
   if (err == kErrConnectFailed) return "Saved Wi-Fi failed. Retry or Settings.";
   if (err.empty()) return "OK";
   return "Network error. Retry.";

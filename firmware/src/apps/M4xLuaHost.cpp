@@ -24,6 +24,7 @@
 #include "util/M4xUiListPolicy.h"
 #include "util/M4xJsonScan.h"
 #include "apps/M4xWifiConnect.h"
+#include "apps/M4WifiFailureTracker.h"
 #include "apps/weread/WereadCrypto.h"
 #include "CrossPointSettings.h"
 #include "fontIds.h"
@@ -1899,31 +1900,36 @@ int l_fs_readAppFile(lua_State* L) {
 
 // Device radio adapter for M4xWifiConnect (never logs passwords).
 struct EspWifiRadio final : M4xWifiConnect::IRadio {
+  M4WifiFailureTracker failureTracker;
+
   bool isConnected() const override {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
     if (m4QemuNetWifiCompatConnected()) return true;
 #endif
-    return WiFi.status() == WL_CONNECTED;
+    return WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
   }
   std::string connectedSsid() const override {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
     if (m4QemuNetWifiCompatConnected()) return "qemu-openeth";
 #endif
-    if (WiFi.status() != WL_CONNECTED) return {};
+    if (!isConnected()) return {};
     return std::string(WiFi.SSID().c_str());
   }
   M4xWifiConnect::RadioStatus status() const override {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
     if (m4QemuNetWifiCompatConnected()) return M4xWifiConnect::RadioStatus::Connected;
 #endif
+    if (failureTracker.authenticationFailed()) return M4xWifiConnect::RadioStatus::AuthFailed;
     const wl_status_t s = WiFi.status();
-    if (s == WL_CONNECTED) return M4xWifiConnect::RadioStatus::Connected;
+    if (s == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0))
+      return M4xWifiConnect::RadioStatus::Connected;
     if (s == WL_CONNECT_FAILED || s == WL_NO_SSID_AVAIL || s == WL_CONNECTION_LOST)
       return M4xWifiConnect::RadioStatus::Failed;
     if (s == WL_IDLE_STATUS || s == WL_DISCONNECTED) return M4xWifiConnect::RadioStatus::Idle;
     return M4xWifiConnect::RadioStatus::Connecting;
   }
   void begin(const std::string& ssid, const std::string& password) override {
+    failureTracker.reset();
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
     if (m4QemuNetWifiCompatConnected()) {
       Serial.printf("[M4xNet] QEMU open_eth already up (ssid=%s ignored)\n", ssid.c_str());
@@ -1975,7 +1981,7 @@ int l_net_isConnected(lua_State* L) {
     return 1;
   }
 #endif
-  lua_pushboolean(L, WiFi.status() == WL_CONNECTED ? 1 : 0);
+  lua_pushboolean(L, WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0) ? 1 : 0);
   return 1;
 }
 
@@ -2020,6 +2026,7 @@ int l_net_connectSaved(lua_State* L) {
     delay(static_cast<uint32_t>(ms));
   };
   hooks.isCancelled = [h]() -> bool { return h->isCancelRequested(); };
+  hooks.onAuthFailure = [](const std::string& ssid) { return WIFI_STORE.removeCredential(ssid); };
 
   const uint32_t connectStartedMs = millis();
   const M4xWifiConnect::ConnectResult r =

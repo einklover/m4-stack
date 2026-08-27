@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "activities/ActivityWithSubactivity.h"
+#include "apps/M4WifiFailureTracker.h"
 
 // Structure to hold WiFi network information
 struct WifiNetworkInfo {
@@ -26,9 +27,7 @@ enum class WifiSelectionState {
   PASSWORD_ENTRY,     // Entering password for selected network
   CONNECTING,         // Attempting to connect
   CONNECTED,          // Successfully connected
-  SAVE_PROMPT,        // Asking user if they want to save the password
-  CONNECTION_FAILED,  // Connection failed
-  FORGET_PROMPT       // Asking user if they want to forget the network
+  CONNECTION_FAILED   // Connection failed
 };
 
 /**
@@ -37,7 +36,7 @@ enum class WifiSelectionState {
  * - Enter scanning mode on entry
  * - List available WiFi networks
  * - Allow selection and launch KeyboardEntryActivity for password if needed
- * - Save the password if requested
+ * - Persist newly entered credentials after a successful connection
  * - Call onComplete callback when connected or cancelled
  *
  * The onComplete callback receives true if connected successfully, false if cancelled.
@@ -59,18 +58,16 @@ class WifiSelectionActivity final : public ActivityWithSubactivity {
   std::string connectedIP;
   std::string connectionError;
 
-  // Password to potentially save (from keyboard or saved credentials)
+  // Password from the current keyboard entry or saved credentials
   std::string enteredPassword;
 
   // Cached MAC address string for display
   std::string cachedMacAddress;
 
-  // Whether network was connected using a saved password (skip save prompt)
+  // Whether network was connected using a saved password
   bool usedSavedPassword = false;
 
-  // Save/forget prompt selection (0 = Yes, 1 = No)
-  int savePromptSelection = 0;
-  int forgetPromptSelection = 0;
+  M4WifiFailureTracker failureTracker;
 
   // Connection timeout
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;
@@ -83,9 +80,7 @@ class WifiSelectionActivity final : public ActivityWithSubactivity {
   void renderPasswordEntry() const;
   void renderConnecting() const;
   void renderConnected() const;
-  void renderSavePrompt() const;
   void renderConnectionFailed() const;
-  void renderForgetPrompt() const;
 
   void startWifiScan();
   void processWifiScanResults();

@@ -10,13 +10,17 @@
 
 namespace M4NativeWifi {
 
-bool isReady() { return M4QemuNet::staConnected(); }
+bool isReady() {
+  // Readiness is a live transport property: association alone is not enough
+  // until DHCP has supplied a usable station address.
+  return M4QemuNet::staConnected();
+}
 
 Result ensureConnected(uint32_t timeoutMs, const CancelFn& cancelled) {
   Result r;
   // QEMU plugin-debug uses open_eth (not the Wi-Fi radio). Treat that path as
   // already connected so discovery/HTTP does not demand saved STA credentials.
-  if (M4QemuNet::staConnected() || WiFi.status() == WL_CONNECTED) {
+  if (isReady()) {
     r.ok = true;
     r.alreadyConnected = true;
     return r;
@@ -53,7 +57,7 @@ Result ensureConnected(uint32_t timeoutMs, const CancelFn& cancelled) {
         r.error = "cancelled";
         return r;
       }
-      if (WiFi.status() == WL_CONNECTED) {
+      if (isReady()) {
         r.ok = true;
         return r;
       }

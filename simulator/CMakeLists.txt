@@ -204,6 +204,12 @@ target_include_directories(m4_ssd1677_driver_replay PRIVATE
 )
 target_link_libraries(m4_ssd1677_driver_replay PRIVATE m4_reader_core m4_deterministic_backend)
 add_test(NAME m4_ssd1677_driver_replay COMMAND m4_ssd1677_driver_replay)
+add_executable(m4_wifi_state_tests
+  ../firmware/tests/native_app/test_wifi_state.cpp
+  ../firmware/src/WifiCredentialStore.cpp)
+target_include_directories(m4_wifi_state_tests PRIVATE
+  ../firmware/tests/native_app/wifi_store_shims ../firmware/src)
+add_test(NAME m4_wifi_state_tests COMMAND m4_wifi_state_tests)
 if(M4SIM_BUILD_NATIVE_SMOKE)
   add_executable(m4_native_smoke native/main.cpp)
   target_link_libraries(m4_native_smoke PRIVATE m4_reader_core m4_platform_ports)

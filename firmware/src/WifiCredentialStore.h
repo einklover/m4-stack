@@ -24,6 +24,7 @@ class WifiCredentialStore {
 
   // XOR obfuscation (symmetric - same for encode/decode)
   void obfuscate(std::string& data) const;
+  bool saveCredentials(const std::vector<WifiCredential>& next) const;
 
  public:
   // Delete copy constructor and assignment

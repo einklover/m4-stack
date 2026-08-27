@@ -2,8 +2,9 @@
 
 #include <HardwareSerial.h>
 #include <SDCardManager.h>
-#include <Serialization.h>
-
+#include <algorithm>
+#include <cstdint>
+#include <utility>
 
 
 
@@ -30,36 +31,128 @@ void WifiCredentialStore::obfuscate(std::string& data) const {
   }
 }
 
-bool WifiCredentialStore::saveToFile() const {
+namespace {
+
+bool writeExact(FsFile& file, const uint8_t* data, size_t size) {
+  size_t offset = 0;
+  while (offset < size) {
+    const int written = file.write(data + offset, size - offset);
+    if (written <= 0) return false;
+    offset += static_cast<size_t>(written);
+  }
+  return true;
+}
+
+template <typename T>
+bool writePodExact(FsFile& file, const T& value) {
+  return writeExact(file, reinterpret_cast<const uint8_t*>(&value), sizeof(value));
+}
+
+bool writeStringExact(FsFile& file, const std::string& value) {
+  const uint32_t size = static_cast<uint32_t>(value.size());
+  return writePodExact(file, size) && writeExact(file, reinterpret_cast<const uint8_t*>(value.data()), value.size());
+}
+
+bool readExact(FsFile& file, uint8_t* data, size_t size) {
+  size_t offset = 0;
+  while (offset < size) {
+    const int read = file.read(data + offset, size - offset);
+    if (read <= 0) return false;
+    offset += static_cast<size_t>(read);
+  }
+  return true;
+}
+
+template <typename T>
+bool readPodExact(FsFile& file, T& value) {
+  return readExact(file, reinterpret_cast<uint8_t*>(&value), sizeof(value));
+}
+
+bool readStringExact(FsFile& file, std::string& value) {
+  uint32_t size = 0;
+  if (!readPodExact(file, size) || size > 4096) return false;
+  value.resize(size);
+  return readExact(file, reinterpret_cast<uint8_t*>(value.data()), size);
+}
+
+}  // namespace
+
+bool WifiCredentialStore::saveCredentials(const std::vector<WifiCredential>& next) const {
   // Make sure the directory exists
-  SdMan.mkdir("/.crosspoint");
+  if (!SdMan.mkdir("/.crosspoint")) return false;
+
+  const char* const tempPath = "/.crosspoint/wifi.bin.part";
+  const char* const backupPath = "/.crosspoint/wifi.bin.bak";
+  if (SdMan.exists(tempPath)) SdMan.remove(tempPath);
 
   FsFile file;
-  if (!SdMan.openFileForWrite("WCS", WIFI_FILE, file)) {
+  if (!SdMan.openFileForWrite("WCS", tempPath, file)) {
     return false;
   }
 
-  // Write header
-  serialization::writePod(file, WIFI_FILE_VERSION);
-  serialization::writePod(file, static_cast<uint8_t>(credentials.size()));
+  const uint8_t count = static_cast<uint8_t>(next.size());
+  bool ok = writePodExact(file, WIFI_FILE_VERSION) && writePodExact(file, count);
 
-  // Write each credential
-  for (const auto& cred : credentials) {
+  for (const auto& cred : next) {
     // Write SSID (plaintext - not sensitive)
-    serialization::writeString(file, cred.ssid);
+    ok = ok && writeStringExact(file, cred.ssid);
     Serial.printf("[%lu] [WCS] Saving SSID: %s, password length: %zu\n", millis(), cred.ssid.c_str(),
                   cred.password.size());
 
     // Write password (obfuscated)
     std::string obfuscatedPwd = cred.password;
     obfuscate(obfuscatedPwd);
-    serialization::writeString(file, obfuscatedPwd);
+    ok = ok && writeStringExact(file, obfuscatedPwd);
   }
 
-  file.close();
-  Serial.printf("[%lu] [WCS] Saved %zu WiFi credentials to file\n", millis(), credentials.size());
+  ok = ok && file.sync() && file.close();
+  if (!ok) {
+    file.close();
+    SdMan.remove(tempPath);
+    return false;
+  }
+
+  FsFile probe;
+  if (!SdMan.openFileForRead("WCS", tempPath, probe)) {
+    SdMan.remove(tempPath);
+    return false;
+  }
+  const size_t writtenSize = static_cast<size_t>(probe.fileSize());
+  probe.close();
+  if (writtenSize == 0) {
+    SdMan.remove(tempPath);
+    return false;
+  }
+
+  // Keep the last complete file until the new file has been renamed into
+  // place. This also makes a failed persistence operation non-destructive.
+  if (SdMan.exists(backupPath)) SdMan.remove(backupPath);
+  const bool hadFile = SdMan.exists(WIFI_FILE);
+  if (hadFile && !SdMan.rename(WIFI_FILE, backupPath)) {
+    SdMan.remove(tempPath);
+    return false;
+  }
+  if (!SdMan.rename(tempPath, WIFI_FILE)) {
+    if (hadFile && SdMan.exists(backupPath)) SdMan.rename(backupPath, WIFI_FILE);
+    SdMan.remove(tempPath);
+    return false;
+  }
+
+  FsFile verify;
+  if (!SdMan.openFileForRead("WCS", WIFI_FILE, verify) ||
+      static_cast<size_t>(verify.fileSize()) != writtenSize) {
+    verify.close();
+    SdMan.remove(WIFI_FILE);
+    if (hadFile && SdMan.exists(backupPath)) SdMan.rename(backupPath, WIFI_FILE);
+    return false;
+  }
+  verify.close();
+  if (SdMan.exists(backupPath)) SdMan.remove(backupPath);
+  Serial.printf("[%lu] [WCS] Saved %zu WiFi credentials to file\n", millis(), next.size());
   return true;
 }
+
+bool WifiCredentialStore::saveToFile() const { return saveCredentials(credentials); }
 
 bool WifiCredentialStore::loadFromFile() {
   FsFile file;
@@ -68,76 +161,86 @@ bool WifiCredentialStore::loadFromFile() {
   }
 
   // Read and verify version
-  uint8_t version;
-  serialization::readPod(file, version);
-  if (version != WIFI_FILE_VERSION) {
+  uint8_t version = 0;
+  if (!readPodExact(file, version) || version != WIFI_FILE_VERSION) {
     Serial.printf("[%lu] [WCS] Unknown file version: %u\n", millis(), version);
     file.close();
     return false;
   }
 
   // Read credential count
-  uint8_t count;
-  serialization::readPod(file, count);
+  uint8_t count = 0;
+  if (!readPodExact(file, count) || count > MAX_NETWORKS) {
+    file.close();
+    return false;
+  }
 
-  // Read credentials
-  credentials.clear();
+  std::vector<WifiCredential> loaded;
+  loaded.reserve(count);
   for (uint8_t i = 0; i < count && i < MAX_NETWORKS; i++) {
     WifiCredential cred;
 
     // Read SSID
-    serialization::readString(file, cred.ssid);
+    if (!readStringExact(file, cred.ssid)) {
+      file.close();
+      return false;
+    }
 
     // Read and deobfuscate password
-    serialization::readString(file, cred.password);
+    if (!readStringExact(file, cred.password)) {
+      file.close();
+      return false;
+    }
     Serial.printf("[%lu] [WCS] Loaded SSID: %s, obfuscated password length: %zu\n", millis(), cred.ssid.c_str(),
                   cred.password.size());
     obfuscate(cred.password);  // XOR is symmetric, so same function deobfuscates
     Serial.printf("[%lu] [WCS] After deobfuscation, password length: %zu\n", millis(), cred.password.size());
 
-    credentials.push_back(cred);
+    loaded.push_back(std::move(cred));
   }
 
   file.close();
+  credentials.swap(loaded);
   Serial.printf("[%lu] [WCS] Loaded %zu WiFi credentials from file\n", millis(), credentials.size());
   return true;
 }
 
 bool WifiCredentialStore::addCredential(const std::string& ssid, const std::string& password) {
+  std::vector<WifiCredential> next = credentials;
   // Check if this SSID already exists and update it
-  const auto cred = find_if(credentials.begin(), credentials.end(),
+  const auto cred = std::find_if(next.begin(), next.end(),
                             [&ssid](const WifiCredential& cred) { return cred.ssid == ssid; });
-  if (cred != credentials.end()) {
+  if (cred != next.end()) {
     cred->password = password;
-    Serial.printf("[%lu] [WCS] Updated credentials for: %s\n", millis(), ssid.c_str());
-    return saveToFile();
-  }
-
-  // Check if we've reached the limit
-  if (credentials.size() >= MAX_NETWORKS) {
+  } else if (next.size() >= MAX_NETWORKS) {
     Serial.printf("[%lu] [WCS] Cannot add more networks, limit of %zu reached\n", millis(), MAX_NETWORKS);
     return false;
+  } else {
+    next.push_back({ssid, password});
   }
 
-  // Add new credential
-  credentials.push_back({ssid, password});
-  Serial.printf("[%lu] [WCS] Added credentials for: %s\n", millis(), ssid.c_str());
-  return saveToFile();
+  if (!saveCredentials(next)) return false;
+  credentials.swap(next);
+  Serial.printf("[%lu] [WCS] Stored credentials for: %s\n", millis(), ssid.c_str());
+  return true;
 }
 
 bool WifiCredentialStore::removeCredential(const std::string& ssid) {
-  const auto cred = find_if(credentials.begin(), credentials.end(),
+  std::vector<WifiCredential> next = credentials;
+  const auto cred = std::find_if(next.begin(), next.end(),
                             [&ssid](const WifiCredential& cred) { return cred.ssid == ssid; });
-  if (cred != credentials.end()) {
-    credentials.erase(cred);
+  if (cred != next.end()) {
+    next.erase(cred);
+    if (!saveCredentials(next)) return false;
+    credentials.swap(next);
     Serial.printf("[%lu] [WCS] Removed credentials for: %s\n", millis(), ssid.c_str());
-    return saveToFile();
+    return true;
   }
   return false;  // Not found
 }
 
 const WifiCredential* WifiCredentialStore::findCredential(const std::string& ssid) const {
-  const auto cred = find_if(credentials.begin(), credentials.end(),
+  const auto cred = std::find_if(credentials.begin(), credentials.end(),
                             [&ssid](const WifiCredential& cred) { return cred.ssid == ssid; });
 
   if (cred != credentials.end()) {
@@ -150,7 +253,9 @@ const WifiCredential* WifiCredentialStore::findCredential(const std::string& ssi
 bool WifiCredentialStore::hasSavedCredential(const std::string& ssid) const { return findCredential(ssid) != nullptr; }
 
 void WifiCredentialStore::clearAll() {
-  credentials.clear();
-  saveToFile();
-  Serial.printf("[%lu] [WCS] Cleared all WiFi credentials\n", millis());
+  std::vector<WifiCredential> next;
+  if (saveCredentials(next)) {
+    credentials.swap(next);
+    Serial.printf("[%lu] [WCS] Cleared all WiFi credentials\n", millis());
+  }
 }

@@ -12,7 +12,7 @@ mode-selection flow.
 
 - Explicit loading/failure feedback already exists and is preserved:
   - Mode 1 (Create Hotspot) → `AP_STARTING` → render “Starting Hotspot…” then `renderServerRunning` shows SSID (`MERCURY_C165_5G` example), QR `WIFI:S:…;;`, `http://192.168.4.1/` + `http://crosspoint.local/`.
-  - Mode 2 (Join Network) → `WifiSelectionActivity` → `SCANNING` “Scanning…”, `NETWORK_LIST` list with RSSI / `*` encrypted / `+` saved, `CONNECTING` “Connecting… to <SSID>”, `SAVE_PROMPT` / `FORGET_PROMPT`, `CONNECTION_FAILED` with `connectionError`.
+  - Mode 2 (Join Network) → `WifiSelectionActivity` → `SCANNING` “Scanning…”, `NETWORK_LIST` list with RSSI / `*` encrypted / `+` saved, `CONNECTING` “Connecting… to <SSID>”. A successful user-entered password is persisted automatically; only an explicit authentication failure clears the saved credential. Other failures preserve it and show `CONNECTION_FAILED` with `connectionError`.
   - Mode 3 (Calibre) → `CalibreConnectActivity` → `WIFI_SELECTION` child or `SERVER_STARTING` → `SERVER_RUNNING` / `ERROR` with heap logs.
   - Failures call `showSetupError` → state `ERROR` → “Network setup failed” + `setupError` + “Back: choose another mode”.
 

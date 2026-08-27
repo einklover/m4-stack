@@ -671,6 +671,7 @@ function net_error_title(err)
   if err == "no_saved_wifi" then return "无已存 Wi-Fi" end
   if err == "timeout" then return "Wi-Fi 超时" end
   if err == "cancelled" then return "已取消" end
+  if err == "auth_failed" then return "Wi-Fi 密码错误" end
   if err == "connect_failed" then return "Wi-Fi 失败" end
   if err == "wifi_not_connected" then return "无网络" end
   if err == "tls_error" or err == "ssl_error" then return "TLS 失败" end
@@ -689,6 +690,9 @@ function net_error_body(err)
   end
   if err == "cancelled" then
     return "连接已取消"
+  end
+  if err == "auth_failed" then
+    return "Wi-Fi 密码被拒绝，请先在系统设置重新连接"
   end
   return tostring(err or "未知错误")
 end
