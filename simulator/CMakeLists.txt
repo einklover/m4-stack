@@ -204,6 +204,9 @@ target_include_directories(m4_ssd1677_driver_replay PRIVATE
 )
 target_link_libraries(m4_ssd1677_driver_replay PRIVATE m4_reader_core m4_deterministic_backend)
 add_test(NAME m4_ssd1677_driver_replay COMMAND m4_ssd1677_driver_replay)
+add_executable(m4_subactivity_lifecycle_tests tests/subactivity_lifecycle.cpp)
+target_include_directories(m4_subactivity_lifecycle_tests PRIVATE ../firmware/src)
+add_test(NAME m4_subactivity_lifecycle_tests COMMAND m4_subactivity_lifecycle_tests)
 add_executable(m4_wifi_state_tests
   ../firmware/tests/native_app/test_wifi_state.cpp
   ../firmware/src/WifiCredentialStore.cpp)
