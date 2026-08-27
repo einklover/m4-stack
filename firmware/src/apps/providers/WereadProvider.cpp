@@ -8,6 +8,7 @@
 
 #include "apps/M4xPsvtsExtract.h"
 #include "apps/weread/WereadCrypto.h"
+#include "util/M4WereadAuthPolicy.h"
 
 // Single-flight HTTP/TLS substrate (agent A, branch m4-http-transport-core).
 // B uses it when present and falls back to the std::function-based native
@@ -1098,16 +1099,8 @@ class WereadProvider final : public M4NativeProvider::Adapter {
     }
 
     const std::string prefix = readPrefix(outPath, 256);
-    if (containsLoginTimeout(prefix)) {
-      err = "login_required";
-      return false;
-    }
-    if (!allowJson && !prefix.empty() && prefix[0] == '{') {
-      err = "shard_json";
-      return false;
-    }
-    if (prefix.size() >= 32 && !isHex32(prefix.c_str())) {
-      err = "shard_bad_header";
+    if (const char* prefixError = M4WereadAuthPolicy::shardPrefixError(prefix, allowJson)) {
+      err = prefixError;
       return false;
     }
     return true;
