@@ -60,7 +60,7 @@ void JianGuoYunSettingsActivity::onExit() {
 
 void JianGuoYunSettingsActivity::loop() {
     if (subActivity) {
-        subActivity->loop();
+        pumpSubActivityFrame();
         return;
     }
 

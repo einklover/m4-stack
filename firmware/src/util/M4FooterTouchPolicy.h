@@ -21,15 +21,17 @@ inline uint8_t mask() { return maskStorage(); }
 inline bool enabled(LogicalButton button) { return (maskStorage() & static_cast<uint8_t>(button)) != 0; }
 
 // Returns the physical four-slot footer index (0..3), or -1 when the point is
-// outside the painted bottom hint bar. Kept pure so host tests can guarantee
-// draw/hit parity without touch hardware.
+// outside one of the painted bottom hint buttons. Keep these rectangles in
+// lockstep with FengyanTheme/LyraTheme::drawButtonHints.
 inline int slotFromPoint(int x, int y, int screenWidth, int screenHeight, int footerHeight) {
   if (screenWidth <= 0 || screenHeight <= 0 || footerHeight <= 0) return -1;
   if (x < 0 || x >= screenWidth || y < screenHeight - footerHeight || y >= screenHeight) return -1;
-  int slot = x * 4 / screenWidth;
-  if (slot < 0) slot = 0;
-  if (slot > 3) slot = 3;
-  return slot;
+  constexpr int buttonWidth = 106;
+  constexpr int buttonPositions[] = {38, 154, 268, 384};
+  for (int slot = 0; slot < 4; ++slot) {
+    if (x >= buttonPositions[slot] && x < buttonPositions[slot] + buttonWidth) return slot;
+  }
+  return -1;
 }
 
 }  // namespace M4FooterTouchPolicy

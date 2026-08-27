@@ -462,6 +462,31 @@ bool HomeActivity::computeCoverBufferLayout(size_t& xByteOffset, size_t& yStart,
 void HomeActivity::loop() {
   // Handle low memory warning dialog first
   if (showMemWarning) {
+    int touchX = 0;
+    int touchY = 0;
+    if (mappedInput.hasTouch() && mappedInput.wasScreenTapped(touchX, touchY)) {
+      const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+      const int cancelWidth = M4UiText::textWidth(renderer, UI_12_FONT_ID, L(Str::kCancel));
+      const int restartWidth = M4UiText::textWidth(renderer, UI_12_FONT_ID, L(Str::kRebootNow));
+      constexpr int padding = 20;
+      constexpr int btnSpacing = 30;
+      const int btnRowWidth = cancelWidth + btnSpacing + restartWidth;
+      const int boxH = lineHeight + 8 + lineHeight + 8 + lineHeight + padding * 3;
+      const int boxY = (renderer.getScreenHeight() - boxH) / 2;
+      const int btnY = boxY + boxH - padding - lineHeight;
+      const int cancelX = (renderer.getScreenWidth() - btnRowWidth) / 2;
+      const int restartX = cancelX + cancelWidth + btnSpacing;
+      const TouchHitGeometry::Rect cancelRect{cancelX - 4, btnY - 2, cancelWidth + 8, lineHeight + 4};
+      const TouchHitGeometry::Rect restartRect{restartX - 4, btnY - 2, restartWidth + 8, lineHeight + 4};
+      if (cancelRect.contains(touchX, touchY)) {
+        showMemWarning = false;
+        updateRequired = true;
+      } else if (restartRect.contains(touchX, touchY)) {
+        Serial.printf("[%lu] [Home] User confirmed restart due to low memory\n", millis());
+        ESP.restart();
+      }
+      return;
+    }
     if (mappedInput.wasPressed(MappedInputManager::Button::Left) ||
         mappedInput.wasPressed(MappedInputManager::Button::Up)) {
       memWarningSelected = false;
@@ -540,18 +565,21 @@ void HomeActivity::loop() {
     const int pageWidth = renderer.getScreenWidth();
     const int pageHeight = renderer.getScreenHeight();
     const TouchHitGeometry::Rect coverRect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight};
+    const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing;
     const TouchHitGeometry::Rect menuRect{
-        0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing, pageWidth,
-        pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing * 2 +
-                      metrics.buttonHintsHeight)};
+        0, menuTop, pageWidth, pageHeight - menuTop - metrics.buttonHintsHeight - metrics.verticalSpacing};
     const int coverCount = static_cast<int>(recentBooks.size());
     const int menuCount = getMenuItemCount();
     const int renderedMenuCount = menuCount - coverCount;
+    const bool isFengyanTheme = UITheme::getInstance().getThemeType() == ThemeType::Fengyan;
     constexpr int hPaddingInSelection = 8;
 
     int tx = 0;
     int ty = 0;
-    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+    int tapX = 0;
+    int tapY = 0;
+    const bool tapped = mappedInput.wasScreenTapped(tapX, tapY);
+    if (mappedInput.wasScreenTouchDown(tx, ty) && !tapped) {
       int hit = -1;
       if (coverCount > 0 &&
           TouchHitGeometry::fengyanCoverIndexFromPoint(coverRect, coverCount, metrics.contentSidePadding,
@@ -562,9 +590,14 @@ void HomeActivity::loop() {
         }
         return;
       }
-      if (renderedMenuCount > 0 &&
-          TouchHitGeometry::fengyanMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty, hit,
-                                                      -6, metrics.contentSidePadding)) {
+      const bool menuHit = renderedMenuCount > 0 &&
+          (isFengyanTheme
+               ? TouchHitGeometry::fengyanMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty,
+                                                              hit, -6, metrics.contentSidePadding)
+               : TouchHitGeometry::lyraMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty, hit,
+                                                           metrics.contentSidePadding, metrics.menuRowHeight,
+                                                           metrics.menuSpacing));
+      if (menuHit) {
         const int touched = coverCount + hit;
         if (selectorIndex != touched) {
           selectorIndex = touched;
@@ -573,7 +606,9 @@ void HomeActivity::loop() {
         return;
       }
     }
-    if (mappedInput.wasScreenTapped(tx, ty)) {
+    if (tapped) {
+      tx = tapX;
+      ty = tapY;
       int hit = -1;
       if (coverCount > 0 &&
           TouchHitGeometry::fengyanCoverIndexFromPoint(coverRect, coverCount, metrics.contentSidePadding,
@@ -582,9 +617,14 @@ void HomeActivity::loop() {
         activateSelection();
         return;
       }
-      if (renderedMenuCount > 0 &&
-          TouchHitGeometry::fengyanMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty, hit,
-                                                      -6, metrics.contentSidePadding)) {
+      const bool menuHit = renderedMenuCount > 0 &&
+          (isFengyanTheme
+               ? TouchHitGeometry::fengyanMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty,
+                                                              hit, -6, metrics.contentSidePadding)
+               : TouchHitGeometry::lyraMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty, hit,
+                                                           metrics.contentSidePadding, metrics.menuRowHeight,
+                                                           metrics.menuSpacing));
+      if (menuHit) {
         selectorIndex = coverCount + hit;
         activateSelection();
         return;
@@ -760,12 +800,11 @@ void HomeActivity::render() {
   menuItems.push_back(L(Str::kSystemSettings));
   menuIcons.push_back(isFengyanTheme ? UIIcon::Setting32 : UIIcon::Settings);
 
-  // 计算菜单区域
-  Rect menuRect = Rect{0,
-                       metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing,
-                       pageWidth,
-                       pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing * 2 +
-                                     metrics.buttonHintsHeight)};
+  // Keep the menu below the cover and above the painted footer. The old
+  // height calculation extended the hit/draw grid into the footer.
+  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing;
+  Rect menuRect = Rect{0, menuTop, pageWidth,
+                       pageHeight - menuTop - metrics.buttonHintsHeight - metrics.verticalSpacing};
 
   // 使用网格布局绘制菜单（一行两个）
   GUI.drawButtonMenu(

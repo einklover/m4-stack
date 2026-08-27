@@ -73,5 +73,8 @@ class OnlineOtaActivity : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  uint8_t touchFooterButtonsMask() const override {
+    return M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm;
+  }
   bool preventAutoSleep() override { return state == FLASHING || state == DOWNLOADING; }
 };

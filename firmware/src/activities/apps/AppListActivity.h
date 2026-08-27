@@ -16,6 +16,12 @@ class AppListActivity final : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool showTouchNavigation() const override { return false; }
+  uint8_t touchFooterButtonsMask() const override {
+    return mode_ == 1 ? M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm
+                      : M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm |
+                            M4FooterTouchPolicy::Left | M4FooterTouchPolicy::Right;
+  }
 
  private:
   std::function<void()> onGoBack;

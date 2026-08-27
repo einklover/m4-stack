@@ -392,7 +392,7 @@ void KOReaderSyncActivity::render() {
 
 void KOReaderSyncActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

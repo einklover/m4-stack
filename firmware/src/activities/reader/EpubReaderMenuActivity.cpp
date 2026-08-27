@@ -475,6 +475,22 @@ void EpubReaderMenuActivity::loop() {
       const int totalItems = static_cast<int>(items.size());
       const int pageItems = std::max(1, listHeight / metrics.listRowHeight);
 
+      // In portrait-inverted mode the rendered header is shifted down by the
+      // 50px hint gutter. Keep its visible More/back control tappable there;
+      // the old list-only routing left this header band inert.
+      int headerX = 0;
+      int headerY = 0;
+      if (menuLayer_ == MenuLayer::MORE && mappedInput.wasScreenTapped(headerX, headerY) &&
+          headerY >= hintGutterHeight && headerY < contentTop && headerX >= contentX &&
+          headerX < contentX + kTopBackHitW) {
+        if (moreSection_ != MoreSection::ROOT) {
+          showMoreRoot();
+        } else {
+          closeToReader();
+        }
+        return;
+      }
+
       M4ListTouchPolicy::Event te{};
       const auto sw = mappedInput.wasSwipe();
       if (sw == MappedInputManager::SwipeDir::Up) te.swipe = M4ListTouchPolicy::Swipe::Up;

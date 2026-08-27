@@ -49,7 +49,7 @@ void XtcReaderMenuActivity::displayTaskLoop() {
 
 void XtcReaderMenuActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

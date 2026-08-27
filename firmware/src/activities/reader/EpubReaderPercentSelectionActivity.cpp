@@ -163,7 +163,7 @@ void EpubReaderPercentSelectionActivity::adjustPercent(const int delta) {
 
 void EpubReaderPercentSelectionActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

@@ -370,25 +370,25 @@ void OnlineOtaActivity::render() {
 
 void OnlineOtaActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 
   // CHECKING_WIFI 状态已经在 onEnter 中处理，不再需要
 
   if (state == NO_UPDATE) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       goBack();
     }
     return;
   }
 
   if (state == UPDATE_AVAILABLE) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       Serial.printf("[%lu] [OnlineOTA] User confirmed download\n", millis());
       startDownload();
     }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       goBack();
     }
     // 支持滚动备注文本（上下左右键都可以）
@@ -412,28 +412,28 @@ void OnlineOtaActivity::loop() {
   }
 
   if (state == CHECK_FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       goBack();
     }
     return;
   }
 
   if (state == DOWNLOAD_FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       goBack();
     }
     return;
   }
 
   if (state == MD5_FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       goBack();
     }
     return;
   }
 
   if (state == READY_TO_FLASH) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       Serial.printf("[%lu] [OnlineOTA] User confirmed flash\n", millis());
       
       // 检查可用内存
@@ -452,14 +452,14 @@ void OnlineOtaActivity::loop() {
       
       startFlash();
     }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       goBack();
     }
     return;
   }
 
   if (state == FLASH_FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       goBack();
     }
     return;

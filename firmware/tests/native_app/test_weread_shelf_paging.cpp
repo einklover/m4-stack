@@ -78,11 +78,11 @@ int main() {
   assert(hit == 1);
 
   // Fullscreen provider footer hit geometry: four physical slots across 480px.
-  assert(M4FooterTouchPolicy::slotFromPoint(10, 770, 480, 800, 46) == 0);
-  assert(M4FooterTouchPolicy::slotFromPoint(130, 770, 480, 800, 46) == 1);
-  assert(M4FooterTouchPolicy::slotFromPoint(260, 770, 480, 800, 46) == 2);
-  assert(M4FooterTouchPolicy::slotFromPoint(470, 770, 480, 800, 46) == 3);
-  assert(M4FooterTouchPolicy::slotFromPoint(100, 740, 480, 800, 46) == -1);
+  assert(M4FooterTouchPolicy::slotFromPoint(40, 770, 480, 800, 40) == 0);
+  assert(M4FooterTouchPolicy::slotFromPoint(160, 770, 480, 800, 40) == 1);
+  assert(M4FooterTouchPolicy::slotFromPoint(275, 770, 480, 800, 40) == 2);
+  assert(M4FooterTouchPolicy::slotFromPoint(400, 770, 480, 800, 40) == 3);
+  assert(M4FooterTouchPolicy::slotFromPoint(145, 740, 480, 800, 40) == -1);
 
   return 0;
 }

@@ -130,7 +130,7 @@ void SdOtaUpdateActivity::render() {
 
 void SdOtaUpdateActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

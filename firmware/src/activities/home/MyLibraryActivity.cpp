@@ -436,7 +436,7 @@ void MyLibraryActivity::onExit() {
 //核心：修改loop，匹配这几个我需要的操作
 void MyLibraryActivity::loop() {
   if (subActivity) {
-      subActivity->loop();
+      pumpSubActivityFrame();
       // if a search was requested while the keyboard was running, close it now
       if (pendingSearch) {
           // perform exit after keyboard loop returns to avoid self-delete
@@ -522,14 +522,6 @@ void MyLibraryActivity::loop() {
         updateRequired = true;
         return;
       }
-      if (mappedInput.wasScreenTouchDown(tx, ty)) {
-        int hit = -1;
-        if (TouchHitGeometry::popupMenuIndexFromPoint(popup, tx, ty, hit) && actionMenuIndex != hit) {
-          actionMenuIndex = hit;
-          updateRequired = true;
-        }
-        return;
-      }
       if (mappedInput.wasScreenTapped(tx, ty)) {
         int hit = -1;
         if (TouchHitGeometry::popupMenuIndexFromPoint(popup, tx, ty, hit)) {
@@ -538,6 +530,14 @@ void MyLibraryActivity::loop() {
           executeActionMenu(actionMenuIndex);
         } else {
           showingActionMenu = false;
+          updateRequired = true;
+        }
+        return;
+      }
+      if (mappedInput.wasScreenTouchDown(tx, ty)) {
+        int hit = -1;
+        if (TouchHitGeometry::popupMenuIndexFromPoint(popup, tx, ty, hit) && actionMenuIndex != hit) {
+          actionMenuIndex = hit;
           updateRequired = true;
         }
         return;
@@ -572,14 +572,6 @@ void MyLibraryActivity::loop() {
         // Match drawPreviewImageMenu(): popupW=190, itemH=40, padding=4.
         const auto popup = TouchHitGeometry::makeCenteredPopupMenu(
             renderer.getScreenWidth(), renderer.getScreenHeight(), PREVIEW_MENU_COUNT, 190, 40, 4);
-        if (mappedInput.wasScreenTouchDown(tx, ty)) {
-          int hit = -1;
-          if (TouchHitGeometry::popupMenuIndexFromPoint(popup, tx, ty, hit) && previewImageMenuIndex != hit) {
-            previewImageMenuIndex = hit;
-            drawPreviewImageMenu();
-          }
-          return;
-        }
         if (mappedInput.wasScreenTapped(tx, ty)) {
           int hit = -1;
           if (TouchHitGeometry::popupMenuIndexFromPoint(popup, tx, ty, hit)) {
@@ -589,6 +581,14 @@ void MyLibraryActivity::loop() {
           } else {
             isPreviewImageMenuShowing = false;
             previewImage(currentPreviewPath);
+          }
+          return;
+        }
+        if (mappedInput.wasScreenTouchDown(tx, ty)) {
+          int hit = -1;
+          if (TouchHitGeometry::popupMenuIndexFromPoint(popup, tx, ty, hit) && previewImageMenuIndex != hit) {
+            previewImageMenuIndex = hit;
+            drawPreviewImageMenu();
           }
           return;
         }
@@ -657,6 +657,15 @@ void MyLibraryActivity::loop() {
       // drawList uses listRowHeight when subtitle callback is null.
       const int rowStep = metrics.listRowHeight;
       int tx = 0, ty = 0;
+      if (itemCount > 0 && mappedInput.wasScreenTapped(tx, ty)) {
+        int hit = -1;
+        if (TouchHitGeometry::listIndexFromPoint(ty, contentTop, contentHeight, rowStep, itemCount,
+                                                 static_cast<int>(selectorIndex), hit)) {
+          selectorIndex = static_cast<size_t>(hit);
+          openSelected();
+        }
+        return;
+      }
       if (itemCount > 0 && mappedInput.wasScreenTouchDown(tx, ty)) {
         int hit = -1;
         if (TouchHitGeometry::listIndexFromPoint(ty, contentTop, contentHeight, rowStep, itemCount,
@@ -665,15 +674,6 @@ void MyLibraryActivity::loop() {
             selectorIndex = static_cast<size_t>(hit);
             updateRequired = true;
           }
-        }
-        return;
-      }
-      if (itemCount > 0 && mappedInput.wasScreenTapped(tx, ty)) {
-        int hit = -1;
-        if (TouchHitGeometry::listIndexFromPoint(ty, contentTop, contentHeight, rowStep, itemCount,
-                                                 static_cast<int>(selectorIndex), hit)) {
-          selectorIndex = static_cast<size_t>(hit);
-          openSelected();
         }
         return;
       }

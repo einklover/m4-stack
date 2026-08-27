@@ -180,10 +180,6 @@ void CalibreConnectActivity::loop() {
     if (!mappedInput.hasTouch()) return false;
     if (mappedInput.wasBackGesture()) return true;
     if (mappedInput.wasSwipe() == MappedInputManager::SwipeDir::Left) return true;
-    int tx = 0, ty = 0;
-    const int bottom = renderer.getScreenHeight() - 92;
-    if (mappedInput.wasScreenTapped(tx, ty) && ty >= bottom) return true;
-    if (mappedInput.wasScreenTouchDown(tx, ty) && ty >= bottom) return true;
     return false;
   };
 

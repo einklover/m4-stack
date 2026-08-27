@@ -67,7 +67,7 @@ void DataCapsuleSettingsActivity::displayTaskLoop() {
 
 void DataCapsuleSettingsActivity::loop() {
     if (subActivity) {
-        subActivity->loop();
+        pumpSubActivityFrame();
         return;
     }
 

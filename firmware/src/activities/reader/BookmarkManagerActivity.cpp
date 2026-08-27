@@ -100,7 +100,7 @@ void BookmarkManagerActivity::displayTaskLoop() {
 
 void BookmarkManagerActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

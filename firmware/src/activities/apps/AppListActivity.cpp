@@ -57,6 +57,7 @@ void AppListActivity::reload() {
     selectedIndex_ = std::max(0, static_cast<int>(apps_.size()) - 1);
   }
   mode_ = 0;
+  M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
 }
 
 void AppListActivity::onEnter() {
@@ -123,6 +124,7 @@ void AppListActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
     if (mode_ == 1) {
       mode_ = 0;
+      M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
       updateRequired_ = true;
     } else {
       onGoBack();
@@ -134,6 +136,10 @@ void AppListActivity::loop() {
   if (mode_ == 1) {
     int tx = 0, ty = 0;
     if (mappedInput.wasScreenTapped(tx, ty)) {
+      if (ty >= renderer.getScreenHeight() - UITheme::getInstance().getMetrics().buttonHintsHeight) {
+        if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) uninstallSelected();
+        return;
+      }
       const auto dialog = uninstallDialogLayout(renderer);
       int hit = -1;
       if (M4ListTouchPolicy::dialogButtonFromPoint(dialog, tx, ty, hit)) {
@@ -168,16 +174,17 @@ void AppListActivity::loop() {
       const auto metrics = UITheme::getInstance().getMetrics();
       const int pageHeight = renderer.getScreenHeight();
       if (ty >= pageHeight - metrics.buttonHintsHeight) {
-        const int quarter = std::max(1, renderer.getScreenWidth() / 4);
-        if (tx < quarter) onGoBack();
-        else if (tx < quarter * 2) {
+        if (mappedInput.wasReleased(MappedInputManager::Button::Back)) onGoBack();
+        else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
           if (count > 0) openSelected();
-        } else if (tx < quarter * 3) {
+          else openInstall();
+        } else if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
           if (count > 0) {
             mode_ = 1;
+            M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
             updateRequired_ = true;
           }
-        } else {
+        } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
           openInstall();
         }
         return;

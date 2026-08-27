@@ -224,10 +224,10 @@ bool MappedInputManager::wasReleased(const Button button) const {
       const int w = renderer->getScreenWidth();
       const int h = renderer->getScreenHeight();
       if (w > 0 && ty >= h - metrics.buttonHintsHeight && ty < h) {
-        const int slot = std::min(3, std::max(0, tx * 4 / w));
+        const int slot = M4FooterTouchPolicy::slotFromPoint(tx, ty, w, h, metrics.buttonHintsHeight);
         const uint8_t physical[4] = {HalGPIO::BTN_BACK, HalGPIO::BTN_CONFIRM,
                                      HalGPIO::BTN_LEFT, HalGPIO::BTN_RIGHT};
-        if (physical[slot] == mappedHw) return true;
+        if (slot >= 0 && physical[slot] == mappedHw) return true;
       }
     }
   }

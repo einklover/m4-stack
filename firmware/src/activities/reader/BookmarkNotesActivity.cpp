@@ -123,7 +123,7 @@ void BookmarkNotesActivity::displayTaskLoop() {
 
 void BookmarkNotesActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

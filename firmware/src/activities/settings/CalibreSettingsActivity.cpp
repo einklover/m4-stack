@@ -50,7 +50,7 @@ void CalibreSettingsActivity::onExit() {
 
 void CalibreSettingsActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

@@ -52,7 +52,7 @@ void KOReaderSettingsActivity::onExit() {
 
 void KOReaderSettingsActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

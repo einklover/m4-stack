@@ -67,7 +67,7 @@ void AutoPageTurnIntervalActivity::adjustInterval(const int delta) {
 
 void AutoPageTurnIntervalActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

@@ -110,16 +110,10 @@ void RecentBooksActivity::loop() {
     else if (sw == MappedInputManager::SwipeDir::Down) te.swipe = M4ListTouchPolicy::Swipe::Down;
     else if (sw == MappedInputManager::SwipeDir::Left) te.swipe = M4ListTouchPolicy::Swipe::Left;
     else if (sw == MappedInputManager::SwipeDir::Right) te.swipe = M4ListTouchPolicy::Swipe::Right;
-    int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTouchDown(tx, ty)) {
-      te.touchDown = true;
-      te.x = tx;
-      te.y = ty;
-    } else if (mappedInput.wasScreenTapped(tx, ty)) {
-      te.tap = true;
-      te.x = tx;
-      te.y = ty;
-    }
+    int downX = 0, downY = 0, tapX = 0, tapY = 0;
+    te = M4ListTouchPolicy::mergeFrame(te.backGesture, te.swipe,
+                                       mappedInput.wasScreenTouchDown(downX, downY), downX, downY,
+                                       mappedInput.wasScreenTapped(tapX, tapY), tapX, tapY);
 
     M4ListTouchPolicy::ListLayout layout;
     layout.listTop = contentTop;

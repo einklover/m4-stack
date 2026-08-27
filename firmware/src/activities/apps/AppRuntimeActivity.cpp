@@ -680,7 +680,7 @@ void AppRuntimeActivity::tryLaunchPluginToc() {
 void AppRuntimeActivity::loop() {
   // Native reader / TOC as sub-activity: two-phase close.
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     // After child frame returns, apply deferred close.
     if (childClosePending_) {
       childClosePending_ = false;

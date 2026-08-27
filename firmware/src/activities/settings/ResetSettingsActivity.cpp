@@ -99,7 +99,7 @@ void ResetSettingsActivity::doReset() {
 
 void ResetSettingsActivity::loop() {
   if (state == WARNING) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       Serial.printf("[%lu] [RESET] User confirmed, resetting settings\n", millis());
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       state = RESETTING;
@@ -110,7 +110,7 @@ void ResetSettingsActivity::loop() {
       doReset();
     }
 
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       Serial.printf("[%lu] [RESET] User cancelled\n", millis());
       goBack();
     }
@@ -118,7 +118,7 @@ void ResetSettingsActivity::loop() {
   }
 
   if (state == SUCCESS) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       goBack();
     }
     return;

@@ -26,6 +26,7 @@ extern TiltPageTurnDetector tiltDetector;
 #include "EpubReaderPercentSelectionActivity.h"
 #include "fontIds.h"
 #include "util/M4UiText.h"
+#include "util/TouchHitGeometry.h"
 #include "../../lib/Xtc/Xtc/XtcTypes.h"
 
 namespace {
@@ -127,8 +128,45 @@ void XtcReaderActivity::loop() {
 
   // Pass input responsibility to sub activity if exists
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
+  }
+
+  // Keep XTC reader touch semantics identical to EPUB/TXT: edge back, top-edge
+  // menu gesture, tap zones, and horizontal swipes all share the same reader
+  // geometry and page-turn direction.
+  bool touchPrev = false;
+  bool touchNext = false;
+  bool touchMenu = false;
+  if (mappedInput.hasTouch()) {
+    if (mappedInput.wasBackGesture()) {
+      pendingGoBack = true;
+      return;
+    }
+    if (mappedInput.wasMenuGesture()) {
+      touchMenu = true;
+    } else {
+      int tx = 0;
+      int ty = 0;
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        const auto zone = TouchHitGeometry::readerZoneFromPoint(tx, ty, renderer.getScreenWidth(),
+                                                                 renderer.getScreenHeight());
+        if (zone == TouchHitGeometry::ReaderZone::Prev) {
+          touchPrev = true;
+        } else if (zone == TouchHitGeometry::ReaderZone::Next) {
+          touchNext = true;
+        } else if (zone == TouchHitGeometry::ReaderZone::Menu) {
+          touchMenu = true;
+        }
+      } else {
+        const auto swipe = mappedInput.wasSwipe();
+        if (swipe == MappedInputManager::SwipeDir::Right) {
+          touchPrev = true;
+        } else if (swipe == MappedInputManager::SwipeDir::Left) {
+          touchNext = true;
+        }
+      }
+    }
   }
 
   // ===== 自动翻页模式：只响应取消键 =====
@@ -157,7 +195,7 @@ void XtcReaderActivity::loop() {
   }
 
   // ===== Confirm 键：打开菜单 =====
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || touchMenu) {
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     exitActivity();
     const int progress = xtc ? (int)xtc->calculateProgress(currentPage) : 0;
@@ -208,17 +246,21 @@ void XtcReaderActivity::loop() {
   }
 #endif
 
-  const bool prevTriggered = usePressForPageTurn ? (mappedInput.wasPressed(MappedInputManager::Button::PageBack) ||
-                                                    mappedInput.wasPressed(MappedInputManager::Button::Left))
-                                                 : (mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
-                                                    mappedInput.wasReleased(MappedInputManager::Button::Left));
+  const bool prevTriggered =
+      touchPrev ||
+      (usePressForPageTurn ? (mappedInput.wasPressed(MappedInputManager::Button::PageBack) ||
+                              mappedInput.wasPressed(MappedInputManager::Button::Left))
+                           : (mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
+                              mappedInput.wasReleased(MappedInputManager::Button::Left)));
   const bool powerPageTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
                              mappedInput.wasReleased(MappedInputManager::Button::Power);
-  const bool nextTriggered = usePressForPageTurn
-                                 ? (mappedInput.wasPressed(MappedInputManager::Button::PageForward) || powerPageTurn ||
-                                    mappedInput.wasPressed(MappedInputManager::Button::Right))
-                                 : (mappedInput.wasReleased(MappedInputManager::Button::PageForward) || powerPageTurn ||
-                                    mappedInput.wasReleased(MappedInputManager::Button::Right));
+  const bool nextTriggered =
+      touchNext ||
+      (usePressForPageTurn
+           ? (mappedInput.wasPressed(MappedInputManager::Button::PageForward) || powerPageTurn ||
+              mappedInput.wasPressed(MappedInputManager::Button::Right))
+           : (mappedInput.wasReleased(MappedInputManager::Button::PageForward) || powerPageTurn ||
+              mappedInput.wasReleased(MappedInputManager::Button::Right)));
 
   if (!prevTriggered && !nextTriggered) {
     return;

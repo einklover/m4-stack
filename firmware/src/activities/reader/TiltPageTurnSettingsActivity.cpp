@@ -194,7 +194,7 @@ void TiltPageTurnSettingsActivity::taskTrampoline(void* param) {
 
 void TiltPageTurnSettingsActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

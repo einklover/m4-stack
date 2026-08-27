@@ -58,7 +58,7 @@ void NumberSelectionActivity::adjustValue(const int delta) {
 
 void NumberSelectionActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

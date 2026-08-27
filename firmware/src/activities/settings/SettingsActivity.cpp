@@ -182,7 +182,7 @@ void SettingsActivity::onExit() {
 
 void SettingsActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    if (pumpSubActivityFrame()) updateRequired = true;
     return;
   }
   bool hasChangedCategory = false;

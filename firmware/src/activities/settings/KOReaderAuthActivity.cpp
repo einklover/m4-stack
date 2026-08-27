@@ -157,7 +157,7 @@ void KOReaderAuthActivity::render() {
 
 void KOReaderAuthActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

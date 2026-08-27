@@ -112,6 +112,52 @@ inline bool fengyanMenuIndexFromPoint(const Rect& rect, int buttonCount, int px,
   return false;
 }
 
+// Lyra home menu: two columns with fixed-height rows, matching
+// LyraTheme::drawButtonMenu.
+struct LyraMenuLayout {
+  int columns = 2;
+  int rowHeight = 64;
+  int spacing = 8;
+  int contentSidePadding = 20;
+  int buttonCount = 0;
+  int tileWidth = 0;
+  Rect adjusted{};
+
+  bool valid() const { return tileWidth > 0 && buttonCount > 0; }
+
+  Rect tileRect(int index) const {
+    if (index < 0 || index >= buttonCount || !valid()) return {};
+    return {adjusted.x + contentSidePadding + (spacing + tileWidth) * (index % columns),
+            adjusted.y + (rowHeight + spacing) * (index / columns), tileWidth, rowHeight};
+  }
+};
+
+inline LyraMenuLayout makeLyraMenuLayout(const Rect& rect, int buttonCount, int contentSidePadding = 20,
+                                         int rowHeight = 64, int spacing = 8) {
+  LyraMenuLayout L;
+  L.contentSidePadding = contentSidePadding;
+  L.rowHeight = rowHeight;
+  L.spacing = spacing;
+  L.buttonCount = maxInt(0, buttonCount);
+  L.adjusted = rect;
+  if (L.buttonCount <= 0 || rect.width <= 2 * contentSidePadding || rowHeight <= 0) return L;
+  L.tileWidth = (rect.width - 2 * contentSidePadding - spacing) / 2;
+  return L;
+}
+
+inline bool lyraMenuIndexFromPoint(const Rect& rect, int buttonCount, int px, int py, int& outIndex,
+                                   int contentSidePadding = 20, int rowHeight = 64, int spacing = 8) {
+  const auto layout = makeLyraMenuLayout(rect, buttonCount, contentSidePadding, rowHeight, spacing);
+  if (!layout.valid() || !rect.contains(px, py)) return false;
+  for (int i = 0; i < layout.buttonCount; ++i) {
+    if (layout.tileRect(i).contains(px, py)) {
+      outIndex = i;
+      return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Fengyan recent covers (uses rect.x origin)
 // ---------------------------------------------------------------------------

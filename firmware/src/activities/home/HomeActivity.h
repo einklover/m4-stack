@@ -89,4 +89,7 @@ class HomeActivity final : public Activity {
   void onExit() override;
   void loop() override;
   bool isHomeActivity() const override { return true; }
+  uint8_t touchFooterButtonsMask() const override {
+    return M4FooterTouchPolicy::Confirm | M4FooterTouchPolicy::Left | M4FooterTouchPolicy::Right;
+  }
 };

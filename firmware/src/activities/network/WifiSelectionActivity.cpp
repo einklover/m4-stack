@@ -329,7 +329,7 @@ void WifiSelectionActivity::checkConnectionStatus() {
 
 void WifiSelectionActivity::loop() {
   if (subActivity) {
-    subActivity->loop();
+    pumpSubActivityFrame();
     return;
   }
 

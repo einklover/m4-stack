@@ -210,6 +210,9 @@ add_executable(m4_wifi_state_tests
 target_include_directories(m4_wifi_state_tests PRIVATE
   ../firmware/tests/native_app/wifi_store_shims ../firmware/src)
 add_test(NAME m4_wifi_state_tests COMMAND m4_wifi_state_tests)
+add_executable(m4_touch_regression_tests ../firmware/tests/native_app/test_touch_regressions.cpp)
+target_include_directories(m4_touch_regression_tests PRIVATE ../firmware/src)
+add_test(NAME m4_touch_regression_tests COMMAND m4_touch_regression_tests)
 if(M4SIM_BUILD_NATIVE_SMOKE)
   add_executable(m4_native_smoke native/main.cpp)
   target_link_libraries(m4_native_smoke PRIVATE m4_reader_core m4_platform_ports)
