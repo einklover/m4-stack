@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -8,6 +9,24 @@
 
 class FontManager {
  public:
+  struct RuntimeFontInfo {
+    std::string filename;
+    std::string displayName;
+    std::string type;
+    uint32_t sizeBytes = 0;
+    // Bounded on-device metadata only; no font payload leaves the device.
+    char signature[8] = {};
+    char integrity[32] = {};
+  };
+
+  struct RuntimeFontDiagnostic {
+    bool attempted = false;
+    bool ok = false;
+    char filename[128] = {};
+    char stage[24] = {};
+    char error[160] = {};
+  };
+
   static FontManager& getInstance();
 
   // Scan SD card for fonts
@@ -19,6 +38,8 @@ class FontManager {
   // User-facing runtime font list. Legacy .epdfont files remain available to
   // the internal loader, but are intentionally not exposed by the picker.
   const std::vector<std::string>& getAvailableTtfFamilies();
+  const std::vector<RuntimeFontInfo>& getRuntimeFonts();
+  static RuntimeFontDiagnostic lastRuntimeFontDiagnostic();
 
   // Persist font diagnostics because serial output is not reliable on USB.
   static void appendFontDiagnostic(const char* line);
@@ -61,6 +82,7 @@ class FontManager {
     scanned = false;
     availableFamilies.clear();
     availableTtfFamilies.clear();
+    runtimeFonts.clear();
   }
 
  private:
@@ -69,6 +91,7 @@ class FontManager {
 
   std::vector<std::string> availableFamilies;
   std::vector<std::string> availableTtfFamilies;
+  std::vector<RuntimeFontInfo> runtimeFonts;
   bool scanned = false;
 
   // Map: FamilyName -> Size -> EpdFontFamily*

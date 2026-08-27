@@ -56,6 +56,9 @@ struct HostHooks {
   std::function<bool(const std::string& appId, std::string& errKey, std::string& errMsg)> launchApp;
   std::function<void(const std::string& appId)> noteActiveApp;
   std::function<void()> clearActiveApp;
+  std::function<std::string()> fontList;
+  std::function<std::string()> fontGet;
+  std::function<std::string(const std::string& filename)> fontSet;
   // Synchronous install on the main owner loop (no FreeRTOS worker).
   std::function<bool(const std::string& inboxPath, std::string& errKey, std::string& errMsg, std::string& id,
                      std::string& ver, int& code)>

@@ -169,11 +169,11 @@ bool insertCustomFamily(GfxRenderer& renderer, const char* familyName, int size)
   return true;
 }
 
-int loadAndInsertCustom(GfxRenderer& renderer, const char* familyName, int size, std::vector<int>& outIds) {
-  if (!insertCustomFamily(renderer, familyName, size)) return -1;
+bool loadAndInsertCustom(GfxRenderer& renderer, const char* familyName, int size, std::vector<int>& outIds) {
+  if (!insertCustomFamily(renderer, familyName, size)) return false;
   const int id = hashFontId(familyName, size);
   outIds.push_back(id);
-  return id;
+  return true;
 }
 
 void promoteToReaderIds(GfxRenderer& renderer, const char* familyName, int size) {
@@ -339,7 +339,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
 
     bool any = false;
     for (int sz : sizes) {
-      any = (loadAndInsertCustom(renderer, d.loadCustomFamily.c_str(), sz, loadedCustomIds) >= 0) || any;
+      any = loadAndInsertCustom(renderer, d.loadCustomFamily.c_str(), sz, loadedCustomIds) || any;
     }
     if (!any) {
       customLoadSucceeded = false;
@@ -418,7 +418,7 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
                     SETTINGS.getReaderPixelSize());
       Serial.flush();
       const int size = SETTINGS.getReaderPixelSize();
-      legacyCustomLoadSucceeded = loadAndInsertCustom(renderer, SETTINGS.customFontFamily, size, loadedCustomIds) >= 0;
+      legacyCustomLoadSucceeded = loadAndInsertCustom(renderer, SETTINGS.customFontFamily, size, loadedCustomIds);
     }
   }
   sdFontsLoaded_ = true;

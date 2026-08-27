@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import secrets
 import time
 from pathlib import Path
@@ -89,6 +90,7 @@ class Client:
         timeout: Optional[float] = None,
         req_id: Optional[str] = None,
         on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+        collect_chunks: bool = False,
     ) -> dict:
         """Send one request and wait for ok/err.
 
@@ -102,6 +104,7 @@ class Client:
         deadline = time.time() + float(timeout)
         last_progress_at = time.time()
         last_heartbeat = time.time()
+        chunks: dict[int, bytes] = {}
 
         while time.time() < deadline:
             data = self.t.read(timeout=0.1)
@@ -127,6 +130,10 @@ class Client:
                 self._emit_log(raw_line)
                 if frame.req_id != rid:
                     continue
+                if frame.kind == "chk" and collect_chunks:
+                    if frame.raw is not None:
+                        chunks[frame.seq or 0] = frame.raw
+                    continue
                 if frame.kind == "prg":
                     last_progress_at = time.time()
                     last_heartbeat = time.time()
@@ -137,7 +144,23 @@ class Client:
                     j = frame.json or {}
                     raise BridgeError(j.get("error", "error"), j.get("message", ""))
                 if frame.kind == "ok":
-                    return frame.json or {}
+                    result = frame.json or {}
+                    if collect_chunks and result.get("op") == "font_list_done":
+                        try:
+                            count = int(result["chunks"])
+                            expected_bytes = int(result["bytes"])
+                            if count < 0 or sorted(chunks) != list(range(count)):
+                                raise ValueError("missing font list chunk")
+                            raw = b"".join(chunks[index] for index in range(count))
+                            if len(raw) != expected_bytes:
+                                raise ValueError("font list byte count mismatch")
+                            decoded = json.loads(raw.decode("utf-8"))
+                        except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as e:
+                            raise BridgeError("font_list_invalid", str(e)) from e
+                        if not isinstance(decoded, dict):
+                            raise BridgeError("font_list_invalid", "字体列表响应不是 JSON 对象")
+                        return decoded
+                    return result
             # Stale: no prg for a long stretch still prints host_wait via heartbeat above.
             _ = last_progress_at
         raise BridgeError("timeout", f"等待响应超时 ({timeout}s)")
@@ -169,6 +192,15 @@ class Client:
 
     def status(self) -> dict:
         return self.request({"op": "status"}, timeout=5)
+
+    def font_list(self) -> dict:
+        return self.request({"op": "font", "action": "list"}, timeout=15, collect_chunks=True)
+
+    def font_get(self) -> dict:
+        return self.request({"op": "font", "action": "get"}, timeout=5)
+
+    def font_set(self, filename: str) -> dict:
+        return self.request({"op": "font", "action": "set", "filename": filename}, timeout=45)
 
     def ui(self) -> dict:
         """Structured on-screen / plugin state (prefer over OCR for automation)."""

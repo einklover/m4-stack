@@ -29,6 +29,7 @@
 #include "apps/M4xWifiConnect.h"
 #include "apps/M4WifiFailureTracker.h"
 #include "qemu/M4QemuNet.h"
+#include "util/M4FontDebugPolicy.h"
 
 namespace M4SerialDebug {
 namespace {
@@ -522,7 +523,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"wifi_connected\":%s,\"wifi_status\":%d,\"wifi_ssid\":\"%s\",\"wifi_ip\":\"%s\","
              "\"wifi_rssi\":%d,\"caps\":[\"install\",\"install_http\",\"wifi_status\",\"wifi_prepare\","
              "\"wifi_transfer\",\"sd_probe\",\"sd_read\",\"http_probe\",\"launch\",\"tap\",\"key\","
-             "\"swipe\",\"screenshot\",\"logs\",\"ui\"]}",
+             "\"swipe\",\"screenshot\",\"logs\",\"ui\",\"font\"]}",
              op, kProtocolVersion, st.firmwareVersion ? st.firmwareVersion : "", activityCopy_, appIdCopy_,
              static_cast<unsigned>(st.freeHeap), static_cast<unsigned>(st.minFreeHeap),
              static_cast<unsigned>(st.freePsram), static_cast<unsigned>(st.resetReason),
@@ -561,6 +562,58 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     out += '}';
     if (out.size() > 1000) out.resize(1000);
     replyOk(reqId, out.c_str());
+    return;
+  }
+
+  if (strcmp(op, "font") == 0) {
+    const char* action = doc["action"] | "";
+    if (strcmp(action, "list") == 0 && hooks_.fontList) {
+      const std::string out = hooks_.fontList();
+      if (out.size() <= 900) {
+        replyOk(reqId, out.empty() ? "{\"op\":\"font\",\"action\":\"list\",\"fonts\":[]}" : out.c_str());
+      } else {
+        const size_t total = (out.size() + kMaxRawChunk - 1) / kMaxRawChunk;
+        for (size_t seq = 0; seq < total; ++seq) {
+          const size_t offset = seq * kMaxRawChunk;
+          const size_t count = std::min(kMaxRawChunk, out.size() - offset);
+          char b64[1100] = {};
+          M4SerialDebugPolicy::b64Encode(reinterpret_cast<const uint8_t*>(out.data() + offset), count, b64,
+                                          sizeof(b64));
+          Serial.printf("%s %s chk %u %u %s\n", kPrefix, reqId, static_cast<unsigned>(seq),
+                        static_cast<unsigned>(total), b64);
+        }
+        char done[180];
+        snprintf(done, sizeof(done),
+                 "{\"op\":\"font_list_done\",\"chunks\":%u,\"bytes\":%u}",
+                 static_cast<unsigned>(total), static_cast<unsigned>(out.size()));
+        replyOk(reqId, done);
+      }
+      return;
+    }
+    if (strcmp(action, "get") == 0 && hooks_.fontGet) {
+      const std::string out = hooks_.fontGet();
+      replyOk(reqId, out.empty() ? "{\"op\":\"font\",\"action\":\"get\",\"ok\":false}" : out.c_str());
+      return;
+    }
+    if (strcmp(action, "set") == 0 && hooks_.fontSet) {
+      const std::string filename = doc["filename"] | "";
+      const std::string validation = M4FontDebugPolicy::validateBasename(filename);
+      if (!validation.empty()) {
+        char safe[160] = {};
+        copyJsonSafe(filename.c_str(), safe, sizeof(safe));
+        char out[300];
+        snprintf(out, sizeof(out),
+                 "{\"op\":\"font\",\"action\":\"set\",\"ok\":false,"
+                 "\"filename\":\"%s\",\"stage\":\"validate\",\"error\":\"%s\"}",
+                 safe, validation.c_str());
+        replyOk(reqId, out);
+        return;
+      }
+      const std::string out = hooks_.fontSet(filename);
+      replyOk(reqId, out.empty() ? "{\"op\":\"font\",\"action\":\"set\",\"ok\":false}" : out.c_str());
+      return;
+    }
+    replyErr(reqId, "font_unavailable", "字体控制不可用");
     return;
   }
 

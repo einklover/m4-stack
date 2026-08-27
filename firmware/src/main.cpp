@@ -66,6 +66,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "managers/FontCacheManager.h"
+#include "managers/FontManager.h"
 #include "activities/browser/JianGuoBrowserActivity.h"
 #include "activities/browser/DataCapsuleBrowserActivity.h"
 #include "activities/reader/BookmarkNotesActivity.h"
@@ -82,6 +83,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include "util/M4FrontlightPolicy.h"
+#include "util/M4FontDebugPolicy.h"
 #include "util/M4FontPolicy.h"
 #include "util/M4SdStatus.h"
 #endif
@@ -1010,6 +1012,89 @@ void setup() {
       hooks.openFileTransferUi = []() { onGoToFileTransferUsb(); };
       hooks.noteActiveApp = [](const std::string& id) { gDebugActiveAppId = id; };
       hooks.clearActiveApp = []() { gDebugActiveAppId.clear(); };
+      const auto jsonQuote = [](const std::string& value) {
+        std::string out = "\"";
+        for (const unsigned char c : value) {
+          if (c == '\"' || c == '\\') {
+            out += '\\';
+            out += static_cast<char>(c);
+          } else if (c < 0x20) {
+            out += '_';
+          } else {
+            out += static_cast<char>(c);
+          }
+        }
+        out += '\"';
+        return out;
+      };
+      hooks.fontList = [jsonQuote]() {
+        const auto& fonts = FontManager::getInstance().getRuntimeFonts();
+        std::string out = "{\"op\":\"font\",\"action\":\"list\",\"ok\":true,\"fonts\":[";
+        for (size_t i = 0; i < fonts.size(); ++i) {
+          if (i) out += ',';
+          out += "{\"filename\":" + jsonQuote(fonts[i].filename) +
+                 ",\"display_name\":" + jsonQuote(fonts[i].displayName) +
+                 ",\"type\":" + jsonQuote(fonts[i].type) +
+                 ",\"size_bytes\":" + std::to_string(fonts[i].sizeBytes) +
+                 ",\"signature\":" + jsonQuote(fonts[i].signature) +
+                 ",\"integrity\":" + jsonQuote(fonts[i].integrity) + "}";
+        }
+        out += "]}";
+        return out;
+      };
+      hooks.fontGet = [jsonQuote]() {
+        const bool custom = SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM;
+        const std::string filename = custom ? SETTINGS.customFontFamily : "";
+        const bool runtime = custom && M4FontDebugPolicy::isRuntimeFilename(filename.c_str());
+        const char* mode = !custom ? "builtin" : (runtime ? "runtime" : "legacy");
+        const std::string path = runtime ? "/FONT/" + filename : (custom ? "/fonts/" + filename + ".epdfont" : "");
+        return std::string("{\"op\":\"font\",\"action\":\"get\",\"ok\":true,\"mode\":") +
+               jsonQuote(mode) + ",\"filename\":" + jsonQuote(filename) + ",\"path\":" +
+               jsonQuote(path) + "}";
+      };
+      hooks.fontSet = [jsonQuote](const std::string& filename) {
+        const auto& fonts = FontManager::getInstance().getRuntimeFonts();
+        bool found = false;
+        for (const auto& font : fonts) {
+          if (font.filename == filename) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          return std::string("{\"op\":\"font\",\"action\":\"set\",\"ok\":false,\"filename\":") +
+                 jsonQuote(filename) + ",\"stage\":\"validate\",\"error\":\"not_scanned_font\"}";
+        }
+
+        const uint8_t previousMode = SETTINGS.fontFamily;
+        const std::string previousFamily = SETTINGS.customFontFamily;
+        SETTINGS.fontFamily = CrossPointSettings::FONT_CUSTOM;
+        strncpy(SETTINGS.customFontFamily, filename.c_str(), sizeof(SETTINGS.customFontFamily) - 1);
+        SETTINGS.customFontFamily[sizeof(SETTINGS.customFontFamily) - 1] = '\0';
+        FontCacheManager::clearCache();
+        const bool loaded = EpdFontLoader::loadFontsFromSd(renderer);
+        const auto diagnostic = FontManager::lastRuntimeFontDiagnostic();
+        if (!loaded) {
+          SETTINGS.fontFamily = previousMode;
+          strncpy(SETTINGS.customFontFamily, previousFamily.c_str(), sizeof(SETTINGS.customFontFamily) - 1);
+          SETTINGS.customFontFamily[sizeof(SETTINGS.customFontFamily) - 1] = '\0';
+          SETTINGS.saveToFile();
+          (void)EpdFontLoader::loadFontsFromSd(renderer);
+          const char* stage = diagnostic.stage[0] ? diagnostic.stage : "load";
+          const char* error = diagnostic.error[0] ? diagnostic.error : "load_failed";
+          Serial.printf("[M4-FONT] DEBUG_SET_FAIL file=%s stage=%s error=%s rollback=1\n",
+                        filename.c_str(), stage, error);
+          return std::string("{\"op\":\"font\",\"action\":\"set\",\"ok\":false,\"filename\":") +
+                 jsonQuote(filename) + ",\"stage\":" + jsonQuote(stage) + ",\"error\":" +
+                 jsonQuote(error) + ",\"detail\":\"selection rolled back\",\"rollback\":true,\"heap_free\":" +
+                 std::to_string(ESP.getFreeHeap()) + ",\"psram_free\":" + std::to_string(ESP.getFreePsram()) + "}";
+        }
+        SETTINGS.saveToFile();
+        Serial.printf("[M4-FONT] DEBUG_SET_OK file=%s\n", filename.c_str());
+        return std::string("{\"op\":\"font\",\"action\":\"set\",\"ok\":true,\"filename\":") +
+               jsonQuote(filename) + ",\"stage\":\"ready\",\"render\":\"not_tested\",\"heap_free\":" +
+               std::to_string(ESP.getFreeHeap()) + ",\"psram_free\":" + std::to_string(ESP.getFreePsram()) + "}";
+      };
       hooks.launchApp = [](const std::string& appId, std::string& errKey, std::string& errMsg) -> bool {
         if (!M4xIsValidPackageId(appId)) {
           errKey = "invalid_id";

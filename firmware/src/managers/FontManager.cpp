@@ -11,15 +11,124 @@
 #include "CustomEpdFont.h"
 #include "FontCacheManager.h"
 #include "TtfEpdFont.h"
+#include "util/M4FontDebugPolicy.h"
 
 namespace {
 constexpr const char* kLegacyEpdFontDir = "/fonts";
 constexpr const char* kRuntimeTtfDir = "/FONT";
+FontManager::RuntimeFontDiagnostic gRuntimeFontDiagnostic;
 
 bool isRuntimeFontName(const String& name) {
-  String n = name;
-  n.toLowerCase();
-  return n.endsWith(".ttf") || n.endsWith(".ttc") || n.endsWith(".otf") || n.endsWith(".otc");
+  return M4FontDebugPolicy::isRuntimeFilename(name.c_str());
+}
+
+const char* runtimeFontType(const char* filename) {
+  const char* dot = strrchr(filename ? filename : "", '.');
+  return dot ? dot + 1 : "";
+}
+
+uint16_t readU16BE(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
+uint32_t readU32BE(const uint8_t* p) {
+  return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+         (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+}
+
+bool inspectSfntTables(FsFile& file, size_t fileSize, uint32_t faceOffset) {
+  constexpr uint16_t kMaxTables = 128;
+  if (faceOffset > fileSize || fileSize - faceOffset < 12) return false;
+  uint8_t header[12] = {};
+  if (!file.seekSet(faceOffset) || file.read(header, sizeof(header)) != sizeof(header)) return false;
+  const uint32_t version = readU32BE(header);
+  if (version != 0x00010000u && version != 0x74727565u && version != 0x4f54544fu) return false;
+  const uint16_t tableCount = readU16BE(header + 4);
+  const uint64_t directoryEnd = uint64_t(faceOffset) + 12u + uint64_t(tableCount) * 16u;
+  if (tableCount == 0 || tableCount > kMaxTables || directoryEnd > fileSize) return false;
+
+  uint8_t record[16] = {};
+  for (uint16_t i = 0; i < tableCount; ++i) {
+    const uint32_t recordOffset = faceOffset + 12u + uint32_t(i) * 16u;
+    if (!file.seekSet(recordOffset) || file.read(record, sizeof(record)) != sizeof(record)) return false;
+    const uint64_t tableOffset = readU32BE(record + 8);
+    const uint64_t tableLength = readU32BE(record + 12);
+    if (tableOffset > fileSize || tableLength > fileSize - tableOffset) return false;
+  }
+  return true;
+}
+
+void inspectRuntimeFont(FsFile& file, FontManager::RuntimeFontInfo& info) {
+  const size_t fileSize = static_cast<size_t>(file.fileSize());
+  if (fileSize == 0) {
+    strncpy(info.signature, "empty", sizeof(info.signature) - 1);
+    strncpy(info.integrity, "empty", sizeof(info.integrity) - 1);
+    return;
+  }
+  uint8_t signature[4] = {};
+  if (!file.seekSet(0) || file.read(signature, sizeof(signature)) != sizeof(signature)) {
+    strncpy(info.signature, "short", sizeof(info.signature) - 1);
+    strncpy(info.integrity, "header_truncated", sizeof(info.integrity) - 1);
+    return;
+  }
+
+  const uint32_t sfntVersion = readU32BE(signature);
+  if (sfntVersion == 0x00010000u) {
+    strncpy(info.signature, "sfnt", sizeof(info.signature) - 1);
+  } else if (memcmp(signature, "true", 4) == 0) {
+    strncpy(info.signature, "true", sizeof(info.signature) - 1);
+  } else if (memcmp(signature, "OTTO", 4) == 0) {
+    strncpy(info.signature, "OTTO", sizeof(info.signature) - 1);
+  } else if (memcmp(signature, "ttcf", 4) == 0) {
+    strncpy(info.signature, "ttcf", sizeof(info.signature) - 1);
+    uint8_t collectionHeader[12] = {};
+    if (!file.seekSet(0) || file.read(collectionHeader, sizeof(collectionHeader)) != sizeof(collectionHeader) ||
+        fileSize < 16) {
+      strncpy(info.integrity, "header_truncated", sizeof(info.integrity) - 1);
+      return;
+    }
+    const uint32_t faceCount = readU32BE(collectionHeader + 8);
+    if (faceCount == 0 || faceCount > 64 || 12u + uint64_t(faceCount) * 4u > fileSize) {
+      strncpy(info.integrity, "directory_past_eof", sizeof(info.integrity) - 1);
+      return;
+    }
+    uint8_t rawOffset[4] = {};
+    for (uint32_t i = 0; i < faceCount; ++i) {
+      if (!file.seekSet(12u + i * 4u) || file.read(rawOffset, sizeof(rawOffset)) != sizeof(rawOffset)) break;
+      if (inspectSfntTables(file, fileSize, readU32BE(rawOffset))) {
+        strncpy(info.integrity, "tables_in_file", sizeof(info.integrity) - 1);
+        return;
+      }
+    }
+    strncpy(info.integrity, "table_past_eof", sizeof(info.integrity) - 1);
+    return;
+  } else if (memcmp(signature, "wOFF", 4) == 0) {
+    strncpy(info.signature, "wOFF", sizeof(info.signature) - 1);
+    strncpy(info.integrity, "not_sfnt", sizeof(info.integrity) - 1);
+    return;
+  } else if (memcmp(signature, "wOF2", 4) == 0) {
+    strncpy(info.signature, "wOF2", sizeof(info.signature) - 1);
+    strncpy(info.integrity, "not_sfnt", sizeof(info.integrity) - 1);
+    return;
+  } else {
+    strncpy(info.signature, "other", sizeof(info.signature) - 1);
+    strncpy(info.integrity, "not_sfnt", sizeof(info.integrity) - 1);
+    return;
+  }
+
+  strncpy(info.integrity, inspectSfntTables(file, fileSize, 0) ? "tables_in_file" : "table_past_eof",
+          sizeof(info.integrity) - 1);
+}
+
+const char* diagnosticStage(const char* error) {
+  if (!error) return "load";
+  if (strstr(error, "cmap")) return "cmap";
+  if (strstr(error, "CFF") || strstr(error, "CharString") || strstr(error, "Type2")) return "cff";
+  if (strstr(error, "glyph") || strstr(error, "glyf") || strstr(error, "loca")) return "glyph";
+  if (strstr(error, "table") || strstr(error, "sfnt") || strstr(error, "head") || strstr(error, "maxp") ||
+      strstr(error, "hhea") || strstr(error, "hmtx")) return "table";
+  if (strstr(error, "alloc") || strstr(error, "memory") || strstr(error, "OOM") || strstr(error, "PSRAM")) {
+    return "memory";
+  }
+  if (strstr(error, "file") || strstr(error, "open")) return "file";
+  return "load";
 }
 }  // namespace
 
@@ -103,10 +212,20 @@ const std::vector<std::string>& FontManager::getAvailableTtfFamilies() {
   return availableTtfFamilies;
 }
 
+const std::vector<FontManager::RuntimeFontInfo>& FontManager::getRuntimeFonts() {
+  if (!scanned) scanFonts();
+  return runtimeFonts;
+}
+
+FontManager::RuntimeFontDiagnostic FontManager::lastRuntimeFontDiagnostic() {
+  return gRuntimeFontDiagnostic;
+}
+
 void FontManager::scanFonts() {
   Serial.println("[FM] Scanning fonts...");
   availableFamilies.clear();
   availableTtfFamilies.clear();
+  runtimeFonts.clear();
   scanned = true;
 
   auto scanDir = [&](const char* dirPath, bool allowLegacyEpdFont) {
@@ -146,9 +265,21 @@ void FontManager::scanFonts() {
         // UI exposes the exact file the user dropped into /FONT.
         if (std::find(availableFamilies.begin(), availableFamilies.end(), name.c_str()) ==
             availableFamilies.end()) {
-          availableFamilies.push_back(name.c_str());
-          availableTtfFamilies.push_back(name.c_str());
-          Serial.printf("[FM] Added runtime font: %s\n", name.c_str());
+          RuntimeFontInfo info;
+          info.filename = name.c_str();
+          info.displayName = name.c_str();
+          info.type = runtimeFontType(name.c_str());
+          info.sizeBytes = static_cast<uint32_t>(file.fileSize());
+          inspectRuntimeFont(file, info);
+          if (!M4FontDebugPolicy::isCompleteRuntimeFont(info.sizeBytes, info.signature, info.integrity)) {
+            Serial.printf("[FM] Skipping incomplete runtime font: %s size=%u signature=%s integrity=%s\n",
+                          name.c_str(), static_cast<unsigned>(info.sizeBytes), info.signature, info.integrity);
+          } else {
+            availableFamilies.push_back(name.c_str());
+            availableTtfFamilies.push_back(name.c_str());
+            runtimeFonts.push_back(std::move(info));
+            Serial.printf("[FM] Added runtime font: %s\n", name.c_str());
+          }
         }
       }
       }
@@ -164,6 +295,8 @@ void FontManager::scanFonts() {
   scanDir(kRuntimeTtfDir, false);
 
   std::sort(availableFamilies.begin(), availableFamilies.end());
+  std::sort(runtimeFonts.begin(), runtimeFonts.end(),
+            [](const RuntimeFontInfo& a, const RuntimeFontInfo& b) { return a.filename < b.filename; });
   Serial.printf("[FM] Scan complete. Found %d families\n", availableFamilies.size());
 }
 
@@ -614,6 +747,9 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
   const bool isRuntimeFont = isRuntimeFontName(String(familyName.c_str()));
 
   if (isRuntimeFont) {
+    gRuntimeFontDiagnostic = {};
+    gRuntimeFontDiagnostic.attempted = true;
+    strncpy(gRuntimeFontDiagnostic.filename, familyName.c_str(), sizeof(gRuntimeFontDiagnostic.filename) - 1);
     // Runtime sfnt/collection: streamed glyf rasterizer, no flash caching. The
     // runtime face is per (family, size) so changing customFontSize recreates it.
     String fontPath = String(kRuntimeTtfDir) + "/" + String(familyName.c_str());
@@ -625,6 +761,8 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
 
     TtfEpdFont* regular = new (std::nothrow) TtfEpdFont(fontPath, (uint16_t)fontSize);
     if (regular && regular->valid()) {
+      gRuntimeFontDiagnostic.ok = true;
+      strncpy(gRuntimeFontDiagnostic.stage, "ready", sizeof(gRuntimeFontDiagnostic.stage) - 1);
       EpdFontFamily* fontFamily = new EpdFontFamily(regular, nullptr, nullptr, nullptr);
       loadedFonts[familyName][fontSize] = fontFamily;
       snprintf(diag, sizeof(diag), "load_ok family=%s size=%d", familyName.c_str(), fontSize);
@@ -632,6 +770,8 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
       return fontFamily;
     }
     const char* err = regular ? regular->lastError() : "alloc failed";
+    strncpy(gRuntimeFontDiagnostic.stage, diagnosticStage(err), sizeof(gRuntimeFontDiagnostic.stage) - 1);
+    strncpy(gRuntimeFontDiagnostic.error, err ? err : "load failed", sizeof(gRuntimeFontDiagnostic.error) - 1);
     Serial.printf("[FontMgr] Failed to load runtime font: %s (%s)\n", fontPath.c_str(), err);
     snprintf(diag, sizeof(diag), "load_fail family=%s size=%d error=%s", familyName.c_str(), fontSize, err);
     appendFontDiagnostic(diag);

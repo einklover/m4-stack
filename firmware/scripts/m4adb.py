@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from m4adb_lib import package as pkg  # noqa: E402
 from m4adb_lib.client import BridgeError, Client  # noqa: E402
 from m4adb_lib.daemon import BridgeDaemon, DaemonTransport, daemon_alive, socket_path_for_port, stop_daemon  # noqa: E402
+from m4adb_lib.font_policy import font_filename_error  # noqa: E402
 from m4adb_lib.journey import load_journey, run_journey  # noqa: E402
 from m4adb_lib.mock_device import MockDevice  # noqa: E402
 from m4adb_lib.transport import MockTransport, auto_port, list_serial_devices, make_transport  # noqa: E402
@@ -511,6 +512,38 @@ def cmd_back(args: argparse.Namespace) -> int:
         c.close()
 
 
+def cmd_font(args: argparse.Namespace) -> int:
+    if args.font_action == "set":
+        error = font_filename_error(args.filename)
+        if error:
+            result = {
+                "op": "font",
+                "action": "set",
+                "ok": False,
+                "filename": args.filename,
+                "stage": "validate",
+                "error": error,
+            }
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 1
+
+    c = _open_client(args)
+    try:
+        if args.font_action == "list":
+            result = c.font_list()
+        elif args.font_action == "get":
+            result = c.font_get()
+        else:
+            result = c.font_set(args.filename)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok", True) else 1
+    except BridgeError as e:
+        print(f"错误 {e.key}: {e.message}", file=sys.stderr)
+        return 1
+    finally:
+        c.close()
+
+
 def cmd_screenshot(args: argparse.Namespace) -> int:
     c = _open_client(args)
     try:
@@ -799,6 +832,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("devices", help="列出候选串口")
     sub.add_parser("ping", help="握手")
     sub.add_parser("status", help="状态快照")
+    pf = sub.add_parser("font", help="列出、读取或切换运行时字体")
+    pfa = pf.add_subparsers(dest="font_action", required=True)
+    pfa.add_parser("list", help="列出 /FONT 中的 TTF/TTC/OTF/OTC")
+    pfa.add_parser("get", help="读取当前字体设置")
+    pfs = pfa.add_parser("set", help="切换到 /FONT 中的字体文件名")
+    pfs.add_argument("filename")
     sub.add_parser("sd_probe", help="SD 卡写入/同步/读取/删除探针")
     php = sub.add_parser(
         "http_probe",
@@ -942,6 +981,7 @@ def main(argv: list[str] | None = None) -> int:
         "devices": cmd_devices,
         "ping": cmd_ping,
         "status": cmd_status,
+        "font": cmd_font,
         "sd_probe": cmd_sd_probe,
         "http_probe": cmd_http_probe,
         "sd_read": cmd_sd_read,
