@@ -66,6 +66,17 @@ int main() {
   assert(TouchHitGeometry::listIndexFromPoint(299, 100, 360, 60, count, 3000, hit));
   assert(hit == 3003);
 
+  // A held modal tap can report both down and release; release must activate
+  // the dialog button instead of being consumed as selection-only.
+  const auto dialog = M4ListTouchPolicy::makeCenteredTwoButtons(480, 456, 60, 28, 30, 2);
+  M4ListTouchPolicy::Event dialogTap{};
+  dialogTap.touchDown = true;
+  dialogTap.tap = true;
+  dialogTap.x = dialog.buttonRect(1).x + 30;
+  dialogTap.y = dialog.buttonRect(1).y + 14;
+  assert(M4ListTouchPolicy::resolveDialog(dialogTap, dialog, hit) == M4ListTouchPolicy::Action::DialogPick);
+  assert(hit == 1);
+
   // Fullscreen provider footer hit geometry: four physical slots across 480px.
   assert(M4FooterTouchPolicy::slotFromPoint(10, 770, 480, 800, 46) == 0);
   assert(M4FooterTouchPolicy::slotFromPoint(130, 770, 480, 800, 46) == 1);

@@ -164,19 +164,21 @@ inline bool dialogButtonFromPoint(const DialogTwoButtonLayout& L, int px, int py
 inline Action resolveDialog(const Event& e, const DialogTwoButtonLayout& L, int& outIndex) {
   outIndex = -1;
   if (e.backGesture) return Action::Back;
-  if (e.touchDown) {
-    int idx = -1;
-    if (dialogButtonFromPoint(L, e.x, e.y, idx)) {
-      outIndex = idx;
-      return Action::Select;
-    }
-    return Action::None;
-  }
+  // A release can report both touchDown and tap after the hold threshold.
+  // The tap is the activating edge; do not downgrade it to selection.
   if (e.tap) {
     int idx = -1;
     if (dialogButtonFromPoint(L, e.x, e.y, idx)) {
       outIndex = idx;
       return Action::DialogPick;
+    }
+    return Action::None;
+  }
+  if (e.touchDown) {
+    int idx = -1;
+    if (dialogButtonFromPoint(L, e.x, e.y, idx)) {
+      outIndex = idx;
+      return Action::Select;
     }
     return Action::None;
   }
