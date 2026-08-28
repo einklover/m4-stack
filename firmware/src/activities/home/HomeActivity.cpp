@@ -31,6 +31,42 @@
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
 #include "util/TouchHitGeometry.h"
+
+namespace {
+
+// Home owns the composition of the theme-owned cover and menu surfaces. Keep
+// their geometry in one place so visual composition and touch hit-testing do
+// not drift apart.
+struct HomeCompositionLayout {
+  int coverTop;
+  int coverHeight;
+  int menuTop;
+  int menuHeight;
+};
+
+HomeCompositionLayout makeHomeCompositionLayout(const ThemeMetrics& metrics, int pageHeight) {
+  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing;
+  return {metrics.homeTopPadding, metrics.homeCoverTileHeight, menuTop,
+          pageHeight - menuTop - metrics.buttonHintsHeight - metrics.verticalSpacing};
+}
+
+// A single sparse rule makes the transition from recent reading to actions
+// legible without adding another card surface or a ghosting-prone fill.
+constexpr int kHomeSectionRuleGapPx = 8;
+
+void drawHomeSectionRule(GfxRenderer& renderer, const ThemeMetrics& metrics,
+                         const HomeCompositionLayout& layout, int pageWidth) {
+  const int ruleInset = metrics.contentSidePadding;
+  const int ruleY = layout.menuTop - kHomeSectionRuleGapPx;
+  if (pageWidth <= 0 || ruleInset < 0 || ruleInset * 2 >= pageWidth || ruleY < 0 ||
+      ruleY >= renderer.getScreenHeight()) {
+    return;
+  }
+  renderer.drawLine(ruleInset, ruleY, pageWidth - ruleInset - 1, ruleY, 1, true);
+}
+
+}  // namespace
+
 void HomeActivity::taskTrampoline(void* param) {
   auto* self = static_cast<HomeActivity*>(param);
   self->displayTaskLoop();
@@ -564,10 +600,10 @@ void HomeActivity::loop() {
     const auto metrics = UITheme::getInstance().getMetrics();
     const int pageWidth = renderer.getScreenWidth();
     const int pageHeight = renderer.getScreenHeight();
-    const TouchHitGeometry::Rect coverRect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight};
-    const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing;
+    const auto homeLayout = makeHomeCompositionLayout(metrics, pageHeight);
+    const TouchHitGeometry::Rect coverRect{0, homeLayout.coverTop, pageWidth, homeLayout.coverHeight};
     const TouchHitGeometry::Rect menuRect{
-        0, menuTop, pageWidth, pageHeight - menuTop - metrics.buttonHintsHeight - metrics.verticalSpacing};
+        0, homeLayout.menuTop, pageWidth, homeLayout.menuHeight};
     const int coverCount = static_cast<int>(recentBooks.size());
     const int menuCount = getMenuItemCount();
     const int renderedMenuCount = menuCount - coverCount;
@@ -740,6 +776,7 @@ void HomeActivity::render() {
   auto metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
+  const auto homeLayout = makeHomeCompositionLayout(metrics, pageHeight);
 
   // Navigation surfaces use a single fast/partial frame. Reader-body page
   // pagination owns the only windowed animation path.
@@ -758,9 +795,10 @@ void HomeActivity::render() {
   // feature has been removed, matching the original CrossLink home layout.
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, nullptr);
 
-  GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
+  GUI.drawRecentBookCover(renderer, Rect{0, homeLayout.coverTop, pageWidth, homeLayout.coverHeight},
                           recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this));
+  drawHomeSectionRule(renderer, metrics, homeLayout, pageWidth);
 
   // 菜单项：一行两个的网格布局
   std::vector<const char*> menuItems = {L(Str::kFileManager), L(Str::kReadingHistory)};
@@ -802,9 +840,7 @@ void HomeActivity::render() {
 
   // Keep the menu below the cover and above the painted footer. The old
   // height calculation extended the hit/draw grid into the footer.
-  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing;
-  Rect menuRect = Rect{0, menuTop, pageWidth,
-                       pageHeight - menuTop - metrics.buttonHintsHeight - metrics.verticalSpacing};
+  Rect menuRect = Rect{0, homeLayout.menuTop, pageWidth, homeLayout.menuHeight};
 
   // 使用网格布局绘制菜单（一行两个）
   GUI.drawButtonMenu(

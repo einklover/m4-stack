@@ -219,6 +219,10 @@ add_test(NAME m4_wifi_state_tests COMMAND m4_wifi_state_tests)
 add_executable(m4_touch_regression_tests ../firmware/tests/native_app/test_touch_regressions.cpp)
 target_include_directories(m4_touch_regression_tests PRIVATE ../firmware/src)
 add_test(NAME m4_touch_regression_tests COMMAND m4_touch_regression_tests)
+add_executable(m4_home_critical_ui_tests ../firmware/tests/native_app/test_home_critical_ui.cpp)
+add_test(NAME m4_home_critical_ui_tests
+         COMMAND m4_home_critical_ui_tests
+                 "${CMAKE_CURRENT_SOURCE_DIR}/../firmware/src/activities/home/HomeActivity.cpp")
 if(M4SIM_BUILD_NATIVE_SMOKE)
   add_executable(m4_native_smoke native/main.cpp)
   target_link_libraries(m4_native_smoke PRIVATE m4_reader_core m4_platform_ports)
