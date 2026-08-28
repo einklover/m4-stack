@@ -49,6 +49,11 @@ void compositionUsesOneGeometryPolicy(const char* source) {
   assert(cover < rule && rule < menu);
 }
 
+void routesReferenceGeometryThroughTouch(const char* source) {
+  require(source, "fengyanRecentBookIndexFromPoint");
+  require(source, "kHomeQuickColumns");
+}
+
 void sectionRuleIsSparseAndScreenLocal(const char* source) {
   require(source, "kHomeSectionRuleGapPx");
   require(source, "metrics.contentSidePadding");
@@ -65,6 +70,7 @@ int main(int argc, char** argv) {
   preservesThemeOwnedRenderingAndBehavior(source);
   compositionUsesOneGeometryPolicy(source);
   sectionRuleIsSparseAndScreenLocal(source);
+  routesReferenceGeometryThroughTouch(source);
   std::free(source);
   std::puts("home critical UI contract passed");
   return 0;

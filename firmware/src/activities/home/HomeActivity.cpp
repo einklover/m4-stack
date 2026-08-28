@@ -53,6 +53,8 @@ HomeCompositionLayout makeHomeCompositionLayout(const ThemeMetrics& metrics, int
 // A single sparse rule makes the transition from recent reading to actions
 // legible without adding another card surface or a ghosting-prone fill.
 constexpr int kHomeSectionRuleGapPx = 8;
+constexpr int kHomeQuickColumns = 4;
+constexpr int kHomeQuickHeaderOffset = 44;
 
 void drawHomeSectionRule(GfxRenderer& renderer, const ThemeMetrics& metrics,
                          const HomeCompositionLayout& layout, int pageWidth) {
@@ -608,7 +610,6 @@ void HomeActivity::loop() {
     const int menuCount = getMenuItemCount();
     const int renderedMenuCount = menuCount - coverCount;
     const bool isFengyanTheme = UITheme::getInstance().getThemeType() == ThemeType::Fengyan;
-    constexpr int hPaddingInSelection = 8;
 
     int tx = 0;
     int ty = 0;
@@ -618,8 +619,8 @@ void HomeActivity::loop() {
     if (mappedInput.wasScreenTouchDown(tx, ty) && !tapped) {
       int hit = -1;
       if (coverCount > 0 &&
-          TouchHitGeometry::fengyanCoverIndexFromPoint(coverRect, coverCount, metrics.contentSidePadding,
-                                                       metrics.homeCoverHeight, hPaddingInSelection, tx, ty, hit)) {
+          TouchHitGeometry::fengyanRecentBookIndexFromPoint(coverRect, coverCount, metrics.contentSidePadding,
+                                                            tx, ty, hit)) {
         if (selectorIndex != hit) {
           selectorIndex = hit;
           updateRequired = true;
@@ -629,7 +630,8 @@ void HomeActivity::loop() {
       const bool menuHit = renderedMenuCount > 0 &&
           (isFengyanTheme
                ? TouchHitGeometry::fengyanMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty,
-                                                              hit, -6, metrics.contentSidePadding)
+                                                              hit, kHomeQuickHeaderOffset,
+                                                              metrics.contentSidePadding, kHomeQuickColumns)
                : TouchHitGeometry::lyraMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty, hit,
                                                            metrics.contentSidePadding, metrics.menuRowHeight,
                                                            metrics.menuSpacing));
@@ -647,8 +649,8 @@ void HomeActivity::loop() {
       ty = tapY;
       int hit = -1;
       if (coverCount > 0 &&
-          TouchHitGeometry::fengyanCoverIndexFromPoint(coverRect, coverCount, metrics.contentSidePadding,
-                                                       metrics.homeCoverHeight, hPaddingInSelection, tx, ty, hit)) {
+          TouchHitGeometry::fengyanRecentBookIndexFromPoint(coverRect, coverCount, metrics.contentSidePadding,
+                                                            tx, ty, hit)) {
         selectorIndex = hit;
         activateSelection();
         return;
@@ -656,7 +658,8 @@ void HomeActivity::loop() {
       const bool menuHit = renderedMenuCount > 0 &&
           (isFengyanTheme
                ? TouchHitGeometry::fengyanMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty,
-                                                              hit, -6, metrics.contentSidePadding)
+                                                              hit, kHomeQuickHeaderOffset,
+                                                              metrics.contentSidePadding, kHomeQuickColumns)
                : TouchHitGeometry::lyraMenuIndexFromPoint(menuRect, renderedMenuCount, tx, ty, hit,
                                                            metrics.contentSidePadding, metrics.menuRowHeight,
                                                            metrics.menuSpacing));

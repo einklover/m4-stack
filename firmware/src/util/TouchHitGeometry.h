@@ -46,6 +46,91 @@ inline Rect chapterHeaderBackRect(int x = 0, int y = 0) {
   return {x, y, kChapterHeaderBackWidth, kChapterHeaderBackHeight};
 }
 
+
+// ---------------------------------------------------------------------------
+// Fengyan reference-style recent books: one hero row plus two compact books.
+// Geometry is shared by drawing and touch routing so the e-ink UI never
+// develops a visible/tappable mismatch.
+// ---------------------------------------------------------------------------
+struct FengyanRecentLayout {
+  Rect panel{};
+  Rect hero{};
+  Rect heroCover{};
+  Rect heroInfo{};
+  Rect progress{};
+  Rect mini[2]{};
+  Rect miniCover[2]{};
+  int dividerY = 0;
+  int bookCount = 0;
+
+  bool valid() const {
+    return panel.width > 0 && panel.height > 0 && hero.width > 0 &&
+           hero.height > 0 && bookCount > 0;
+  }
+
+  Rect bookRect(int index) const {
+    if (index == 0) return hero;
+    if (index == 1 || index == 2) return mini[index - 1];
+    return {};
+  }
+};
+
+inline FengyanRecentLayout makeFengyanRecentLayout(const Rect& rect, int bookCount,
+                                                    int contentSidePadding = 20) {
+  FengyanRecentLayout L;
+  L.bookCount = minInt(maxInt(bookCount, 0), 3);
+  if (L.bookCount <= 0 || rect.width <= 0 || rect.height <= 0) return L;
+
+  const int panelInset = maxInt(12, contentSidePadding - 6);
+  L.panel = {rect.x + panelInset, rect.y, rect.width - panelInset * 2, rect.height};
+  if (L.panel.width <= 64 || L.panel.height <= 120) return {};
+
+  const int inner = 16;
+  const int heroTop = L.panel.y + 52;
+  const int heroHeight = minInt(212, maxInt(120, L.panel.height / 2 - 16));
+  L.hero = {L.panel.x + inner, heroTop, L.panel.width - inner * 2, heroHeight};
+
+  const int heroCoverW = minInt(132, maxInt(72, L.hero.width / 3));
+  const int heroCoverH = minInt(198, L.hero.height - 8);
+  L.heroCover = {L.hero.x, L.hero.y, heroCoverW, heroCoverH};
+
+  const int infoX = L.heroCover.x + L.heroCover.width + 20;
+  const int infoW = maxInt(1, L.hero.x + L.hero.width - infoX);
+  L.heroInfo = {infoX, L.hero.y + 16, infoW, maxInt(1, L.heroCover.height - 24)};
+  L.progress = {infoX, L.heroCover.y + L.heroCover.height - 28, infoW, 12};
+
+  L.dividerY = L.hero.y + L.hero.height + 12;
+  const int miniTop = L.dividerY + 18;
+  const int miniTileW = 104;
+  const int miniTileH = minInt(152, maxInt(96, L.panel.y + L.panel.height - miniTop - 16));
+  const int miniGap = 18;
+  const int miniStartX = L.hero.x + 8;
+  for (int i = 0; i < 2; ++i) {
+    const int x = miniStartX + i * (miniTileW + miniGap);
+    L.mini[i] = {x, miniTop, miniTileW, miniTileH};
+    const int coverW = minInt(84, miniTileW);
+    const int coverH = minInt(126, maxInt(72, miniTileH - 24));
+    L.miniCover[i] = {x + (miniTileW - coverW) / 2, miniTop, coverW, coverH};
+  }
+
+  return L;
+}
+
+inline bool fengyanRecentBookIndexFromPoint(const Rect& rect, int bookCount,
+                                            int contentSidePadding, int px, int py,
+                                            int& outIndex) {
+  const auto layout = makeFengyanRecentLayout(rect, bookCount, contentSidePadding);
+  if (!layout.valid() || !layout.panel.contains(px, py)) return false;
+  const int n = layout.bookCount;
+  for (int i = 0; i < n; ++i) {
+    if (layout.bookRect(i).contains(px, py)) {
+      outIndex = i;
+      return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Fengyan home menu grid (shared by draw + hit-test)
 // ---------------------------------------------------------------------------
@@ -100,8 +185,8 @@ inline FengyanMenuLayout makeFengyanMenuLayout(const Rect& rect, int buttonCount
 }
 
 inline bool fengyanMenuIndexFromPoint(const Rect& rect, int buttonCount, int px, int py, int& outIndex,
-                                      int offsetY = -6, int contentSidePadding = 20) {
-  const auto layout = makeFengyanMenuLayout(rect, buttonCount, contentSidePadding, offsetY);
+                                      int offsetY = -6, int contentSidePadding = 20, int cols = 3) {
+  const auto layout = makeFengyanMenuLayout(rect, buttonCount, contentSidePadding, offsetY, cols);
   if (!layout.valid() || !layout.adjusted.contains(px, py)) return false;
   for (int i = 0; i < layout.buttonCount; ++i) {
     if (layout.tileRect(i).contains(px, py)) {

@@ -30,7 +30,7 @@ constexpr ThemeMetrics values = {
     .scrollBarRightOffset = 5,
     .homeTopPadding = 56,
     .homeCoverHeight = 226,
-    .homeCoverTileHeight = 395,  // 封面高度 + 信息框高度 + 间距
+    .homeCoverTileHeight = 470,  // 封面高度 + 信息框高度 + 间距
     .homeRecentBooksCount = 3,
     .homeCoverWidth = 132,        // availableCoverWidth(140) - 8 = 132
     .homeCoverThumbHeight = 198,  // homeCoverWidth(132) * 3/2 = 198，保扅2:3宣传片比例

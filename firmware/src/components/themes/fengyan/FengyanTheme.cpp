@@ -63,6 +63,8 @@ constexpr int cornerRadius = 8;  // 风眼主题使用更大的圆角
 constexpr int listIconSize = 24;
 constexpr int mainMenuIconWidth = 72;   // 主菜单图标宽度
 constexpr int mainMenuIconHeight = 72;  // 主菜单图标高度
+constexpr int kHomeQuickColumns = 4;
+constexpr int kHomeQuickHeaderOffset = 44;
 
 const uint8_t* iconForName(UIIcon icon) {
   // 根据图标风格选择对应的图标
@@ -406,419 +408,129 @@ void FengyanTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* 
   }
 }
 
-// 风眼主题核心：三本书籍封面横向排列，中间选中放大
+// Reference-style Home: one prominent recent book, followed by two compact recent books.
 void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                        const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                        bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
-  const int tileWidth = (rect.width - 2 * FengyanMetrics::values.contentSidePadding) / 3;
-  const int tileHeight = FengyanMetrics::values.homeCoverHeight + hPaddingInSelection * 2;
-  const int tileY = rect.y;
-  const bool hasContinueReading = !recentBooks.empty();
-  // 检查是否选中书籍区域（0-2是书籍，3以上是菜单）
-  const bool isBookSelected = selectorIndex >= 0 && selectorIndex < std::min(static_cast<int>(recentBooks.size()), FengyanMetrics::values.homeRecentBooksCount);
+  (void)bufferRestored;
+  const int bookCount =
+      std::min(static_cast<int>(recentBooks.size()), FengyanMetrics::values.homeRecentBooksCount);
+  const auto layout = TouchHitGeometry::makeFengyanRecentLayout(
+      TouchHitGeometry::Rect{rect.x, rect.y, rect.width, rect.height}, bookCount,
+      FengyanMetrics::values.contentSidePadding);
+  if (!layout.valid()) return;
 
-  // 计算封面区域总宽度和每个封面的宽度（两端对齐）- 在整个函数中使用
-  const int totalCoversWidth = tileWidth * 3;
-  const int coverSpacing = 8;  // 封面之间的间距
-  const int availableCoverWidth = (totalCoversWidth - coverSpacing * 2) / 3;  // 每个封面的可用宽度
-
-  if (hasContinueReading) {
-    if (!coverRendered) {
-      // 收集所有可用的封面
-      std::vector<std::string> availableCovers;
-      auto coverDir = SdMan.open("/epub_cover");
-      if (coverDir && coverDir.isDirectory()) {
-        char fileName[128];
-        for (auto coverFile = coverDir.openNextFile(); coverFile; coverFile = coverDir.openNextFile()) {
-          if (!coverFile.isDirectory()) {
-            coverFile.getName(fileName, sizeof(fileName));
-            std::string name(fileName);
-            if (name.size() >= 4) {
-              std::string ext = name.substr(name.size() - 4);
-              for (auto& c : ext) c = tolower(c);
-              if (ext == ".bmp") {
-                availableCovers.push_back(std::string("/epub_cover/") + fileName);
-              }
-            }
-          }
-          coverFile.close();
+  auto drawCover = [&](int bookIndex, const TouchHitGeometry::Rect& dst) {
+    bool drawn = false;
+    if (bookIndex >= 0 && bookIndex < bookCount && !recentBooks[bookIndex].coverBmpPath.empty()) {
+      const std::string thumbPath =
+          UITheme::getCoverThumbPath(recentBooks[bookIndex].coverBmpPath,
+                                     FengyanMetrics::values.homeCoverWidth,
+                                     FengyanMetrics::values.homeCoverThumbHeight);
+      FsFile file;
+      if (SdMan.openFileForRead("HOME", thumbPath, file)) {
+        Bitmap bitmap(file);
+        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+          renderer.drawBitmap(bitmap, dst.x, dst.y, dst.width, dst.height);
+          drawn = true;
         }
-        coverDir.close();
-      }
-      
-      for (int i = 0; i < std::min(static_cast<int>(recentBooks.size()), FengyanMetrics::values.homeRecentBooksCount);
-           i++) {
-        std::string coverPath = recentBooks[i].coverBmpPath;
-        bool hasCover = true;
-        // 计算每个封面的起始位置（两端对齐）；origin follows rect.x
-        int tileX = rect.x + FengyanMetrics::values.contentSidePadding + i * (availableCoverWidth + coverSpacing);
-        
-        // 判断是否为选中的书籍
-        bool isSelected = (selectorIndex == i);
-        
-        if (coverPath.empty()) {
-          hasCover = false;
-        } else {
-          const std::string coverBmpPath = UITheme::getCoverThumbPath(coverPath, FengyanMetrics::values.homeCoverWidth, FengyanMetrics::values.homeCoverThumbHeight);
-          
-          FsFile file;
-          if (SdMan.openFileForRead("HOME", coverBmpPath, file)) {
-            Bitmap bitmap(file);
-            if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-              // Thumbnail is pre-generated at exact display dimensions (homeCoverWidth x homeCoverThumbHeight)
-              // Draw at native bitmap size to avoid any runtime scaling
-              const int bmpW = bitmap.getWidth();
-              const int bmpH = bitmap.getHeight();
-              int displayX = tileX + (availableCoverWidth - bmpW) / 2;
-              int displayY = tileY + (tileHeight - bmpH) / 2;
-          
-              renderer.drawBitmap(bitmap, displayX, displayY, bmpW, bmpH);
-          
-              // 注意：黑框不在此处绘制，统一在外部绘制以确保跟随选中状态
-            } else {
-              hasCover = false;
-            }
-            file.close();
-          } else {
-            hasCover = false;
-          }
-        }
-
-        if (!hasCover) {
-          // 尝试绘制随机封面或使用默认占位符
-          bool randomCoverRendered = false;
-          if (!availableCovers.empty()) {
-            randomSeed(millis() + i);
-            const std::string& randomCoverPath = availableCovers[random(availableCovers.size())];
-            FsFile randomFile;
-            if (SdMan.openFileForRead("HOME", randomCoverPath, randomFile)) {
-              Bitmap bitmap(randomFile);
-              if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-                // 使用预定义的封面尺寸（随机封面必要时仍需缩放）
-                const int displayWidth = FengyanMetrics::values.homeCoverWidth;
-                const int displayHeight = FengyanMetrics::values.homeCoverThumbHeight;
-                float coverH = static_cast<float>(bitmap.getHeight());
-                float coverW = static_cast<float>(bitmap.getWidth());
-                float ratio = coverW / coverH;
-                const float targetRatio = static_cast<float>(displayWidth) / static_cast<float>(displayHeight);
-                float cropX = 1.0f - (targetRatio / ratio);
-                if (cropX < 0.0f) cropX = 0.0f;
-                int displayX = tileX + (availableCoverWidth - displayWidth) / 2;
-                int displayY = tileY + (tileHeight - displayHeight) / 2;
-
-                renderer.drawBitmap(bitmap, displayX, displayY, displayWidth, displayHeight, cropX);
-
-                // 注意：黑框不在此处绘制，统一在外部绘制以确保跟随选中状态
-                randomCoverRendered = true;
-              }
-              randomFile.close();
-            }
-          }
-          if (!randomCoverRendered) {
-            // 计算默认占位符尺寸（使用预定义封面尺寸）
-            const int displayWidth = FengyanMetrics::values.homeCoverWidth;
-            const int displayHeight = FengyanMetrics::values.homeCoverThumbHeight;
-            int displayX = tileX + (availableCoverWidth - displayWidth) / 2;
-            int displayY = tileY + (tileHeight - displayHeight) / 2;
-            
-            // 绘制默认占位符：上1/3白底+边框，下2/3深色，类似Lyra主题
-            const int topHeight = displayHeight / 3;
-            const int bottomHeight = displayHeight - topHeight;
-            
-            // 上1/3区域：白底+边框
-            renderer.drawRect(displayX, displayY, displayWidth, topHeight);
-            
-            // 下2/3区域：深色填充
-            renderer.fillRect(displayX, displayY + topHeight, displayWidth, bottomHeight, true);
-            
-            // 在上1/3区域居中绘制书本图标
-            const int iconSize = 32;
-            const int iconX = displayX + (displayWidth - iconSize) / 2;
-            const int iconY = displayY + (topHeight - iconSize) / 2;
-            renderer.drawIcon(CoverIcon, iconX, iconY, iconSize, iconSize);
-          }
-        }
-      }
-
-      coverBufferStored = storeCoverBuffer();
-      coverRendered = true;
-    }
-    
-    // 每次渲染都绘制选中书籍的黑框（不依赖coverRendered，确保移动时跟随）
-    if (isBookSelected) {
-      const int selectedTileX =
-          rect.x + FengyanMetrics::values.contentSidePadding + selectorIndex * (availableCoverWidth + coverSpacing);
-      
-      // 使用预计算的精确封面尺寸，避免运行时缩放
-      const int displayWidth = FengyanMetrics::values.homeCoverWidth;
-      const int displayHeight = FengyanMetrics::values.homeCoverThumbHeight;
-      int displayX = selectedTileX + (availableCoverWidth - displayWidth) / 2;
-      int displayY = tileY + (tileHeight - displayHeight) / 2;
-      
-      const int borderX = displayX - 4;
-      const int borderY = displayY - 4;
-      const int borderW = displayWidth + 8;
-      const int borderH = displayHeight + 8;
-      // 绘制4层实现粗边框效果
-      renderer.drawRect(borderX, borderY, borderW, borderH, true);
-      renderer.drawRect(borderX + 1, borderY + 1, borderW - 2, borderH - 2, true);
-      renderer.drawRect(borderX + 2, borderY + 2, borderW - 4, borderH - 4, true);
-      renderer.drawRect(borderX + 3, borderY + 3, borderW - 6, borderH - 6, true);
-    }
-
-    // 绘制灰色信息区域（书籍选中或菜单选中时都显示）
-    {
-      const int infoBoxX = FengyanMetrics::values.contentSidePadding;
-#ifdef CROSSPOINT_X3
-      const int infoBoxY = tileY + tileHeight + 8;  // X3原位置
-#else
-      const int infoBoxY = tileY + tileHeight - 4;      // X4往上偏移8像素
-#endif
-      
-      // 动态计算行高
-      const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-      const int normalLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-      const int padding = 12;  // 上下内边距
-      const int lineSpacing = 8;  // 行间距
-      
-      int infoBoxHeight;
-      int currentY = infoBoxY + padding;
-      
-      if (isBookSelected) {
-        // 书籍选中时：显示书籍信息
-        const int progressBarHeight = 8;
-        
-        // 计算总高度
-        infoBoxHeight = padding + titleLineHeight + lineSpacing + normalLineHeight + lineSpacing + 
-                        normalLineHeight + lineSpacing + progressBarHeight + padding;
-        
-        // 绘制灰色背景方框（先绘制，三角形后绘制）
-        renderer.fillRectDither(infoBoxX, infoBoxY, totalCoversWidth, infoBoxHeight, Color::LightGray);
-        renderer.drawRect(infoBoxX, infoBoxY, totalCoversWidth, infoBoxHeight, true);
-        
-        const auto& selectedBook = recentBooks[selectorIndex];
-        const auto meta = M4HomeBookDetailMeta::presentCached(
-            selectedBook.path, selectedBook.title, selectedBook.author, selectedBook.progress,
-            {L(Str::kValNone), L(Str::kBookSourceLocal), L(Str::kBookSourceUnknown)});
-
-        // 绘制书名行：左侧标题（带虚线下划线）+内容，右侧右对齐
-        const std::string& bookTitle = meta.title;
-        const char* bookNameLabel = L(Str::kBookTitle);
-        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + 12, currentY, bookNameLabel, true);
-        int bookNameLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, bookNameLabel);
-        // 绘制虚线下划线（4像素实线，2像素间隔）
-        for (int x = infoBoxX + 12; x < infoBoxX + 12 + bookNameLabelWidth; x += 6) {
-          renderer.drawPixel(x, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 1, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 2, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 3, currentY + normalLineHeight - 2, true);
-        }
-        // 计算书名可用宽度：总宽度 - 左边距 - 标签宽度 - 最小间距 - 右边距
-        const int minGap = 36;
-        int titleAvailableWidth = totalCoversWidth - 12 - bookNameLabelWidth - minGap - 12;
-        if (titleAvailableWidth < 50) titleAvailableWidth = 50;  // 最小50像素
-        auto titleText = M4UiText::truncated(renderer, UI_12_FONT_ID, bookTitle.c_str(), titleAvailableWidth,
-                                          EpdFontFamily::BOLD);
-        int titleTextWidth = M4UiText::textWidth(renderer, UI_12_FONT_ID, titleText.c_str(), EpdFontFamily::BOLD);
-        M4UiText::draw(renderer, UI_12_FONT_ID, infoBoxX + totalCoversWidth - 12 - titleTextWidth, currentY,
-                       titleText.c_str(), true, EpdFontFamily::BOLD);
-        currentY += titleLineHeight + lineSpacing;
-        
-        // 绘制作者行：左侧标题（带虚线下划线）+内容，右侧右对齐
-        const std::string& authorDisplay = meta.author;
-        const char* bookAuthorLabel = L(Str::kBookAuthor);
-        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + 12, currentY, bookAuthorLabel, true);
-        int bookAuthorLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, bookAuthorLabel);
-        // 绘制虚线下划线（4像素实线，2像素间隔）
-        for (int x = infoBoxX + 12; x < infoBoxX + 12 + bookAuthorLabelWidth; x += 6) {
-          renderer.drawPixel(x, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 1, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 2, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 3, currentY + normalLineHeight - 2, true);
-        }
-        auto authorText = M4UiText::truncated(renderer, UI_10_FONT_ID, authorDisplay.c_str(), totalCoversWidth - 120);
-        int authorTextWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, authorText.c_str());
-        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + totalCoversWidth - 12 - authorTextWidth, currentY,
-                       authorText.c_str(), true);
-        currentY += normalLineHeight + lineSpacing;
-
-        // 绘制来源行：插件展示名（或本地/未知来源），不用内部 id
-        const std::string& sourceDisplay = meta.source;
-        const char* bookSourceLabel = L(Str::kBookSource);
-        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + 12, currentY, bookSourceLabel, true);
-        int bookSourceLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, bookSourceLabel);
-        for (int x = infoBoxX + 12; x < infoBoxX + 12 + bookSourceLabelWidth; x += 6) {
-          renderer.drawPixel(x, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 1, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 2, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 3, currentY + normalLineHeight - 2, true);
-        }
-        auto sourceText = M4UiText::truncated(renderer, UI_10_FONT_ID, sourceDisplay.c_str(), totalCoversWidth - 120);
-        int sourceTextWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, sourceText.c_str());
-        M4UiText::draw(renderer, UI_10_FONT_ID, infoBoxX + totalCoversWidth - 12 - sourceTextWidth, currentY,
-                       sourceText.c_str(), true);
-        currentY += normalLineHeight + lineSpacing;
-
-        // 阅读进度只由图形进度条表示；计算语义仍用 recentBooks[].progress
-        int bookProgress = recentBooks[selectorIndex].progress;
-        
-        // 绘制进度条背景
-        renderer.fillRect(infoBoxX + 12, currentY, totalCoversWidth - 24, progressBarHeight, false);
-        renderer.drawRect(infoBoxX + 12, currentY, totalCoversWidth - 24, progressBarHeight, true);
-        
-        // 绘制进度条填充
-        if (bookProgress > 0) {
-          int fillWidth = ((totalCoversWidth - 28) * bookProgress) / 100;
-          renderer.fillRect(infoBoxX + 14, currentY + 2, fillWidth, progressBarHeight - 4, true);
-        }
-        
-        // 绘制指向选中书籍的三角形（朝上，黑色边框+浅灰填充）
-        // 计算选中书籍的位置和黑框底部
-        const int selectedTileX =
-          rect.x + FengyanMetrics::values.contentSidePadding + selectorIndex * (availableCoverWidth + coverSpacing);
-        const int displayWidth = FengyanMetrics::values.homeCoverWidth;
-        const int displayHeight = FengyanMetrics::values.homeCoverThumbHeight;
-        int displayX = selectedTileX + (availableCoverWidth - displayWidth) / 2;
-        int displayY = tileY + (tileHeight - displayHeight) / 2;
-        const int borderBottomY = displayY + displayHeight + 4;  // 黑框底部位置（考虑4px边框）
-        
-        const int triangleCenterX = displayX + displayWidth / 2;
-        const int triangleSize = 14;  // 三角形尺寸
-        // 三角形向下延伸2像素进入灰色区域，让底边"覆盖"灰框上边线
-        const int triangleTopY = borderBottomY + 1;
-        
-        // 绘制实心三角形（朝上）- 使用与灰框相同的 fillRectDither 填充
-        for (int row = 1; row < triangleSize; row++) {
-          int lineWidth = (row + 1) * 2 - 1 - 2;  // 内部宽度（减去边框）
-          if (lineWidth < 1) lineWidth = 1;
-          int startX = triangleCenterX - lineWidth / 2;
-          int y = triangleTopY + row;
-          // 使用 fillRectDither 绘制内部填充，与灰框颜色一致
-          renderer.fillRectDither(startX, y, lineWidth, 1, Color::LightGray);
-        }
-        
-        // 绘制三角形边框（外轮廓）- 左右两边用黑色，底边用浅灰色与灰框融合
-        // 左边框
-        for (int row = 0; row < triangleSize; row++) {
-          int lineWidth = (row + 1) * 2 - 1;
-          int leftX = triangleCenterX - lineWidth / 2;
-          int rightX = triangleCenterX + lineWidth / 2;
-          int y = triangleTopY + row;
-          renderer.drawPixel(leftX, y, true);   // 左边框（黑色）
-          renderer.drawPixel(rightX, y, true);  // 右边框（黑色）
-        }
-        // 底边框（延伸进入灰框内部）- 使用浅灰色，与灰框融为一体
-        int bottomY = triangleTopY + triangleSize - 1;
-        int bottomWidth = triangleSize * 2 - 1;
-        int bottomStartX = triangleCenterX - bottomWidth / 2;
-        renderer.fillRectDither(bottomStartX, bottomY, bottomWidth, 1, Color::LightGray);
-        // 顶顶点
-        renderer.drawPixel(triangleCenterX, triangleTopY, true);
-      } else {
-        // 菜单选中时：显示阅读统计
-        infoBoxHeight = padding + titleLineHeight + lineSpacing + normalLineHeight + lineSpacing + normalLineHeight + padding;
-        
-        // 绘制灰色背景方框
-        renderer.fillRectDither(infoBoxX, infoBoxY, totalCoversWidth, infoBoxHeight, Color::LightGray);
-        renderer.drawRect(infoBoxX, infoBoxY, totalCoversWidth, infoBoxHeight, true);
-        
-        // 绘制标题"阅读统计"（去掉虚线下划线）
-        const char* titleText = L(Str::kReadingStats);
-        M4UiText::draw(renderer, UI_12_FONT_ID, infoBoxX + 12, currentY, titleText, true, EpdFontFamily::BOLD);
-        currentY += titleLineHeight + lineSpacing;
-        
-        // 左侧固定起始位置
-        const int leftLabelX = infoBoxX + 12;
-        // 右侧固定结束位置（距离右边缘24像素，增加间距）
-        const int rightValueX = infoBoxX + totalCoversWidth - 24;
-        // 中间安全间距区域，确保左右文字不会挨在一起
-        const int minGap = 36;  // 最小间距20像素
-        
-        // 累计阅读时长 - 左侧标题（带虚线下划线，无冒号），右侧值右对齐
-        const char* totalLabel = L(Str::kTotalReadingTime);
-        std::string totalValueStr = ReadingStatsStore::formatReadingTime(READING_STATS.getTotalReadingTime());
-        const char* totalValue = totalValueStr.c_str();
-        int totalLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, totalLabel);
-        int totalValueWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, totalValue);
-        M4UiText::draw(renderer, UI_10_FONT_ID, leftLabelX, currentY, totalLabel, true);
-        // 绘制虚线下划线（4像素实线，2像素间隔）
-        for (int x = leftLabelX; x < leftLabelX + totalLabelWidth; x += 6) {
-          renderer.drawPixel(x, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 1, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 2, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 3, currentY + normalLineHeight - 2, true);
-        }
-        // 计算右侧值的位置，确保与左侧标签至少有minGap的间距
-        int totalValueX = rightValueX - totalValueWidth;
-        if (totalValueX < leftLabelX + totalLabelWidth + minGap) {
-          totalValueX = leftLabelX + totalLabelWidth + minGap;
-        }
-        M4UiText::draw(renderer, UI_10_FONT_ID, totalValueX, currentY, totalValue, true);
-        currentY += normalLineHeight + lineSpacing;
-        
-        // 上次阅读时长 - 左侧标题（带虚线下划线，无冒号），右侧值右对齐
-        const char* sessionLabel = L(Str::kLastReadingTime);
-        std::string sessionValueStr = ReadingStatsStore::formatReadingTime(READING_STATS.getSessionReadingTime());
-        const char* sessionValue = sessionValueStr.c_str();
-        int sessionLabelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, sessionLabel);
-        int sessionValueWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, sessionValue);
-        M4UiText::draw(renderer, UI_10_FONT_ID, leftLabelX, currentY, sessionLabel, true);
-        // 绘制虚线下划线（4像素实线，2像素间隔）
-        for (int x = leftLabelX; x < leftLabelX + sessionLabelWidth; x += 6) {
-          renderer.drawPixel(x, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 1, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 2, currentY + normalLineHeight - 2, true);
-          renderer.drawPixel(x + 3, currentY + normalLineHeight - 2, true);
-        }
-        // 计算右侧值的位置，确保与左侧标签至少有minGap的间距
-        int sessionValueX = rightValueX - sessionValueWidth;
-        if (sessionValueX < leftLabelX + sessionLabelWidth + minGap) {
-          sessionValueX = leftLabelX + sessionLabelWidth + minGap;
-        }
-        M4UiText::draw(renderer, UI_10_FONT_ID, sessionValueX, currentY, sessionValue, true);
+        file.close();
       }
     }
-  } else {
-    // 没有阅读记录时，绘制浅灰色背景的居中提示框
-    const int boxPadding = FengyanMetrics::values.contentSidePadding;
-    const int boxX = boxPadding;
-    const int boxY = rect.y + hPaddingInSelection;
-    const int boxW = rect.width - 2 * boxPadding;
-    const int boxH = rect.height - hPaddingInSelection - 10;
-
-    renderer.fillRectDither(boxX, boxY, boxW, boxH, Color::LightGray);
-    
-    // 绘制虚线边框
-    constexpr int dashOn = 6, dashOff = 4, dashCycle = dashOn + dashOff;
-    for (int i = 0; i < boxW; i++) {
-      if (i % dashCycle < dashOn) {
-        renderer.drawPixel(boxX + i, boxY, true);
-        renderer.drawPixel(boxX + i, boxY + boxH - 1, true);
+    if (!drawn) {
+      renderer.fillRect(dst.x, dst.y, dst.width, dst.height, false);
+      renderer.drawRect(dst.x, dst.y, dst.width, dst.height, true);
+      const int iconSize = std::min(32, std::min(dst.width - 8, dst.height - 8));
+      if (iconSize > 0) {
+        renderer.drawIcon(CoverIcon, dst.x + (dst.width - iconSize) / 2,
+                          dst.y + (dst.height - iconSize) / 2, iconSize, iconSize);
       }
+    } else {
+      renderer.drawRect(dst.x, dst.y, dst.width, dst.height, true);
     }
-    for (int i = 0; i < boxH; i++) {
-      if (i % dashCycle < dashOn) {
-        renderer.drawPixel(boxX, boxY + i, true);
-        renderer.drawPixel(boxX + boxW - 1, boxY + i, true);
-      }
+  };
+
+  if (!coverRendered) {
+    renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+    renderer.drawRect(layout.panel.x, layout.panel.y, layout.panel.width, layout.panel.height, true);
+
+    M4UiText::draw(renderer, UI_12_FONT_ID, layout.panel.x + 18, layout.panel.y + 14,
+                   "最近阅读", true, EpdFontFamily::BOLD);
+    const std::string countText = std::to_string(bookCount) + "/" + std::to_string(recentBooks.size());
+    const int countWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, countText.c_str());
+    M4UiText::draw(renderer, UI_10_FONT_ID, layout.panel.x + layout.panel.width - countWidth - 18,
+                   layout.panel.y + 16, countText.c_str(), true);
+
+    const auto& heroBook = recentBooks[0];
+    drawCover(0, layout.heroCover);
+    const auto heroMeta = M4HomeBookDetailMeta::presentCached(
+        heroBook.path, heroBook.title, heroBook.author, heroBook.progress,
+        {L(Str::kValNone), L(Str::kBookSourceLocal), L(Str::kBookSourceUnknown)});
+
+    const int infoX = layout.heroInfo.x;
+    const int infoW = layout.heroInfo.width;
+    auto heroTitle = M4UiText::truncated(renderer, UI_12_FONT_ID, heroMeta.title.c_str(),
+                                         infoW, EpdFontFamily::BOLD);
+    M4UiText::draw(renderer, UI_12_FONT_ID, infoX, layout.heroInfo.y, heroTitle.c_str(),
+                   true, EpdFontFamily::BOLD);
+
+    auto heroAuthor = M4UiText::truncated(renderer, UI_10_FONT_ID, heroMeta.author.c_str(), infoW);
+    M4UiText::draw(renderer, UI_10_FONT_ID, infoX, layout.heroInfo.y + 44, heroAuthor.c_str(), true);
+
+    const std::string sourceText = std::string("来源：") + heroMeta.source;
+    auto heroSource = M4UiText::truncated(renderer, UI_10_FONT_ID, sourceText.c_str(), infoW);
+    M4UiText::draw(renderer, UI_10_FONT_ID, infoX, layout.heroInfo.y + 78, heroSource.c_str(), true);
+
+    const int progress = std::max(0, std::min(100, heroBook.progress));
+    const std::string progressText = std::to_string(progress) + "%";
+    M4UiText::draw(renderer, UI_10_FONT_ID, infoX, layout.progress.y - 24, progressText.c_str(), true);
+    renderer.fillRect(layout.progress.x, layout.progress.y, layout.progress.width, layout.progress.height, false);
+    renderer.drawRect(layout.progress.x, layout.progress.y, layout.progress.width, layout.progress.height, true);
+    if (progress > 0 && layout.progress.width > 4) {
+      const int fillW = ((layout.progress.width - 4) * progress) / 100;
+      renderer.fillRect(layout.progress.x + 2, layout.progress.y + 2, fillW,
+                        std::max(1, layout.progress.height - 4), true);
     }
 
-    const int textW = M4UiText::textWidth(renderer, UI_10_FONT_ID, L(Str::kNoReadingHistory));
-    const int textH = renderer.getLineHeight(UI_10_FONT_ID);
-    const int textX = boxX + (boxW - textW) / 2;
-    const int textY = boxY + (boxH - textH) / 2;
-    M4UiText::draw(renderer, UI_10_FONT_ID, textX, textY, L(Str::kNoReadingHistory), true);
+    renderer.drawLine(layout.panel.x + 16, layout.dividerY,
+                      layout.panel.x + layout.panel.width - 17, layout.dividerY, 1, true);
+
+    for (int i = 1; i < bookCount; ++i) {
+      const int miniIndex = i - 1;
+      drawCover(i, layout.miniCover[miniIndex]);
+      auto title = M4UiText::truncated(renderer, UI_10_FONT_ID, recentBooks[i].title.c_str(),
+                                       layout.mini[miniIndex].width);
+      const int titleW = M4UiText::textWidth(renderer, UI_10_FONT_ID, title.c_str());
+      M4UiText::draw(renderer, UI_10_FONT_ID,
+                     layout.mini[miniIndex].x + (layout.mini[miniIndex].width - titleW) / 2,
+                     layout.miniCover[miniIndex].y + layout.miniCover[miniIndex].height + 8,
+                     title.c_str(), true);
+    }
+
+    coverBufferStored = storeCoverBuffer();
+    coverRendered = true;
+  }
+
+  if (selectorIndex >= 0 && selectorIndex < bookCount) {
+    const auto selected = layout.bookRect(selectorIndex);
+    renderer.drawRect(selected.x - 2, selected.y - 2, selected.width + 4, selected.height + 4, true);
   }
 }
 
-// 风眼主题核心：底部6个功能图标网格布局（2行3列）
+
+// 风眼主题首页快捷操作：四列网格，标题与触摸布局共用偏移
 void FengyanTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                   const std::function<std::string(int index)>& buttonLabel,
                                   const std::function<UIIcon(int index)>& rowIcon) const {
-  // Shared layout with TouchHitGeometry::makeFengyanMenuLayout (3 cols, rows=ceil(n/3)).
+  const int panelInset = std::max(12, FengyanMetrics::values.contentSidePadding - 6);
+  renderer.drawRect(rect.x + panelInset, rect.y, rect.width - panelInset * 2, rect.height, true);
+  M4UiText::draw(renderer, UI_12_FONT_ID, rect.x + panelInset + 18, rect.y + 14,
+                 "快捷操作", true, EpdFontFamily::BOLD);
+
+  // Reference quick actions: four columns below a compact section header.
   const auto layout = TouchHitGeometry::makeFengyanMenuLayout(
       TouchHitGeometry::Rect{rect.x, rect.y, rect.width, rect.height}, buttonCount,
-      FengyanMetrics::values.contentSidePadding, -6, 3);
+      FengyanMetrics::values.contentSidePadding, kHomeQuickHeaderOffset, kHomeQuickColumns);
   if (!layout.valid()) return;
 
   for (int i = 0; i < layout.buttonCount; ++i) {
