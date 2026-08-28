@@ -20,7 +20,8 @@ int main() {
   assert(bottom.back.height >= 48);
   assert(bottom.home.height >= 48);
   assert(bottom.back.contains(100, 775));
-  assert(bottom.home.contains(380, 775));
+  assert(bottom.home.contains(200, 775));
+  assert(bottom.menu.contains(380, 775));
   assert(!bottom.back.contains(380, 775));
   assert(!bottom.home.contains(100, 775));
   return 0;

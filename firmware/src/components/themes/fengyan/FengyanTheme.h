@@ -7,12 +7,12 @@ class GfxRenderer;
 // 风眼主题指标配置
 namespace FengyanMetrics {
 constexpr ThemeMetrics values = {
-    .batteryWidth = 28,
-    .batteryHeight = 18,
-    .topPadding = 5,
-    .batteryBarHeight = 40,
-    .headerHeight = 44,
-    .verticalSpacing = 16,
+    .batteryWidth = 29,
+    .batteryHeight = 13,
+    .topPadding = 0,
+    .batteryBarHeight = 46,
+    .headerHeight = 46,
+    .verticalSpacing = 14,
     .contentSidePadding = 20,
 // Murphy M4 is always touch: taller rows for finger targets (see M4TouchListMetrics).
 #ifdef CROSSPOINT_MURPHY_M4
@@ -28,13 +28,13 @@ constexpr ThemeMetrics values = {
     .tabBarHeight = 48,
     .scrollBarWidth = 4,
     .scrollBarRightOffset = 5,
-    .homeTopPadding = 56,
-    .homeCoverHeight = 226,
-    .homeCoverTileHeight = 470,  // 封面高度 + 信息框高度 + 间距
+    .homeTopPadding = 62,
+    .homeCoverHeight = 222,
+    .homeCoverTileHeight = 481,
     .homeRecentBooksCount = 3,
-    .homeCoverWidth = 132,        // availableCoverWidth(140) - 8 = 132
-    .homeCoverThumbHeight = 198,  // homeCoverWidth(132) * 3/2 = 198，保扅2:3宣传片比例
-    .buttonHintsHeight = 40,
+    .homeCoverWidth = 158,
+    .homeCoverThumbHeight = 222,
+    .buttonHintsHeight = 51,
     .sideButtonHintsWidth = 30,
     .versionTextRightX = 20,
     .versionTextY = 55,

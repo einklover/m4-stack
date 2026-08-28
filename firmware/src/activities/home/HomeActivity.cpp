@@ -30,6 +30,7 @@
 #include "fontIds.h"
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
+#include "util/HomeRef.h"
 #include "util/TouchHitGeometry.h"
 
 namespace {
@@ -46,18 +47,21 @@ struct HomeCompositionLayout {
 
 HomeCompositionLayout makeHomeCompositionLayout(const ThemeMetrics& metrics, int pageHeight) {
   const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing;
+  constexpr int kHomeFooterGapPx = 20;
   return {metrics.homeTopPadding, metrics.homeCoverTileHeight, menuTop,
-          pageHeight - menuTop - metrics.buttonHintsHeight - metrics.verticalSpacing};
+          pageHeight - menuTop - metrics.buttonHintsHeight - kHomeFooterGapPx};
 }
 
 // A single sparse rule makes the transition from recent reading to actions
 // legible without adding another card surface or a ghosting-prone fill.
 constexpr int kHomeSectionRuleGapPx = 8;
 constexpr int kHomeQuickColumns = 4;
-constexpr int kHomeQuickHeaderOffset = 44;
+constexpr int kHomeQuickHeaderOffset = 46;
 
 void drawHomeSectionRule(GfxRenderer& renderer, const ThemeMetrics& metrics,
                          const HomeCompositionLayout& layout, int pageWidth) {
+  // HomeRef cards already outline themselves; keep the helper for contract tests.
+  if (UITheme::getInstance().getThemeType() == ThemeType::Fengyan) return;
   const int ruleInset = metrics.contentSidePadding;
   const int ruleY = layout.menuTop - kHomeSectionRuleGapPx;
   if (pageWidth <= 0 || ruleInset < 0 || ruleInset * 2 >= pageWidth || ruleY < 0 ||
@@ -75,9 +79,13 @@ void HomeActivity::taskTrampoline(void* param) {
 }
 
 int HomeActivity::getMenuItemCount() const {
+  const int recents = static_cast<int>(recentBooks.size());
+  if (UITheme::getInstance().getThemeType() == ThemeType::Fengyan) {
+    return recents + 4;
+  }
   int count = 5;  // My Library, Recents, File transfer, Apps, Settings
   if (!recentBooks.empty()) {
-    count += recentBooks.size();
+    count += recents;
   }
   if (hasOpdsUrl) {
     count++;
@@ -551,15 +559,7 @@ void HomeActivity::loop() {
   auto activateSelection = [this]() {
     int idx = 0;
     int menuSelectedIndex = selectorIndex - static_cast<int>(recentBooks.size());
-    const int myLibraryIdx = idx++;
-    const int recentsIdx = idx++;
-    const int opdsLibraryIdx = hasOpdsUrl ? idx++ : -1;
-    const int jgLibraryIdx = hasjianguoUrl ? idx++ : -1;
-    const int dcLibraryIdx = hasDataCapsuleUrl ? idx++ : -1;
-    const int bookmarkNotesIdx = hasBookmarkNotes ? idx++ : -1;
-    const int fileTransferIdx = idx++;
-    const int appsIdx = idx++;
-    const int settingsIdx = idx;
+    const bool isFengyanTheme = UITheme::getInstance().getThemeType() == ThemeType::Fengyan;
 
     if (selectorIndex < static_cast<int>(recentBooks.size())) {
       const auto& b = recentBooks[selectorIndex];
@@ -576,7 +576,29 @@ void HomeActivity::loop() {
       const std::string src = M4HistoryReopen::appHintForRecentBook(
           b.path, b.originalSourcePath, b.author, appIdForProvider);
       onSelectBook(b.path, src);
-    } else if (menuSelectedIndex == myLibraryIdx) {
+      return;
+    }
+
+    if (isFengyanTheme) {
+      if (menuSelectedIndex == 0) onMyLibraryOpen();
+      else if (menuSelectedIndex == 1 && onOpenNativeApp) onOpenNativeApp("com.weread.client");
+      else if (menuSelectedIndex == 2 && onOpenNativeApp) onOpenNativeApp("com.fanqie.client");
+      else if (menuSelectedIndex == 3 && onOpenNativeApp) onOpenNativeApp("com.jjwxc.client");
+      else if (menuSelectedIndex > 0) onAppsOpen();
+      return;
+    }
+
+    const int myLibraryIdx = idx++;
+    const int recentsIdx = idx++;
+    const int opdsLibraryIdx = hasOpdsUrl ? idx++ : -1;
+    const int jgLibraryIdx = hasjianguoUrl ? idx++ : -1;
+    const int dcLibraryIdx = hasDataCapsuleUrl ? idx++ : -1;
+    const int bookmarkNotesIdx = hasBookmarkNotes ? idx++ : -1;
+    const int fileTransferIdx = idx++;
+    const int appsIdx = idx++;
+    const int settingsIdx = idx;
+
+    if (menuSelectedIndex == myLibraryIdx) {
       onMyLibraryOpen();
     } else if (menuSelectedIndex == recentsIdx) {
       onRecentsOpen();
@@ -796,50 +818,45 @@ void HomeActivity::render() {
 
   // Keep the home status bar clean; the legacy quote/custom-status-bar
   // feature has been removed, matching the original CrossLink home layout.
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, nullptr);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "主页");
 
   GUI.drawRecentBookCover(renderer, Rect{0, homeLayout.coverTop, pageWidth, homeLayout.coverHeight},
                           recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this));
   drawHomeSectionRule(renderer, metrics, homeLayout, pageWidth);
 
-  // 菜单项：一行两个的网格布局
-  std::vector<const char*> menuItems = {L(Str::kFileManager), L(Str::kReadingHistory)};
-  
-  // 检测当前主题类型，Fengyan主题使用32x32图标
   bool isFengyanTheme = (UITheme::getInstance().getThemeType() == ThemeType::Fengyan);
-  
+  std::vector<const char*> menuItems;
   std::vector<UIIcon> menuIcons;
   if (isFengyanTheme) {
-    menuIcons = {UIIcon::Folder32, UIIcon::History32};
+    menuItems = {L(Str::kFileManager), "微信读书", "番茄小说", "晋江文学"};
+    menuIcons = {UIIcon::Folder32, UIIcon::Book, UIIcon::Recent, UIIcon::Library};
   } else {
+    menuItems = {L(Str::kFileManager), L(Str::kReadingHistory)};
     menuIcons = {UIIcon::Library, UIIcon::Recent};
-  }
-
-  if (hasOpdsUrl) {
+    if (hasOpdsUrl) {
       menuItems.push_back(L(Str::kOPDSBrowser));
-      menuIcons.push_back(isFengyanTheme ? UIIcon::Netdisk32 : UIIcon::Hotspot);
-  }
-  if (hasjianguoUrl) {
+      menuIcons.push_back(UIIcon::Hotspot);
+    }
+    if (hasjianguoUrl) {
       menuItems.push_back(L(Str::kJianGuoDisk));
-      menuIcons.push_back(isFengyanTheme ? UIIcon::Netdisk32 : UIIcon::Transfer);
-  }
-  if (hasDataCapsuleUrl) {
+      menuIcons.push_back(UIIcon::Transfer);
+    }
+    if (hasDataCapsuleUrl) {
       menuItems.push_back(L(Str::kDataCapsule));
-      menuIcons.push_back(isFengyanTheme ? UIIcon::Netdisk32 : UIIcon::Cog);
-  }
-  if (hasBookmarkNotes) {
+      menuIcons.push_back(UIIcon::Cog);
+    }
+    if (hasBookmarkNotes) {
       menuItems.push_back(L(Str::kBookmarkNotes));
-      menuIcons.push_back(isFengyanTheme ? UIIcon::Shuqian32 : UIIcon::Book);
+      menuIcons.push_back(UIIcon::Book);
+    }
+    menuItems.push_back(L(Str::kNetworkManage));
+    menuIcons.push_back(UIIcon::Wifi);
+    menuItems.push_back(L(Str::kApps));
+    menuIcons.push_back(UIIcon::Library);
+    menuItems.push_back(L(Str::kSystemSettings));
+    menuIcons.push_back(UIIcon::Settings);
   }
-  menuItems.push_back(L(Str::kNetworkManage));
-  menuIcons.push_back(isFengyanTheme ? UIIcon::Wifi32 : UIIcon::Wifi);
-  menuItems.push_back(L(Str::kApps));
-  // A dedicated 3x3 app-grid glyph is drawn by FengyanTheme; Lyra uses the
-  // library glyph instead of the old gear icon, which looked like Settings.
-  menuIcons.push_back(isFengyanTheme ? UIIcon::Apps32 : UIIcon::Library);
-  menuItems.push_back(L(Str::kSystemSettings));
-  menuIcons.push_back(isFengyanTheme ? UIIcon::Setting32 : UIIcon::Settings);
 
   // Keep the menu below the cover and above the painted footer. The old
   // height calculation extended the hit/draw grid into the footer.

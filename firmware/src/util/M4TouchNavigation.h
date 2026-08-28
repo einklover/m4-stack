@@ -39,7 +39,7 @@ void drawBottomBar(GfxRenderer& renderer);
 
 constexpr int kHeaderHitWidth = 56;
 constexpr int kHeaderHitHeight = 56;
-constexpr int kBottomBarHeight = 50;
+constexpr int kBottomBarHeight = 51;
 constexpr int kChapterHeaderHitWidth = TouchHitGeometry::kChapterHeaderBackWidth;
 constexpr int kChapterHeaderHitHeight = TouchHitGeometry::kChapterHeaderBackHeight;
 

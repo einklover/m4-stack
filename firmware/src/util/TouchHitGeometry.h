@@ -3,6 +3,8 @@
 // Shared pure geometry for drawing + touch hit-testing (host-testable).
 // Keep free of Arduino/hardware so native/host tests can exercise them.
 
+#include "HomeRef.h"
+
 namespace TouchHitGeometry {
 
 inline int minInt(int a, int b) { return a < b ? a : b; }
@@ -25,15 +27,24 @@ struct Rect {
 struct BottomNavigationLayout {
   Rect back;
   Rect home;
+  Rect menu;
 
   bool valid() const { return back.width > 0 && back.height > 0 && home.width > 0 && home.height > 0; }
 };
 
-inline BottomNavigationLayout makeBottomNavigationLayout(int screenWidth, int screenHeight, int barHeight = 50) {
+inline BottomNavigationLayout makeBottomNavigationLayout(int screenWidth, int screenHeight,
+                                                         int barHeight = HomeRef::BottomH) {
   if (screenWidth <= 1 || screenHeight <= 0 || barHeight <= 0 || barHeight > screenHeight) return {};
-  const int half = screenWidth / 2;
-  return {{0, screenHeight - barHeight, half, barHeight},
-          {half, screenHeight - barHeight, screenWidth - half, barHeight}};
+  const int y = screenHeight - barHeight;
+  int split1 = HomeRef::BottomSplit1;
+  int split2 = HomeRef::BottomSplit2;
+  if (screenWidth != HomeRef::ScreenW) {
+    split1 = screenWidth / 3;
+    split2 = (screenWidth * 2) / 3;
+  }
+  return {{0, y, split1, barHeight},
+          {split1, y, split2 - split1, barHeight},
+          {split2, y, screenWidth - split2, barHeight}};
 }
 
 // Chapter selectors reserve the first 65px for the title/list boundary, so a
@@ -77,42 +88,32 @@ struct FengyanRecentLayout {
 
 inline FengyanRecentLayout makeFengyanRecentLayout(const Rect& rect, int bookCount,
                                                     int contentSidePadding = 20) {
+  (void)contentSidePadding;
   FengyanRecentLayout L;
   L.bookCount = minInt(maxInt(bookCount, 0), 3);
-  if (L.bookCount <= 0 || rect.width <= 0 || rect.height <= 0) return L;
+  if (rect.width <= 0 || rect.height <= 0) return L;
 
-  const int panelInset = maxInt(12, contentSidePadding - 6);
-  L.panel = {rect.x + panelInset, rect.y, rect.width - panelInset * 2, rect.height};
-  if (L.panel.width <= 64 || L.panel.height <= 120) return {};
-
-  const int inner = 16;
-  const int heroTop = L.panel.y + 52;
-  const int heroHeight = minInt(212, maxInt(120, L.panel.height / 2 - 16));
-  L.hero = {L.panel.x + inner, heroTop, L.panel.width - inner * 2, heroHeight};
-
-  const int heroCoverW = minInt(132, maxInt(72, L.hero.width / 3));
-  const int heroCoverH = minInt(198, L.hero.height - 8);
-  L.heroCover = {L.hero.x, L.hero.y, heroCoverW, heroCoverH};
-
-  const int infoX = L.heroCover.x + L.heroCover.width + 20;
-  const int infoW = maxInt(1, L.hero.x + L.hero.width - infoX);
-  L.heroInfo = {infoX, L.hero.y + 16, infoW, maxInt(1, L.heroCover.height - 24)};
-  L.progress = {infoX, L.heroCover.y + L.heroCover.height - 28, infoW, 12};
-
-  L.dividerY = L.hero.y + L.hero.height + 12;
-  const int miniTop = L.dividerY + 18;
-  const int miniTileW = 104;
-  const int miniTileH = minInt(152, maxInt(96, L.panel.y + L.panel.height - miniTop - 16));
-  const int miniGap = 18;
-  const int miniStartX = L.hero.x + 8;
-  for (int i = 0; i < 2; ++i) {
-    const int x = miniStartX + i * (miniTileW + miniGap);
-    L.mini[i] = {x, miniTop, miniTileW, miniTileH};
-    const int coverW = minInt(84, miniTileW);
-    const int coverH = minInt(126, maxInt(72, miniTileH - 24));
-    L.miniCover[i] = {x + (miniTileW - coverW) / 2, miniTop, coverW, coverH};
-  }
-
+  const int dy = rect.y - HomeRef::Recent.y;
+  const int dx = rect.x;
+  L.panel = {dx + HomeRef::Recent.x, HomeRef::Recent.y + dy, HomeRef::Recent.w, HomeRef::Recent.h};
+  L.heroCover = {dx + HomeRef::HeroCover.x, HomeRef::HeroCover.y + dy, HomeRef::HeroCover.w, HomeRef::HeroCover.h};
+  L.hero = {L.heroCover.x, L.heroCover.y, HomeRef::HeroTextRight - HomeRef::HeroCover.x, HomeRef::HeroCover.h};
+  L.heroInfo = {dx + HomeRef::HeroTextX, HomeRef::HeroTitleBaseline + dy - HomeRef::FontHeroTitle,
+                maxInt(1, HomeRef::HeroTextRight - HomeRef::HeroTextX),
+                HomeRef::HeroProgressBar.y - HomeRef::HeroTitleBaseline + HomeRef::FontHeroTitle};
+  L.progress = {dx + HomeRef::HeroProgressBar.x, HomeRef::HeroProgressBar.y + dy, HomeRef::HeroProgressBar.w,
+                HomeRef::HeroProgressBar.h};
+  L.dividerY = HomeRef::HeroDividerY + dy;
+  L.miniCover[0] = {dx + HomeRef::MiniCover1.x, HomeRef::MiniCover1.y + dy, HomeRef::MiniCover1.w,
+                    HomeRef::MiniCover1.h};
+  L.miniCover[1] = {dx + HomeRef::MiniCover2.x, HomeRef::MiniCover2.y + dy, HomeRef::MiniCover2.w,
+                    HomeRef::MiniCover2.h};
+  const int miniTitleH = 24;
+  L.mini[0] = {L.miniCover[0].x, L.miniCover[0].y, L.miniCover[0].width,
+               HomeRef::MiniTitleBaseline + dy - L.miniCover[0].y + miniTitleH};
+  L.mini[1] = {L.miniCover[1].x, L.miniCover[1].y, L.miniCover[1].width,
+               HomeRef::MiniTitleBaseline + dy - L.miniCover[1].y + miniTitleH};
+  if (L.bookCount <= 0) return L;
   return L;
 }
 
@@ -144,15 +145,22 @@ struct FengyanMenuLayout {
   int contentSidePadding = 20;
   int offsetY = -6;
   int squareSize = 0;
+  int tileW = 0;
+  int tileH = 0;
   int startX = 0;
   int startY = 0;
   int buttonCount = 0;
+  int tileX[4] = {0, 0, 0, 0};
+  bool useHomeRef = false;
   Rect adjusted{};
 
-  bool valid() const { return squareSize > 0 && buttonCount > 0 && rows > 0; }
+  bool valid() const { return (squareSize > 0 || tileW > 0) && buttonCount > 0 && rows > 0; }
 
   Rect tileRect(int index) const {
     if (index < 0 || index >= buttonCount || !valid()) return {};
+    if (useHomeRef && index < 4) {
+      return {tileX[index], startY, tileW, tileH};
+    }
     const int col = index % cols;
     const int row = index / cols;
     return {startX + col * (squareSize + horizontalSpacing),
@@ -167,9 +175,27 @@ inline FengyanMenuLayout makeFengyanMenuLayout(const Rect& rect, int buttonCount
   L.contentSidePadding = contentSidePadding;
   L.offsetY = offsetY;
   L.buttonCount = maxInt(0, buttonCount);
-  L.adjusted = {rect.x, rect.y + offsetY, rect.width, rect.height};
+  L.adjusted = {rect.x, rect.y, rect.width, rect.height};
   if (L.buttonCount <= 0 || L.adjusted.width <= 0 || L.adjusted.height <= 0) return L;
 
+  if (L.cols == 4) {
+    const int dy = rect.y - HomeRef::Quick.y;
+    const int n = minInt(L.buttonCount, 4);
+    L.useHomeRef = true;
+    L.rows = 1;
+    L.tileW = HomeRef::QuickTile1.w;
+    L.tileH = HomeRef::QuickTile1.h;
+    L.squareSize = HomeRef::QuickTile1.w;
+    L.startY = HomeRef::QuickTile1.y + dy;
+    const HomeRef::Rect tiles[4] = {HomeRef::QuickTile1, HomeRef::QuickTile2, HomeRef::QuickTile3,
+                                    HomeRef::QuickTile4};
+    for (int i = 0; i < 4; ++i) L.tileX[i] = rect.x + tiles[i].x;
+    L.buttonCount = n;
+    L.startX = L.tileX[0];
+    return L;
+  }
+
+  L.adjusted = {rect.x, rect.y + offsetY, rect.width, rect.height};
   L.rows = maxInt(1, ceilDiv(L.buttonCount, L.cols));
   const int totalHSpacing = L.horizontalSpacing * (L.cols - 1);
   const int totalVSpacing = L.verticalSpacing * (L.rows - 1);

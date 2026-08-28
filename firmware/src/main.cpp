@@ -554,6 +554,31 @@ void onGoToApps() {
   enterNewActivity(new AppListActivity(renderer, mappedInputManager, onGoHome));
 }
 
+void onGoToNativeApp(const std::string& appId) {
+#ifdef CROSSPOINT_MURPHY_M4
+  if (!M4xIsValidPackageId(appId)) {
+    onGoToApps();
+    return;
+  }
+  const auto apps = M4xRegistry::load();
+  const auto* app = M4xRegistry::find(apps, appId);
+  if (!app) {
+    onGoToApps();
+    return;
+  }
+  const M4xInstalledApp launched = *app;
+  exitActivity();
+  if (launched.runtime == M4xRuntimeKind::Native) {
+    enterNewActivity(new NativeAppActivity(renderer, mappedInputManager, launched, []() { onGoHome(); }));
+  } else {
+    enterNewActivity(new AppRuntimeActivity(renderer, mappedInputManager, launched, []() { onGoHome(); }));
+  }
+#else
+  (void)appId;
+  onGoToApps();
+#endif
+}
+
 void onGoToMyLibrary() {
   exitActivity();
   enterNewActivity(new MyLibraryActivity(renderer, mappedInputManager, onGoHome,
@@ -605,7 +630,7 @@ void onGoHomeAnimated(const bool animateEntry, const int animationDirection) {
                                     onGoToMyLibrary, onGoToRecentBooks,
                                     onGoToSettings, onGoToFileTransfer, onGoToBrowser, onGoToJianGuoYun,
                                     onGoToDataCapsule, onGoToBookmarkNotes, onGoToApps,
-                                    animateEntry, animationDirection));
+                                    animateEntry, animationDirection, onGoToNativeApp));
 #ifdef CROSSPOINT_MURPHY_M4
   gDebugActiveAppId.clear();
 #endif

@@ -32,11 +32,11 @@ int main(int argc, char** argv) {
   require(cpp, "\"最近阅读\"");
   require(cpp, "\"快捷操作\"");
   require(cpp, "kHomeQuickColumns = 4");
-  require(cpp, "kHomeQuickHeaderOffset = 44");
+  require(cpp, "kHomeQuickHeaderOffset = 46");
   require(cpp, "kNoReadingHistory");
-  require(cpp, "renderer.drawRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, true)");
-  require(cpp, "renderer.drawRect(tileRect.x + 2, tileRect.y + 2, tileRect.width - 4, tileRect.height - 4, true)");
-  require(hdr, ".homeCoverTileHeight = 470");
+  require(cpp, "HomeRef::FocusInset");
+  require(cpp, "drawLineIconFolder");
+  require(hdr, ".homeCoverTileHeight = 481");
 
   std::free(cpp);
   std::free(hdr);

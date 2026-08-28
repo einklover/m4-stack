@@ -6,6 +6,7 @@
 
 #include "components/themes/BaseTheme.h"
 #include "fontIds.h"
+#include "util/HomeRef.h"
 #include "util/M4UiText.h"
 
 namespace M4TouchNavigation {
@@ -122,13 +123,16 @@ void drawBottomBar(GfxRenderer& renderer) {
   // Replace legacy hardware-only hints with a high-contrast, stable touch bar.
   // The standard layouts already reserve roughly this much footer space.
   renderer.fillRect(0, top, w, kBottomBarHeight, false);
-  renderer.drawLine(0, top, w - 1, top, true);
-  renderer.drawLine(w / 2, top + 7, w / 2, h - 7, true);
+  renderer.drawLine(0, top, w - 1, top, 1, true);
+  renderer.drawLine(layout.home.x, top + 8, layout.home.x, h - 8, 1, true);
+  renderer.drawLine(layout.menu.x, top + 8, layout.menu.x, h - 8, 1, true);
 
   M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, layout.back.x, layout.back.y, layout.back.width,
                                     layout.back.height, "返回", true, EpdFontFamily::BOLD, 0);
   M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, layout.home.x, layout.home.y, layout.home.width,
                                     layout.home.height, "主页", true, EpdFontFamily::BOLD, 0);
+  M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, layout.menu.x, layout.menu.y, layout.menu.width,
+                                    layout.menu.height, "菜单", true, EpdFontFamily::BOLD, 0);
 #else
   (void)renderer;
 #endif

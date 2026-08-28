@@ -47,6 +47,7 @@ class HomeActivity final : public Activity {
   const std::function<void()> onDataCapsuleOpen;  // 数据胶囊回调
   const std::function<void()> onBookmarkNotesOpen;  // 书签笔记回调
   const std::function<void()> onAppsOpen;           // 扩展应用列表
+  const std::function<void(const std::string& appId)> onOpenNativeApp;
 
 
   static void taskTrampoline(void* param);
@@ -71,7 +72,8 @@ class HomeActivity final : public Activity {
                         const std::function<void()>& onDataCapsuleOpen,
                         const std::function<void()>& onBookmarkNotesOpen,
                         const std::function<void()>& onAppsOpen,
-                        bool animateEntry = false, int animationDirection = 0)
+                        bool animateEntry = false, int animationDirection = 0,
+                        const std::function<void(const std::string& appId)>& onOpenNativeApp = {})
       : Activity("Home", renderer, mappedInput),
         animateEntry(animateEntry),
         entryAnimationDirection(animationDirection),
@@ -84,11 +86,13 @@ class HomeActivity final : public Activity {
         onJianGuoYunOpen(onJianGuoYunOpen),
         onDataCapsuleOpen(onDataCapsuleOpen),
         onBookmarkNotesOpen(onBookmarkNotesOpen),
-        onAppsOpen(onAppsOpen) {}
+        onAppsOpen(onAppsOpen),
+        onOpenNativeApp(onOpenNativeApp) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
   bool isHomeActivity() const override { return true; }
+  bool showTouchNavigation() const override { return true; }
   uint8_t touchFooterButtonsMask() const override {
     return M4FooterTouchPolicy::Confirm | M4FooterTouchPolicy::Left | M4FooterTouchPolicy::Right;
   }
