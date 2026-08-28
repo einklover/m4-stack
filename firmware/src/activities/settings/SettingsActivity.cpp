@@ -14,7 +14,6 @@
 #include "KOReaderSettingsActivity.h"
 #include "MappedInputManager.h"
 #include "NumberSelectionActivity.h"
-#include "OtaUpdateActivity.h"
 #include "SimpleBluetoothActivity.h"
 #include "components/UITheme.h"
 #include <EpdFontLoader.h>
@@ -29,8 +28,6 @@
 #include "DeveloperOptionsActivity.h"
 #include <esp_ota_ops.h>
 #endif
-#include <SDCardManager.h>
-
 #include "SettingsLists.h"
 
 const char* SettingsActivity::categoryNames[categoryCount] = {"Display", "Controls", "System"};
@@ -119,11 +116,6 @@ void SettingsActivity::onEnter() {
   {
     auto act = SettingInfo::Action(L(Str::kClearCache));
     act.key = "clearCache";
-    systemSettings.push_back(std::move(act));
-  }
-  if (SdMan.exists("/update/firmware.bin")) {
-    auto act = SettingInfo::Action(L(Str::kSdCardUpdate));
-    act.key = "sdOta";
     systemSettings.push_back(std::move(act));
   }
   {
@@ -524,24 +516,6 @@ void SettingsActivity::toggleCurrentSetting() {
         updateRequired = true;
       }
 #endif
-    } else if (strcmp(actKey, "sdOta") == 0) {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      exitActivity();
-      enterNewActivity(new SdOtaUpdateActivity(renderer, mappedInput, [this] {
-        exitActivity();
-        updateRequired = true;
-      }));
-      xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "sdOta") == 0) {
-      // duplicate sdOta key handled above
-      ;
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      exitActivity();
-      enterNewActivity(new SdOtaUpdateActivity(renderer, mappedInput, [this] {
-        exitActivity();
-        updateRequired = true;
-      }));
-      xSemaphoreGive(renderingMutex);
     } else if (strcmp(actKey, "bluetooth") == 0) {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       exitActivity();

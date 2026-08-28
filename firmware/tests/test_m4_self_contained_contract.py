@@ -14,7 +14,6 @@ REQUIRED_VENDOR_PATHS = (
     "firmware/lib/expat",
     "firmware/lib/miniz",
     "firmware/lib/picojpeg",
-    "firmware/src/network/updater_fw.bin",
 )
 
 FONT_GENERATOR_FILES = (
@@ -34,6 +33,23 @@ BUILD_SURFACES = (
     ROOT / "README.md",
     ROOT / "VERSIONS.md",
     ROOT / "docs" / "BUILD_AND_DEPS.md",
+)
+
+LEGACY_SD_UPDATER_SURFACES = (
+    ROOT / "scripts",
+    ROOT / "firmware" / "scripts",
+    ROOT / "firmware" / "src",
+    ROOT / "firmware" / "platformio.ini",
+    ROOT / "README.md",
+    ROOT / "VERSIONS.md",
+    ROOT / "docs",
+)
+
+LEGACY_SD_UPDATER_TOKENS = (
+    "updater_fw.bin",
+    "_binary_src_network_updater_fw_bin_",
+    "SdOtaUpdater",
+    '"sdOta"',
 )
 
 
@@ -91,6 +107,29 @@ def test_public_build_owns_all_dependency_inputs() -> None:
     assert not references, "active build surfaces still require private dependency repo: " + "; ".join(references)
 
 
+def test_legacy_sd_intermediary_updater_is_removed() -> None:
+    references = []
+    for surface in LEGACY_SD_UPDATER_SURFACES:
+        for path in _files_under(surface):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for token in LEGACY_SD_UPDATER_TOKENS:
+                if token in text:
+                    references.append(f"{path.relative_to(ROOT)}: {token}")
+
+    assert not references, "legacy SD intermediary updater remains active: " + "; ".join(references)
+    for rel in (
+        "firmware/src/network/SdOtaUpdater.h",
+        "firmware/src/network/SdOtaUpdater.cpp",
+        "firmware/src/activities/settings/OtaUpdateActivity.h",
+        "firmware/src/activities/settings/OtaUpdateActivity.cpp",
+    ):
+        assert not (ROOT / rel).exists(), f"legacy SD updater source remains: {rel}"
+
+
 if __name__ == "__main__":
     test_public_build_owns_all_dependency_inputs()
+    test_legacy_sd_intermediary_updater_is_removed()
     print("m4 self-contained build contract: PASS")

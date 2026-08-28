@@ -56,17 +56,13 @@ If a non-`OMIT_FONTS` build is attempted before generation, the M4 pre-script
 fails with an actionable message naming the generator command and required
 local font. The TTF itself is never copied or published by the repository.
 
-## Updater image publication blocker
+## Legacy SD-card update removal
 
-`firmware/src/network/updater_fw.bin` is a 312,288-byte ESP-IDF/Arduino
-two-stage SD-OTA image used by `SdOtaUpdater` and embedded in both legacy and
-M4 images. The currently available copy identifies itself as ESP-IDF 4.4.7
-and `arduino-lib-builder`, but the public `m4-stack` tree contains no source
-project or license for that compiled image. It must not be published as a
-blind binary until its source/license is recovered or a clean-room,
-redistributable replacement is built and verified. This is the remaining
-blocker to a truly clean-clone M4 build; the source dependencies and generated
-font workflow above are self-contained.
+The former SD-card intermediary updater was intentionally removed. Public M4
+builds no longer require an embedded second-stage updater image or any private
+repository artifact. Online OTA retains its network download, verification,
+and direct OTA-slot write path; dual-boot slot switching and APP1-only flash
+scripts are separate and remain supported.
 
 ## Regression contract
 

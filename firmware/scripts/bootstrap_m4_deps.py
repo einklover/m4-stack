@@ -13,7 +13,6 @@ REQUIRED_SENTINELS = (
     "open-m4-sdk/libs/hardware/BoardConfig/library.json",
     "open-m4-sdk/libs/hardware/FrontlightManager/library.json",
     "open-m4-sdk/libs/hardware/PowerManager/library.json",
-    "src/network/updater_fw.bin",
     "lib/Epub/Epub.h",
     "lib/Lua/src/lua.h",
     "lib/expat/expat.h",
@@ -56,7 +55,13 @@ def _run_as_platformio_extra_script() -> None:
     firmware_dir = Path(env.subst("$PROJECT_DIR"))
     ensure_dependencies(firmware_dir)
 
-    defines = " ".join(str(value) for value in env.get("CPPDEFINES", []))
+    build_flags = env.get("BUILD_FLAGS", [])
+    if isinstance(build_flags, str):
+        build_flags = [build_flags]
+    defines = " ".join(
+        [str(value) for value in env.get("CPPDEFINES", [])]
+        + [str(value) for value in build_flags]
+    )
     if "OMIT_FONTS" not in defines and not (firmware_dir / "lib/EpdFont/builtinFonts/all.h").is_file():
         raise RuntimeError(
             "builtinFonts/all.h is missing. Provide a legally usable compatible "

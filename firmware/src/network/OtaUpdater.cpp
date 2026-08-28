@@ -206,7 +206,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate() {
 
   esp_https_ota_handle_t ota_handle = NULL;
   esp_err_t esp_err;
-  /* Signal for OtaUpdateActivity */
+  /* Signal for the online OTA activity */
   render = false;
 
   esp_http_client_config_t client_config = {
@@ -240,7 +240,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate() {
   do {
     esp_err = esp_https_ota_perform(ota_handle);
     processedSize = esp_https_ota_get_image_len_read(ota_handle);
-    /* Sent signal to  OtaUpdateActivity */
+    /* Send progress to the online OTA activity */
     render = true;
     vTaskDelay(10 / portTICK_PERIOD_MS);
   } while (esp_err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);

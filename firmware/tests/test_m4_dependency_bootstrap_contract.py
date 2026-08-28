@@ -23,7 +23,6 @@ REQUIRED_SENTINELS = (
     "open-m4-sdk/libs/hardware/BoardConfig/library.json",
     "open-m4-sdk/libs/hardware/FrontlightManager/library.json",
     "open-m4-sdk/libs/hardware/PowerManager/library.json",
-    "src/network/updater_fw.bin",
     "lib/Epub/Epub.h",
     "lib/Lua/src/lua.h",
     "lib/expat/expat.h",
@@ -134,7 +133,13 @@ def test_root_bootstrap_repairs_qemu_patch_without_downloading_complete_tree() -
         )
 
 
+def test_font_guard_reads_platformio_build_flags() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "BUILD_FLAGS" in source
+
+
 if __name__ == "__main__":
     test_m4_pre_script_bootstraps_only_when_sentinels_are_missing()
     test_root_bootstrap_repairs_qemu_patch_without_downloading_complete_tree()
+    test_font_guard_reads_platformio_build_flags()
     print("m4 dependency bootstrap contract: PASS")

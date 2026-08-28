@@ -4,7 +4,7 @@ Use the smallest diagnostic that distinguishes the failure. Preserve logs and un
 
 ## Missing reconstructed libraries
 
-Symptoms include missing `open-m4-sdk`, `Epub`, `Lua`, font headers, or `updater_fw.bin` during an M4 build. Check `curl` and `tar`, then run `bash scripts/bootstrap_deps.sh` from the repository root. The script is pinned to `einklover/m4-device@f86b134`; do not substitute an unverified SDK tree.
+Symptoms include missing `open-m4-sdk`, `Epub`, `Lua`, or font headers during an M4 build. Run `bash scripts/bootstrap_deps.sh` from the repository root; it validates the tracked source dependencies offline and reports the missing path.
 
 ## PlatformIO not found
 

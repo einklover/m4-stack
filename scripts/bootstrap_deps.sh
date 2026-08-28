@@ -15,7 +15,6 @@ REQUIRED_SENTINELS=(
   "open-m4-sdk/libs/hardware/BoardConfig/library.json"
   "open-m4-sdk/libs/hardware/FrontlightManager/library.json"
   "open-m4-sdk/libs/hardware/PowerManager/library.json"
-  "src/network/updater_fw.bin"
   "lib/Epub/Epub.h"
   "lib/Lua/src/lua.h"
   "lib/expat/expat.h"

@@ -18,7 +18,5 @@ production artifact, not a vendored dependency. The generator consumes only
 a local font selected by the builder; no source TTF or generated output is
 published here.
 
-`src/network/updater_fw.bin` is intentionally not described as redistributable
-until its original source and license are recovered. It is an embedded
-two-stage SD-OTA image, not a harmless test fixture; see the build/dependency
-document for the current publication blocker.
+The former SD-card intermediary updater was intentionally removed. No compiled
+second-stage updater image is shipped or required by this repository.
