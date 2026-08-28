@@ -130,33 +130,39 @@ void drawBottomBar(GfxRenderer& renderer) {
 
   auto drawNavItem = [&](const TouchHitGeometry::Rect& zone, const char* label, int kind) {
     const int icon = HomeRef::BottomIconSize;
-    const int textW = M4UiText::textWidth(renderer, UI_10_FONT_ID, label, EpdFontFamily::BOLD);
-    const int gap = 6;
+    const int textW = M4UiText::systemTextWidth(renderer, UI_10_FONT_ID, label, EpdFontFamily::BOLD);
+    const int gap = 8;
     const int group = icon + gap + textW;
     const int gx = zone.x + std::max(0, (zone.width - group) / 2);
-    const int iy = zone.y + (zone.height - icon) / 2;
+    const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+    const int textY = HomeRef::BottomBaseline - lineH;
+    const int textCy = textY + lineH / 2;
+    const int iy = textCy - icon / 2;
     const int cx = gx + icon / 2;
     const int cy = iy + icon / 2;
     if (kind == 0) {
-      for (int i = 0; i <= 7; ++i) {
-        renderer.drawPixel(gx + 5 + i, cy - i, true);
-        renderer.drawPixel(gx + 6 + i, cy - i, true);
-        renderer.drawPixel(gx + 5 + i, cy + i, true);
-        renderer.drawPixel(gx + 6 + i, cy + i, true);
+      const int tipX = gx + 6;
+      for (int i = 0; i <= 6; ++i) {
+        renderer.drawPixel(tipX + i, cy - i, true);
+        renderer.drawPixel(tipX + i, cy + i, true);
       }
     } else if (kind == 1) {
-      renderer.drawLine(cx, iy + 2, gx + 3, iy + 12, true);
-      renderer.drawLine(cx, iy + 2, gx + icon - 4, iy + 12, true);
-      renderer.drawLine(gx + 3, iy + 12, gx + icon - 4, iy + 12, true);
-      renderer.drawRect(gx + 6, iy + 12, icon - 12, icon - 15, true);
+      const int peakY = std::max(zone.y + 2, iy + 1);
+      for (int i = 0; i <= 8; ++i) {
+        renderer.drawPixel(cx - i, peakY + i, true);
+        renderer.drawPixel(cx + i, peakY + i, true);
+      }
+      const int eaveY = peakY + 8;
+      renderer.drawLine(cx - 8, eaveY, cx + 8, eaveY, true);
+      renderer.drawRect(cx - 6, eaveY, 13, 8, true);
     } else {
+      const int lx = gx + 4;
+      const int rx = gx + icon - 5;
       for (int row = 0; row < 3; ++row) {
-        renderer.drawLine(gx + 3, iy + 5 + row * 6, gx + icon - 4, iy + 5 + row * 6, true);
+        renderer.drawLine(lx, iy + 5 + row * 5, rx, iy + 5 + row * 5, true);
       }
     }
-    M4UiText::drawSystem(renderer, UI_10_FONT_ID, gx + icon + gap,
-                         HomeRef::BottomBaseline - renderer.getLineHeight(UI_10_FONT_ID), label, true,
-                         EpdFontFamily::BOLD);
+    M4UiText::drawSystem(renderer, UI_10_FONT_ID, gx + icon + gap, textY, label, true, EpdFontFamily::BOLD);
   };
 
   drawNavItem(layout.back, "返回", 0);
