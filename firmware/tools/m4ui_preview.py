@@ -19,12 +19,15 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import html
 import time
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
-
 W, H = 480, 800
+TOOL_DIR = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_DIR = TOOL_DIR / "preview_output"
+SOURCE_DIR = TOOL_DIR.parent / "src"
+SCREENS = ("home", "detail")
 PAD = 30
 TILE_PAD = 20
 HEADER_H = 50
@@ -41,30 +44,73 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/arphic/uming.ttc",
     "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/System/Library/Fonts/STHeiti Light.ttc",
     "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "C:/Windows/Fonts/arial.ttf",
 ]
 BOLD_CANDIDATES = [
     "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/arphic/uming.ttc",
     "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/System/Library/Fonts/STHeiti Medium.ttc",
+    "C:/Windows/Fonts/msyhbd.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/Library/Fonts/Arial Bold.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
 ]
 
 
-def first_existing(paths: list[str]) -> str:
+def first_existing(paths: list[str]) -> Path:
     for p in paths:
-        if Path(p).exists():
-            return p
-    raise SystemExit("No CJK font found. Install Noto Sans CJK in the preview environment.")
+        candidate = Path(p)
+        if candidate.exists():
+            return candidate.resolve()
+    raise ValueError("No usable system font found; pass --font PATH to a TTF/TTC/OTF file.")
 
 
-REGULAR = first_existing(FONT_CANDIDATES)
-BOLD = first_existing(BOLD_CANDIDATES)
+def resolve_font_paths(font: Path | None = None, bold_font: Path | None = None) -> tuple[Path, Path]:
+    regular = Path(font).expanduser().resolve() if font else first_existing(FONT_CANDIDATES)
+    if bold_font:
+        bold = Path(bold_font).expanduser().resolve()
+    elif font:
+        bold = regular
+    else:
+        bold = first_existing(BOLD_CANDIDATES)
+    for label, path in (("font", regular), ("bold font", bold)):
+        if not path.is_file():
+            raise ValueError(f"{label} does not exist: {path}")
+    return regular, bold
+
+
+Image = None
+ImageDraw = None
+ImageFont = None
+REGULAR: Path | None = None
+BOLD: Path | None = None
+
+
+def _configure_pillow(font: Path | None, bold_font: Path | None) -> None:
+    global Image, ImageDraw, ImageFont, REGULAR, BOLD
+    if Image is None:
+        from PIL import Image as pil_image
+        from PIL import ImageDraw as pil_image_draw
+        from PIL import ImageFont as pil_image_font
+
+        Image = pil_image
+        ImageDraw = pil_image_draw
+        ImageFont = pil_image_font
+    REGULAR, BOLD = resolve_font_paths(font, bold_font)
 
 
 def face(px: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    if ImageFont is None or REGULAR is None or BOLD is None:
+        raise RuntimeError("Pillow preview runtime is not configured")
     return ImageFont.truetype(BOLD if bold else REGULAR, px)
 
 
@@ -270,30 +316,77 @@ def render_detail() -> Image.Image:
     return image
 
 
-def render(out: Path, screen: str) -> list[Path]:
+def validate_output_dir(out: Path) -> Path:
+    resolved = Path(out).expanduser().resolve()
+    try:
+        resolved.relative_to(SOURCE_DIR.resolve())
+    except ValueError:
+        return resolved
+    raise ValueError(f"refusing to write preview output under production source: {resolved}")
+
+
+def render(
+    out: Path,
+    screen: str,
+    *,
+    font: Path | None = None,
+    bold_font: Path | None = None,
+) -> list[Path]:
+    out = validate_output_dir(out)
+    _configure_pillow(font, bold_font)
     out.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    if screen in ("home", "both"):
+    if screen in ("home", "both", "all"):
         path = out / "home_fixed_ui.png"
         render_home().save(path)
         paths.append(path)
-    if screen in ("detail", "both"):
+    if screen in ("detail", "both", "all"):
         path = out / "detail_fixed_ui.png"
         render_detail().save(path)
         paths.append(path)
     return paths
 
 
-def main() -> None:
+def write_gallery(out: Path) -> Path:
+    out = validate_output_dir(out)
+    images = sorted(out.glob("*.png"))
+    links = "\n".join(
+        f'  <li><a href="{html.escape(path.name)}">{html.escape(path.stem)}</a></li>'
+        for path in images
+    )
+    gallery = (
+        "<!doctype html>\n<html><meta charset=\"utf-8\"><title>M4 UI preview</title>\n"
+        "<body><h1>Murphy M4 UI preview</h1><ul>\n"
+        f"{links}\n</ul></body></html>\n"
+    )
+    path = out / "index.html"
+    path.write_text(gallery, encoding="utf-8")
+    return path
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Murphy M4 fixed-raster Native UI preview")
-    parser.add_argument("--screen", choices=["home", "detail", "both"], default="both")
-    parser.add_argument("--out", type=Path, default=Path("build/m4ui-preview"))
+    parser.add_argument("--screen", choices=["home", "detail", "both", "all"], default="both")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--font", type=Path, help="regular TTF/TTC/OTF font override")
+    parser.add_argument("--bold-font", type=Path, help="bold TTF/TTC/OTF font override")
+    parser.add_argument("--gallery", action="store_true", help="write index.html for generated PNGs")
     parser.add_argument("--watch", action="store_true", help="continuously regenerate PNGs")
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     while True:
-        for path in render(args.out, args.screen):
-            print(path, flush=True)
+        try:
+            for path in render(args.out, args.screen, font=args.font, bold_font=args.bold_font):
+                print(path, flush=True)
+            if args.gallery:
+                print(write_gallery(args.out), flush=True)
+        except (ImportError, ValueError, OSError) as exc:
+            parser.error(str(exc))
         if not args.watch:
             break
         time.sleep(0.5)
