@@ -418,6 +418,31 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
   const auto layout = TouchHitGeometry::makeFengyanRecentLayout(
       TouchHitGeometry::Rect{rect.x, rect.y, rect.width, rect.height}, bookCount,
       FengyanMetrics::values.contentSidePadding);
+  if (recentBooks.empty()) {
+    const int panelInset = std::max(12, FengyanMetrics::values.contentSidePadding - 6);
+    const int panelX = rect.x + panelInset;
+    const int panelY = rect.y;
+    const int panelW = rect.width - panelInset * 2;
+    const int panelH = rect.height;
+    if (!coverRendered) {
+      renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+      renderer.drawRect(panelX, panelY, panelW, panelH, true);
+      M4UiText::draw(renderer, UI_12_FONT_ID, panelX + 18, panelY + 14, "最近阅读", true,
+                     EpdFontFamily::BOLD);
+      const char* countText = "0/0";
+      const int countWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, countText);
+      M4UiText::draw(renderer, UI_10_FONT_ID, panelX + panelW - countWidth - 18, panelY + 16,
+                     countText, true);
+      const char* emptyMsg = L(Str::kNoReadingHistory);
+      const int textW = M4UiText::textWidth(renderer, UI_10_FONT_ID, emptyMsg);
+      const int textH = renderer.getLineHeight(UI_10_FONT_ID);
+      M4UiText::draw(renderer, UI_10_FONT_ID, panelX + (panelW - textW) / 2,
+                     panelY + (panelH - textH) / 2, emptyMsg, true);
+      coverBufferStored = storeCoverBuffer();
+      coverRendered = true;
+    }
+    return;
+  }
   if (!layout.valid()) return;
 
   auto drawCover = [&](int bookIndex, const TouchHitGeometry::Rect& dst) {
@@ -538,96 +563,36 @@ void FengyanTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCo
     Rect tileRect = Rect{tr.x, tr.y, tr.width, tr.height};
     const bool selected = selectedIndex == i;
 
-    // 先绘制选中状态的背景（在图标和文字之前）
+    renderer.drawRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, true);
     if (selected) {
-      const int cornerSize = 12;
-      const int lineThickness = 3;
-      
-      switch (SETTINGS.homeIconStyle) {
-        case CrossPointSettings::GRAY_BG_ONLY:
-          renderer.fillRectDither(tileRect.x, tileRect.y, tileRect.width, tileRect.height, Color::LightGray);
-          break;
-          
-        case CrossPointSettings::DASHED_BORDER_ONLY:
-          for (int i = 0; i < tileRect.width; i += 6) {
-            renderer.drawPixel(tileRect.x + i, tileRect.y, true);
-            renderer.drawPixel(tileRect.x + i + 1, tileRect.y, true);
-            renderer.drawPixel(tileRect.x + i + 2, tileRect.y, true);
-            renderer.drawPixel(tileRect.x + i + 3, tileRect.y, true);
-            renderer.drawPixel(tileRect.x + i, tileRect.y + tileRect.height - 1, true);
-            renderer.drawPixel(tileRect.x + i + 1, tileRect.y + tileRect.height - 1, true);
-            renderer.drawPixel(tileRect.x + i + 2, tileRect.y + tileRect.height - 1, true);
-            renderer.drawPixel(tileRect.x + i + 3, tileRect.y + tileRect.height - 1, true);
-          }
-          for (int i = 0; i < tileRect.height; i += 6) {
-            renderer.drawPixel(tileRect.x, tileRect.y + i, true);
-            renderer.drawPixel(tileRect.x, tileRect.y + i + 1, true);
-            renderer.drawPixel(tileRect.x, tileRect.y + i + 2, true);
-            renderer.drawPixel(tileRect.x, tileRect.y + i + 3, true);
-            renderer.drawPixel(tileRect.x + tileRect.width - 1, tileRect.y + i, true);
-            renderer.drawPixel(tileRect.x + tileRect.width - 1, tileRect.y + i + 1, true);
-            renderer.drawPixel(tileRect.x + tileRect.width - 1, tileRect.y + i + 2, true);
-            renderer.drawPixel(tileRect.x + tileRect.width - 1, tileRect.y + i + 3, true);
-          }
-          break;
-          
-        case CrossPointSettings::SOLID_BORDER_ONLY:
-          renderer.drawRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, true);
-          break;
-          
-        case CrossPointSettings::CORNERS_AND_GRAY_BG:
-          renderer.fillRectDither(tileRect.x, tileRect.y, tileRect.width, tileRect.height, Color::LightGray);
-          [[fallthrough]];
-          
-        case CrossPointSettings::CORNERS_ONLY:
-          for (int t = 0; t < lineThickness; t++) {
-            renderer.drawLine(tileRect.x, tileRect.y + t, tileRect.x + cornerSize, tileRect.y + t, true);
-            renderer.drawLine(tileRect.x + t, tileRect.y, tileRect.x + t, tileRect.y + cornerSize, true);
-          }
-          for (int t = 0; t < lineThickness; t++) {
-            renderer.drawLine(tileRect.x + tileRect.width - cornerSize, tileRect.y + t, tileRect.x + tileRect.width - 1, tileRect.y + t, true);
-            renderer.drawLine(tileRect.x + tileRect.width - 1 - t, tileRect.y, tileRect.x + tileRect.width - 1 - t, tileRect.y + cornerSize, true);
-          }
-          for (int t = 0; t < lineThickness; t++) {
-            renderer.drawLine(tileRect.x, tileRect.y + tileRect.height - 1 - t, tileRect.x + cornerSize, tileRect.y + tileRect.height - 1 - t, true);
-            renderer.drawLine(tileRect.x + t, tileRect.y + tileRect.height - cornerSize, tileRect.x + t, tileRect.y + tileRect.height - 1, true);
-          }
-          for (int t = 0; t < lineThickness; t++) {
-            renderer.drawLine(tileRect.x + tileRect.width - cornerSize, tileRect.y + tileRect.height - 1 - t,
-                              tileRect.x + tileRect.width - 1, tileRect.y + tileRect.height - 1 - t, true);
-            renderer.drawLine(tileRect.x + tileRect.width - 1 - t, tileRect.y + tileRect.height - cornerSize,
-                              tileRect.x + tileRect.width - 1 - t, tileRect.y + tileRect.height - 1, true);
-          }
-          break;
-      }
+      renderer.drawRect(tileRect.x + 2, tileRect.y + 2, tileRect.width - 4, tileRect.height - 4, true);
     }
 
-    // 计算图标和文字的整体居中位置
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
     const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
     const int textWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, label);
-    
+    int iconSize = std::min(std::min(mainMenuIconWidth, mainMenuIconHeight),
+                            std::min(tileRect.width - 16, tileRect.height - lineHeight - 20));
+    if (iconSize < 1) iconSize = 1;
+
     const int iconTextGap = 4;
-    const int totalContentHeight = mainMenuIconHeight + iconTextGap + lineHeight;
+    const int totalContentHeight = iconSize + iconTextGap + lineHeight;
     const int contentStartY = tileRect.y + (tileRect.height - totalContentHeight) / 2 + 4;
 
-    // 绘制图标
     if (rowIcon != nullptr) {
       UIIcon icon = rowIcon(i);
       const uint8_t* iconBitmap = iconForName(icon);
-      const int iconX = tileRect.x + (tileRect.width - mainMenuIconWidth) / 2;
+      const int iconX = tileRect.x + (tileRect.width - iconSize) / 2;
       const int iconY = contentStartY;
       if (iconBitmap != nullptr) {
-        renderer.drawIcon(iconBitmap, iconX, iconY, mainMenuIconWidth, mainMenuIconHeight);
+        renderer.drawIcon(iconBitmap, iconX, iconY, iconSize, iconSize);
       } else if (icon == UIIcon::Apps32) {
-        // Keep the Apps glyph distinct from Settings without adding another
-        // 72x72 bitmap to the already tight APP1 image.
-        constexpr int cell = 14;
-        constexpr int gap = 5;
-        constexpr int grid = cell * 3 + gap * 2;
-        const int gx = iconX + (mainMenuIconWidth - grid) / 2;
-        const int gy = iconY + (mainMenuIconHeight - grid) / 2;
+        const int cell = std::max(1, (14 * iconSize) / 72);
+        const int gap = std::max(1, (5 * iconSize) / 72);
+        const int grid = cell * 3 + gap * 2;
+        const int gx = iconX + (iconSize - grid) / 2;
+        const int gy = iconY + (iconSize - grid) / 2;
         for (int row = 0; row < 3; ++row) {
           for (int col = 0; col < 3; ++col) {
             renderer.fillRect(gx + col * (cell + gap), gy + row * (cell + gap), cell, cell, true);
@@ -636,9 +601,8 @@ void FengyanTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCo
       }
     }
 
-    // 绘制文字标签（reader face scaled to UI — full CJK menu names）
     const int textX = tileRect.x + (tileRect.width - textWidth) / 2;
-    const int textY = contentStartY + mainMenuIconHeight + iconTextGap;
+    const int textY = contentStartY + iconSize + iconTextGap;
     M4UiText::draw(renderer, UI_10_FONT_ID, textX, textY, label, true);
   }
 }
