@@ -1,35 +1,23 @@
 # Build and dependencies
 
-The M4 build is designed for a clean clone. Large reconstructed inputs are ignored by Git and are restored from one pinned archive when needed.
-
-## Reconstructed paths
-
-The bootstrap reconstructs these paths under `firmware/`:
-
-```text
-open-m4-sdk/
-lib/Epub/
-lib/Lua/
-lib/expat/
-lib/miniz/
-lib/picojpeg/
-lib/EpdFont/builtinFonts/
-src/network/updater_fw.bin
-```
-
-The SDK contains the hardware/display libraries discovered through `lib_extra_dirs`; the other directories provide the embedded and application libraries referenced by the M4 configuration. These generated trees are intentionally not committed.
-
-## Automatic flow
-
-`firmware/platformio.ini` attaches `firmware/scripts/bootstrap_m4_deps.py` to the M4 base environment before PlatformIO resolves the reconstructed libraries and embedded updater image. The pre-script checks required sentinel files. If any are missing, it invokes the root script:
+The public `m4-stack` checkout is the only repository required for the M4
+source and SDK dependencies. `firmware/open-m4-sdk/` and the Epub, Lua,
+Expat, miniz, and picojpeg libraries are tracked in this repository. The
+validator below is offline and exists to produce a clear error if a checkout
+is incomplete:
 
 ```bash
 bash scripts/bootstrap_deps.sh
 ```
 
-That script downloads `einklover/m4-device@f86b134`, validates the expected archive contents, installs the paths above, and applies the required QEMU InputManager patch when needed. A complete dependency set is a no-op and does not download anything.
+PlatformIO runs the same validation before it discovers the M4 libraries.
+Neither the root script nor the PlatformIO pre-script accesses
+the former private device repository or any other sibling repository. The QEMU
+`M4_QEMU_PLUGIN_DEBUG` InputManager patch is applied to an older unpatched
+in-tree SDK copy before the validator returns; a complete patched checkout is
+a download-free no-op.
 
-The normal build is:
+## Production build
 
 ```bash
 export PATH="$HOME/.local/bin:$HOME/.platformio/penv/bin:$PATH"
@@ -37,60 +25,57 @@ cd firmware
 pio run -e murphy_m4 -j1
 ```
 
-## Manual bootstrap
+The M4 production and QEMU profiles define `OMIT_FONTS=1` and use the tracked
+center-kernel font, so they do not require the generated bitmap-font tree.
+The PlatformIO platform/toolchain and declared libraries may still be
+downloaded by PlatformIO into its normal user cache.
 
-When diagnosing a clean clone or preparing dependencies explicitly, run from the repository root:
+## Generated builtinFonts
 
-```bash
-bash scripts/bootstrap_deps.sh
-cd firmware
-pio run -e murphy_m4 -j1
-```
-
-Manual bootstrap is supported; it is not required before a normal M4 build.
-
-## Custom M4 pixel source
-
-The original custom source TTF `标准像素粗.ttf` is intentionally not
-distributed because redistribution permission is unclear. Normal firmware
-builds do not need it: the tracked
-`firmware/src/fontdata/m4_center_kernel_16x16.bin` is already present.
-
-Only regenerate or customize the M4 pixel font when you have a legally usable, distributable Chinese-capable pixel-style TTF. The current generator also enforces the known source-font SHA-256, so a different TTF is rejected until that validation is intentionally updated; the command syntax is:
+`firmware/lib/EpdFont/builtinFonts/` is a generated production artifact and
+must remain untracked. A clean clone contains the complete generator and its
+Python dependency declaration, but intentionally contains no TTF. To generate
+the seven faces included by `builtinFonts/all.h`, provide a legally usable
+local TTF or OTF:
 
 ```bash
-python3 firmware/scripts/generate_m4_center_kernel.py --font <path-to-font.ttf>
+python3 -m pip install --user -r firmware/lib/EpdFont/scripts/requirements.txt
+firmware/lib/EpdFont/scripts/convert-builtin-fonts.sh \
+  --font /path/to/compatible-font.ttf \
+  --charset gb2312-plus
 ```
 
-A different TTF would change glyph appearance and output hash and cannot
-reproduce the current artifact byte-for-byte. This is separate from
-`firmware/lib/EpdFont/builtinFonts/`: that ~159 MiB tree is a separate
-bootstrap-reconstructed dependency and is not the source for the custom M4
-center-kernel font.
+The output is written to:
+`firmware/lib/EpdFont/builtinFonts/{notosans_12,13,14,16,18,20,22}_bold.h`
+plus `all.h`. For a smaller controlled fixture, use
+`--codepoints-file firmware/lib/EpdFont/m4_ui_charset.txt`
+with a local copy of that file, or use `--charset empty` for a toolchain
+smoke check. Prefer a pixel-style, CJK-capable TTF for Chinese UI coverage.
 
-## Prerequisites and caches
+If a non-`OMIT_FONTS` build is attempted before generation, the M4 pre-script
+fails with an actionable message naming the generator command and required
+local font. The TTF itself is never copied or published by the repository.
 
-The bootstrap requires Python 3, `curl`, and `tar`. The firmware build requires PlatformIO and its downloaded toolchain/packages. Install PlatformIO with your Python environment, then ensure its CLI is on `PATH`:
+## Updater image publication blocker
 
-```bash
-python3 -m pip install --user platformio
-export PATH="$HOME/.local/bin:$HOME/.platformio/penv/bin:$PATH"
-```
+`firmware/src/network/updater_fw.bin` is a 312,288-byte ESP-IDF/Arduino
+two-stage SD-OTA image used by `SdOtaUpdater` and embedded in both legacy and
+M4 images. The currently available copy identifies itself as ESP-IDF 4.4.7
+and `arduino-lib-builder`, but the public `m4-stack` tree contains no source
+project or license for that compiled image. It must not be published as a
+blind binary until its source/license is recovered or a clean-room,
+redistributable replacement is built and verified. This is the remaining
+blocker to a truly clean-clone M4 build; the source dependencies and generated
+font workflow above are self-contained.
 
-PlatformIO downloads the M4 platform from the pinned `pioarduino/platform-espressif32` release `55.03.37`. The M4 configuration also uses its declared ArduinoJson, QRCode, PNGdec, WebSockets, NimBLE-Arduino, and SdFat dependencies. Keep the package cache at `~/.platformio` and use a compiler-object cache for repeated builds:
-
-```bash
-export PLATFORMIO_BUILD_CACHE_DIR="$HOME/.cache/murphy-m4/platformio-build-cache"
-```
-
-The patched QEMU cache is separate from PlatformIO. Its source and patch pin are recorded in `VERSIONS.md`; do not rebuild it for an ordinary firmware-only edit.
-
-## Clean-clone troubleshooting
-
-If a first build reports missing `open-m4-sdk`, `Epub`, `Lua`, font, or other reconstructed inputs, verify that `curl` and `tar` are available and run `bash scripts/bootstrap_deps.sh` from the repository root. Then rerun the production build.
-
-If bootstrap reports an archive or network failure, keep the error output: it identifies the pinned archive and the missing prerequisite. Do not replace the pin with an unverified local SDK. The dependency contract can be checked without a device:
+## Regression contract
 
 ```bash
 python3 firmware/tests/test_m4_dependency_bootstrap_contract.py
+python3 firmware/tests/test_m4_self_contained_contract.py
 ```
+
+The self-contained contract intentionally does not require the generated
+159 MiB font output in Git. It checks for the in-repo generator, ignored
+output path, actionable documentation, tracked source dependencies, and the
+absence of an active private-repository build reference.

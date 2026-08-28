@@ -1,0 +1,26 @@
+{
+  "name": "Lua",
+  "version": "5.4.7",
+  "description": "Lua 5.4.7 embedded interpreter (sandbox-friendly subset for M4 apps)",
+  "keywords": "lua,scripting",
+  "build": {
+    "includeDir": "src",
+    "srcDir": "src",
+    "srcFilter": [
+      "+<*>",
+      "-<lua.c>",
+      "-<luac.c>",
+      "-<liolib.c>",
+      "-<loslib.c>",
+      "-<loadlib.c>",
+      "-<ldblib.c>",
+      "-<linit.c>"
+    ],
+    "flags": [
+      "-DLUA_COMPAT_5_3",
+      "-DLUA_32BITS=1",
+      "-Wno-error",
+      "-Wno-undef"
+    ]
+  }
+}

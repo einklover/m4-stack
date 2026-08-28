@@ -11,13 +11,7 @@ compile_commands.json
 *.session.json
 **/session.json
 
-# Reconstructed dependencies from the pinned m4-device archive (generated; not committed)
-firmware/open-m4-sdk/
-firmware/lib/Epub/
-firmware/lib/expat/
-firmware/lib/miniz/
-firmware/lib/Lua/
-firmware/lib/picojpeg/
+# M4 SDK and libraries are vendored; generated fonts remain local-only.
 firmware/lib/EpdFont/builtinFonts/
 
 # Artifacts / secrets
@@ -32,6 +26,7 @@ release-*/
 !**/partitions*.bin
 !firmware/src/fontdata/m4_native_grid_15x16.bin
 !firmware/src/fontdata/m4_center_kernel_16x16.bin
+!firmware/src/network/updater_fw.bin
 
 # Simulator local
 simulator/build/

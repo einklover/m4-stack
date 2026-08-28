@@ -7,7 +7,6 @@ This repository is the Murphy M4 monorepo: production firmware for the ESP32-S3 
 For the firmware path you need:
 
 - Git and Python 3.10 or newer
-- `curl` and `tar` for a clean-clone dependency bootstrap
 - PlatformIO for the firmware build
 
 For simulator work, also install a C/C++17 toolchain, CMake, and the host packages listed in [the simulator setup guide](docs/M4SIM_CLEAN_SETUP.md).
@@ -24,7 +23,11 @@ pio run -e murphy_m4 -j1
 
 The production image is written to `firmware/.pio/build/murphy_m4/firmware.bin`.
 
-On the first M4 build, PlatformIO runs the repository's dependency pre-script. If reconstructed SDK/library sentinels are missing, it fetches the pinned `einklover/m4-device@f86b134` archive through `scripts/bootstrap_deps.sh`; when the sentinels are already present, it does no download. See [Build and dependencies](docs/BUILD_AND_DEPS.md) for the manual path and cache details.
+M4 SDK and library sources are vendored in this repository. The dependency
+pre-script validates them and performs no repository download. Generated
+bitmap fonts are optional for the production/QEMU profiles; if building a
+profile without `OMIT_FONTS`, provide a compatible local TTF and follow
+[Build and dependencies](docs/BUILD_AND_DEPS.md).
 
 ## Simulator
 

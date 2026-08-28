@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Regression contract for automatic M4 dependency reconstruction."""
+"""Regression contract for the in-tree M4 dependency validator."""
 
 from importlib.util import module_from_spec, spec_from_file_location
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 from tempfile import TemporaryDirectory
 
@@ -28,7 +29,6 @@ REQUIRED_SENTINELS = (
     "lib/expat/expat.h",
     "lib/miniz/miniz.h",
     "lib/picojpeg/picojpeg.h",
-    "lib/EpdFont/builtinFonts/all.h",
 )
 
 
@@ -81,10 +81,11 @@ def test_m4_pre_script_bootstraps_only_when_sentinels_are_missing() -> None:
 
 def test_root_bootstrap_repairs_qemu_patch_without_downloading_complete_tree() -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
+    assert stat.S_IMODE(BOOTSTRAP.stat().st_mode) == 0o755
     patch_definition = source.index("patch_qemu_input_manager()")
-    no_op = source.index("if ((${#missing[@]} == 0)); then")
+    no_op = source.index("if ((${#missing[@]} != 0)); then")
     assert patch_definition < no_op
-    assert source.count("patch_qemu_input_manager") == 3
+    assert source.count("patch_qemu_input_manager") == 2
 
     with TemporaryDirectory() as temp:
         root = Path(temp) / "repo"
