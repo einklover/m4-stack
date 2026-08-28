@@ -73,43 +73,59 @@ int textTop(const GfxRenderer& renderer, int fontId, int baseline) {
   return baseline - renderer.getLineHeight(fontId);
 }
 
+void strokeCircle(const GfxRenderer& renderer, int cx, int cy, int r) {
+  if (r < 2) {
+    renderer.fillRect(cx - 1, cy - 1, 3, 3, true);
+    return;
+  }
+  renderer.drawRoundedRect(cx - r, cy - r, r * 2 + 1, r * 2 + 1, 1, r, true);
+}
+
 void drawLineIconFolder(const GfxRenderer& renderer, int x, int y, int s) {
-  const int tab = s / 3;
-  renderer.drawRect(x, y + 6, tab + 4, 8, true);
-  renderer.drawRect(x, y + 10, s - 1, s - 14, true);
+  renderer.drawRect(x + 2, y + 8, 12, 5, true);
+  renderer.drawRect(x + 2, y + 12, s - 5, s - 16, true);
 }
 
 void drawLineIconWeread(const GfxRenderer& renderer, int x, int y, int s) {
-  renderer.drawRect(x + 2, y + 4, s - 8, s - 12, true);
-  renderer.drawRect(x + 8, y + 8, s - 10, s - 12, true);
-  renderer.drawLine(x + 12, y + 14, x + s - 8, y + 14, true);
-  renderer.drawLine(x + 12, y + 18, x + s - 10, y + 18, true);
+  renderer.drawRoundedRect(x + 1, y + 2, 20, 16, 1, 7, true);
+  renderer.drawRoundedRect(x + 10, y + 12, 20, 16, 1, 7, true);
+  renderer.drawLine(x + 5, y + 17, x + 2, y + 21, true);
+  renderer.drawLine(x + 26, y + 27, x + 29, y + 30, true);
 }
 
 void drawLineIconTomato(const GfxRenderer& renderer, int x, int y, int s) {
   const int cx = x + s / 2;
   const int cy = y + s / 2 + 2;
-  const int r = s / 2 - 4;
-  renderer.drawRoundedRect(cx - r, cy - r, r * 2, r * 2, 1, r, true);
-  renderer.drawLine(cx, y + 2, cx, cy - r + 2, true);
-  renderer.drawLine(cx, y + 4, cx + 6, y + 1, true);
+  const int r = 11;
+  strokeCircle(renderer, cx, cy, r);
+  renderer.drawLine(cx, y + 2, cx, cy - r, true);
+  renderer.drawLine(cx, y + 4, cx - 7, y + 1, true);
+  renderer.drawLine(cx, y + 4, cx + 7, y + 1, true);
 }
 
 void drawLineIconJinjiang(const GfxRenderer& renderer, int x, int y, int s) {
-  const int m = 4;
-  renderer.drawLine(x + s / 2, y + m, x + s - m, y + s / 2, true);
-  renderer.drawLine(x + s - m, y + s / 2, x + s / 2, y + s - m, true);
-  renderer.drawLine(x + s / 2, y + s - m, x + m, y + s / 2, true);
-  renderer.drawLine(x + m, y + s / 2, x + s / 2, y + m, true);
-  renderer.drawLine(x + s / 2, y + m + 3, x + s / 2, y + s - m - 3, true);
+  auto stemJ = [&](int jx, int top, int bot, int hook) {
+    renderer.fillRect(jx - 1, top, 3, 4, true);
+    renderer.drawLine(jx, top + 7, jx, bot, true);
+    renderer.drawLine(jx + 1, top + 7, jx + 1, bot, true);
+    renderer.drawLine(jx, bot, jx - hook, bot, true);
+    renderer.drawLine(jx, bot - 1, jx - hook, bot - 1, true);
+    renderer.drawLine(jx - hook, bot, jx - hook, bot - 5, true);
+  };
+  stemJ(x + 12, y + 3, y + s - 6, 6);
+  stemJ(x + 22, y + 1, y + s - 4, 6);
 }
 
 void drawWifiGlyph(const GfxRenderer& renderer, int x, int y, int s) {
   const int cx = x + s / 2;
-  const int cy = y + s - 4;
+  const int cy = y + s - 3;
   renderer.fillRect(cx - 1, cy - 1, 3, 3, true);
-  renderer.drawArc(s / 3, cx, cy, 0, -1, 1, true);
-  renderer.drawArc(s / 2, cx, cy, 0, -1, 1, true);
+  const int radii[] = {6, 11, 16};
+  for (int r : radii) {
+    if (r > s - 4) continue;
+    renderer.drawArc(r, cx, cy, -1, -1, 1, true);
+    renderer.drawArc(r, cx, cy, 1, -1, 1, true);
+  }
 }
 
 std::string firstGlyph(const std::string& s) {
@@ -591,10 +607,11 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
                    true);
     renderer.fillRect(layout.progress.x, layout.progress.y, layout.progress.width, layout.progress.height, false);
     renderer.drawRect(layout.progress.x, layout.progress.y, layout.progress.width, layout.progress.height, true);
-    if (progress > 0 && layout.progress.width > 4) {
-      const int fillW = ((layout.progress.width - 4) * progress) / 100;
-      renderer.fillRect(layout.progress.x + 2, layout.progress.y + 2, fillW,
-                        std::max(1, layout.progress.height - 4), true);
+    if (progress > 0 && layout.progress.width > 2) {
+      const int innerW = layout.progress.width - 2;
+      const int fillW = std::max(1, (innerW * progress) / 100);
+      renderer.fillRect(layout.progress.x + 1, layout.progress.y + 1, fillW,
+                        std::max(1, layout.progress.height - 2), true);
     }
 
     renderer.drawLine(rect.x + HomeRef::HeroDividerX1, layout.dividerY, rect.x + HomeRef::HeroDividerX2,
@@ -616,9 +633,11 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
   }
 
   if (selectorIndex >= 0 && selectorIndex < bookCount) {
-    const auto selected = layout.bookRect(selectorIndex);
-    renderer.drawRect(selected.x + HomeRef::FocusInset, selected.y + HomeRef::FocusInset,
-                      selected.width - HomeRef::FocusInset * 2, selected.height - HomeRef::FocusInset * 2, true);
+    const auto selected =
+        selectorIndex == 0 ? layout.heroCover : layout.miniCover[std::max(0, selectorIndex - 1)];
+    const int inset = HomeRef::FocusInset;
+    renderer.drawRoundedRect(selected.x + inset, selected.y + inset, selected.width - inset * 2,
+                             selected.height - inset * 2, HomeRef::Stroke, HomeRef::CoverRadius, true);
   }
 }
 

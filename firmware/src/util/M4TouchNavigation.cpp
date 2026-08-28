@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 
+#include <algorithm>
 #include <atomic>
 
 #include "components/themes/BaseTheme.h"
@@ -124,15 +125,43 @@ void drawBottomBar(GfxRenderer& renderer) {
   // The standard layouts already reserve roughly this much footer space.
   renderer.fillRect(0, top, w, kBottomBarHeight, false);
   renderer.drawLine(0, top, w - 1, top, 1, true);
-  renderer.drawLine(layout.home.x, top + 8, layout.home.x, h - 8, 1, true);
-  renderer.drawLine(layout.menu.x, top + 8, layout.menu.x, h - 8, 1, true);
+  renderer.drawLine(layout.home.x, top, layout.home.x, h - 1, 1, true);
+  renderer.drawLine(layout.menu.x, top, layout.menu.x, h - 1, 1, true);
 
-  M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, layout.back.x, layout.back.y, layout.back.width,
-                                    layout.back.height, "返回", true, EpdFontFamily::BOLD, 0);
-  M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, layout.home.x, layout.home.y, layout.home.width,
-                                    layout.home.height, "主页", true, EpdFontFamily::BOLD, 0);
-  M4UiText::drawCenteredInBoxSystem(renderer, UI_10_FONT_ID, layout.menu.x, layout.menu.y, layout.menu.width,
-                                    layout.menu.height, "菜单", true, EpdFontFamily::BOLD, 0);
+  auto drawNavItem = [&](const TouchHitGeometry::Rect& zone, const char* label, int kind) {
+    const int icon = HomeRef::BottomIconSize;
+    const int textW = M4UiText::textWidth(renderer, UI_10_FONT_ID, label, EpdFontFamily::BOLD);
+    const int gap = 6;
+    const int group = icon + gap + textW;
+    const int gx = zone.x + std::max(0, (zone.width - group) / 2);
+    const int iy = zone.y + (zone.height - icon) / 2;
+    const int cx = gx + icon / 2;
+    const int cy = iy + icon / 2;
+    if (kind == 0) {
+      for (int i = 0; i <= 7; ++i) {
+        renderer.drawPixel(gx + 5 + i, cy - i, true);
+        renderer.drawPixel(gx + 6 + i, cy - i, true);
+        renderer.drawPixel(gx + 5 + i, cy + i, true);
+        renderer.drawPixel(gx + 6 + i, cy + i, true);
+      }
+    } else if (kind == 1) {
+      renderer.drawLine(cx, iy + 2, gx + 3, iy + 12, true);
+      renderer.drawLine(cx, iy + 2, gx + icon - 4, iy + 12, true);
+      renderer.drawLine(gx + 3, iy + 12, gx + icon - 4, iy + 12, true);
+      renderer.drawRect(gx + 6, iy + 12, icon - 12, icon - 15, true);
+    } else {
+      for (int row = 0; row < 3; ++row) {
+        renderer.drawLine(gx + 3, iy + 5 + row * 6, gx + icon - 4, iy + 5 + row * 6, true);
+      }
+    }
+    M4UiText::drawSystem(renderer, UI_10_FONT_ID, gx + icon + gap,
+                         HomeRef::BottomBaseline - renderer.getLineHeight(UI_10_FONT_ID), label, true,
+                         EpdFontFamily::BOLD);
+  };
+
+  drawNavItem(layout.back, "返回", 0);
+  drawNavItem(layout.home, "主页", 1);
+  drawNavItem(layout.menu, "菜单", 2);
 #else
   (void)renderer;
 #endif

@@ -36,6 +36,10 @@ int main(int argc, char** argv) {
   require(cpp, "kNoReadingHistory");
   require(cpp, "HomeRef::FocusInset");
   require(cpp, "drawLineIconFolder");
+  require(cpp, "drawLineIconWeread");
+  require(cpp, "drawLineIconTomato");
+  require(cpp, "drawLineIconJinjiang");
+  require(cpp, "drawWifiGlyph");
   require(hdr, ".homeCoverTileHeight = 481");
 
   std::free(cpp);

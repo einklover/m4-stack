@@ -829,7 +829,7 @@ void HomeActivity::render() {
   std::vector<const char*> menuItems;
   std::vector<UIIcon> menuIcons;
   if (isFengyanTheme) {
-    menuItems = {L(Str::kFileManager), "微信读书", "番茄小说", "晋江文学"};
+    menuItems = {"文件", "微信读书", "番茄", "晋江"};
     menuIcons = {UIIcon::Folder32, UIIcon::Book, UIIcon::Recent, UIIcon::Library};
   } else {
     menuItems = {L(Str::kFileManager), L(Str::kReadingHistory)};
