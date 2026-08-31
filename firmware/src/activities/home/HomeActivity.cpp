@@ -212,12 +212,29 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     if (isCancelled()) return false;
   }
   const auto apps = M4xRegistry::load();
-  for (size_t i = 0; i < apps.size() && i < 4; ++i) {
-    if (isCancelled()) return false;
-    const auto& app = apps[i];
-    UiScene::AssetKey key{HomeScene::kBindingItemIcon, HomeScene::kBindingApps, static_cast<uint8_t>(i)};
-    (void)HomeSceneAssetDecoder::decodeAppIconForPublication(draftPub, app.path, app.icon, key, isCancelled);
-    if (isCancelled()) return false;
+  // Decode in snapshot order (builtin.files first, then preferred plugins).
+  {
+    const auto& snap = draftPub.snapshot;
+    for (uint8_t i = 0; i < snap.appCount; ++i) {
+      if (isCancelled()) return false;
+      // Extract app id from snapshot text arena.
+      std::string appId;
+      {
+        auto view = snap.textView(snap.apps[i].id);
+        appId.reserve(view.size);
+        for (uint16_t k = 0; k < view.size; ++k) appId.push_back(static_cast<char>(view.readByte(k)));
+      }
+      UiScene::AssetKey key{HomeScene::kBindingItemIcon, HomeScene::kBindingApps, i};
+      if (appId == "builtin.files") {
+        (void)HomeSceneAssetDecoder::decodeBuiltinFilesIconForPublication(draftPub, key, isCancelled);
+      } else {
+        const auto* found = M4xRegistry::find(apps, appId);
+        if (found) {
+          (void)HomeSceneAssetDecoder::decodeAppIconForPublication(draftPub, found->path, found->icon, key, isCancelled);
+        }
+      }
+      if (isCancelled()) return false;
+    }
   }
   if (isCancelled()) return false;
   if (isCancelled()) return false;
@@ -254,8 +271,34 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
   }
   const auto apps = M4xRegistry::load();
   bool hasApps = false;
+  // Dock order (must match mockup): 1. 文件管理 (builtin) 2. 微信读书 3. 番茄小说 4. 晋江文学
+  // Always publish builtin.files at slot 0, then prefer weread/fanqie/jjwxc if installed,
+  // fill remaining from registry without duplicating.
+  if (ctx.model.addApp("builtin.files", "文件管理", "builtin.files")) {
+    hasApps = true;
+  }
+  // Prefer the three mockup plugins in order.
+  const char* kPreferredIds[3] = {"com.weread.client", "com.fanqie.client", "com.jjwxc.client"};
+  for (int pi = 0; pi < 3; ++pi) {
+    if (isCancelled()) return;
+    const auto* found = M4xRegistry::find(apps, kPreferredIds[pi]);
+    if (found) {
+      // Avoid duplicate if somehow already added (should not happen for builtin)
+      bool already = false;
+      // Simple check: if id already in model, skip (model has no lookup, so we rely on registry not containing builtin)
+      if (found->id == "builtin.files") already = true;
+      if (already) continue;
+      if (!ctx.model.addApp(found->id.c_str(), found->name.c_str(), found->icon.c_str())) break;
+      hasApps = true;
+    }
+  }
+  // Fill remaining slots from registry in load order, skipping duplicates and preferred already handled.
   for (const auto& app : apps) {
     if (isCancelled()) return;
+    if (app.id == "builtin.files") continue;
+    bool isPreferred = false;
+    for (int pi = 0; pi < 3; ++pi) if (app.id == kPreferredIds[pi]) { isPreferred = true; break; }
+    if (isPreferred) continue; // already considered
     if (!ctx.model.addApp(app.id.c_str(), app.name.c_str(), app.icon.c_str())) break;
     hasApps = true;
   }

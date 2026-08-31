@@ -51,6 +51,12 @@ bool decodeAppIconForPublication(HomeScene::HomeScenePublication& pub,
                                  const UiScene::AssetKey& key,
                                  std::function<bool()> isCancelled = nullptr);
 
+// Builtin files icon (no SD path). Decodes the compiled 1-bit 62x64 icon
+// for builtin.files slot. Works on device and host without filesystem.
+bool decodeBuiltinFilesIconForPublication(HomeScene::HomeScenePublication& pub,
+                                          const UiScene::AssetKey& key,
+                                          std::function<bool()> isCancelled = nullptr);
+
 // Host helper — fills a small compiled 1-bit fallback icon (used when BMP missing but we want a placeholder asset).
 bool fillFallbackAppIcon(uint8_t* out, uint16_t w, uint16_t h, uint16_t stride, uint8_t pattern);
 
