@@ -5,6 +5,7 @@
 #include <thread>
 #include <vector>
 
+#include "activities/home/HomeSceneAssetDecoder.h"
 #include "ui/pages/HomeSceneModel.h"
 
 using namespace HomeScene;
@@ -17,6 +18,30 @@ struct TestBackendContext {
   std::atomic<bool> exiting{false};
   std::atomic<bool> updateRequired{false};
 };
+
+void testCancelledDecodeDoesNotCommitPartialAsset() {
+  // Two-row, 8x2 1-bit BMP; cancellation is observed after row zero.
+  std::vector<uint8_t> bmp(70, 0);
+  bmp[0] = 'B';
+  bmp[1] = 'M';
+  bmp[10] = 62;  // 14-byte file header + 40-byte DIB + 8-byte palette
+  bmp[14] = 40;
+  bmp[18] = 8;
+  bmp[22] = 2;
+  bmp[26] = 1;
+  bmp[28] = 1;
+  bmp[62] = 0xFF;
+  bmp[66] = 0xFF;
+
+  std::vector<uint8_t> out(2, 0xA5);
+  int checks = 0;
+  const bool decoded = HomeSceneAssetDecoder::decodeBmpBytesTo1Bit(
+      bmp.data(), bmp.size(), out.data(), 8, 2, 1,
+      [&checks]() { return checks++ >= 2; });
+  assert(!decoded && "mid-decode cancellation must fail");
+  assert(out[0] == 0xA5 && out[1] == 0xA5 &&
+         "cancelled decode must not commit a partial asset");
+}
 
 void testDelayedBackendCannotAccessDestroyedActivityAndNoPostExitPublish() {
   // Create ctx as HomeActivity would onEnter.
@@ -119,6 +144,7 @@ void testNoPostExitPublishEvenIfBackendTriesLate() {
 }
 
 int main() {
+  testCancelledDecodeDoesNotCommitPartialAsset();
   testDelayedBackendCannotAccessDestroyedActivityAndNoPostExitPublish();
   testNoPostExitPublishEvenIfBackendTriesLate();
   return 0;
