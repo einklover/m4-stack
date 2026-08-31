@@ -438,7 +438,7 @@ std::string SettingsActivity::valueTextForSetting(const SettingInfo& info) const
     uint8_t idx = info.valueGetter();
     if (idx < info.enumValues.size()) valueText = info.enumValues[idx];
   } else if (info.type == SettingType::VALUE && info.signedValuePtr != nullptr) {
-    valueText = std::to_string((int)SETTINGS.*(info.signedValuePtr));
+    valueText = std::to_string((int)(SETTINGS.*(info.signedValuePtr)));
   } else if (info.type == SettingType::VALUE && info.valuePtr != nullptr) {
     int v = SETTINGS.*(info.valuePtr);
     if (info.key && strcmp(info.key, "lineSpacing")==0) {
