@@ -22,7 +22,7 @@
         24
       ],
       "text": "Murphy M4",
-      "font": "ui_16_bold",
+      "font": "ui_22_bold",
       "align": "left"
     },
     {
@@ -76,7 +76,7 @@
         18
       ],
       "text": "继续阅读",
-      "font": "ui_14_regular",
+      "font": "ui_16_regular",
       "align": "left",
       "visible_if": "$current.exists"
     },
@@ -89,7 +89,7 @@
         52
       ],
       "text": "$current.title",
-      "font": "ui_20_bold",
+      "font": "ui_24_bold",
       "align": "left",
       "ellipsis": true
     },
@@ -102,7 +102,7 @@
         18
       ],
       "text": "$current.author",
-      "font": "ui_14_regular",
+      "font": "ui_16_regular",
       "align": "left",
       "ellipsis": true
     },
@@ -115,7 +115,7 @@
         18
       ],
       "text": "$current.source",
-      "font": "ui_14_regular",
+      "font": "ui_16_regular",
       "align": "left",
       "ellipsis": true
     },
@@ -128,7 +128,7 @@
         18
       ],
       "text": "$home.current.progress_text",
-      "font": "ui_12_regular",
+      "font": "ui_16_regular",
       "align": "left"
     },
     {
@@ -151,7 +151,7 @@
         20
       ],
       "text": "最近阅读",
-      "font": "ui_16_bold",
+      "font": "ui_20_bold",
       "align": "left"
     },
     {
@@ -163,8 +163,8 @@
         20
       ],
       "text": "全部  >",
-      "font": "ui_14_regular",
-      "align": "right",
+      "font": "ui_16_regular",
+      "align": "left",
       "action": "open_history"
     },
     {
@@ -198,7 +198,7 @@
             44
           ],
           "text": "$item.title",
-          "font": "ui_14_regular",
+          "font": "ui_16_regular",
           "align": "center",
           "ellipsis": true
         }
@@ -213,7 +213,7 @@
         20
       ],
       "text": "应用",
-      "font": "ui_16_bold",
+      "font": "ui_20_bold",
       "align": "left"
     },
     {
@@ -225,8 +225,8 @@
         20
       ],
       "text": "更多  >",
-      "font": "ui_14_regular",
-      "align": "right",
+      "font": "ui_16_regular",
+      "align": "left",
       "action": "open_apps"
     },
     {
@@ -262,7 +262,7 @@
             18
           ],
           "text": "$item.name",
-          "font": "ui_12_regular",
+          "font": "ui_16_regular",
           "align": "center",
           "ellipsis": true
         }

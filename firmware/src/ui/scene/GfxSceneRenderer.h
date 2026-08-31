@@ -34,13 +34,13 @@ class GfxSceneRenderer {
       case 14:
       case 15: return NOTOSANS_14_FONT_ID;
       case 16:
-      case 17: return NOTOSANS_16_FONT_ID;
+      case 17: return SMALL_FONT_ID; // Scene 16px roles must not inherit reader-body size.
       case 18:
       case 19: return NOTOSANS_18_FONT_ID;
       case 20:
-      case 21: return M4FixedRuntimeUiFonts::kHubTitleFontId; // Hub title 20px free
+      case 21: return SMALL_FONT_ID; // Home section roles use the fixed 16px system face.
       case 22:
-      case 23: return M4FixedRuntimeUiFonts::kHubCategoryFontId; // Hub category 24px free
+      case 23: return SMALL_FONT_ID; // Home header role stays compact beside the battery.
       case 24:
       case 25: return M4FixedRuntimeUiFonts::kHubCategoryFontId; // ui_24 also 24px free
       default: return sceneFontId;
