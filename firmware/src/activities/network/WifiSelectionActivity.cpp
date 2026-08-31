@@ -277,10 +277,10 @@ void WifiSelectionActivity::checkConnectionStatus() {
       const bool saved = WIFI_STORE.addCredential(selectedSSID, enteredPassword);
       xSemaphoreGive(renderingMutex);
       if (!saved) {
-        connectionError = "Connected, but could not save Wi-Fi";
-        state = WifiSelectionState::CONNECTION_FAILED;
-        updateRequired = true;
-        return;
+        // Radio is up; do not present this as a connection failure. Persist
+        // miss is logged so the next boot can still hit no_saved_wifi.
+        Serial.printf("[%lu] [WIFI] Connected, but could not save Wi-Fi for %s\n", millis(),
+                      selectedSSID.c_str());
       }
     }
     Serial.printf("[%lu] [WIFI] Connected with durable credentials, completing immediately\n", millis());

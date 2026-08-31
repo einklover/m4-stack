@@ -15,6 +15,12 @@ class WifiStateContractTests(unittest.TestCase):
         self.assertIn("WIFI_STORE.addCredential(selectedSSID, enteredPassword)", activity)
         self.assertLess(activity.index("WIFI_STORE.addCredential(selectedSSID, enteredPassword)"),
                         activity.index("onComplete(true)"))
+        self.assertNotIn('connectionError = "Connected, but could not save Wi-Fi"', activity)
+
+    def test_existing_crosspoint_dir_does_not_fail_wifi_save(self) -> None:
+        store = (ROOT / "firmware/src/WifiCredentialStore.cpp").read_text()
+        self.assertNotIn('if (!SdMan.mkdir("/.crosspoint")) return false;', store)
+        self.assertIn('!SdMan.exists("/.crosspoint") && !SdMan.mkdir("/.crosspoint")', store)
 
     def test_provider_readiness_is_live_station_with_ip(self) -> None:
         native_wifi = (ROOT / "firmware/src/apps/providers/M4NativeWifi.cpp").read_text()

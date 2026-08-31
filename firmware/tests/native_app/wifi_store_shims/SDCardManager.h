@@ -12,6 +12,7 @@ inline bool failWrite = false;
 inline bool failSync = false;
 inline bool failRename = false;
 inline bool failOpenWrite = false;
+inline bool failMkdir = false;
 }
 
 class FsFile {
@@ -59,7 +60,7 @@ class FsFile {
 
 class SDCardManager {
  public:
-  bool mkdir(const char*, bool = false) { return true; }
+  bool mkdir(const char*, bool = false) { return !wifi_store_test_sd::failMkdir; }
   bool exists(const char* path) const { return path && wifi_store_test_sd::files.count(path) != 0; }
   bool remove(const char* path) {
     return path && wifi_store_test_sd::files.erase(path) != 0;

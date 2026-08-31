@@ -100,10 +100,24 @@ void testGenericFailureAndTimeoutPreserveCredential() {
   }
 }
 
+void testExistingCrosspointDirDoesNotBlockSave() {
+  using namespace wifi_store_test_sd;
+  files.clear();
+  failWrite = failSync = failRename = failOpenWrite = failMkdir = false;
+  auto& store = WIFI_STORE;
+  store.clearAll();
+  files["/.crosspoint"] = "";
+  failMkdir = true;
+  assert(store.addCredential("Home", "secret"));
+  assert(store.findCredential("Home") != nullptr);
+  assert(store.findCredential("Home")->password == "secret");
+  failMkdir = false;
+}
+
 void testCredentialPersistenceIsTransactionalAndReloadable() {
   using namespace wifi_store_test_sd;
   files.clear();
-  failWrite = failSync = failRename = failOpenWrite = false;
+  failWrite = failSync = failRename = failOpenWrite = failMkdir = false;
   auto& store = WIFI_STORE;
   store.clearAll();
   assert(store.addCredential("Home", "old-secret"));
@@ -140,6 +154,7 @@ int main() {
   testOnlyExplicitAuthFailureInvalidatesCredential();
   testAuthFailureReportsIfCredentialCouldNotBeInvalidated();
   testGenericFailureAndTimeoutPreserveCredential();
+  testExistingCrosspointDirDoesNotBlockSave();
   testCredentialPersistenceIsTransactionalAndReloadable();
   std::cout << "wifi state and credential persistence tests passed\n";
 }

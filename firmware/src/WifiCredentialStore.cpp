@@ -78,8 +78,14 @@ bool readStringExact(FsFile& file, std::string& value) {
 }  // namespace
 
 bool WifiCredentialStore::saveCredentials(const std::vector<WifiCredential>& next) const {
-  // Make sure the directory exists
-  if (!SdMan.mkdir("/.crosspoint")) return false;
+  // SdFat mkdir() returns false when the directory already exists. Other stores
+  // ignore that; treating it as fatal made every Wi-Fi save fail after first boot
+  // (recents/settings already created /.crosspoint) → "Connected, but could not
+  // save Wi-Fi" and later WeRead no_saved_wifi.
+  if (!SdMan.exists("/.crosspoint") && !SdMan.mkdir("/.crosspoint")) {
+    Serial.printf("[%lu] [WCS] mkdir /.crosspoint failed\n", millis());
+    return false;
+  }
 
   const char* const tempPath = "/.crosspoint/wifi.bin.part";
   const char* const backupPath = "/.crosspoint/wifi.bin.bak";
