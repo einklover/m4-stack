@@ -274,7 +274,7 @@ def m4adb_once(pty: str, args: list[str], *, timeout: float = 12.0) -> tuple[int
 
 def wait_m4adb_ready(pty: str, proc: subprocess.Popen, *, seconds: float,
                      qemu_log: Path) -> dict[str, Any]:
-    """Protocol-level readiness: short reconnects until ping JSON is valid."""
+    """Application readiness: reconnect until firmware and screen are initialized."""
     deadline = time.time() + seconds
     last = ""
     attempt = 0
@@ -288,16 +288,12 @@ def wait_m4adb_ready(pty: str, proc: subprocess.Popen, *, seconds: float,
         attempt += 1
         # Short connect budget; no fixed multi-minute sleep.
         rc, last = m4adb_once(pty, ["ping"], timeout=8.0)
-        if rc == 0 and '"protocol"' in last and '"firmware"' in last:
-            # Prefer structured parse when possible.
+        if rc == 0:
             blob = _json_blob(last)
-            if blob and "protocol" in blob and "firmware" in blob:
+            if blob and _application_ping_ready(blob):
                 (ART / "ping.json").write_text(json.dumps(blob, indent=2) + "\n", encoding="utf-8")
                 print(f"m4adb READY after {attempt} attempt(s)", flush=True)
                 return blob
-            if '"protocol"' in last:
-                print(f"m4adb READY (text) after {attempt} attempt(s)", flush=True)
-                return {"raw": last}
         time.sleep(0.4)
     (ART / "ping-fail.txt").write_text(last, encoding="utf-8")
     qlog = qemu_log.read_text(encoding="utf-8", errors="replace") if qemu_log.is_file() else ""
@@ -321,6 +317,18 @@ def _json_blob(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             continue
     return None
+
+
+def _application_ping_ready(blob: dict[str, Any]) -> bool:
+    try:
+        return (
+            int(blob.get("protocol", 0)) > 0
+            and bool(str(blob.get("firmware", "")).strip())
+            and int(blob.get("screen_w", 0)) > 0
+            and int(blob.get("screen_h", 0)) > 0
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def can_use_pty() -> bool:

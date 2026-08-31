@@ -1,0 +1,406 @@
+{
+  "format": 1,
+  "id": "mofei-classic",
+  "screen": [
+    480,
+    800
+  ],
+  "background": {
+    "source": "assets/home_template.png",
+    "source_size": [
+      480,
+      800
+    ],
+    "fit": "native",
+    "mode": "prebinarized_alpha"
+  },
+  "slots": [
+    {
+      "id": "hero_cover",
+      "type": "cover",
+      "binding": "recent[0].cover",
+      "rect": [
+        25,
+        93,
+        164,
+        250
+      ],
+      "radius": 4,
+      "stroke": 1,
+      "focus_inset": 3,
+      "focusable": true,
+      "focus_order": 0,
+      "target": {
+        "type": "recent_book",
+        "index": 0
+      }
+    },
+    {
+      "id": "hero_title",
+      "type": "text",
+      "binding": "recent[0].title",
+      "rect": [
+        216,
+        151,
+        236,
+        34
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_24_bold",
+      "align": "left"
+    },
+    {
+      "id": "hero_author",
+      "type": "text",
+      "binding": "recent[0].author",
+      "rect": [
+        216,
+        191,
+        236,
+        28
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_16_regular",
+      "align": "left"
+    },
+    {
+      "id": "hero_source",
+      "type": "text",
+      "binding": "recent[0].source",
+      "rect": [
+        216,
+        234,
+        236,
+        28
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_16_regular",
+      "align": "left"
+    },
+    {
+      "id": "hero_progress",
+      "type": "progress",
+      "binding": "recent[0].progress",
+      "rect": [
+        216,
+        316,
+        237,
+        26
+      ],
+      "radius": 9,
+      "stroke": 1,
+      "focus_inset": 0
+    },
+    {
+      "id": "mini_cover1",
+      "type": "cover",
+      "binding": "recent[1].cover",
+      "rect": [
+        37,
+        416,
+        110,
+        146
+      ],
+      "radius": 4,
+      "stroke": 1,
+      "focus_inset": 3,
+      "focusable": true,
+      "focus_order": 1,
+      "target": {
+        "type": "recent_book",
+        "index": 1
+      }
+    },
+    {
+      "id": "mini_cover2",
+      "type": "cover",
+      "binding": "recent[2].cover",
+      "rect": [
+        185,
+        416,
+        106,
+        146
+      ],
+      "radius": 4,
+      "stroke": 1,
+      "focus_inset": 3,
+      "focusable": true,
+      "focus_order": 2,
+      "target": {
+        "type": "recent_book",
+        "index": 2
+      }
+    },
+    {
+      "id": "mini_cover3",
+      "type": "cover",
+      "binding": "recent[3].cover",
+      "rect": [
+        329,
+        416,
+        106,
+        146
+      ],
+      "radius": 4,
+      "stroke": 1,
+      "focus_inset": 3,
+      "focusable": true,
+      "focus_order": 3,
+      "target": {
+        "type": "recent_book",
+        "index": 3
+      }
+    },
+    {
+      "id": "mini_title1",
+      "type": "text",
+      "binding": "recent[1].title",
+      "rect": [
+        37,
+        568,
+        110,
+        24
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_16_regular",
+      "align": "left"
+    },
+    {
+      "id": "mini_title2",
+      "type": "text",
+      "binding": "recent[2].title",
+      "rect": [
+        185,
+        568,
+        106,
+        24
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_16_regular",
+      "align": "left"
+    },
+    {
+      "id": "mini_title3",
+      "type": "text",
+      "binding": "recent[3].title",
+      "rect": [
+        329,
+        568,
+        106,
+        24
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_16_regular",
+      "align": "left"
+    },
+    {
+      "id": "mini_author1",
+      "type": "text",
+      "binding": "recent[1].author",
+      "rect": [
+        37,
+        592,
+        110,
+        22
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_14_regular",
+      "align": "left"
+    },
+    {
+      "id": "mini_author2",
+      "type": "text",
+      "binding": "recent[2].author",
+      "rect": [
+        185,
+        592,
+        106,
+        22
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_14_regular",
+      "align": "left"
+    },
+    {
+      "id": "mini_author3",
+      "type": "text",
+      "binding": "recent[3].author",
+      "rect": [
+        329,
+        592,
+        106,
+        22
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_14_regular",
+      "align": "left"
+    },
+    {
+      "id": "recent_count",
+      "type": "text",
+      "binding": "recent_count",
+      "rect": [
+        407,
+        374,
+        48,
+        24
+      ],
+      "radius": 0,
+      "stroke": 0,
+      "focus_inset": 0,
+      "font": "ui_12_regular",
+      "align": "right"
+    },
+    {
+      "id": "file_action",
+      "type": "hitbox",
+      "rect": [
+        35,
+        650,
+        86,
+        92
+      ],
+      "radius": 6,
+      "stroke": 1,
+      "focus_inset": 3,
+      "focusable": true,
+      "focus_order": 4,
+      "target": {
+        "type": "action",
+        "action": "open_files"
+      }
+    },
+    {
+      "id": "weread_action",
+      "type": "hitbox",
+      "rect": [
+        141,
+        650,
+        86,
+        92
+      ],
+      "radius": 6,
+      "stroke": 1,
+      "focus_inset": 3,
+      "focusable": true,
+      "focus_order": 5,
+      "target": {
+        "type": "action",
+        "action": "open_weread"
+      }
+    },
+    {
+      "id": "fanqie_action",
+      "type": "hitbox",
+      "rect": [
+        247,
+        650,
+        86,
+        92
+      ],
+      "radius": 6,
+      "stroke": 1,
+      "focus_inset": 3,
+      "focusable": true,
+      "focus_order": 6,
+      "target": {
+        "type": "action",
+        "action": "open_fanqie"
+      }
+    },
+    {
+      "id": "jinjiang_action",
+      "type": "hitbox",
+      "rect": [
+        357,
+        650,
+        86,
+        92
+      ],
+      "radius": 6,
+      "stroke": 1,
+      "focus_inset": 3,
+      "focusable": true,
+      "focus_order": 7,
+      "target": {
+        "type": "action",
+        "action": "open_jinjiang"
+      }
+    },
+    {
+      "id": "history_action",
+      "type": "hitbox",
+      "rect": [
+        19,
+        741,
+        134,
+        45
+      ],
+      "radius": 0,
+      "stroke": 1,
+      "focus_inset": 2,
+      "focusable": true,
+      "focus_order": 8,
+      "target": {
+        "type": "action",
+        "action": "open_history"
+      }
+    },
+    {
+      "id": "apps_action",
+      "type": "hitbox",
+      "rect": [
+        170,
+        741,
+        134,
+        45
+      ],
+      "radius": 0,
+      "stroke": 1,
+      "focus_inset": 2,
+      "focusable": true,
+      "focus_order": 9,
+      "target": {
+        "type": "action",
+        "action": "open_apps"
+      }
+    },
+    {
+      "id": "settings_action",
+      "type": "hitbox",
+      "rect": [
+        318,
+        741,
+        140,
+        45
+      ],
+      "radius": 0,
+      "stroke": 1,
+      "focus_inset": 2,
+      "focusable": true,
+      "focus_order": 10,
+      "target": {
+        "type": "action",
+        "action": "open_settings"
+      }
+    }
+  ]
+}

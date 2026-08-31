@@ -200,7 +200,7 @@ unsigned char JpegToBmpConverter::jpegReadCallback(unsigned char* pBuf, const un
 
 // Internal implementation with configurable target size and bit depth
 bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bmpOut, int targetWidth, int targetHeight,
-                                                     bool oneBit, bool crop) {
+                                                     bool oneBit, bool crop, bool exactTarget) {
   Serial.printf("[%lu] [JPG] Converting JPEG to %s BMP (target: %dx%d)\n", millis(), oneBit ? "1-bit" : "2-bit",
                 targetWidth, targetHeight);
 
@@ -232,12 +232,50 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   // Calculate output dimensions (pre-scale to fit display exactly)
   int outWidth = imageInfo.m_width;
   int outHeight = imageInfo.m_height;
+  int srcX0 = 0;
+  int srcY0 = 0;
+  int srcCropW = imageInfo.m_width;
+  int srcCropH = imageInfo.m_height;
   // Use fixed-point scaling (16.16) for sub-pixel accuracy
   uint32_t scaleX_fp = 65536;  // 1.0 in 16.16 fixed point
   uint32_t scaleY_fp = 65536;
   bool needsScaling = false;
 
-  if (targetWidth > 0 && targetHeight > 0 && (imageInfo.m_width > targetWidth || imageInfo.m_height > targetHeight)) {
+  if (exactTarget && targetWidth > 0 && targetHeight > 0) {
+    // Home Scene thumbs need the BMP header to match the requested size exactly.
+    // Aspect-fill: cover the dest rect, center-crop the source.
+    outWidth = targetWidth;
+    outHeight = targetHeight;
+    const uint64_t srcW = static_cast<uint64_t>(imageInfo.m_width);
+    const uint64_t srcH = static_cast<uint64_t>(imageInfo.m_height);
+    const uint64_t dstW = static_cast<uint64_t>(outWidth);
+    const uint64_t dstH = static_cast<uint64_t>(outHeight);
+    if (srcW * dstH > srcH * dstW) {
+      srcCropW = static_cast<int>((srcH * dstW) / dstH);
+      if (srcCropW < 1) srcCropW = 1;
+      if (srcCropW > imageInfo.m_width) srcCropW = imageInfo.m_width;
+      srcX0 = (imageInfo.m_width - srcCropW) / 2;
+      srcCropH = imageInfo.m_height;
+      srcY0 = 0;
+    } else {
+      srcCropH = static_cast<int>((srcW * dstH) / dstW);
+      if (srcCropH < 1) srcCropH = 1;
+      if (srcCropH > imageInfo.m_height) srcCropH = imageInfo.m_height;
+      srcY0 = (imageInfo.m_height - srcCropH) / 2;
+      srcCropW = imageInfo.m_width;
+      srcX0 = 0;
+    }
+    if (srcCropW < 1) srcCropW = 1;
+    if (srcCropH < 1) srcCropH = 1;
+    scaleX_fp = (static_cast<uint32_t>(srcCropW) << 16) / static_cast<uint32_t>(outWidth);
+    scaleY_fp = (static_cast<uint32_t>(srcCropH) << 16) / static_cast<uint32_t>(outHeight);
+    if (scaleX_fp == 0) scaleX_fp = 1;
+    if (scaleY_fp == 0) scaleY_fp = 1;
+    needsScaling = true;
+    Serial.printf("[%lu] [JPG] Exact-size aspect-fill %dx%d crop %dx%d @%d,%d -> %dx%d\n", millis(),
+                  imageInfo.m_width, imageInfo.m_height, srcCropW, srcCropH, srcX0, srcY0, outWidth, outHeight);
+  } else if (targetWidth > 0 && targetHeight > 0 &&
+             (imageInfo.m_width > targetWidth || imageInfo.m_height > targetHeight)) {
     // Calculate scale to fit within target dimensions while maintaining aspect ratio
     const float scaleToFitWidth = static_cast<float>(targetWidth) / imageInfo.m_width;
     const float scaleToFitHeight = static_cast<float>(targetHeight) / imageInfo.m_height;
@@ -255,6 +293,11 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     // Ensure at least 1 pixel
     if (outWidth < 1) outWidth = 1;
     if (outHeight < 1) outHeight = 1;
+
+    srcCropW = imageInfo.m_width;
+    srcCropH = imageInfo.m_height;
+    srcX0 = 0;
+    srcY0 = 0;
 
     // Calculate fixed-point scale factors (source pixels per output pixel)
     // scaleX_fp = (srcWidth << 16) / outWidth
@@ -446,10 +489,15 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
         // srcX range for outX: [outX * scaleX_fp >> 16, (outX+1) * scaleX_fp >> 16)
         const uint8_t* srcRow = mcuRowBuffer + bufferY * imageInfo.m_width;
 
+        if (y < srcY0 || y >= srcY0 + srcCropH) {
+          continue;
+        }
+
         for (int outX = 0; outX < outWidth; outX++) {
           // Calculate source X range for this output pixel
-          const int srcXStart = (static_cast<uint32_t>(outX) * scaleX_fp) >> 16;
-          const int srcXEnd = (static_cast<uint32_t>(outX + 1) * scaleX_fp) >> 16;
+          const int srcXStart = srcX0 + static_cast<int>((static_cast<uint32_t>(outX) * scaleX_fp) >> 16);
+          int srcXEnd = srcX0 + static_cast<int>((static_cast<uint32_t>(outX + 1) * scaleX_fp) >> 16);
+          if (srcXEnd > srcX0 + srcCropW) srcXEnd = srcX0 + srcCropW;
 
           // Accumulate all source pixels in this range
           int sum = 0;
@@ -470,8 +518,8 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
         }
 
         // Check if we've crossed into the next output row
-        // Current source Y in fixed point: y << 16
-        const uint32_t srcY_fp = static_cast<uint32_t>(y + 1) << 16;
+        // Current source Y in fixed point relative to the cropped origin.
+        const uint32_t srcY_fp = static_cast<uint32_t>(y + 1 - srcY0) << 16;
 
         // Output row when source Y crosses the boundary
         if (srcY_fp >= nextOutY_srcStart && currentOutY < outHeight) {
@@ -567,5 +615,5 @@ bool JpegToBmpConverter::jpegFileToBmpStreamWithSize(FsFile& jpegFile, Print& bm
 // Convert to 1-bit BMP (black and white only, no grays) for fast home screen rendering
 bool JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(FsFile& jpegFile, Print& bmpOut, int targetMaxWidth,
                                                          int targetMaxHeight) {
-  return jpegFileToBmpStreamInternal(jpegFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true);
+  return jpegFileToBmpStreamInternal(jpegFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true, true);
 }

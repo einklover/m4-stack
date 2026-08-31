@@ -17,8 +17,9 @@ int main() {
 
   const auto bottom = TouchHitGeometry::makeBottomNavigationLayout(480, 800);
   assert(bottom.valid());
-  assert(bottom.back.height >= 48);
-  assert(bottom.home.height >= 48);
+  assert(bottom.back.height == HomeRef::BottomH);
+  assert(bottom.home.height == HomeRef::BottomH);
+  assert(bottom.back.y == HomeRef::BottomY);
   assert(bottom.back.contains(100, 775));
   assert(bottom.home.contains(200, 775));
   assert(bottom.menu.contains(380, 775));

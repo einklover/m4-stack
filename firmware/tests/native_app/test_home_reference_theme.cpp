@@ -30,9 +30,9 @@ int main(int argc, char** argv) {
   require(cpp, "layout.heroCover");
   require(cpp, "layout.miniCover");
   require(cpp, "\"最近阅读\"");
-  require(cpp, "\"快捷操作\"");
+  assert(std::strstr(cpp, "\"快 捷 操 作 \"") == nullptr);
   require(cpp, "kHomeQuickColumns = 4");
-  require(cpp, "kHomeQuickHeaderOffset = 46");
+  require(cpp, "kHomeQuickHeaderOffset = 0");
   require(cpp, "kNoReadingHistory");
   require(cpp, "HomeRef::FocusInset");
   require(cpp, "drawLineIconFolder");
@@ -40,7 +40,14 @@ int main(int argc, char** argv) {
   require(cpp, "drawLineIconTomato");
   require(cpp, "drawLineIconJinjiang");
   require(cpp, "drawWifiGlyph");
-  require(hdr, ".homeCoverTileHeight = 481");
+  require(cpp, "homeFooter");
+  require(cpp, "\"历史\"");
+  require(cpp, "HomeRef::BottomY");
+  require(cpp, "HomeRef::BottomSplit1");
+  require(cpp, "HomeRef::BottomSplit2");
+  require(hdr, ".homeRecentBooksCount = 4");
+  require(hdr, ".homeCoverWidth = 171");
+  require(hdr, ".homeCoverThumbHeight = 254");
 
   std::free(cpp);
   std::free(hdr);

@@ -30,6 +30,20 @@ class ProviderCoverCacheContracts(unittest.TestCase):
         self.assertIn("return format == ImageFormat::Bmp", header)
         self.assertIn("ImageFormat::Webp", header)
 
+    def test_home_scene_sizes_generate_from_source_img_without_fetch(self):
+        header = HEADER.read_text(encoding="utf-8")
+        source = CACHE.read_text(encoding="utf-8")
+        home = (ROOT / "firmware/src/activities/home/HomeActivity.cpp").read_text(encoding="utf-8")
+        self.assertIn("ensureSizedCoverFromSource", header)
+        self.assertIn("source.img", header)
+        self.assertIn("Never fetches", header)
+        self.assertIn("jpegFileTo1BitBmpStreamWithSize", source)
+        self.assertIn("convertCoverFile(source, target, w, h, true)", source)
+        self.assertNotIn("backend.fetch", source[source.find("bool ensureSizedCoverFromSource"):])
+        self.assertIn("M4ProviderCoverCache::ensureSizedCoverFromSource", home)
+        self.assertIn("kHomeCurrentCoverW", home)
+        self.assertIn("kHomeRecentCoverW", home)
+
 
 if __name__ == "__main__":
     unittest.main()

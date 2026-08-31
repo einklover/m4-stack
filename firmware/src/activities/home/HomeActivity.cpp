@@ -32,6 +32,13 @@
 #include "util/StringUtils.h"
 #include "util/HomeRef.h"
 #include "util/TouchHitGeometry.h"
+#include "util/HomeMofeiTemplateOverlay.h"
+#include "ui/scene/GfxSceneRenderer.h"
+#include "generated/mofei_classic_m4theme.h"
+#include "generated/murphy_default_m4theme.h"
+#include "components/themes/fengyan/FengyanTheme.h"
+#include "activities/home/HomeSceneAssetDecoder.h"
+#include "util/M4ProviderCoverCache.h"
 
 namespace {
 
@@ -46,6 +53,9 @@ struct HomeCompositionLayout {
 };
 
 HomeCompositionLayout makeHomeCompositionLayout(const ThemeMetrics& metrics, int pageHeight) {
+  if (UITheme::getInstance().getThemeType() == ThemeType::Fengyan) {
+    return {HomeRef::Recent.y, HomeRef::Recent.h, HomeRef::Quick.y, HomeRef::Quick.h};
+  }
   const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing;
   constexpr int kHomeFooterGapPx = 20;
   return {metrics.homeTopPadding, metrics.homeCoverTileHeight, menuTop,
@@ -56,7 +66,10 @@ HomeCompositionLayout makeHomeCompositionLayout(const ThemeMetrics& metrics, int
 // legible without adding another card surface or a ghosting-prone fill.
 constexpr int kHomeSectionRuleGapPx = 8;
 constexpr int kHomeQuickColumns = 4;
-constexpr int kHomeQuickHeaderOffset = 46;
+constexpr int kHomeQuickHeaderOffset = 0;
+#ifdef CROSSPOINT_MURPHY_M4
+constexpr uint32_t kHomeSceneBackendStackBytes = 16 * 1024;
+#endif
 
 void drawHomeSectionRule(GfxRenderer& renderer, const ThemeMetrics& metrics,
                          const HomeCompositionLayout& layout, int pageWidth) {
@@ -73,13 +86,361 @@ void drawHomeSectionRule(GfxRenderer& renderer, const ThemeMetrics& metrics,
 
 }  // namespace
 
+#ifdef CROSSPOINT_MURPHY_M4
+
+namespace {
+
+std::string homeSceneText(const HomeScene::HomeSceneSnapshot& snapshot,
+                          HomeScene::HomeTextRef ref) {
+  const auto view = snapshot.textView(ref);
+  std::string result;
+  result.reserve(view.size);
+  for (uint16_t i = 0; i < view.size; ++i) {
+    result.push_back(static_cast<char>(view.readByte(i)));
+  }
+  return result;
+}
+
+}  // namespace
+
+void HomeActivity::sceneBackendTaskTrampoline(void* param) {
+  // Take the task's ownership once. Do not pass shared_ptr by value through the
+  // Xtensa task call chain; the task-local owner keeps the context alive.
+  std::unique_ptr<std::shared_ptr<BackendContext>> holder(
+      static_cast<std::shared_ptr<BackendContext>*>(param));
+  std::shared_ptr<BackendContext> ctx = holder ? std::move(*holder) : nullptr;
+  holder.reset();
+  if (!ctx) {
+    Serial.printf("[%lu] [Home] backend task missing context\n", millis());
+    vTaskDelete(nullptr);
+    for (;;) vTaskDelay(portMAX_DELAY);
+  }
+  backendLoop(*ctx);
+  ctx->exiting.store(true, std::memory_order_release);
+  // FreeRTOS task deletion does not unwind C++ stack locals.
+  ctx.reset();
+  vTaskDelete(nullptr);
+  for (;;) vTaskDelay(portMAX_DELAY);
+}
+
+[[noreturn]] void HomeActivity::sceneBackendTaskLoop() {
+  // Legacy path kept for ODR but should not be used after refactor.
+  // If reached, just self-delete without touching HomeActivity `this`.
+  vTaskDelete(nullptr);
+  for (;;) vTaskDelay(portMAX_DELAY);
+}
+
+void HomeActivity::backendLoop(BackendContext& ctx) {
+  publishHomeSceneFromBackendCtx(ctx);
+}
+
+void HomeActivity::loadRecentBooksInto(BackendContext& ctx, int maxBooks) {
+  {
+    std::vector<M4HomeBookDetailMeta::InstalledPlugin> plugins;
+    const auto apps = M4xRegistry::load();
+    plugins.reserve(apps.size());
+    for (const auto& app : apps) plugins.push_back({app.id, app.name, app.provider});
+    M4HomeBookDetailMeta::setInstalledPlugins(std::move(plugins));
+  }
+  ctx.recentBooks.clear();
+  const auto& books = RECENT_BOOKS.getBooks();
+  ctx.recentBooks.reserve(std::min(static_cast<int>(books.size()), maxBooks));
+  for (RecentBook book : books) {
+    if (static_cast<int>(ctx.recentBooks.size()) >= maxBooks) break;
+    if (M4ContentProvider::isHistoryUri(book.path.c_str())) {
+      book.progress = loadBookProgress(book.originalSourcePath.empty() ? book.path : book.originalSourcePath);
+      ctx.recentBooks.push_back(book);
+      continue;
+    }
+    if (!SdMan.exists(book.path.c_str())) continue;
+    book.progress = loadBookProgress(book.path);
+    ctx.recentBooks.push_back(book);
+  }
+}
+
+bool HomeActivity::tryEnsureCoverThumbInCtx(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
+                                            const std::function<bool()>& cancelled) {
+  if (coverBmpPath.empty()) return false;
+  std::string thumb = UITheme::getCoverThumbPath(coverBmpPath, w, h);
+  if (SdMan.exists(thumb.c_str())) return true;
+  if (cancelled && cancelled()) return false;
+  if (M4ProviderCoverCache::ensureSizedCoverFromSource(coverBmpPath, w, h, cancelled) &&
+      SdMan.exists(thumb.c_str())) {
+    return true;
+  }
+  for (const auto& b : ctx.recentBooks) {
+    std::string expectedThumb = UITheme::getCoverThumbPath(b.coverBmpPath, w, h);
+    if (expectedThumb != thumb) continue;
+    if (StringUtils::checkFileExtension(b.path, ".epub")) {
+      Epub epub(b.path, "/.crosspoint");
+      epub.load(false, true);
+      if (epub.generateThumbBmp(w, h)) return true;
+    }
+    break;
+  }
+  return SdMan.exists(thumb.c_str());
+}
+
+bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
+  uint32_t epoch = ctx.epoch.load(std::memory_order_acquire);
+  auto isCancelled = [&ctx, epoch]() -> bool {
+    return ctx.cancelled.load(std::memory_order_acquire) ||
+           ctx.epoch.load(std::memory_order_acquire) != epoch;
+  };
+  if (isCancelled()) return false;
+  HomeScene::HomeScenePublication& draftPub = ctx.model.draftPublication();
+  if (!ctx.recentBooks.empty()) {
+    const RecentBook& cur = ctx.recentBooks.front();
+    if (tryEnsureCoverThumbInCtx(ctx, cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH,
+                                 isCancelled)) {
+      std::string thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
+      UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
+      if (isCancelled()) return false;
+      (void)HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled);
+    }
+  }
+  if (isCancelled()) return false;
+  for (size_t i = 0; i < ctx.recentBooks.size() && i < 3; ++i) {
+    if (isCancelled()) return false;
+    const RecentBook& b = ctx.recentBooks[i];
+    if (tryEnsureCoverThumbInCtx(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH,
+                                 isCancelled)) {
+      std::string thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
+      UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, static_cast<uint8_t>(i)};
+      (void)HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled);
+    }
+    if (isCancelled()) return false;
+  }
+  const auto apps = M4xRegistry::load();
+  for (size_t i = 0; i < apps.size() && i < 4; ++i) {
+    if (isCancelled()) return false;
+    const auto& app = apps[i];
+    UiScene::AssetKey key{HomeScene::kBindingItemIcon, HomeScene::kBindingApps, static_cast<uint8_t>(i)};
+    (void)HomeSceneAssetDecoder::decodeAppIconForPublication(draftPub, app.path, app.icon, key, isCancelled);
+    if (isCancelled()) return false;
+  }
+  if (isCancelled()) return false;
+  if (isCancelled()) return false;
+  if (ctx.model.publish()) {
+    ctx.updateRequired.store(true, std::memory_order_release);
+    return true;
+  }
+  return false;
+}
+
+void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
+  const auto metrics = UITheme::getInstance().getMetrics();
+  uint32_t epoch = ctx.epoch.load(std::memory_order_acquire);
+  auto isCancelled = [&ctx, epoch]() -> bool {
+    return ctx.cancelled.load(std::memory_order_acquire) ||
+           ctx.epoch.load(std::memory_order_acquire) != epoch;
+  };
+  loadRecentBooksInto(ctx, metrics.homeRecentBooksCount);
+  if (isCancelled()) return;
+  ctx.model.begin(UiScene::DataState::Ready);
+  ctx.model.setBattery(powerManager.getBatteryPercentage());
+  ctx.model.setWifiConnected(false);
+  if (!ctx.recentBooks.empty()) {
+    const RecentBook& current = ctx.recentBooks.front();
+    ctx.model.setCurrent(current.title.c_str(), current.author.c_str(), "", current.coverBmpPath.c_str(), current.progress);
+    ctx.model.setCurrentPaths(current.path.c_str(), current.originalSourcePath.c_str());
+  }
+  uint8_t recentIndex = 0;
+  for (const RecentBook& book : ctx.recentBooks) {
+    if (isCancelled()) return;
+    if (ctx.model.addRecent(book.title.c_str(), book.author.c_str(), "", book.coverBmpPath.c_str(), book.progress)) {
+      ctx.model.setRecentPaths(recentIndex++, book.path.c_str(), book.originalSourcePath.c_str());
+    }
+  }
+  const auto apps = M4xRegistry::load();
+  bool hasApps = false;
+  for (const auto& app : apps) {
+    if (isCancelled()) return;
+    if (!ctx.model.addApp(app.id.c_str(), app.name.c_str(), app.icon.c_str())) break;
+    hasApps = true;
+  }
+  if (UITheme::getInstance().getThemeType() == ThemeType::Fengyan && !hasApps) {
+    hasApps = ctx.model.addApp("com.weread.client", "微信读书", "book");
+    hasApps = ctx.model.addApp("com.fanqie.client", "番茄", "tomato") || hasApps;
+    hasApps = ctx.model.addApp("com.jjwxc.client", "晋江", "library") || hasApps;
+  }
+  if (ctx.recentBooks.empty() && !hasApps) ctx.model.begin(UiScene::DataState::Empty);
+  if (isCancelled()) return;
+  (void)publishHomeSceneWithAssetsCtx(ctx);
+}
+
+// Legacy wrappers kept for non-refactored call sites (should not be used in M4 path).
+bool HomeActivity::tryEnsureCoverThumb(const std::string& coverBmpPath, int w, int h) {
+  if (coverBmpPath.empty()) return false;
+  std::string thumb = UITheme::getCoverThumbPath(coverBmpPath, w, h);
+  if (SdMan.exists(thumb.c_str())) return true;
+  if (M4ProviderCoverCache::ensureSizedCoverFromSource(coverBmpPath, w, h) && SdMan.exists(thumb.c_str())) {
+    return true;
+  }
+  for (const auto& b : recentBooks) {
+    std::string expectedThumb = UITheme::getCoverThumbPath(b.coverBmpPath, w, h);
+    if (expectedThumb != thumb) continue;
+    if (StringUtils::checkFileExtension(b.path, ".epub")) {
+      Epub epub(b.path, "/.crosspoint");
+      epub.load(false, true);
+      if (epub.generateThumbBmp(w, h)) return true;
+    }
+    break;
+  }
+  return SdMan.exists(thumb.c_str());
+}
+
+bool HomeActivity::publishHomeSceneWithAssets() {
+  if (!backendCtx) return false;
+  return publishHomeSceneWithAssetsCtx(*backendCtx);
+}
+
+void HomeActivity::publishHomeSceneFromBackend() {
+  if (!backendCtx) return;
+  publishHomeSceneFromBackendCtx(*backendCtx);
+}
+
+bool HomeActivity::queueHomeSceneAction(const UiScene::UiSceneAction& action) {
+  return sceneActionQueue.tryEnqueue(action);
+}
+
+bool HomeActivity::dispatchHomeSceneAction(
+    void* user, const UiScene::UiSceneAction& action) {
+  return static_cast<HomeActivity*>(user)->dispatchHomeSceneAction(action);
+}
+
+bool HomeActivity::dispatchHomeSceneAction(
+    const UiScene::UiSceneAction& action) {
+  if (!backendCtx) return false;
+  HomeScene::HomeSceneSnapshot snapshot{};
+  if (!backendCtx->model.copyLatest(snapshot)) return false;
+  if (action.action == HomeScene::kActionOpenCurrentBook && snapshot.recentCount > 0) {
+    const auto& book = snapshot.recent[0];
+    onSelectBook(homeSceneText(snapshot, book.path),
+                 homeSceneText(snapshot, book.originalSource));
+  } else if (action.action == HomeScene::kActionOpenHistory) {
+    onRecentsOpen();
+  } else if (action.action == HomeScene::kActionOpenApps) {
+    onAppsOpen();
+  } else if (action.action == HomeScene::kActionOpenApp &&
+             action.itemIndex < snapshot.appCount) {
+    if (onOpenNativeApp) {
+      onOpenNativeApp(homeSceneText(snapshot, snapshot.apps[action.itemIndex].id));
+    }
+  }
+  return true;
+}
+
+void HomeActivity::dispatchHomeSceneActions() {
+  sceneActionDispatcher.dispatchAvailable(sceneActionQueue,
+                                           &HomeActivity::dispatchHomeSceneAction,
+                                           this, 1);
+}
+
+void HomeActivity::handleSnapshotInput() {
+  // Global Home is handled before Activity::loop(). Back is also consumed
+  // before page-action dispatch so navigation cannot wait on a content action.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) return;
+  if (!backendCtx) return;
+  HomeScene::HomeSceneSnapshot snapshot{};
+  if (!backendCtx->model.copyLatest(snapshot)) return;
+  const auto source = HomeScene::HomeSceneModel::bindingSource(snapshot);
+
+  // Home is the root activity; consume Back locally without touching the
+  // backend. Global Home gestures are handled by main.cpp before this loop.
+  const int focusCount = snapshot.recentCount + snapshot.appCount;
+  if (focusCount > 0) {
+    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
+        mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+      sceneFocusIndex = static_cast<uint8_t>((sceneFocusIndex + focusCount - 1) % focusCount);
+      if (backendCtx) backendCtx->updateRequired.store(true, std::memory_order_release);
+      else updateRequired.store(true, std::memory_order_release);
+      return;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
+        mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+      sceneFocusIndex = static_cast<uint8_t>((sceneFocusIndex + 1) % focusCount);
+      if (backendCtx) backendCtx->updateRequired.store(true, std::memory_order_release);
+      else updateRequired.store(true, std::memory_order_release);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      HomeScene::HomeSceneActionTarget action{};
+      UiSceneRuntime::SceneItemContext item{};
+      UiScene::ActionId actionId = HomeScene::kActionOpenCurrentBook;
+      if (sceneFocusIndex < snapshot.recentCount) {
+        item = {true, HomeScene::kBindingRecent, sceneFocusIndex,
+                snapshot.recentCount};
+      } else {
+        actionId = HomeScene::kActionOpenApp;
+        item = {true, HomeScene::kBindingApps,
+                static_cast<uint8_t>(sceneFocusIndex - snapshot.recentCount),
+                snapshot.appCount};
+      }
+      if (HomeScene::HomeSceneModel::actionTarget(snapshot, actionId, &item,
+                                                   &action)) {
+        queueHomeSceneAction(action);
+      }
+      return;
+    }
+  }
+  int touchX = 0;
+  int touchY = 0;
+  if (!mappedInput.hasTouch() || !mappedInput.wasScreenTapped(touchX, touchY)) return;
+
+  UiSceneRuntime::HitResult hit{};
+  if (!UiSceneRuntime::hitTestScene(murphy_default_m4theme,
+                                    murphy_default_m4theme_len, source, touchX,
+                                    touchY, &hit) || !hit.hit) return;
+  HomeScene::HomeSceneActionTarget action{};
+  if (HomeScene::HomeSceneModel::actionTarget(snapshot, hit.action, &hit.item,
+                                               &action)) {
+    queueHomeSceneAction(action);
+  }
+}
+
+void HomeActivity::renderSnapshotScene() {
+  if (!backendCtx) {
+    renderer.clearScreen();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return;
+  }
+  // Pin a stable publication generation for the entire render + displayBuffer submission.
+  // This keeps asset arena pointers valid for the whole frame even if backend publishes next frame.
+  auto pinned = backendCtx->model.acquirePublication();
+  if (!pinned.valid()) {
+    renderer.clearScreen();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return;
+  }
+  const HomeScene::HomeScenePublication& pub = pinned.value();
+  // Build immutable assets view pointing into the pinned arena — still backend-free.
+  UiScene::UiSceneAssets assets;
+  HomeScene::homePublicationToAssets(pub, assets);
+  HomeScene::HomeSceneSnapshot snapshot = pub.snapshot;
+  snapshot.selectedIndex = sceneFocusIndex;
+  const auto source = HomeScene::HomeSceneModel::bindingSource(snapshot);
+  UiScene::GfxSceneRenderer sceneRenderer;
+  // Pure render: only reads snapshot + assets arena + package + framebuffer. No SD/Bitmap/JSON.
+  sceneRenderer.render(murphy_default_m4theme, murphy_default_m4theme_len, source, assets, renderer);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  (void)renderer.storeLastShown();
+  // pinned is released after displayBuffer, keeping generation stable throughout.
+}
+
+#endif
+
 void HomeActivity::taskTrampoline(void* param) {
   auto* self = static_cast<HomeActivity*>(param);
   self->displayTaskLoop();
 }
 
 int HomeActivity::getMenuItemCount() const {
+#ifdef CROSSPOINT_MURPHY_M4
+  const int recents = backendCtx ? static_cast<int>(backendCtx->recentBooks.size()) : static_cast<int>(recentBooks.size());
+#else
   const int recents = static_cast<int>(recentBooks.size());
+#endif
   if (UITheme::getInstance().getThemeType() == ThemeType::Fengyan) {
     return recents + 4;
   }
@@ -355,22 +716,88 @@ void HomeActivity::onEnter() {
 
   selectorIndex = 0;
 
+#ifdef CROSSPOINT_MURPHY_M4
+  sceneAssets.clear();
+  sceneFocusIndex = 0;
+  // Create independently owned backend context; backend task will hold a shared_ptr copy.
+  // This keeps FsFile/Bitmap/Epub state off the Activity object so onExit can safely
+  // detach without UAF, and no post-exit publish can touch a destroyed HomeActivity.
+  backendCtx = std::make_shared<BackendContext>();
+  backendCtx->epoch.fetch_add(1, std::memory_order_acq_rel);
+  backendCtx->cancelled.store(false, std::memory_order_release);
+  backendCtx->exiting.store(false, std::memory_order_release);
+  backendCtx->updateRequired.store(false, std::memory_order_release);
+  // Publish initial Loading via the context's model (PSRAM-backed arena).
+  backendCtx->model.publishLoading();
+  updateRequired.store(false, std::memory_order_release);
+#else
   auto metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);
+#endif
 
   // Trigger first update
-  updateRequired = true;
+#ifdef CROSSPOINT_MURPHY_M4
+  if (backendCtx) backendCtx->updateRequired.store(true, std::memory_order_release);
+  else updateRequired.store(true, std::memory_order_release);
 
-  xTaskCreate(&HomeActivity::taskTrampoline, "HomeActivityTask",
-              8192,               // Stack size
-              this,               // Parameters
-              1,                  // Priority
-              &displayTaskHandle  // Task handle
-  );
+  // Capture task ownership before another task can run against HomeActivity.
+  // The trampoline moves this owner into its task-local shared_ptr exactly once.
+  auto* backendHolder = new std::shared_ptr<BackendContext>(backendCtx);
+#else
+  updateRequired.store(true, std::memory_order_release);
+#endif
+
+  if (xTaskCreate(&HomeActivity::taskTrampoline, "HomeActivityTask",
+                  8192, this, 1, &displayTaskHandle) != pdPASS) {
+    displayTaskHandle = nullptr;
+    Serial.printf("[%lu] [Home] failed to create display task\n", millis());
+  }
+#ifdef CROSSPOINT_MURPHY_M4
+  if (xTaskCreate(&HomeActivity::sceneBackendTaskTrampoline, "HomeSceneBackend",
+                  kHomeSceneBackendStackBytes, backendHolder, 1,
+                  &sceneBackendTaskHandle) != pdPASS) {
+    delete backendHolder;
+    sceneBackendTaskHandle = nullptr;
+    Serial.printf("[%lu] [Home] failed to create backend task\n", millis());
+  }
+#endif
 }
 
 void HomeActivity::onExit() {
   Activity::onExit();
+
+#ifdef CROSSPOINT_MURPHY_M4
+  // Lifetime-safe cooperative join: signal backend via its own context and wait boundedly.
+  // Backend owns its context via shared_ptr, so even if we return, it cannot touch `this`.
+  // We never delete a task while it holds FsFile/Bitmap/Epub destructors.
+  std::shared_ptr<BackendContext> ctx = backendCtx;
+  if (ctx) {
+    ctx->cancelled.store(true, std::memory_order_release);
+    ctx->epoch.fetch_add(1, std::memory_order_acq_rel);
+    if (sceneBackendTaskHandle) {
+      const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(250);
+      while (sceneBackendTaskHandle && !ctx->exiting.load(std::memory_order_acquire) && xTaskGetTickCount() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+      if (sceneBackendTaskHandle && !ctx->exiting.load(std::memory_order_acquire)) {
+        Serial.printf("[%lu] [Home] backend still alive after 250ms, not force-deleting (epoch blocked, ctx retained)\n", millis());
+        sceneBackendTaskHandle = nullptr;
+        // ctx stays alive via backend task's shared_ptr; our copy will be released below.
+      } else if (sceneBackendTaskHandle) {
+        // The backend task owns and deletes itself after setting exiting.
+        sceneBackendTaskHandle = nullptr;
+      }
+    }
+    // Release our reference; backend's copy keeps PSRAM arena alive if still running.
+    // Any late publish will be ignored because epoch is bumped and cancelled is true,
+    // and HomeActivity no longer reads from this ctx after we clear backendCtx.
+    backendCtx.reset();
+  } else if (sceneBackendTaskHandle) {
+    // No context but task handle exists (should not happen) — just clear.
+    vTaskDelete(sceneBackendTaskHandle);
+    sceneBackendTaskHandle = nullptr;
+  }
+#endif
 
   // Wait until not rendering to delete task to avoid killing mid-instruction to EPD
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
@@ -526,7 +953,7 @@ void HomeActivity::loop() {
       const TouchHitGeometry::Rect restartRect{restartX - 4, btnY - 2, restartWidth + 8, lineHeight + 4};
       if (cancelRect.contains(touchX, touchY)) {
         showMemWarning = false;
-        updateRequired = true;
+        updateRequired.store(true, std::memory_order_release);
       } else if (restartRect.contains(touchX, touchY)) {
         Serial.printf("[%lu] [Home] User confirmed restart due to low memory\n", millis());
         ESP.restart();
@@ -536,26 +963,32 @@ void HomeActivity::loop() {
     if (mappedInput.wasPressed(MappedInputManager::Button::Left) ||
         mappedInput.wasPressed(MappedInputManager::Button::Up)) {
       memWarningSelected = false;
-      updateRequired = true;
+      updateRequired.store(true, std::memory_order_release);
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Right) ||
                mappedInput.wasPressed(MappedInputManager::Button::Down)) {
       memWarningSelected = true;
-      updateRequired = true;
+      updateRequired.store(true, std::memory_order_release);
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (memWarningSelected) {
         Serial.printf("[%lu] [Home] User confirmed restart due to low memory\n", millis());
         ESP.restart();
       } else {
         showMemWarning = false;
-        updateRequired = true;
+        updateRequired.store(true, std::memory_order_release);
       }
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       showMemWarning = false;
-      updateRequired = true;
+      updateRequired.store(true, std::memory_order_release);
     }
     return;
   }
 
+#ifdef CROSSPOINT_MURPHY_M4
+  const bool backPressed = mappedInput.wasPressed(MappedInputManager::Button::Back);
+  handleSnapshotInput();
+  if (!backPressed) dispatchHomeSceneActions();
+  return;
+#else
   auto activateSelection = [this]() {
     int idx = 0;
     int menuSelectedIndex = selectorIndex - static_cast<int>(recentBooks.size());
@@ -638,6 +1071,15 @@ void HomeActivity::loop() {
     int tapX = 0;
     int tapY = 0;
     const bool tapped = mappedInput.wasScreenTapped(tapX, tapY);
+    if (isFengyanTheme && tapped) {
+      int bottomHit = -1;
+      if (TouchHitGeometry::fengyanHomeBottomIndexFromPoint(tapX, tapY, bottomHit, pageWidth, pageHeight)) {
+        if (bottomHit == 0) onRecentsOpen();
+        else if (bottomHit == 1) onAppsOpen();
+        else if (bottomHit == 2) onSettingsOpen();
+        return;
+      }
+    }
     if (mappedInput.wasScreenTouchDown(tx, ty) && !tapped) {
       int hit = -1;
       if (coverCount > 0 &&
@@ -645,7 +1087,7 @@ void HomeActivity::loop() {
                                                             tx, ty, hit)) {
         if (selectorIndex != hit) {
           selectorIndex = hit;
-          updateRequired = true;
+          updateRequired.store(true, std::memory_order_release);
         }
         return;
       }
@@ -661,7 +1103,7 @@ void HomeActivity::loop() {
         const int touched = coverCount + hit;
         if (selectorIndex != touched) {
           selectorIndex = touched;
-          updateRequired = true;
+          updateRequired.store(true, std::memory_order_release);
         }
         return;
       }
@@ -695,12 +1137,12 @@ void HomeActivity::loop() {
     const auto swipe = mappedInput.wasSwipe();
     if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Left) {
       selectorIndex = (selectorIndex + 1) % menuCount;
-      updateRequired = true;
+      updateRequired.store(true, std::memory_order_release);
       return;
     }
     if (swipe == MappedInputManager::SwipeDir::Down || swipe == MappedInputManager::SwipeDir::Right) {
       selectorIndex = (selectorIndex + menuCount - 1) % menuCount;
-      updateRequired = true;
+      updateRequired.store(true, std::memory_order_release);
       return;
     }
   }
@@ -716,21 +1158,32 @@ void HomeActivity::loop() {
     activateSelection();
   } else if (prevPressed) {
     selectorIndex = (selectorIndex + menuCount - 1) % menuCount;
-    updateRequired = true;
+    updateRequired.store(true, std::memory_order_release);
   } else if (nextPressed) {
     selectorIndex = (selectorIndex + 1) % menuCount;
-    updateRequired = true;
+    updateRequired.store(true, std::memory_order_release);
   }
+#endif
 }
 
 void HomeActivity::displayTaskLoop() {
   while (true) {
-    if (updateRequired) {
-      updateRequired = false;
+#ifdef CROSSPOINT_MURPHY_M4
+    bool need = false;
+    if (backendCtx && backendCtx->updateRequired.exchange(false, std::memory_order_acq_rel)) need = true;
+    if (updateRequired.exchange(false, std::memory_order_acq_rel)) need = true;
+    if (need) {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       render();
       xSemaphoreGive(renderingMutex);
     }
+#else
+    if (updateRequired.exchange(false, std::memory_order_acq_rel)) {
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      render();
+      xSemaphoreGive(renderingMutex);
+    }
+#endif
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
 }
@@ -798,10 +1251,36 @@ void HomeActivity::render() {
     return;
   }
 
+#ifdef CROSSPOINT_MURPHY_M4
+  renderSnapshotScene();
+  return;
+#else
   auto metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   const auto homeLayout = makeHomeCompositionLayout(metrics, pageHeight);
+  const bool isFengyanTheme = (UITheme::getInstance().getThemeType() == ThemeType::Fengyan);
+  if (isFengyanTheme) {
+    // Template Home — black-ink overlay compositing (see HomeMofeiTemplateOverlay).
+    // A) clear white, B) dynamic covers/text/progress/count, C) overlay template ink last, D) focus.
+    // Template owns header/card/dividers/quick/footer ink — skip static repaints.
+    renderer.clearScreen();
+    auto* fengyan = static_cast<FengyanTheme*>(UITheme::getInstance().getTheme());
+    if (fengyan) {
+      fengyan->drawRecentBookCoverContent(renderer,
+                                          Rect{0, homeLayout.coverTop, pageWidth, homeLayout.coverHeight},
+                                          recentBooks);
+    }
+    HomeMofeiTemplateOverlay::draw(renderer, mofei_classic_m4theme, mofei_classic_m4theme_len);
+    if (fengyan) {
+      fengyan->drawRecentBookCoverFocus(renderer,
+                                        Rect{0, homeLayout.coverTop, pageWidth, homeLayout.coverHeight},
+                                        recentBooks, selectorIndex);
+    }
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    (void)renderer.storeLastShown();
+    return;
+  }
 
   // Navigation surfaces use a single fast/partial frame. Reader-body page
   // pagination owns the only windowed animation path.
@@ -825,7 +1304,6 @@ void HomeActivity::render() {
                           std::bind(&HomeActivity::storeCoverBuffer, this));
   drawHomeSectionRule(renderer, metrics, homeLayout, pageWidth);
 
-  bool isFengyanTheme = (UITheme::getInstance().getThemeType() == ThemeType::Fengyan);
   std::vector<const char*> menuItems;
   std::vector<UIIcon> menuIcons;
   if (isFengyanTheme) {
@@ -871,8 +1349,12 @@ void HomeActivity::render() {
       [&menuItems](int index) { return std::string(menuItems[index]); },
       [&menuIcons](int index) -> UIIcon { return menuIcons[index]; });
 
-  const auto labels = mappedInput.mapLabels("", L(Str::kSelect), L(Str::kMoveUp), L(Str::kMoveDown));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (isFengyanTheme) {
+    GUI.drawButtonHints(renderer, "历史", "应用", "设置", "", true);
+  } else {
+    const auto labels = mappedInput.mapLabels("", L(Str::kSelect), L(Str::kMoveUp), L(Str::kMoveDown));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 
   (void)animateHomeEntry;
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -880,7 +1362,7 @@ void HomeActivity::render() {
 
   if (!firstRenderDone) {
     firstRenderDone = true;
-    updateRequired = true;
+    updateRequired.store(true, std::memory_order_release);
   } else if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
     loadRecentCovers(metrics.homeCoverWidth, metrics.homeCoverThumbHeight);
@@ -888,6 +1370,7 @@ void HomeActivity::render() {
     coverRendered = false;
     coverBufferStored = false;
     freeCoverBuffer();
-    updateRequired = true;
+    updateRequired.store(true, std::memory_order_release);
   }
+#endif
 }

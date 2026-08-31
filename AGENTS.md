@@ -33,3 +33,8 @@ Read `HANDOFF.md`, `docs/FAST_FIRMWARE_DEV.md`, and the task-specific docs befor
 ## Evidence and scope
 
 Keep firmware changes bounded-memory and streaming-first. Do not add private network endpoints to canonical configuration or docs. Update the relevant task/issue evidence when the task authorizes it; keep `HANDOFF.md` as a short pointer, not a history log. Do not flash hardware, publish, push, or modify GitHub unless the current task explicitly authorizes it.
+
+
+## M4 recurring lessons
+
+Before starting any M4 firmware/Home/Scene/QEMU task, read `docs/M4_AGENT_LESSONS.md`. When a repeatable pitfall or fix is discovered, append it there before considering the task complete.

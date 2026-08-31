@@ -59,7 +59,7 @@ inline Rect chapterHeaderBackRect(int x = 0, int y = 0) {
 
 
 // ---------------------------------------------------------------------------
-// Fengyan reference-style recent books: one hero row plus two compact books.
+// Fengyan reference-style recent books: one hero row plus three compact books.
 // Geometry is shared by drawing and touch routing so the e-ink UI never
 // develops a visible/tappable mismatch.
 // ---------------------------------------------------------------------------
@@ -69,8 +69,8 @@ struct FengyanRecentLayout {
   Rect heroCover{};
   Rect heroInfo{};
   Rect progress{};
-  Rect mini[2]{};
-  Rect miniCover[2]{};
+  Rect mini[3]{};
+  Rect miniCover[3]{};
   int dividerY = 0;
   int bookCount = 0;
 
@@ -81,7 +81,7 @@ struct FengyanRecentLayout {
 
   Rect bookRect(int index) const {
     if (index == 0) return hero;
-    if (index == 1 || index == 2) return mini[index - 1];
+    if (index >= 1 && index <= 3) return mini[index - 1];
     return {};
   }
 };
@@ -90,7 +90,7 @@ inline FengyanRecentLayout makeFengyanRecentLayout(const Rect& rect, int bookCou
                                                     int contentSidePadding = 20) {
   (void)contentSidePadding;
   FengyanRecentLayout L;
-  L.bookCount = minInt(maxInt(bookCount, 0), 3);
+  L.bookCount = minInt(maxInt(bookCount, 0), 4);
   if (rect.width <= 0 || rect.height <= 0) return L;
 
   const int dy = rect.y - HomeRef::Recent.y;
@@ -108,11 +108,13 @@ inline FengyanRecentLayout makeFengyanRecentLayout(const Rect& rect, int bookCou
                     HomeRef::MiniCover1.h};
   L.miniCover[1] = {dx + HomeRef::MiniCover2.x, HomeRef::MiniCover2.y + dy, HomeRef::MiniCover2.w,
                     HomeRef::MiniCover2.h};
+  L.miniCover[2] = {dx + HomeRef::MiniCover3.x, HomeRef::MiniCover3.y + dy, HomeRef::MiniCover3.w,
+                    HomeRef::MiniCover3.h};
   const int miniTitleH = 24;
-  L.mini[0] = {L.miniCover[0].x, L.miniCover[0].y, L.miniCover[0].width,
-               HomeRef::MiniTitleBaseline + dy - L.miniCover[0].y + miniTitleH};
-  L.mini[1] = {L.miniCover[1].x, L.miniCover[1].y, L.miniCover[1].width,
-               HomeRef::MiniTitleBaseline + dy - L.miniCover[1].y + miniTitleH};
+  for (int i = 0; i < 3; ++i) {
+    L.mini[i] = {L.miniCover[i].x, L.miniCover[i].y, L.miniCover[i].width,
+                 HomeRef::MiniTitleBaseline + dy - L.miniCover[i].y + miniTitleH};
+  }
   if (L.bookCount <= 0) return L;
   return L;
 }
@@ -220,6 +222,18 @@ inline bool fengyanMenuIndexFromPoint(const Rect& rect, int buttonCount, int px,
       return true;
     }
   }
+  return false;
+}
+
+// Fixed Home footer: history / apps / settings.
+inline bool fengyanHomeBottomIndexFromPoint(int px, int py, int& outIndex,
+                                            int screenWidth = HomeRef::ScreenW,
+                                            int screenHeight = HomeRef::ScreenH) {
+  const auto nav = makeBottomNavigationLayout(screenWidth, screenHeight, HomeRef::BottomH);
+  if (!nav.valid()) return false;
+  if (nav.back.contains(px, py)) { outIndex = 0; return true; }
+  if (nav.home.contains(px, py)) { outIndex = 1; return true; }
+  if (nav.menu.contains(px, py)) { outIndex = 2; return true; }
   return false;
 }
 

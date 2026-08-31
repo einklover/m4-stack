@@ -31,9 +31,9 @@ constexpr ThemeMetrics values = {
     .homeTopPadding = 62,
     .homeCoverHeight = 222,
     .homeCoverTileHeight = 481,
-    .homeRecentBooksCount = 3,
-    .homeCoverWidth = 158,
-    .homeCoverThumbHeight = 222,
+    .homeRecentBooksCount = 4,
+    .homeCoverWidth = 171,
+    .homeCoverThumbHeight = 254,
     .buttonHintsHeight = 51,
     .sideButtonHintsWidth = 30,
     .versionTextRightX = 20,
@@ -64,5 +64,11 @@ class FengyanTheme : public BaseTheme {
   void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                            std::function<bool()> storeCoverBuffer) const override;
+  // Template Home: draws only dynamic covers/text/progress without static card/divider/cover borders.
+  // Used for black-ink overlay compositing: covers are rectangular, template supplies rounded frames.
+  void drawRecentBookCoverContent(const GfxRenderer& renderer, Rect rect,
+                                  const std::vector<RecentBook>& recentBooks) const;
+  void drawRecentBookCoverFocus(const GfxRenderer& renderer, Rect rect,
+                                const std::vector<RecentBook>& recentBooks, int selectorIndex) const;
   Rect drawPopup(const GfxRenderer& renderer, const char* message) const override;
 };

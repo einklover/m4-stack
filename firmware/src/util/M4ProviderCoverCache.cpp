@@ -228,6 +228,38 @@ M4ProviderCoverCache::ImageFormat sniffFile(FsFile& file) {
   return M4ProviderCoverCache::detectImageFormat(magic, sizeof(magic));
 }
 
+bool convertCoverFile(const std::string& source, const std::string& target, int width, int height, bool oneBit) {
+  using M4ProviderCoverCache::ImageFormat;
+  FsFile sniff;
+  if (!SdMan.openFileForRead("M4Cover", source.c_str(), sniff)) return false;
+  const auto format = sniffFile(sniff);
+  sniff.close();
+  if (format == ImageFormat::Bmp) {
+    if (oneBit) return false;
+    FsFile input;
+    if (!SdMan.openFileForRead("M4Cover", source.c_str(), input)) return false;
+    Bitmap bitmap(input);
+    const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok;
+    input.close();
+    return valid && copyFile(source, target);
+  }
+  if (format == ImageFormat::Png) return pngFileToBmpStream(source, target, width, height);
+  if (format != ImageFormat::Jpeg) return false;
+  FsFile input;
+  FsFile output;
+  if (!SdMan.openFileForRead("M4Cover", source.c_str(), input) ||
+      !SdMan.openFileForWrite("M4Cover", target.c_str(), output)) {
+    input.close();
+    output.close();
+    return false;
+  }
+  const bool ok = oneBit ? JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(input, output, width, height)
+                         : JpegToBmpConverter::jpegFileToBmpStreamWithSize(input, output, width, height);
+  input.close();
+  output.close();
+  return ok;
+}
+
 }  // namespace
 
 namespace M4ProviderCoverCache {
@@ -258,35 +290,22 @@ Result acquireProviderCover(const Request& request) {
     return ok;
   };
   backend.convert = [](const std::string& source, const std::string& target, int width, int height) {
-    FsFile sniff;
-    if (!SdMan.openFileForRead("M4Cover", source.c_str(), sniff)) return false;
-    const auto format = sniffFile(sniff);
-    sniff.close();
-    if (format == ImageFormat::Bmp) {
-      FsFile input;
-      if (!SdMan.openFileForRead("M4Cover", source.c_str(), input)) return false;
-      Bitmap bitmap(input);
-      const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok;
-      input.close();
-      return valid && copyFile(source, target);
-    }
-    if (format == ImageFormat::Png) return pngFileToBmpStream(source, target, width, height);
-    if (format != ImageFormat::Jpeg) return false;
-    FsFile input;
-    FsFile output;
-    if (!SdMan.openFileForRead("M4Cover", source.c_str(), input) ||
-        !SdMan.openFileForWrite("M4Cover", target.c_str(), output)) {
-      input.close();
-      output.close();
-      return false;
-    }
-    const bool ok = JpegToBmpConverter::jpegFileToBmpStreamWithSize(input, output, width, height);
-    input.close();
-    output.close();
-    return ok;
+    return convertCoverFile(source, target, width, height, false);
   };
   backend.remove = [](const std::string& path) { SdMan.remove(path.c_str()); };
   return acquire(request, backend);
+}
+
+bool ensureSizedCoverFromSource(const std::string& coverBmpPath, int width, int height,
+                                const std::function<bool()>& cancelled) {
+  Backend backend;
+  backend.exists = [](const std::string& path) { return SdMan.exists(path.c_str()); };
+  backend.convert = [](const std::string& source, const std::string& target, int w, int h) {
+    return convertCoverFile(source, target, w, h, true);
+  };
+  backend.remove = [](const std::string& path) { SdMan.remove(path.c_str()); };
+  const auto result = ensureSizedCoverFromSource(coverBmpPath, width, height, backend, cancelled);
+  return !result.thumbPath.empty();
 }
 
 }  // namespace M4ProviderCoverCache

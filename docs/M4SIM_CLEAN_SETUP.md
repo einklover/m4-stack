@@ -72,6 +72,29 @@ pio run -e murphy_m4_qemu_plugin   # once
   --build-dir firmware/.pio/build/murphy_m4_qemu_plugin
 ```
 
+### B2. QEMU screen-only Home profile
+
+`murphy_m4_qemu` is a different profile from `murphy_m4_qemu_plugin`: it uses
+Quad PSRAM, renders the deterministic Home fixture, and emits the framebuffer
+over UART before returning from setup. It does not initialize the m4adb bridge,
+so do not run it through `m4sim run` (that path waits for a bridge and forces
+the octal-PSRAM QEMU setting). Use the serial framebuffer runner instead:
+
+```bash
+pio run -e murphy_m4_qemu -j1
+python3 simulator/tools/murphy_flash_image.py \
+  --build-dir firmware/.pio/build/murphy_m4_qemu \
+  -o /tmp/murphy-m4-qemu.bin
+python3 simulator/qemu/run_murphy_bin.py /tmp/murphy-m4-qemu.bin \
+  --seconds 40 \
+  --serial-file /tmp/murphy-m4-qemu.serial.log \
+  --screen-file /tmp/murphy-m4-qemu-home.pbm \
+  --probe
+```
+
+The runner defaults to no `ssi_psram.is_octal` override, which is required for
+this QSPI build. The plugin-debug profile remains the interactive m4adb path.
+
 ### C. Full 16 MiB flash image
 
 ```bash

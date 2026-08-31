@@ -1,0 +1,272 @@
+{
+  "format": 1,
+  "id": "murphy-default",
+  "screen": [
+    480,
+    800
+  ],
+  "bindings": {
+    "$home.current.progress_text": 16
+  },
+  "nodes": [
+    {
+      "type": "clear",
+      "color": "white"
+    },
+    {
+      "type": "text",
+      "rect": [
+        24,
+        24,
+        160,
+        24
+      ],
+      "text": "Murphy M4",
+      "font": "ui_16_bold",
+      "align": "left"
+    },
+    {
+      "type": "battery",
+      "rect": [
+        432,
+        24,
+        24,
+        12
+      ],
+      "binding": "$system.battery"
+    },
+    {
+      "type": "line",
+      "x": 23,
+      "y": 52,
+      "x2": 456,
+      "y2": 52,
+      "width": 1,
+      "color": "black"
+    },
+    {
+      "type": "round_rect",
+      "rect": [
+        22,
+        84,
+        434,
+        230
+      ],
+      "r": 10,
+      "stroke": 1
+    },
+    {
+      "type": "cover",
+      "rect": [
+        44,
+        104,
+        138,
+        191
+      ],
+      "radius": 8,
+      "binding": "$current.cover",
+      "action": "open_current_book"
+    },
+    {
+      "type": "text",
+      "rect": [
+        209,
+        112,
+        180,
+        18
+      ],
+      "text": "继续阅读",
+      "font": "ui_14_regular",
+      "align": "left",
+      "visible_if": "$current.exists"
+    },
+    {
+      "type": "text",
+      "rect": [
+        209,
+        142,
+        220,
+        28
+      ],
+      "text": "$current.title",
+      "font": "ui_20_bold",
+      "align": "left",
+      "ellipsis": true
+    },
+    {
+      "type": "text",
+      "rect": [
+        209,
+        187,
+        220,
+        18
+      ],
+      "text": "$current.author",
+      "font": "ui_14_regular",
+      "align": "left",
+      "ellipsis": true
+    },
+    {
+      "type": "text",
+      "rect": [
+        209,
+        209,
+        220,
+        18
+      ],
+      "text": "$current.source",
+      "font": "ui_14_regular",
+      "align": "left",
+      "ellipsis": true
+    },
+    {
+      "type": "text",
+      "rect": [
+        209,
+        253,
+        50,
+        18
+      ],
+      "text": "$home.current.progress_text",
+      "font": "ui_12_regular",
+      "align": "left"
+    },
+    {
+      "type": "progress",
+      "rect": [
+        208,
+        278,
+        222,
+        10
+      ],
+      "radius": 5,
+      "binding": "$current.progress"
+    },
+    {
+      "type": "text",
+      "rect": [
+        28,
+        347,
+        120,
+        20
+      ],
+      "text": "最近阅读",
+      "font": "ui_16_bold",
+      "align": "left"
+    },
+    {
+      "type": "text",
+      "rect": [
+        401,
+        347,
+        72,
+        20
+      ],
+      "text": "全部  >",
+      "font": "ui_14_regular",
+      "align": "right",
+      "action": "open_history"
+    },
+    {
+      "type": "repeat",
+      "source": "$recent",
+      "limit": 3,
+      "x": 28,
+      "y": 380,
+      "item_width": 129,
+      "item_height": 174,
+      "gap": 14,
+      "direction": "horizontal",
+      "children": [
+        {
+          "type": "cover",
+          "rect": [
+            18,
+            0,
+            92,
+            122
+          ],
+          "radius": 5,
+          "binding": "$item.cover"
+        },
+        {
+          "type": "text",
+          "rect": [
+            0,
+            136,
+            129,
+            18
+          ],
+          "text": "$item.title",
+          "font": "ui_14_regular",
+          "align": "center",
+          "ellipsis": true
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "rect": [
+        28,
+        601,
+        100,
+        20
+      ],
+      "text": "应用",
+      "font": "ui_16_bold",
+      "align": "left"
+    },
+    {
+      "type": "text",
+      "rect": [
+        401,
+        601,
+        72,
+        20
+      ],
+      "text": "更多  >",
+      "font": "ui_14_regular",
+      "align": "right",
+      "action": "open_apps"
+    },
+    {
+      "type": "repeat",
+      "source": "$apps",
+      "limit": 4,
+      "x": 24,
+      "y": 636,
+      "item_width": 100,
+      "item_height": 100,
+      "gap": 10,
+      "direction": "horizontal",
+      "children": [
+        {
+          "type": "icon",
+          "rect": [
+            18,
+            0,
+            62,
+            64
+          ],
+          "name": "app_icon",
+          "binding": "$item.icon",
+          "action": "open_app",
+          "action_arg": "$item.id"
+        },
+        {
+          "type": "text",
+          "rect": [
+            0,
+            78,
+            100,
+            18
+          ],
+          "text": "$item.name",
+          "font": "ui_12_regular",
+          "align": "center",
+          "ellipsis": true
+        }
+      ]
+    }
+  ]
+}

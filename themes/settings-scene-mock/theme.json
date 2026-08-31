@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "id": "settings-scene-mock",
+  "screen": [480, 800],
+  "bindings": {
+    "$page.settings": 64,
+    "$page.status": 65,
+    "$item.value": 66,
+    "$item.enabled": 67
+  },
+  "actions": {
+    "open_setting": 32,
+    "toggle_setting": 33
+  },
+  "nodes": [
+    {"type": "clear", "color": "white"},
+    {"type": "text", "rect": [30, 28, 200, 24], "text": "Settings", "font": "ui_16_regular", "align": "left"},
+    {"type": "battery", "rect": [400, 30, 60, 20], "binding": "$system.battery"},
+    {"type": "line", "x": 0, "y": 90, "x2": 480, "y2": 90, "width": 1, "color": "black"},
+    {"type": "text", "rect": [30, 108, 420, 20], "text": "$page.status", "font": "ui_14_regular", "align": "left"},
+    {"type": "text", "rect": [30, 135, 200, 16], "text": "Loading...", "font": "ui_12_regular", "visible_if": "$page.status"},
+    {"type": "text", "rect": [30, 155, 420, 16], "text": "Ready", "font": "ui_12_regular", "visible_if": "$page.status"},
+    {"type": "text", "rect": [30, 175, 420, 16], "text": "Error", "font": "ui_12_regular", "visible_if": "$page.status"},
+    {"type": "repeat", "source": "$page.settings", "limit": 5, "x": 24, "y": 210, "item_width": 432, "item_height": 60, "gap": 10, "direction": "vertical", "children": [
+      {"type": "round_rect", "rect": [0, 0, 432, 60], "r": 8, "stroke": 1},
+      {"type": "text", "rect": [12, 8, 200, 20], "text": "$item.title", "font": "ui_14_regular", "ellipsis": true},
+      {"type": "text", "rect": [220, 8, 120, 20], "text": "$item.value", "font": "ui_12_regular", "align": "right", "ellipsis": true},
+      {"type": "icon", "rect": [360, 10, 40, 40], "name": "toggle", "binding": "$item.enabled", "action": "toggle_setting", "action_arg": "$item.id"}
+    ]},
+    {"type": "text", "rect": [30, 750, 420, 20], "text": "Back", "font": "ui_12_regular", "align": "center", "action": "open_setting"}
+  ]
+}

@@ -131,5 +131,70 @@ int main() {
       Request{"weread", "extensionless", extensionlessRequest.coverUrl, 120, 160}, formatBackend);
   assert(!extensionlessJpeg.coverBmpPath.empty());
   assert(files.count(concreteBmpPath("weread", "extensionless", 120, 160)) != 0);
+
+  // Home Scene sizes: generate on miss from source.img, never fetch.
+  std::set<std::string> homeFiles;
+  int homeFetches = 0;
+  int homeConverts = 0;
+  int lastConvertW = 0;
+  int lastConvertH = 0;
+  std::string lastConvertSource;
+  Backend homeBackend;
+  homeBackend.exists = [&](const std::string& path) { return homeFiles.count(path) != 0; };
+  homeBackend.fetch = [&](const std::string&, const std::string&, size_t) {
+    ++homeFetches;
+    return false;
+  };
+  homeBackend.convert = [&](const std::string& source, const std::string& target, int width, int height) {
+    ++homeConverts;
+    lastConvertSource = source;
+    lastConvertW = width;
+    lastConvertH = height;
+    homeFiles.insert(target);
+    return true;
+  };
+  homeBackend.remove = [&](const std::string& path) { homeFiles.erase(path); };
+  const std::string templatePath =
+      "/.crosspoint/provider_covers/032352886ae8bcbc/cover_[WIDTH]x[HEIGHT].bmp";
+  const std::string sourceImg = "/.crosspoint/provider_covers/032352886ae8bcbc/source.img";
+  const std::string fengyan = "/.crosspoint/provider_covers/032352886ae8bcbc/cover_171x254.bmp";
+  homeFiles.insert(sourceImg);
+  homeFiles.insert(fengyan);
+
+  const auto miss110 = ensureSizedCoverFromSource(templatePath, 110, 180, homeBackend);
+  assert(!miss110.thumbPath.empty());
+  assert(miss110.generated);
+  assert(!miss110.cacheHit);
+  assert(homeFetches == 0);
+  assert(homeConverts == 1);
+  assert(lastConvertSource == sourceImg);
+  assert(lastConvertW == 110 && lastConvertH == 180);
+  assert(homeFiles.count("/.crosspoint/provider_covers/032352886ae8bcbc/cover_110x180.bmp") != 0);
+
+  const auto hit110 = ensureSizedCoverFromSource(templatePath, 110, 180, homeBackend);
+  assert(hit110.cacheHit);
+  assert(!hit110.generated);
+  assert(homeConverts == 1);
+  assert(homeFetches == 0);
+
+  const auto miss74 = ensureSizedCoverFromSource(templatePath, 74, 106, homeBackend);
+  assert(miss74.generated);
+  assert(lastConvertW == 74 && lastConvertH == 106);
+  assert(homeConverts == 2);
+
+  homeFiles.erase(sourceImg);
+  const auto noSource = ensureSizedCoverFromSource(templatePath, 64, 64, homeBackend);
+  assert(noSource.thumbPath.empty());
+  assert(homeConverts == 2);
+
+  const auto outside = ensureSizedCoverFromSource("/books/local/cover_[WIDTH]x[HEIGHT].bmp", 110, 180, homeBackend);
+  assert(outside.thumbPath.empty());
+
+  bool cancelFlag = true;
+  const auto cancelled = ensureSizedCoverFromSource(
+      templatePath, 50, 80, homeBackend, [&]() { return cancelFlag; });
+  assert(cancelled.thumbPath.empty());
+  assert(homeFetches == 0);
+
   std::cout << "provider cover cache bounded/reuse/failure/success passed\n";
 }

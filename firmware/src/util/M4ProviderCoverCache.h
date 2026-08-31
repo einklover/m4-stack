@@ -98,6 +98,66 @@ inline std::string concreteBmpPath(const std::string& providerId, const std::str
   return cacheDir(providerId, bookId) + "/cover_" + std::to_string(width) + "x" + std::to_string(height) + ".bmp";
 }
 
+inline std::string directoryOfCoverPath(const std::string& coverBmpPath) {
+  const auto slash = coverBmpPath.find_last_of('/');
+  if (slash == std::string::npos || slash == 0) return {};
+  return coverBmpPath.substr(0, slash);
+}
+
+inline bool isProviderCoverCacheDir(const std::string& dir) {
+  return dir.find("/.crosspoint/provider_covers/") != std::string::npos;
+}
+
+inline std::string sourcePathInDir(const std::string& dir) { return dir + "/source.img"; }
+
+inline std::string sizedBmpPathInDir(const std::string& dir, int width, int height) {
+  return dir + "/cover_" + std::to_string(width) + "x" + std::to_string(height) + ".bmp";
+}
+
+struct EnsureSizedResult {
+  std::string thumbPath;
+  bool cacheHit = false;
+  bool generated = false;
+};
+
+// Home Scene sizes (110x180 / 74x106) are not the Fengyan download size (171x254).
+// Generate on miss from the already-downloaded source.img. Never fetches.
+inline EnsureSizedResult ensureSizedCoverFromSource(const std::string& coverBmpPath, int width, int height,
+                                                    const Backend& backend,
+                                                    const std::function<bool()>& cancelled = {}) {
+  EnsureSizedResult out;
+  if (coverBmpPath.empty() || width <= 0 || height <= 0 || !backend.exists || !backend.convert) return out;
+  const std::string dir = directoryOfCoverPath(coverBmpPath);
+  if (dir.empty() || !isProviderCoverCacheDir(dir)) return out;
+  const std::string target = sizedBmpPathInDir(dir, width, height);
+  out.thumbPath = target;
+  if (backend.exists(target)) {
+    out.cacheHit = true;
+    return out;
+  }
+  if (cancelled && cancelled()) {
+    out.thumbPath.clear();
+    return out;
+  }
+  const std::string source = sourcePathInDir(dir);
+  if (!backend.exists(source)) {
+    out.thumbPath.clear();
+    return out;
+  }
+  if (!backend.convert(source, target, width, height) || !backend.exists(target)) {
+    if (backend.remove) backend.remove(target);
+    out.thumbPath.clear();
+    return out;
+  }
+  if (cancelled && cancelled()) {
+    // Conversion finished; keep the file so the next Home paint is a hit.
+    out.generated = true;
+    return out;
+  }
+  out.generated = true;
+  return out;
+}
+
 inline Result acquire(const Request& request, const Backend& backend) {
   Result out;
   if (request.providerId.empty() || request.bookId.empty() || request.coverUrl.empty() || request.width <= 0 ||
@@ -148,5 +208,9 @@ inline Request requestFor(const std::string& providerId, const std::string& book
 
 // Production adapter: streamed HTTP download + existing PNGdec/JPEG converters + SD.
 Result acquireProviderCover(const Request& request);
+
+// Home bind path: JPEG/PNG source.img -> exact-size 1-bit BMP. No network.
+bool ensureSizedCoverFromSource(const std::string& coverBmpPath, int width, int height,
+                                const std::function<bool()>& cancelled = {});
 
 }  // namespace M4ProviderCoverCache

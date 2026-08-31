@@ -54,6 +54,13 @@ static volatile bool gM4QemuScreenMode = true;
 #include "activities/boot_sleep/SleepActivity.h"
 #include "activities/browser/OpdsBookBrowserActivity.h"
 #include "activities/home/HomeActivity.h"
+#ifdef M4_QEMU_BUILD
+#include "generated/murphy_default_m4theme.h"
+#include "qemu/M4QemuHomeSceneFixture.h"
+#include "ui/pages/HomeSceneModel.h"
+#include "ui/scene/GfxSceneRenderer.h"
+#include "ui/scene/UiSceneAssets.h"
+#endif
 #include "activities/home/MyLibraryActivity.h"
 #include "activities/home/RecentBooksActivity.h"
 #include "activities/network/CrossPointWebServerActivity.h"
@@ -744,14 +751,40 @@ void setup() {
 
 #ifdef M4_QEMU_BUILD
     if (gM4QemuScreenMode) {
-      // QEMU has no Murphy SSD1677/SDMMC devices. Exercise the real UI renderer,
-      // then let FreeInkDisplay export the committed 1bpp frame over UART.
+      // QEMU-only deterministic Home fixture. This exercises the same compiled
+      // Murphy scene, snapshot binding model, and Gfx renderer as production
+      // without touching SD/network/provider state that QEMU does not model.
       setupDisplayAndFonts();
-      exitActivity();
-      enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager,
-                                                     "Murphy QEMU ready",
-                                                     EpdFontFamily::BOLD));
-      Serial.printf("[%lu] [M4-QEMU] screen bridge ready\n", millis());
+      renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+      renderer.setRenderMode(GfxRenderer::BW);
+
+      HomeScene::HomeSceneModel model;
+      model.begin(UiScene::DataState::Ready);
+      model.setBattery(88);
+      model.setWifiConnected(true);
+      model.setCurrent("Murphy M4", "QEMU", "Scene Runtime", "qemu://cover/current", 42);
+      model.addRecent("Recent One", "Author A", "Local", "qemu://cover/recent/0", 25);
+      model.addRecent("Recent Two", "Author B", "Local", "qemu://cover/recent/1", 55);
+      model.addRecent("Recent Three", "Author C", "Local", "qemu://cover/recent/2", 80);
+      model.addApp("history", "History", "history");
+      model.addApp("books", "Books", "book");
+      model.addApp("settings", "Settings", "settings");
+      model.addApp("plugins", "Plugins", "plugin");
+      model.publish();
+
+      HomeScene::HomeSceneSnapshot snapshot{};
+      UiScene::UiSceneAssets assets{};
+      M4QemuHomeSceneFixture::populate(assets);
+      UiScene::GfxSceneRenderer sceneRenderer;
+      if (model.copyLatest(snapshot)) {
+        sceneRenderer.render(murphy_default_m4theme, murphy_default_m4theme_len,
+                             HomeScene::HomeSceneModel::bindingSource(snapshot),
+                             assets, renderer);
+      } else {
+        renderer.clearScreen();
+      }
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      Serial.printf("[%lu] [M4-QEMU] Home scene bridge ready\n", millis());
       return;
     }
 #endif

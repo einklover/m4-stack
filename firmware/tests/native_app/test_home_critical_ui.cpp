@@ -52,6 +52,9 @@ void compositionUsesOneGeometryPolicy(const char* source) {
 void routesReferenceGeometryThroughTouch(const char* source) {
   require(source, "fengyanRecentBookIndexFromPoint");
   require(source, "kHomeQuickColumns");
+  require(source, "HomeRef::Recent.y");
+  require(source, "HomeRef::Quick.y");
+  require(source, "fengyanHomeBottomIndexFromPoint");
 }
 
 void sectionRuleIsSparseAndScreenLocal(const char* source) {

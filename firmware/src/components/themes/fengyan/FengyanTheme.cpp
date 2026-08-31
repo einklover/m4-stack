@@ -67,7 +67,7 @@ constexpr int listIconSize = 24;
 constexpr int mainMenuIconWidth = 72;   // 主菜单图标宽度
 constexpr int mainMenuIconHeight = 72;  // 主菜单图标高度
 constexpr int kHomeQuickColumns = 4;
-constexpr int kHomeQuickHeaderOffset = 46;
+constexpr int kHomeQuickHeaderOffset = 0;
 
 int textTop(const GfxRenderer& renderer, int fontId, int baseline) {
   return baseline - renderer.getLineHeight(fontId);
@@ -82,39 +82,46 @@ void strokeCircle(const GfxRenderer& renderer, int cx, int cy, int r) {
 }
 
 void drawLineIconFolder(const GfxRenderer& renderer, int x, int y, int s) {
-  const int bodyW = 24;
-  const int bodyH = 17;
-  const int bx = x + (s - bodyW) / 2;
-  const int by = y + 11;
-  renderer.drawRect(bx, by - 5, 10, 6, true);
+  const int pad = std::max(2, s / 8);
+  const int bodyW = s - pad * 2;
+  const int tabH = std::max(5, s / 7);
+  const int bodyH = s - pad - tabH - 2;
+  const int bx = x + pad;
+  const int by = y + pad + tabH - 1;
+  renderer.drawRect(bx, y + pad, bodyW / 3 + 2, tabH, true);
   renderer.drawRect(bx, by, bodyW, bodyH, true);
 }
 
 void drawLineIconWeread(const GfxRenderer& renderer, int x, int y, int s) {
-  renderer.drawRoundedRect(x + 3, y + 2, 17, 14, HomeRef::Stroke, 6, true);
-  renderer.drawRoundedRect(x + 12, y + 15, 17, 14, HomeRef::Stroke, 6, true);
+  const int bw = s / 2 + 4;
+  const int bh = s / 2 - 2;
+  const int r = std::max(5, s / 7);
+  renderer.drawRoundedRect(x + 2, y + 2, bw, bh, HomeRef::Stroke, r, true);
+  renderer.drawRoundedRect(x + s - bw - 2, y + s - bh - 2, bw, bh, HomeRef::Stroke, r, true);
 }
 
 void drawLineIconTomato(const GfxRenderer& renderer, int x, int y, int s) {
   const int cx = x + s / 2;
-  const int cy = y + s / 2 + 2;
-  strokeCircle(renderer, cx, cy, 10);
-  renderer.drawLine(cx, y + 3, cx, cy - 10, true);
-  renderer.drawLine(cx, y + 5, cx - 6, y + 2, true);
-  renderer.drawLine(cx, y + 5, cx + 6, y + 2, true);
+  const int cy = y + s / 2 + 3;
+  const int r = s / 2 - 6;
+  strokeCircle(renderer, cx, cy, r);
+  renderer.drawLine(cx, y + 2, cx, cy - r, true);
+  renderer.drawLine(cx, y + 5, cx - r / 2 - 2, y + 2, true);
+  renderer.drawLine(cx, y + 5, cx + r / 2 + 2, y + 2, true);
 }
 
 void drawLineIconJinjiang(const GfxRenderer& renderer, int x, int y, int s) {
   auto stemJ = [&](int jx, int top, int bot, int hook) {
-    renderer.fillRect(jx, top, 2, 2, true);
-    renderer.drawLine(jx, top + 5, jx, bot, true);
+    renderer.fillRect(jx, top, 3, 3, true);
+    renderer.drawLine(jx, top + 6, jx, bot, true);
+    renderer.drawLine(jx + 1, top + 6, jx + 1, bot, true);
     renderer.drawLine(jx, bot, jx - hook, bot, true);
-    renderer.drawLine(jx - hook, bot, jx - hook, bot - 4, true);
+    renderer.drawLine(jx - hook, bot, jx - hook, bot - s / 8, true);
   };
-  const int left = x + s / 2 - 6;
-  const int right = x + s / 2 + 5;
-  stemJ(left, y + 5, y + s - 7, 5);
-  stemJ(right, y + 3, y + s - 5, 5);
+  const int left = x + s / 2 - s / 6;
+  const int right = x + s / 2 + s / 6;
+  stemJ(left, y + 4, y + s - 6, s / 6);
+  stemJ(right, y + 2, y + s - 4, s / 6);
 }
 
 void drawWifiGlyph(const GfxRenderer& renderer, int x, int y, int s) {
@@ -256,6 +263,15 @@ void FengyanTheme::drawBattery(const GfxRenderer& renderer, Rect rect, const boo
 void FengyanTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title) const {
   renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
 
+  const bool referenceHome = title != nullptr && std::string(title) == "我的mofei";
+  if (referenceHome) {
+    auto homeTitle = M4UiText::truncatedSystem(renderer, UI_12_FONT_ID, title, 330, EpdFontFamily::BOLD);
+    M4UiText::drawSystem(renderer, UI_12_FONT_ID, rect.x + HomeRef::HomeHeaderTitleX,
+                         textTop(renderer, UI_12_FONT_ID, rect.y + HomeRef::HomeHeaderTitleBaseline), homeTitle.c_str(), true, EpdFontFamily::BOLD);
+    drawWifiGlyph(renderer, rect.x + HomeRef::HomeHeaderWifiX, rect.y + (HomeRef::HomeHeaderH - HomeRef::HomeHeaderIcon) / 2, HomeRef::HomeHeaderIcon);
+    renderer.drawLine(rect.x, rect.y + rect.height - 1, rect.x + rect.width - 1, rect.y + rect.height - 1, 1, true);
+    return;
+  }
   const int dy = rect.y - HomeRef::HeaderY;
   const int battY = rect.y + (HomeRef::HeaderH - HomeRef::HeaderBatteryH) / 2;
   const bool showBatteryPercentage =
@@ -441,8 +457,31 @@ void FengyanTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, cons
 
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  const bool homeFooter = force && btn1 && btn2 && btn3 && btn4 && btn4[0] == 0 &&
+                          std::string(btn1) == "历史" && std::string(btn2) == "应用" &&
+                          std::string(btn3) == "设置";
 
   const int pageHeight = renderer.getScreenHeight();
+  if (homeFooter) {
+    const int top = HomeRef::BottomY;
+    renderer.fillRect(0, top, HomeRef::ScreenW, HomeRef::BottomH, false);
+    renderer.drawLine(0, top, HomeRef::ScreenW - 1, top, 1, true);
+    renderer.drawLine(HomeRef::BottomSplit1, top, HomeRef::BottomSplit1, pageHeight - 1, 1, true);
+    renderer.drawLine(HomeRef::BottomSplit2, top, HomeRef::BottomSplit2, pageHeight - 1, 1, true);
+    const char* homeLabels[] = {btn1, btn2, btn3};
+    const int xs[] = {0, HomeRef::BottomSplit1, HomeRef::BottomSplit2};
+    const int ws[] = {HomeRef::BottomSplit1, HomeRef::BottomSplit2 - HomeRef::BottomSplit1,
+                      HomeRef::ScreenW - HomeRef::BottomSplit2};
+    for (int i = 0; i < 3; ++i) {
+      const int textWidth = M4UiText::systemTextWidth(renderer, SMALL_FONT_ID, homeLabels[i]);
+      const int textX = xs[i] + (ws[i] - textWidth) / 2;
+      const int textY = textTop(renderer, SMALL_FONT_ID, HomeRef::BottomBaseline);
+      M4UiText::drawSystem(renderer, SMALL_FONT_ID, textX, textY, homeLabels[i]);
+    }
+    renderer.setOrientation(orig_orientation);
+    return;
+  }
+
   constexpr int buttonWidth = 106;
   constexpr int buttonHeight = FengyanMetrics::values.buttonHintsHeight;
   constexpr int buttonY = FengyanMetrics::values.buttonHintsHeight;
@@ -457,7 +496,8 @@ void FengyanTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, cons
       renderer.drawRect(x, pageHeight - buttonY, buttonWidth, buttonHeight);
       const int textWidth = M4UiText::systemTextWidth(renderer, SMALL_FONT_ID, labels[i]);
       const int textX = x + (buttonWidth - 1 - textWidth) / 2;
-      M4UiText::drawSystem(renderer, SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      const int textY = pageHeight - buttonY + textYOffset;
+      M4UiText::drawSystem(renderer, SMALL_FONT_ID, textX, textY, labels[i]);
     }
   }
 
@@ -495,7 +535,7 @@ void FengyanTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* 
   }
 }
 
-// Reference-style Home: one prominent recent book, followed by two compact recent books.
+// Reference-style Home: one prominent recent book, followed by three compact recent books.
 void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                        const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                        bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
@@ -605,20 +645,20 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
     M4UiText::draw(renderer, UI_10_FONT_ID, infoX,
                    textTop(renderer, UI_10_FONT_ID, HomeRef::HeroProgressBaseline + dy), progressText.c_str(),
                    true);
-    const int barY = layout.progress.y + 1;
-    const int barH = std::max(1, layout.progress.height - 2);
+    const int barY = layout.progress.y;
+    const int barH = layout.progress.height;
     renderer.fillRect(layout.progress.x, barY, layout.progress.width, barH, false);
-    renderer.drawRect(layout.progress.x, barY, layout.progress.width, barH, true);
-    if (progress > 0 && layout.progress.width > 2) {
-      const int innerW = layout.progress.width - 2;
-      const int fillW = std::max(1, (innerW * progress) / 100);
-      renderer.fillRect(layout.progress.x + 1, barY + 1, fillW, std::max(1, barH - 2), true);
+    renderer.drawRoundedRect(layout.progress.x, barY, layout.progress.width, barH, HomeRef::Stroke, barH / 2, true);
+    if (progress > 0 && layout.progress.width > 4 && barH > 4) {
+      const int innerW = layout.progress.width - 4;
+      const int fillW = std::max(barH - 4, (innerW * progress) / 100);
+      renderer.fillRoundedRect(layout.progress.x + 2, barY + 2, std::min(innerW, fillW), barH - 4, (barH - 4) / 2, Color::Black);
     }
 
     renderer.drawLine(rect.x + HomeRef::HeroDividerX1, layout.dividerY, rect.x + HomeRef::HeroDividerX2,
                       layout.dividerY, 1, true);
 
-    const int miniCenters[2] = {HomeRef::MiniTitleCenter1, HomeRef::MiniTitleCenter2};
+    const int miniCenters[3] = {HomeRef::MiniTitleCenter1, HomeRef::MiniTitleCenter2, HomeRef::MiniTitleCenter3};
     for (int i = 1; i < bookCount; ++i) {
       const int miniIndex = i - 1;
       drawCover(i, layout.miniCover[miniIndex], recentBooks[i].title.c_str());
@@ -642,6 +682,138 @@ void FengyanTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
   }
 }
 
+void FengyanTheme::drawRecentBookCoverContent(const GfxRenderer& renderer, Rect rect,
+                                              const std::vector<RecentBook>& recentBooks) const {
+  const int bookCount =
+      std::min(static_cast<int>(recentBooks.size()), FengyanMetrics::values.homeRecentBooksCount);
+  const auto layout = TouchHitGeometry::makeFengyanRecentLayout(
+      TouchHitGeometry::Rect{rect.x, rect.y, rect.width, rect.height}, bookCount,
+      FengyanMetrics::values.contentSidePadding);
+  const int dy = rect.y - HomeRef::Recent.y;
+
+  auto drawCoverRectangular = [&](int bookIndex, const TouchHitGeometry::Rect& dst, const char* title) {
+    bool drawn = false;
+    if (bookIndex >= 0 && bookIndex < bookCount && !recentBooks[bookIndex].coverBmpPath.empty()) {
+      const std::string thumbPath =
+          UITheme::getCoverThumbPath(recentBooks[bookIndex].coverBmpPath,
+                                     FengyanMetrics::values.homeCoverWidth,
+                                     FengyanMetrics::values.homeCoverThumbHeight);
+      FsFile file;
+      if (SdMan.openFileForRead("HOME", thumbPath, file)) {
+        Bitmap bitmap(file);
+        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+          renderer.drawBitmap(bitmap, dst.x, dst.y, dst.width, dst.height);
+          drawn = true;
+        }
+        file.close();
+      }
+    }
+    // Template supplies rounded frame ink last — draw only rectangular content, no border.
+    if (!drawn) {
+      renderer.fillRect(dst.x, dst.y, dst.width, dst.height, false);
+      // Keep fallback glyph centered, no border.
+      const std::string glyph = firstGlyph(title ? title : "");
+      if (!glyph.empty()) {
+        const int tw = M4UiText::textWidth(renderer, UI_12_FONT_ID, glyph.c_str(), EpdFontFamily::BOLD);
+        M4UiText::draw(renderer, UI_12_FONT_ID, dst.x + (dst.width - tw) / 2,
+                       dst.y + (dst.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2, glyph.c_str(), true,
+                       EpdFontFamily::BOLD);
+      }
+    }
+  };
+
+  if (recentBooks.empty()) {
+    // Template owns card chrome and "最近阅读" label — draw only dynamic count + empty message.
+    const char* countText = "0 本";
+    const int countWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, countText);
+    M4UiText::draw(renderer, UI_10_FONT_ID, rect.x + HomeRef::RecentCountRight - countWidth,
+                   textTop(renderer, UI_10_FONT_ID, HomeRef::RecentCountBaseline + dy), countText, true);
+    const char* emptyMsg = L(Str::kNoReadingHistory);
+    const int textW = M4UiText::textWidth(renderer, UI_10_FONT_ID, emptyMsg);
+    const int textH = renderer.getLineHeight(UI_10_FONT_ID);
+    M4UiText::draw(renderer, UI_10_FONT_ID, layout.panel.x + (layout.panel.width - textW) / 2,
+                   layout.panel.y + (layout.panel.height - textH) / 2, emptyMsg, true);
+    return;
+  }
+  if (!layout.valid()) return;
+
+  // Dynamic recent-count (template has no count text)
+  {
+    const std::string countText = std::to_string(recentBooks.size()) + " 本";
+    const int countWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, countText.c_str());
+    M4UiText::draw(renderer, UI_10_FONT_ID, rect.x + HomeRef::RecentCountRight - countWidth,
+                   textTop(renderer, UI_10_FONT_ID, HomeRef::RecentCountBaseline + dy), countText.c_str(), true);
+  }
+
+  const auto& heroBook = recentBooks[0];
+  drawCoverRectangular(0, layout.heroCover, heroBook.title.c_str());
+
+  const auto heroMeta = M4HomeBookDetailMeta::presentCached(
+      heroBook.path, heroBook.title, heroBook.author, heroBook.progress,
+      {L(Str::kValNone), L(Str::kBookSourceLocal), L(Str::kBookSourceUnknown)});
+
+  const int infoX = rect.x + HomeRef::HeroTextX;
+  const int infoW = HomeRef::HeroTextRight - HomeRef::HeroTextX;
+  auto heroTitle = M4UiText::truncated(renderer, UI_12_FONT_ID, heroMeta.title.c_str(),
+                                       infoW, EpdFontFamily::BOLD);
+  M4UiText::draw(renderer, UI_12_FONT_ID, infoX,
+                 textTop(renderer, UI_12_FONT_ID, HomeRef::HeroTitleBaseline + dy), heroTitle.c_str(), true,
+                 EpdFontFamily::BOLD);
+
+  auto heroAuthor = M4UiText::truncated(renderer, UI_10_FONT_ID, heroMeta.author.c_str(), infoW);
+  M4UiText::draw(renderer, UI_10_FONT_ID, infoX,
+                 textTop(renderer, UI_10_FONT_ID, HomeRef::HeroAuthorBaseline + dy), heroAuthor.c_str(), true);
+
+  const std::string sourceText = std::string("来源：") + heroMeta.source;
+  auto heroSource = M4UiText::truncated(renderer, UI_10_FONT_ID, sourceText.c_str(), infoW);
+  M4UiText::draw(renderer, UI_10_FONT_ID, infoX,
+                 textTop(renderer, UI_10_FONT_ID, HomeRef::HeroSourceBaseline + dy), heroSource.c_str(), true);
+
+  const int progress = std::max(0, std::min(100, heroBook.progress));
+  const std::string progressText = std::to_string(progress) + "%";
+  M4UiText::draw(renderer, UI_10_FONT_ID, infoX,
+                 textTop(renderer, UI_10_FONT_ID, HomeRef::HeroProgressBaseline + dy), progressText.c_str(),
+                 true);
+  // Template has no progress outline — draw dynamic bar.
+  const int barY = layout.progress.y;
+  const int barH = layout.progress.height;
+  renderer.fillRect(layout.progress.x, barY, layout.progress.width, barH, false);
+  renderer.drawRoundedRect(layout.progress.x, barY, layout.progress.width, barH, HomeRef::Stroke, barH / 2, true);
+  if (progress > 0 && layout.progress.width > 4 && barH > 4) {
+    const int innerW = layout.progress.width - 4;
+    const int fillW = std::max(barH - 4, (innerW * progress) / 100);
+    renderer.fillRoundedRect(layout.progress.x + 2, barY + 2, std::min(innerW, fillW), barH - 4, (barH - 4) / 2, Color::Black);
+  }
+
+  const int miniCenters[3] = {HomeRef::MiniTitleCenter1, HomeRef::MiniTitleCenter2, HomeRef::MiniTitleCenter3};
+  for (int i = 1; i < bookCount; ++i) {
+    const int miniIndex = i - 1;
+    drawCoverRectangular(i, layout.miniCover[miniIndex], recentBooks[i].title.c_str());
+    auto title = M4UiText::truncated(renderer, UI_10_FONT_ID, recentBooks[i].title.c_str(),
+                                     layout.miniCover[miniIndex].width);
+    const int titleW = M4UiText::textWidth(renderer, UI_10_FONT_ID, title.c_str());
+    M4UiText::draw(renderer, UI_10_FONT_ID, rect.x + miniCenters[miniIndex] - titleW / 2,
+                   textTop(renderer, UI_10_FONT_ID, HomeRef::MiniTitleBaseline + dy), title.c_str(), true);
+    // Template owns no mini author — skip to avoid stale text; dynamic title is enough.
+  }
+}
+
+void FengyanTheme::drawRecentBookCoverFocus(const GfxRenderer& renderer, Rect rect,
+                                            const std::vector<RecentBook>& recentBooks, int selectorIndex) const {
+  const int bookCount =
+      std::min(static_cast<int>(recentBooks.size()), FengyanMetrics::values.homeRecentBooksCount);
+  const auto layout = TouchHitGeometry::makeFengyanRecentLayout(
+      TouchHitGeometry::Rect{rect.x, rect.y, rect.width, rect.height}, bookCount,
+      FengyanMetrics::values.contentSidePadding);
+  if (!layout.valid()) return;
+  if (selectorIndex < 0 || selectorIndex >= bookCount) return;
+  const auto selected =
+      selectorIndex == 0 ? layout.heroCover : layout.miniCover[std::max(0, selectorIndex - 1)];
+  const int inset = HomeRef::FocusInset + 1;
+  renderer.drawRoundedRect(selected.x + inset, selected.y + inset, selected.width - inset * 2,
+                           selected.height - inset * 2, HomeRef::Stroke, HomeRef::CoverRadius, true);
+}
+
 
 // 风眼主题首页快捷操作：四列网格，标题与触摸布局共用偏移
 void FengyanTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
@@ -651,9 +823,6 @@ void FengyanTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCo
   renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
   renderer.drawRoundedRect(rect.x + HomeRef::Quick.x, rect.y, HomeRef::Quick.w, HomeRef::Quick.h, HomeRef::Stroke,
                            HomeRef::CardRadius, true);
-  M4UiText::draw(renderer, UI_12_FONT_ID, rect.x + HomeRef::QuickTitleX,
-                 textTop(renderer, UI_12_FONT_ID, HomeRef::QuickTitleBaseline + dy), "快捷操作", true,
-                 EpdFontFamily::BOLD);
 
   const auto layout = TouchHitGeometry::makeFengyanMenuLayout(
       TouchHitGeometry::Rect{rect.x, rect.y, rect.width, rect.height}, buttonCount,
