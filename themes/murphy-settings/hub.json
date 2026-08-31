@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "id": "murphy-settings-hub",
+  "screen": [480, 800],
+  "bindings": {
+    "$hub.cards": 71,
+    "$page.title": 70,
+    "$item.value": 74,
+    "$item.selected": 75,
+    "$item.is_section": 76,
+    "$item.is_row": 77
+  },
+  "actions": {
+    "open_hub_card": 40,
+    "activate_setting": 41
+  },
+  "nodes": [
+    {"type": "clear", "color": "white"},
+    {"type": "text", "rect": [24, 24, 280, 24], "text": "系统设置", "font": "ui_16_bold", "align": "left"},
+    {"type": "battery", "rect": [432, 24, 24, 12], "binding": "$system.battery"},
+    {"type": "line", "x": 23, "y": 52, "x2": 456, "y2": 52, "width": 1, "color": "black"},
+    {"type": "repeat", "source": "$hub.cards", "limit": 4, "x": 24, "y": 68, "item_width": 432, "item_height": 140, "gap": 12, "direction": "vertical", "action": "open_hub_card", "action_arg": "$item.id", "children": [
+      {"type": "round_rect", "rect": [0, 20, 4, 100], "r": 0, "fill": true, "visible_if": "$item.selected"},
+      {"type": "text", "rect": [24, 52, 380, 36], "text": "$item.title", "font": "ui_20_bold", "align": "left", "ellipsis": true}
+    ]}
+  ]
+}
