@@ -493,9 +493,16 @@ bool decodeBuiltinFilesIconForPublication(HomeScene::HomeScenePublication& pub, 
     0xff, 0xff, 0xff, 0xfc, 0xff, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc,
     0xff, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc
   };
-  uint8_t* out = pub.arena + offset;
-  std::memcpy(out, kBuiltinFilesIcon, bytes);
-  return HomeScene::homeAddAssetToPublication(pub, key, out, w, h, stride);
+  // Table is stored like the packaged 1-bit BMPs (1=white paper). Renderer
+  // draw1BitAsset treats 1 as black ink, so invert and mask the 62-wide padding.
+  uint8_t inverted[HomeScene::kHomeAppIconBytes];
+  for (size_t i = 0; i < bytes; ++i) {
+    inverted[i] = static_cast<uint8_t>(~kBuiltinFilesIcon[i]);
+  }
+  for (uint16_t y = 0; y < h; ++y) {
+    inverted[static_cast<size_t>(y) * stride + (stride - 1)] &= 0xFC;
+  }
+  return HomeScene::homeAddAssetToPublication(pub, key, inverted, w, h, stride);
 }
 
 bool fillFallbackAppIcon(uint8_t* out, uint16_t w, uint16_t h, uint16_t stride, uint8_t pattern) {

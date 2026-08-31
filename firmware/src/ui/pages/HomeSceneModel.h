@@ -185,7 +185,10 @@ inline bool homeAddAssetToPublication(HomeScenePublication& pub, const UiScene::
   for (uint8_t i = 0; i < pub.assetCount; ++i) {
     if (pub.entries[i].key == key) return false;
   }
-  std::memcpy(pub.arena + offset, data, expBytes);
+  // Decoders often write into the slot first; overlapping memcpy is UB.
+  if (data != pub.arena + offset) {
+    std::memcpy(pub.arena + offset, data, expBytes);
+  }
   HomePublicationAssetEntry e{};
   e.key = key;
   e.width = w;
@@ -262,6 +265,9 @@ class HomeSceneModel final {
                            uint16_t w, uint16_t h, uint16_t stride);
   HomeScenePublication& draftPublication() { return *draftPubPtr_; }
   const HomeScenePublication& draftPublication() const { return *draftPubPtr_; }
+  // addApp/addRecent mutate draft_, not draftPublication().snapshot. Icon decode
+  // must read this snapshot; publication.snapshot stays empty until publish().
+  const HomeSceneSnapshot& draftSnapshot() const { return draft_; }
   // For storage contract tests: whether draft arena is heap/PSRAM.
   bool isDraftHeapAllocated() const { return draftHeapAllocated_; }
 

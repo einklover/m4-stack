@@ -101,6 +101,27 @@ void testDockSpecPureOrdering() {
     printf("Dock pure spec ordering PASS\n");
 }
 
+void testDraftSnapshotHasAppsBeforePublish() {
+    HomeSceneModel model;
+    model.begin(UiScene::DataState::Ready);
+    assert(model.addApp("builtin.files", "文件管理", "builtin.files"));
+    assert(model.addApp("com.weread.client", "微信读书", "icon_home.bmp"));
+    assert(model.draftSnapshot().appCount == 2);
+    // Asset decode used to walk draftPublication().snapshot here, which is still
+    // empty until publish(). That skipped every dock icon, including compiled
+    // builtin.files.
+    assert(model.draftPublication().snapshot.appCount == 0);
+    model.draftPublication().snapshot = model.draftSnapshot();
+    assert(model.draftPublication().snapshot.appCount == 2);
+    auto tv = model.draftPublication().snapshot.textView(
+        model.draftPublication().snapshot.apps[0].id);
+    std::string id;
+    id.reserve(tv.size);
+    for (uint16_t j = 0; j < tv.size; ++j) id.push_back(static_cast<char>(tv.readByte(j)));
+    assert(id == "builtin.files");
+    printf("draft snapshot vs publication trap PASS\n");
+}
+
 void testProductionDockHelperIfPresent() {
     // If Lane A provides a helper header, verify it matches spec. Otherwise this is expected RED until impl lands.
 #if __has_include("activities/home/HomeDock.h")
@@ -151,6 +172,7 @@ int main() {
     testKMaxAppItemsRemainsFour();
     testDockSpecPureOrdering();
     testHomeSceneModelHoldsFourAppsInOrder();
+    testDraftSnapshotHasAppsBeforePublish();
     testProductionDockHelperIfPresent();
     printf("home dock ALL PASS (if production helper missing, previous assert would have been RED)\n");
     return 0;

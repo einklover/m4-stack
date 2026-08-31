@@ -212,6 +212,8 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     if (isCancelled()) return false;
   }
   const auto apps = M4xRegistry::load();
+  // addApp wrote draft_, not draftPub.snapshot (that copy happens in publish()).
+  draftPub.snapshot = ctx.model.draftSnapshot();
   // Decode in snapshot order (builtin.files first, then preferred plugins).
   {
     const auto& snap = draftPub.snapshot;

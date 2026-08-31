@@ -137,6 +137,26 @@ void testGracefulPlaceholderFallback() {
   assert(!bmpOk);
 }
 
+void testBuiltinFilesIconIsInkOnWhite() {
+  HomeScenePublication pub{};
+  UiScene::AssetKey key{ kBindingItemIcon, kBindingApps, 0 };
+  assert(decodeBuiltinFilesIconForPublication(pub, key));
+  assert(pub.assetCount == 1);
+  UiScene::UiSceneAssets assets;
+  homePublicationToAssets(pub, assets);
+  const UiScene::UiSceneAsset* icon = assets.get(key);
+  assert(icon && icon->valid());
+  unsigned black = 0;
+  const unsigned total = static_cast<unsigned>(kHomeAppIconW) * kHomeAppIconH;
+  for (uint16_t y = 0; y < icon->height; ++y) {
+    for (uint16_t x = 0; x < icon->width; ++x) {
+      if (icon->isBlack(x, y)) ++black;
+    }
+  }
+  // Table is stored BMP-style (1=paper). After invert: ink on white, not solid.
+  assert(black > 80 && black < total / 2);
+}
+
 void testCoverPathHardening() {
   HomeScenePublication pub{};
   UiScene::AssetKey key{ kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex };
@@ -157,5 +177,6 @@ int main() {
   testMalformedSeparatorsAndPathTraversal();
   testGracefulPlaceholderFallback();
   testCoverPathHardening();
+  testBuiltinFilesIconIsInkOnWhite();
   return 0;
 }
