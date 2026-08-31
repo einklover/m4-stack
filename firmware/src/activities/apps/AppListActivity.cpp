@@ -32,11 +32,11 @@
 
 namespace {
 constexpr unsigned long kAppLongPressMs = 700;
-constexpr int kDrawerColumns = 4;
-constexpr int kDrawerTileHeight = 100;
+constexpr int kDrawerColumns = 3;
+constexpr int kDrawerTileHeight = 120;
 constexpr int kDrawerGapX = 8;
 constexpr int kDrawerGapY = 8;
-constexpr int kDrawerIconSlot = 64;
+constexpr int kDrawerIconSlot = 80;
 constexpr int kBuiltinIconSize = 32;
 constexpr size_t kDrawerLabelMaxChars = 4;
 
@@ -131,11 +131,12 @@ void drawPluginIcon(const GfxRenderer& renderer, const std::vector<uint8_t>& ico
 }  // namespace
 
 void AppListActivity::drawItemIcon(const DrawerItem& item, const TouchHitGeometry::Rect& tile) const {
-  constexpr int iconTopPadding = 4;
+  constexpr int iconTopPadding = 8;
   const int iconY = tile.y + iconTopPadding;
   if (item.plugin && !item.pluginIcon.empty()) {
     const int iconX = tile.x + (tile.width - HomeScene::kHomeAppIconW) / 2;
-    drawPluginIcon(renderer, item.pluginIcon, iconX, iconY);
+    drawPluginIcon(renderer, item.pluginIcon, iconX,
+                   iconY + (kDrawerIconSlot - HomeScene::kHomeAppIconH) / 2);
     return;
   }
 
@@ -152,10 +153,15 @@ void AppListActivity::taskTrampoline(void* param) {
 
 void AppListActivity::displayTaskLoop() {
   while (true) {
-    if (updateRequired_ && !subActivity) {
-      updateRequired_ = false;
+    if (updateRequired_) {
       xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-      render();
+      // openSelected() installs the child while holding this mutex. Recheck
+      // after taking it so a stale pre-lock observation cannot paint the drawer
+      // over the child's first frame.
+      if (updateRequired_ && !subActivity) {
+        updateRequired_ = false;
+        render();
+      }
       xSemaphoreGive(renderingMutex_);
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -507,9 +513,9 @@ void AppListActivity::render() const {
       // Character-count ellipsis, not pixel-width: four CJK glyphs must stay
       // intact (「文件管理」). Pixel truncate at tile.width-8 became 「文件管…」.
       const std::string label = utf8EllipsizeChars(item.label.c_str(), kDrawerLabelMaxChars);
-      const int labelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, label.c_str());
+      const int labelWidth = M4UiText::textWidth(renderer, UI_12_FONT_ID, label.c_str());
       const int labelY = tile.y + kDrawerIconSlot + 8;
-      M4UiText::draw(renderer, UI_10_FONT_ID, tile.x + std::max(0, (tile.width - labelWidth) / 2), labelY,
+      M4UiText::draw(renderer, UI_12_FONT_ID, tile.x + std::max(0, (tile.width - labelWidth) / 2), labelY,
                      label.c_str(), true);
     }
   }
