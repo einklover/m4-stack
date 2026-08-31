@@ -1,6 +1,7 @@
 #pragma once
 
 #include "components/themes/BaseTheme.h"
+#include "util/HomeRef.h"
 
 class GfxRenderer;
 
@@ -9,7 +10,7 @@ namespace FengyanMetrics {
 constexpr ThemeMetrics values = {
     .batteryWidth = 29,
     .batteryHeight = 13,
-    .topPadding = 0,
+    .topPadding = HomeRef::HeaderSafeTop,
     .batteryBarHeight = 46,
     .headerHeight = 46,
     .verticalSpacing = 14,

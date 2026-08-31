@@ -13,6 +13,9 @@ constexpr int16_t Stroke = 1;
 // Measured from the 919x1536 reference and mapped to the 480x800 M4 panel.
 constexpr int16_t HeaderY = 0;
 constexpr int16_t HeaderH = 46;
+// Non-Home Fengyan headers need physical top air; Home's generated reference
+// scene owns its own 60px header and does not use this inset.
+constexpr int16_t HeaderSafeTop = 12;
 constexpr int16_t HeaderPadX = 27;
 constexpr int16_t HeaderIcon = 22;
 constexpr int16_t HeaderDividerX = 47;  // reference Home has no vertical header divider

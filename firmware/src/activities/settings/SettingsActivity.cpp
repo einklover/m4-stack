@@ -147,8 +147,8 @@ void SettingsActivity::onEnter() {
 #endif
 
   navState_ = SettingsNavState{};
-  navState_.pane = SettingsPane::Hub;
-  navState_.hub = SettingsHubCard::DisplayReading;
+  navState_.pane = initialPane_;
+  navState_.hub = initialHub_;
   navState_.selectedRow = 0;
   navState_.windowStart = 0;
 

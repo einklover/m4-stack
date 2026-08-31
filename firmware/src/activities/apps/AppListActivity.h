@@ -16,7 +16,7 @@ class AppListActivity final : public ActivityWithSubactivity {
  public:
   struct Callbacks {
     std::function<void()> onSettingsOpen;
-    std::function<void()> onFileTransferOpen;
+    std::function<void()> onFileManagerOpen;
     std::function<void()> onRecentBooksOpen;
     std::function<void()> onOpdsOpen;
     std::function<void()> onJianGuoOpen;
@@ -44,7 +44,7 @@ class AppListActivity final : public ActivityWithSubactivity {
 
  private:
   enum class BuiltinAction : uint8_t {
-    FileTransfer,
+    FileManager,
     RecentBooks,
     Opds,
     JianGuo,
