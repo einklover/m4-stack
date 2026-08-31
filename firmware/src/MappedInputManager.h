@@ -64,6 +64,7 @@ class MappedInputManager {
   // Bottom-edge swipe up → system home. On touch screens with the shared
   // bottom navigation bar, tapping Home is reported through this same path.
   bool wasHomeGesture() const;
+  bool wasHistoryGesture() const;
   // True only for the bottom-edge swipe, not for the on-screen Home control.
   bool wasHomeSwipeGesture() const;
   // Make wasPressed/wasReleased(Back) true this frame so every activity's button

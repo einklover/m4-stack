@@ -84,6 +84,11 @@ bool hitHome(int x, int y, int screenWidth, int screenHeight) {
   return TouchHitGeometry::makeBottomNavigationLayout(screenWidth, screenHeight, kBottomBarHeight).home.contains(x, y);
 }
 
+bool hitHistory(int x, int y, int screenWidth, int screenHeight) {
+  if (mode() != Mode::BottomBackHome) return false;
+  return TouchHitGeometry::makeBottomNavigationLayout(screenWidth, screenHeight, kBottomBarHeight).menu.contains(x, y);
+}
+
 void drawHeaderBack(const GfxRenderer& renderer, const Rect& headerRect, const char* /*title*/) {
 #if defined(CROSSPOINT_MURPHY_M4)
   if (!enabled() || headerRect.width <= 0 || headerRect.height <= 0) return;
@@ -121,53 +126,15 @@ void drawBottomBar(GfxRenderer& renderer) {
   if (!layout.valid()) return;
   const int top = layout.back.y;
 
-  // Replace legacy hardware-only hints with a high-contrast, stable touch bar.
-  // The standard layouts already reserve roughly this much footer space.
   renderer.fillRect(0, top, w, kBottomBarHeight, false);
   renderer.drawLine(0, top, w - 1, top, 1, true);
   renderer.drawLine(layout.home.x, top, layout.home.x, h - 1, 1, true);
   renderer.drawLine(layout.menu.x, top, layout.menu.x, h - 1, 1, true);
 
-  auto drawNavItem = [&](const TouchHitGeometry::Rect& zone, const char* label, int kind) {
-    const int icon = HomeRef::BottomIconSize;
-    const int textW = M4UiText::systemTextWidth(renderer, UI_10_FONT_ID, label, EpdFontFamily::BOLD);
-    const int gap = 8;
-    const int group = icon + gap + textW;
-    const int gx = zone.x + std::max(0, (zone.width - group) / 2);
-    const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
-    const int textY = HomeRef::BottomBaseline - lineH;
-    const int textCy = textY + lineH / 2;
-    const int iy = textCy - icon / 2;
-    const int cx = gx + icon / 2;
-    const int cy = iy + icon / 2;
-    if (kind == 0) {
-      const int tipX = gx + 6;
-      for (int i = 0; i <= 6; ++i) {
-        renderer.drawPixel(tipX + i, cy - i, true);
-        renderer.drawPixel(tipX + i, cy + i, true);
-      }
-    } else if (kind == 1) {
-      const int peakY = std::max(zone.y + 2, iy + 1);
-      for (int i = 0; i <= 8; ++i) {
-        renderer.drawPixel(cx - i, peakY + i, true);
-        renderer.drawPixel(cx + i, peakY + i, true);
-      }
-      const int eaveY = peakY + 8;
-      renderer.drawLine(cx - 8, eaveY, cx + 8, eaveY, true);
-      renderer.drawRect(cx - 6, eaveY, 13, 8, true);
-    } else {
-      const int lx = gx + 4;
-      const int rx = gx + icon - 5;
-      for (int row = 0; row < 3; ++row) {
-        renderer.drawLine(lx, iy + 5 + row * 5, rx, iy + 5 + row * 5, true);
-      }
-    }
-    M4UiText::drawSystem(renderer, UI_10_FONT_ID, gx + icon + gap, textY, label, true, EpdFontFamily::BOLD);
-  };
-
-  drawNavItem(layout.back, "返回", 0);
-  drawNavItem(layout.home, "主页", 1);
-  drawNavItem(layout.menu, "菜单", 2);
+  // Text-only bottom bar: three equal cells, no pixel icons, larger type.
+  M4UiText::drawCenteredInBox(renderer, UI_14_FONT_ID, layout.back.x, layout.back.y, layout.back.width, layout.back.height, "返回", true, EpdFontFamily::BOLD, 12);
+  M4UiText::drawCenteredInBox(renderer, UI_14_FONT_ID, layout.home.x, layout.home.y, layout.home.width, layout.home.height, "主页", true, EpdFontFamily::BOLD, 12);
+  M4UiText::drawCenteredInBox(renderer, UI_14_FONT_ID, layout.menu.x, layout.menu.y, layout.menu.width, layout.menu.height, "历史", true, EpdFontFamily::BOLD, 12);
 #else
   (void)renderer;
 #endif

@@ -32,6 +32,7 @@ void activateForChapterSelection();
 
 bool hitBack(int x, int y, int screenWidth, int screenHeight);
 bool hitHome(int x, int y, int screenWidth, int screenHeight);
+bool hitHistory(int x, int y, int screenWidth, int screenHeight);
 
 // Draw only the affordance appropriate to the current mode.
 void drawHeaderBack(const GfxRenderer& renderer, const Rect& headerRect, const char* title = nullptr);

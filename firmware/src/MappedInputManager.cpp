@@ -518,6 +518,21 @@ bool MappedInputManager::wasHomeSwipeGesture() const {
                                               renderer->getScreenHeight());
 }
 
+bool MappedInputManager::wasHistoryGesture() const {
+  if (!hasTouch()) return false;
+#if defined(CROSSPOINT_MURPHY_M4)
+  if (M4TouchNavigation::mode() == M4TouchNavigation::Mode::BottomBackHome) {
+    int tx = 0, ty = 0;
+    if (wasScreenTapped(tx, ty) &&
+        M4TouchNavigation::hitHistory(tx, ty, renderer->getScreenWidth(), renderer->getScreenHeight())) {
+      rememberTouchHeldTime();
+      return true;
+    }
+  }
+#endif
+  return false;
+}
+
 bool MappedInputManager::wasMenuGesture() const {
   if (!hasTouch()) return false;
   int sx = 0;

@@ -1553,6 +1553,12 @@ void loop() {
       onGoHomeAnimated(swipe, /*logical bottom→top=*/2);
       // Home activity entered; never run the old activity again this frame.
       return;
+    } else if (!currentActivity->isHomeActivity() && mappedInputManager.wasHistoryGesture()) {
+      Serial.printf("[%lu] [M4-GESTURE] history (bottom bar)\n", millis());
+      if (dynamic_cast<RecentBooksActivity*>(currentActivity) == nullptr) {
+        onGoToRecentBooks();
+      }
+      return;
     } else if (!currentActivity->isHomeActivity() && mappedInputManager.wasBackGesture()) {
       Serial.printf("[%lu] [M4-GESTURE] back (edge swipe / bottom bar)\n", millis());
       // Arm only for the touch gesture. The destination may be a new activity
