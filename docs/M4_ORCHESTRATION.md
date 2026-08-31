@@ -1,6 +1,8 @@
 # M4 多 worktree 编排（Grok 居中）
 
 > 协调者：本对话（Grok）。子代理改代码；Grok 拆任务、合并、审计、测、验收。
+> 语言：给 Muse/Luna 的任务书和定位 prompt 用英文；对人用中文。英文用户消息 = 远程 agent 调用，用英文交卷。
+> 图片：对人 markdown 内嵌本地 RGB PNG，不要图床；远程 agent 才给 URL。
 > 回调：子代理 `notifyOnFinish=true`，完成/失败/要权限都会回到本对话，不要轮询 `list_agents`。
 > 禁止：Codex Sol、GitHub push、刷真机、`git reset --hard` / `git clean`、并发全量 PlatformIO。
 
@@ -9,13 +11,15 @@
 | 角色 | 模型 | worktree | 分支 | 本轮文件所有权 |
 |---|---|---|---|---|
 | 协调者 | Grok（本对话） | `m4-critical-ui-home`（原脏树，不自动提交） | `feature/critical-ui-home` | 文档、合并、验收 |
-| Lane A 实现 | Muse Code Ultra `muse-acp/muse-spark-1.2-contributor` thinking `ultra` | `m4-home-muse-impl` | `agent/home-muse-impl` | Round 2：插件/内置 dock 图标与 Home apps 绑定 |
-| Lane B 抽屉 | Luna Max `codex/gpt-5.6-luna` thinking `max` | `m4-home-luna-audit` | `agent/home-luna-audit` | Round 2：`AppListActivity` 宫格抽屉 + `main.cpp` 路由 |
-| Lane C 测试 | Muse Code Ultra 同上 | `m4-home-muse-tests` | `agent/home-muse-tests` | Round 2：仅**新建** tests（图标包装、抽屉清单、全部/更多） |
+| Lane A 实现 | Muse Code Ultra `muse-acp/muse-spark-1.2-contributor` thinking `ultra` | `m4-home-muse-impl` | `agent/home-muse-impl` | Round 3：Settings Hub/L2 theme JSON + `SettingsHubPolicy.h` + `SettingsSceneModel.h` |
+| Lane B 生命周期 | Luna Max `codex/gpt-5.6-luna` thinking `max` | `m4-home-luna-audit` | `agent/home-luna-audit` | Round 3：`SettingsActivity` Hub↔L2 + I18n，不改 theme |
+| Lane C 测试 | Muse Code Ultra 同上 | `m4-home-muse-tests` | `agent/home-muse-tests` | Round 3：仅**新建** Settings IA/window/theme 测试 |
 
 路径前缀：`/Volumes/z/paseo/workspaces/paseo/worktrees/041rfr5o/`。
 
 Paseo 工程：`prj_60a33d4e07df23cb`。原工作区：`wks_4bffa6a42500d80b`（M4 Critical UI Home）。
+
+Round 3 进行中（2026-08-31）：Settings Hub + L2 Scene 极简稿。任务书 `docs/orchestration/rounds/round-3-TASK.md`。规格 `docs/superpowers/specs/2026-08-31-settings-l2-scene.md`。线框 `docs/orchestration/assets/settings-hub-wireframe.png` / `settings-l2-display-wireframe.png`。无图标、无描边卡片；复用 Home Scene 节点；L2 `repeat limit 8` 窗口滑动。
 
 Round 2 已验收（2026-08-31）：主页 dock 图标 + 应用抽屉。任务书 `docs/orchestration/rounds/round-2-TASK.md`。QEMU 证据 `docs/orchestration/rounds/round-2-qemu-dock.md`（integration `d60e53a`）。画像与派活：`docs/M4_AGENT_PROFILES.md`。
 
