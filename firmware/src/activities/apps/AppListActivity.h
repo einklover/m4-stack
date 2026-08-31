@@ -2,16 +2,34 @@
 
 #include "../ActivityWithSubactivity.h"
 #include "apps/M4xRegistry.h"
+#include "components/themes/BaseTheme.h"
+#include "util/TouchHitGeometry.h"
 
+#include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
-// Installed extension apps (APK-like drawer).
+// Phone-style app drawer for built-in M4 destinations and installed extensions.
 class AppListActivity final : public ActivityWithSubactivity {
  public:
+  struct Callbacks {
+    std::function<void()> onSettingsOpen;
+    std::function<void()> onFileTransferOpen;
+    std::function<void()> onRecentBooksOpen;
+    std::function<void()> onOpdsOpen;
+    std::function<void()> onJianGuoOpen;
+    std::function<void()> onDataCapsuleOpen;
+    std::function<void()> onBookmarkNotesOpen;
+    std::function<void()> onNetworkOpen;
+  };
+
   explicit AppListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                           const std::function<void()>& onGoBack);
+                           const std::function<void()>& onGoBack, Callbacks callbacks = {})
+      : ActivityWithSubactivity("AppList", renderer, mappedInput),
+        onGoBack(onGoBack),
+        callbacks_(std::move(callbacks)) {}
 
   void onEnter() override;
   void onExit() override;
@@ -20,12 +38,35 @@ class AppListActivity final : public ActivityWithSubactivity {
   uint8_t touchFooterButtonsMask() const override {
     return mode_ == 1 ? M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm
                       : M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm |
-                            M4FooterTouchPolicy::Left | M4FooterTouchPolicy::Right;
+                            M4FooterTouchPolicy::Right |
+                            (selectedIsPlugin() ? M4FooterTouchPolicy::Left : 0);
   }
 
  private:
+  enum class BuiltinAction : uint8_t {
+    FileTransfer,
+    RecentBooks,
+    Opds,
+    JianGuo,
+    DataCapsule,
+    BookmarkNotes,
+    Network,
+    Settings,
+  };
+
+  struct DrawerItem {
+    bool plugin = false;
+    BuiltinAction builtin = BuiltinAction::Settings;
+    int appIndex = -1;
+    std::string label;
+    UIIcon icon = UIIcon::Library;
+    std::vector<uint8_t> pluginIcon;
+  };
+
   std::function<void()> onGoBack;
+  Callbacks callbacks_;
   std::vector<M4xInstalledApp> apps_;
+  std::vector<DrawerItem> items_;
   int selectedIndex_ = 0;
   bool updateRequired_ = false;
   // 0 = list mode, 1 = confirm uninstall
@@ -42,4 +83,9 @@ class AppListActivity final : public ActivityWithSubactivity {
   void openSelected();
   void openInstall();
   void uninstallSelected();
+  bool selectedIsPlugin() const;
+  void selectIndex(int index);
+  void moveSelection(int delta);
+  void activateBuiltin(BuiltinAction action);
+  void drawItemIcon(const DrawerItem& item, const TouchHitGeometry::Rect& tile) const;
 };

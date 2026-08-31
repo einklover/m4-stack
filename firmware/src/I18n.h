@@ -49,6 +49,7 @@
   STR(kSystemSettings,    "系统设置",        "系統設置") \
   STR(kApps,              "应用",            "應用") \
   STR(kInstallApp,        "安装扩展",        "安裝擴展") \
+  STR(kUninstallApp,      "卸载",            "卸載") \
   STR(kCategoryDisplay,   "1)显示",          "1)顯示") \
   STR(kCategoryControls,  "2)按钮",          "2)按鈕") \
   STR(kCategorySystem,    "3)系统",          "3)系統") \

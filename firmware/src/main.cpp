@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 #include "qemu/M4QemuNet.h"
 
@@ -64,6 +65,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include "activities/home/MyLibraryActivity.h"
 #include "activities/home/RecentBooksActivity.h"
 #include "activities/network/CrossPointWebServerActivity.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/ReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/apps/AppListActivity.h"
@@ -533,6 +535,11 @@ void onGoHome();
 void onGoHomeAnimated(bool animateEntry, int animationDirection);
 void onGoToMyLibraryWithPath(const std::string& path);
 void onGoToRecentBooks();
+void onGoToBrowser();
+void onGoToJianGuoYun();
+void onGoToDataCapsule();
+void onGoToBookmarkNotes();
+void onGoToNetwork();
 void onGoToReader(const std::string& initialEpubPath, const std::string& originalSourcePath = "") {
   exitActivity();
   enterNewActivity(
@@ -556,9 +563,24 @@ void onGoToSettings() {
   enterNewActivity(new SettingsActivity(renderer, mappedInputManager, onGoHome));
 }
 
+void onGoToNetwork() {
+  exitActivity();
+  enterNewActivity(new WifiSelectionActivity(renderer, mappedInputManager, [](const bool) { onGoHome(); }));
+}
+
 void onGoToApps() {
   exitActivity();
-  enterNewActivity(new AppListActivity(renderer, mappedInputManager, onGoHome));
+  AppListActivity::Callbacks callbacks{
+      onGoToSettings,
+      onGoToFileTransfer,
+      onGoToRecentBooks,
+      onGoToBrowser,
+      onGoToJianGuoYun,
+      onGoToDataCapsule,
+      onGoToBookmarkNotes,
+      onGoToNetwork,
+  };
+  enterNewActivity(new AppListActivity(renderer, mappedInputManager, onGoHome, std::move(callbacks)));
 }
 
 void onGoToNativeApp(const std::string& appId) {
