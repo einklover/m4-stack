@@ -131,10 +131,10 @@ void drawBottomBar(GfxRenderer& renderer) {
   renderer.drawLine(layout.home.x, top, layout.home.x, h - 1, 1, true);
   renderer.drawLine(layout.menu.x, top, layout.menu.x, h - 1, 1, true);
 
-  // Text-only bottom bar: three equal cells, no pixel icons, larger type.
-  M4UiText::drawCenteredInBox(renderer, UI_14_FONT_ID, layout.back.x, layout.back.y, layout.back.width, layout.back.height, "返回", true, EpdFontFamily::BOLD, 12);
-  M4UiText::drawCenteredInBox(renderer, UI_14_FONT_ID, layout.home.x, layout.home.y, layout.home.width, layout.home.height, "主页", true, EpdFontFamily::BOLD, 12);
-  M4UiText::drawCenteredInBox(renderer, UI_14_FONT_ID, layout.menu.x, layout.menu.y, layout.menu.width, layout.menu.height, "历史", true, EpdFontFamily::BOLD, 12);
+  // Text-only bottom bar: three equal cells, no pixel icons, larger type (largest declared is UI_12).
+  M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, layout.back.x, layout.back.y, layout.back.width, layout.back.height, "返回", true, EpdFontFamily::BOLD, 12);
+  M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, layout.home.x, layout.home.y, layout.home.width, layout.home.height, "主页", true, EpdFontFamily::BOLD, 12);
+  M4UiText::drawCenteredInBox(renderer, UI_12_FONT_ID, layout.menu.x, layout.menu.y, layout.menu.width, layout.menu.height, "历史", true, EpdFontFamily::BOLD, 12);
 #else
   (void)renderer;
 #endif
