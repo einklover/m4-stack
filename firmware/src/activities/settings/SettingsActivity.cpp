@@ -156,7 +156,7 @@ void SettingsActivity::onEnter() {
   updateRequired = true;
 
   xTaskCreate(&SettingsActivity::taskTrampoline, "SettingsActivityTask",
-              4096, this, 1, &displayTaskHandle);
+              8192, this, 1, &displayTaskHandle);
 }
 
 void SettingsActivity::onExit() {
