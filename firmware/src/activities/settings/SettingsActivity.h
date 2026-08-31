@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "activities/ActivityWithSubactivity.h"
+#include "activities/settings/SettingsHubPolicy.h"
+#include "activities/settings/SettingsSceneModel.h"
 
 class CrossPointSettings;
 
@@ -28,14 +30,12 @@ struct SettingInfo {
   ValueRange valueRange ={};
 
 
-  const char* key = nullptr;       // JSON API key (nullptr for ACTION types)
-  const char* category = nullptr;  // Category for web UI grouping
+  const char* key = nullptr;
+  const char* category = nullptr;
 
-  // Direct char[] string fields (for settings stored in CrossPointSettings)
   char* stringPtr = nullptr;
   size_t stringMaxLen = 0;
 
-  // Dynamic accessors (for settings stored outside CrossPointSettings, e.g. KOReaderCredentialStore)
   std::function<uint8_t()> valueGetter;
   std::function<void(uint8_t)> valueSetter;
   std::function<std::string()> stringGetter;
@@ -149,27 +149,29 @@ class SettingsActivity final : public ActivityWithSubactivity {
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   bool updateRequired = false;
-  int selectedCategoryIndex = 0;  // Currently selected category
-  int selectedSettingIndex = 0;
-  int settingsCount = 0;
-  //const SettingInfo* settingsList = nullptr;
-  // Per-category settings derived from shared list + device-only actions
-  std::vector<SettingInfo> displaySettings;
-  std::vector<SettingInfo> readerSettings;
-  std::vector<SettingInfo> controlsSettings;
-  std::vector<SettingInfo> systemSettings;
-  const std::vector<SettingInfo>* currentSettings = nullptr;
+  SettingsNavState navState_;
+  SettingsScene::SettingsSceneModel sceneModel_;
+  std::vector<SettingInfo> displayReadingSettings_;
+  std::vector<SettingInfo> keysSettings_;
+  std::vector<SettingInfo> networkSettings_;
+  std::vector<SettingInfo> systemSettings_;
 
   const std::function<void()> onGoHome;
-
-  static constexpr int categoryCount = 3;
-  static const char* categoryNames[categoryCount];
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
   void render() const;
-  void enterCategory(int categoryIndex);
+  void rebuildModel();
+  const std::vector<SettingInfo>& currentHubSettings() const;
+  std::vector<SettingInfo>& currentHubSettings();
+  int currentHubSettingCount() const;
+  const SettingInfo* findSettingByKey(const char* key) const;
+  std::string valueTextForSetting(const SettingInfo& info) const;
   void toggleCurrentSetting();
+  void openHubCard(SettingsHubCard card);
+  void handleHubConfirm();
+  void handleL2Confirm();
+  void handleL2TapIndex(int windowIndex);
 
  public:
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,

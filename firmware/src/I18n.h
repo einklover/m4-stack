@@ -499,6 +499,22 @@
   STR(kQuote13, "欲穷千里目，更上一层楼。", "欲窮千里目，更上一層樓。") \
   STR(kQuote14, "会当凌绝顶，一览众山小。", "會當凌絕頂，一覽眾山小。") \
   STR(kQuote15, "少壮不努力，老大徒伤悲。", "少壯不努力，老大徒傷悲。") \
+  /* --- Settings Hub (4 cards) --- */ \
+  STR(kHubDisplayReading,      "显示与阅读",          "顯示與閱讀") \
+  STR(kHubKeysOps,             "按键与操作",          "按鍵與操作") \
+  STR(kHubNetworkSync,         "网络与同步",          "網絡與同步") \
+  STR(kHubSystemMaint,         "系统与维护",          "系統與維護") \
+  /* --- Settings L2 section titles --- */ \
+  STR(kSectionUiChrome,        "界面",                "界面") \
+  STR(kSectionEinkRefresh,     "墨水屏刷新",          "墨水屏刷新") \
+  STR(kSectionFrontlight,      "前光",                "前光") \
+  STR(kSectionReaderDoor,      "阅读排版",            "閱讀排版") \
+  STR(kSectionPageTurn,        "翻页动画",            "翻頁動畫") \
+  STR(kSectionNetworkToggles,  "网络",                "網絡") \
+  STR(kSectionSyncDoorways,    "同步入口",            "同步入口") \
+  STR(kSectionSystem,          "系统",                "系統") \
+  STR(kSectionMaintenance,     "维护",                "維護") \
+  STR(kReaderLayout,           "阅读排版",            "閱讀排版") \
   /* --- 向上/向下(完整) --- */ \
   STR(kMoveUp,                 "向上",                "向上") \
   STR(kMoveDown,               "向下",                "向下")

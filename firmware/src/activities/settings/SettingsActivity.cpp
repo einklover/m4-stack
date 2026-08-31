@@ -7,14 +7,12 @@
 #include "ButtonRemapActivity.h"
 #include "util/M4ListTouchPolicy.h"
 #include "util/TouchHitGeometry.h"
-#include "CalibreSettingsActivity.h"
 #include "ClearCacheActivity.h"
 #include "CrossPointSettings.h"
 #include "I18n.h"
 #include "KOReaderSettingsActivity.h"
 #include "MappedInputManager.h"
 #include "NumberSelectionActivity.h"
-#include "OtaUpdateActivity.h"
 #include "SimpleBluetoothActivity.h"
 #include "components/UITheme.h"
 #include <EpdFontLoader.h>
@@ -29,27 +27,29 @@
 #include "DeveloperOptionsActivity.h"
 #include <esp_ota_ops.h>
 #endif
-#include <SDCardManager.h>
+#include <HalPowerManager.h>
+#include <BluetoothHIDManager.h>
+#include "activities/reader/EpubReaderSettingsActivity.h"
 
 #include "SettingsLists.h"
-
-const char* SettingsActivity::categoryNames[categoryCount] = {"Display", "Controls", "System"};
+#include "activities/settings/SettingsHubPolicy.h"
+#include "activities/settings/SettingsSceneModel.h"
+#include "ui/scene/GfxSceneRenderer.h"
+#include "ui/scene/UiSceneRuntime.h"
+#include "generated/murphy_settings_hub_m4theme.h"
+#include "generated/murphy_settings_l2_m4theme.h"
 
 namespace {
-constexpr int changeTabsMs = 700;
-
 #ifdef CROSSPOINT_MURPHY_M4
 const esp_partition_t* runningOtaPartition() {
   return esp_ota_get_running_partition();
 }
-
 const char* runningOtaLabel() {
   const auto* running = runningOtaPartition();
   if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) return L(Str::kApp0Official);
   if (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1) return L(Str::kApp1Custom);
   return L(Str::kUnknownBootSlot);
 }
-
 bool switchToOtherOtaSlot() {
   const auto* running = runningOtaPartition();
   if (!running) return false;
@@ -60,7 +60,6 @@ bool switchToOtherOtaSlot() {
   return target && esp_ota_set_boot_partition(target) == ESP_OK;
 }
 #endif
-
 }  // namespace
 
 void SettingsActivity::taskTrampoline(void* param) {
@@ -72,103 +71,96 @@ void SettingsActivity::onEnter() {
   Activity::onEnter();
   renderingMutex = xSemaphoreCreateMutex();
 
-  // Build per-category vectors from the shared settings list
-  displaySettings.clear();
-  readerSettings.clear();
-  controlsSettings.clear();
-  systemSettings.clear();
+  displayReadingSettings_.clear();
+  keysSettings_.clear();
+  networkSettings_.clear();
+  systemSettings_.clear();
 
   for (auto& setting : getSettingsList()) {
-    if (!setting.category) continue;
-    if (strcmp(setting.category, "Display") == 0) {
-      displaySettings.push_back(std::move(setting));
-    } else if (strcmp(setting.category, "Controls") == 0) {
-      controlsSettings.push_back(std::move(setting));
-    } else if (strcmp(setting.category, "System") == 0) {
-      systemSettings.push_back(std::move(setting));
+    if (!setting.key) continue;
+    // Bucket via Hub policy (M4)
+    if (settingsHubContainsKey(SettingsHubCard::DisplayReading, setting.key, true, false)) {
+      displayReadingSettings_.push_back(std::move(setting));
+    } else if (settingsHubContainsKey(SettingsHubCard::KeysOperations, setting.key, true, false)) {
+      keysSettings_.push_back(std::move(setting));
+    } else if (settingsHubContainsKey(SettingsHubCard::NetworkSync, setting.key, true, false)) {
+      networkSettings_.push_back(std::move(setting));
+    } else if (settingsHubContainsKey(SettingsHubCard::SystemMaintenance, setting.key, true, false)) {
+      systemSettings_.push_back(std::move(setting));
     }
-    // Web-only categories (Reader, KOReader Sync, OPDS Browser) are skipped for device UI
+    // Web-only categories (Reader, KOReader Sync, OPDS etc.) are ignored
   }
 
-  // Append device-only ACTION items (use key as stable identifier for matching)
+  // Append device-only ACTION items per Hub
+  {
+    auto act = SettingInfo::Action(L(Str::kReaderLayout));
+    act.key = "readerLayout";
+    displayReadingSettings_.push_back(std::move(act));
+  }
   {
     auto act = SettingInfo::Action(L(Str::kRemapFrontButtons));
     act.key = "remapButtons";
-    controlsSettings.insert(controlsSettings.begin(), std::move(act));
+    // Ensure remapButtons is first in Keys
+    keysSettings_.insert(keysSettings_.begin(), std::move(act));
   }
   {
     auto act = SettingInfo::Action(L(Str::kBluetoothSettings));
     act.key = "bluetooth";
-    systemSettings.push_back(std::move(act));
+    networkSettings_.push_back(std::move(act));
   }
   {
     auto act = SettingInfo::Action(L(Str::kKOReaderSync));
     act.key = "koreader";
-    systemSettings.push_back(std::move(act));
+    networkSettings_.push_back(std::move(act));
   }
   {
     auto act = SettingInfo::Action(L(Str::kJianGuoConfig));
     act.key = "jianguo";
-    systemSettings.push_back(std::move(act));
+    networkSettings_.push_back(std::move(act));
   }
   {
     auto act = SettingInfo::Action(L(Str::kDataCapsuleConfig));
     act.key = "dataCapsule";
-    systemSettings.push_back(std::move(act));
+    networkSettings_.push_back(std::move(act));
   }
   {
     auto act = SettingInfo::Action(L(Str::kClearCache));
     act.key = "clearCache";
-    systemSettings.push_back(std::move(act));
-  }
-  if (SdMan.exists("/update/firmware.bin")) {
-    auto act = SettingInfo::Action(L(Str::kSdCardUpdate));
-    act.key = "sdOta";
-    systemSettings.push_back(std::move(act));
+    systemSettings_.push_back(std::move(act));
   }
   {
     auto act = SettingInfo::Action(L(Str::kResetSettings));
     act.key = "resetSettings";
-    systemSettings.push_back(std::move(act));
+    systemSettings_.push_back(std::move(act));
   }
 #ifdef CROSSPOINT_MURPHY_M4
-  // Device-only: never added to getSettingsList() / web settings API.
   {
     auto act = SettingInfo::Action(L(Str::kDeveloperOptions));
     act.key = "developerOptions";
-    systemSettings.push_back(std::move(act));
+    systemSettings_.push_back(std::move(act));
   }
   {
     auto act = SettingInfo::Action(L(Str::kSwitchBootSlot));
     act.key = "switchBootSlot";
-    systemSettings.push_back(std::move(act));
+    systemSettings_.push_back(std::move(act));
   }
 #endif
 
+  navState_ = SettingsNavState{};
+  navState_.pane = SettingsPane::Hub;
+  navState_.hub = SettingsHubCard::DisplayReading;
+  navState_.selectedRow = 0;
+  navState_.windowStart = 0;
 
-  // Reset selection to first category
-  selectedCategoryIndex = 0;
-  selectedSettingIndex = 0;
-
-  // Initialize with first category (Display)
-  currentSettings = &displaySettings;
-  settingsCount = static_cast<int>(displaySettings.size());
-
-  // Trigger first update
+  rebuildModel();
   updateRequired = true;
 
   xTaskCreate(&SettingsActivity::taskTrampoline, "SettingsActivityTask",
-              4096,               // Stack size
-              this,               // Parameters
-              1,                  // Priority
-              &displayTaskHandle  // Task handle
-  );
+              4096, this, 1, &displayTaskHandle);
 }
 
 void SettingsActivity::onExit() {
   ActivityWithSubactivity::onExit();
-
-  // Wait until not rendering to delete task to avoid killing mid-instruction to EPD
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
   if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
@@ -176,8 +168,7 @@ void SettingsActivity::onExit() {
   }
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
-
-  UITheme::getInstance().reload();  // Re-apply theme in case it was changed
+  UITheme::getInstance().reload();
 }
 
 void SettingsActivity::loop() {
@@ -185,335 +176,497 @@ void SettingsActivity::loop() {
     if (pumpSubActivityFrame()) updateRequired = true;
     return;
   }
-  bool hasChangedCategory = false;
 
-  // Touch: tab bar + settings rows share metrics with render().
-  if (mappedInput.hasTouch()) {
-    if (mappedInput.wasBackGesture()) {
+  // Back gesture / Back button
+  if (mappedInput.hasTouch() && mappedInput.wasBackGesture()) {
+    if (navState_.pane == SettingsPane::Category) {
+      navState_ = settingsNavBack(navState_);
+      rebuildModel();
+      updateRequired = true;
+      return;
+    } else {
       SETTINGS.saveToFile();
       EpdFontLoader::loadFontsFromSd(renderer);
       onGoHome();
       return;
     }
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (navState_.pane == SettingsPane::Category) {
+      navState_ = settingsNavBack(navState_);
+      rebuildModel();
+      updateRequired = true;
+      return;
+    } else {
+      SETTINGS.saveToFile();
+      EpdFontLoader::loadFontsFromSd(renderer);
+      onGoHome();
+      return;
+    }
+  }
 
-    const auto metrics = UITheme::getInstance().getMetrics();
-    const int pageHeight = renderer.getScreenHeight();
-    const int tabTop = metrics.topPadding + metrics.headerHeight + 4;
-    const int tabH = metrics.tabBarHeight;
-    const int listTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-    const int listHeight =
-        pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.buttonHintsHeight +
-                      metrics.verticalSpacing * 2);
-    const int pageItems = std::max(1, listHeight / metrics.listRowHeight);
-
-    // Exact geometry mirrors SettingsActivity::render() / FengyanTheme::drawTabBar:
-    //   tabs are left-packed by label width (not equal screen thirds).
-    //   list: y = topPadding+headerHeight+tabBarHeight+verticalSpacing
-    // Swipe pages the list only (vertical). Horizontal was stealing edge/tab gestures.
-    const auto swipe = mappedInput.wasSwipe();
-    if (settingsCount > 0 &&
+  // Touch handling via scene hitTest
+  if (mappedInput.hasTouch()) {
+    // Swipe paging for L2 (vertical)
+    auto swipe = mappedInput.wasSwipe();
+    if (navState_.pane == SettingsPane::Category && currentHubSettingCount() > 0 &&
         (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down)) {
-      const int listSel = selectedSettingIndex > 0 ? selectedSettingIndex - 1 : 0;
+      const int pageItems = kSettingsL2Window;
+      const int count = currentHubSettingCount();
       const bool pageDown = swipe == MappedInputManager::SwipeDir::Up;
-      const int next = M4ListTouchPolicy::applyPage(listSel, settingsCount, pageItems, pageDown);
-      selectedSettingIndex = next + 1;
+      int next = M4ListTouchPolicy::applyPage(navState_.selectedRow, count, pageItems, pageDown);
+      navState_.selectedRow = next;
+      navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+      rebuildModel();
       updateRequired = true;
       return;
     }
 
-    // Tab labels match render() (must stay in sync for hit geometry).
-    const char* tabLabels[categoryCount] = {
-        L(Str::kCategoryDisplay),
-        L(Str::kCategoryControls),
-        L(Str::kCategorySystem),
-    };
-    // FengyanTheme / LyraTheme both use hPaddingInSelection = 8 on tabs.
-    constexpr int kTabHPad = 8;
-    int tabTextWidths[categoryCount];
-    for (int i = 0; i < categoryCount; ++i) {
-      tabTextWidths[i] = M4UiText::textWidth(renderer, UI_10_FONT_ID, tabLabels[i]);
-    }
-
-    auto hitTab = [&](int tx, int ty, int& outTab) -> bool {
-      return TouchHitGeometry::settingsTabFromPoint(tx, ty, tabTop, tabH, metrics.contentSidePadding,
-                                                    metrics.tabSpacing, kTabHPad, tabTextWidths, categoryCount,
-                                                    outTab);
-    };
-
-    int tx = 0;
-    int ty = 0;
-    if (mappedInput.wasScreenTapped(tx, ty)) {
-      int tab = -1;
-      if (hitTab(tx, ty, tab)) {
-        if (tab != selectedCategoryIndex) {
-          selectedCategoryIndex = tab;
-          hasChangedCategory = true;
-          updateRequired = true;
+    int tx = 0, ty = 0;
+    bool tapped = mappedInput.wasScreenTapped(tx, ty);
+    bool down = mappedInput.wasScreenTouchDown(tx, ty);
+    if (tapped || down) {
+      int x = tapped ? tx : tx;
+      int y = tapped ? ty : ty;
+      // Build source for hitTest from current model snapshot
+      SettingsScene::SettingsSnapshot snap{};
+      if (sceneModel_.copyLatest(snap)) {
+        auto src = SettingsScene::SettingsSceneModel::bindingSource(snap);
+        UiSceneRuntime::HitResult hit{};
+        const uint8_t* pkg = nullptr;
+        size_t len = 0;
+        if (navState_.pane == SettingsPane::Hub) {
+          pkg = murphy_settings_hub_m4theme;
+          len = murphy_settings_hub_m4theme_len;
+        } else {
+          pkg = murphy_settings_l2_m4theme;
+          len = murphy_settings_l2_m4theme_len;
         }
-      } else {
-        int sel = -1;
-        if (TouchHitGeometry::settingsRowFromPoint(ty, listTop, listHeight, metrics.listRowHeight, settingsCount,
-                                                   selectedSettingIndex, sel)) {
-          selectedSettingIndex = sel;
-          toggleCurrentSetting();
-          updateRequired = true;
-          return;
-        }
-      }
-    }
-    if (mappedInput.wasScreenTouchDown(tx, ty)) {
-      int tab = -1;
-      if (hitTab(tx, ty, tab)) {
-        if (tab != selectedCategoryIndex) {
-          selectedCategoryIndex = tab;
-          hasChangedCategory = true;
-          updateRequired = true;
-        }
-      } else {
-        int sel = -1;
-        if (ty >= listTop &&
-            TouchHitGeometry::settingsRowFromPoint(ty, listTop, listHeight, metrics.listRowHeight, settingsCount,
-                                                   selectedSettingIndex, sel)) {
-          if (selectedSettingIndex != sel) {
-            selectedSettingIndex = sel;
-            updateRequired = true;
+        if (UiSceneRuntime::hitTestScene(pkg, len, src, x, y, &hit) && hit.hit) {
+          if (navState_.pane == SettingsPane::Hub && hit.action == SettingsScene::kActionOpenHubCard) {
+            SettingsHubCard card = static_cast<SettingsHubCard>(hit.item.index);
+            if (hit.item.index < kSettingsHubCardCount) {
+              navState_.hub = card;
+              openHubCard(card);
+              updateRequired = true;
+              return;
+            }
+          } else if (navState_.pane == SettingsPane::Category && hit.action == SettingsScene::kActionActivateSetting) {
+            int windowIndex = hit.item.index;
+            if (windowIndex >=0 && windowIndex < (int)kSettingsL2Window) {
+              if (tapped) {
+                handleL2TapIndex(windowIndex);
+                updateRequired = true;
+                return;
+              } else {
+                // touchDown select only
+                int flatIndex = navState_.windowStart + windowIndex;
+                int flatCount = settingsFlatCount(navState_.hub, true);
+                if (flatIndex < flatCount) {
+                  auto fr = settingsFlatAt(navState_.hub, flatIndex, true);
+                  if (fr.kind == SettingsFlatKind::Setting) {
+                    // Find settingIndex for this key
+                    const auto& vec = currentHubSettings();
+                    for (size_t i=0;i<vec.size();++i) if (vec[i].key && strcmp(vec[i].key, fr.key)==0) {
+                      if ((int)i != navState_.selectedRow) {
+                        navState_.selectedRow = (int)i;
+                        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+                        rebuildModel();
+                        updateRequired = true;
+                      }
+                      break;
+                    }
+                  }
+                }
+                return;
+              }
+            }
           }
         }
       }
     }
   }
 
-  // Handle actions with early return
+  // Physical keys
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (selectedSettingIndex == 0) {
-      selectedCategoryIndex = (selectedCategoryIndex < categoryCount - 1) ? (selectedCategoryIndex + 1) : 0;
-      hasChangedCategory = true;
+    if (navState_.pane == SettingsPane::Hub) {
+      handleHubConfirm();
       updateRequired = true;
+      return;
     } else {
-      toggleCurrentSetting();
+      handleL2Confirm();
       updateRequired = true;
       return;
     }
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    SETTINGS.saveToFile();
-    EpdFontLoader::loadFontsFromSd(renderer);
-    onGoHome();
-    return;
-  }
+  const bool up = mappedInput.wasReleased(MappedInputManager::Button::Up);
+  const bool down = mappedInput.wasReleased(MappedInputManager::Button::Down);
+  const bool left = mappedInput.wasReleased(MappedInputManager::Button::Left);
+  const bool right = mappedInput.wasReleased(MappedInputManager::Button::Right);
 
-  const bool upReleased = mappedInput.wasReleased(MappedInputManager::Button::Up);
-  const bool downReleased = mappedInput.wasReleased(MappedInputManager::Button::Down);
-  const bool leftReleased = mappedInput.wasReleased(MappedInputManager::Button::Left);
-  const bool rightReleased = mappedInput.wasReleased(MappedInputManager::Button::Right);
-  const bool changeTab = mappedInput.getHeldTime() > changeTabsMs;
-
-  // Handle navigation
-  if (upReleased && changeTab) {
-    hasChangedCategory = true;
-    selectedCategoryIndex = (selectedCategoryIndex > 0) ? (selectedCategoryIndex - 1) : (categoryCount - 1);
-    updateRequired = true;
-  } else if (downReleased && changeTab) {
-    hasChangedCategory = true;
-    selectedCategoryIndex = (selectedCategoryIndex < categoryCount - 1) ? (selectedCategoryIndex + 1) : 0;
-    updateRequired = true;
-  } else if (upReleased || leftReleased) {
-    selectedSettingIndex = (selectedSettingIndex > 0) ? (selectedSettingIndex - 1) : (settingsCount);
-    updateRequired = true;
-  } else if (rightReleased || downReleased) {
-    selectedSettingIndex = (selectedSettingIndex < settingsCount) ? (selectedSettingIndex + 1) : 0;
-    updateRequired = true;
-  }
-
-  if (hasChangedCategory) {
-    selectedSettingIndex = (selectedSettingIndex == 0) ? 0 : 1;
-    switch (selectedCategoryIndex) {
-      case 0:  // Display
-        currentSettings = &displaySettings;
-        break;
-      case 1:  // Controls
-        currentSettings = &controlsSettings;
-        break;
-      case 2:  // System
-        currentSettings = &systemSettings;
-        break;
+  if (navState_.pane == SettingsPane::Hub) {
+    if (up || left) {
+      navState_ = settingsNavMoveHub(navState_, -1);
+      rebuildModel();
+      updateRequired = true;
+    } else if (down || right) {
+      navState_ = settingsNavMoveHub(navState_, 1);
+      rebuildModel();
+      updateRequired = true;
     }
-     settingsCount = static_cast<int>(currentSettings->size());
+  } else {
+    int count = currentHubSettingCount();
+    if (count>0 && (up || left)) {
+      navState_ = settingsNavMoveRow(navState_, -1, count);
+      navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+      rebuildModel();
+      updateRequired = true;
+    } else if (count>0 && (down || right)) {
+      navState_ = settingsNavMoveRow(navState_, 1, count);
+      navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+      rebuildModel();
+      updateRequired = true;
+    }
   }
 }
 
-void SettingsActivity::toggleCurrentSetting() {
-  int selectedSetting = selectedSettingIndex - 1;
-  if (selectedSetting < 0 || selectedSetting >= settingsCount) {
-    return;
-  }
-
-  const auto& setting = (*currentSettings)[selectedSetting];
-
-  if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
-    // Toggle the boolean value using the member pointer
-    const bool currentValue = SETTINGS.*(setting.valuePtr);
-    SETTINGS.*(setting.valuePtr) = !currentValue;
-  } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-    // Treat the stored field as an index. Clamp first so a corrupt/out-of-range
-    // value (or a non-index field bound by mistake) cannot walk off enumValues.
-    const size_t n = setting.enumValues.size();
-    if (n == 0) return;
-    uint8_t currentValue = SETTINGS.*(setting.valuePtr);
-    if (currentValue >= static_cast<uint8_t>(n)) currentValue = 0;
-    SETTINGS.*(setting.valuePtr) = static_cast<uint8_t>((currentValue + 1) % n);
-#ifdef CROSSPOINT_X3
-    // 切换到全局生效时，自动开启晃动翻页
-    if (setting.valuePtr == &CrossPointSettings::tiltScope &&
-        SETTINGS.tiltScope == 1 && !SETTINGS.tiltPageTurnEnabled) {
-      SETTINGS.tiltPageTurnEnabled = 1;
-    }
-#endif
-  } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
-    const size_t n = setting.enumValues.size();
-    if (n == 0) return;
-    const uint8_t currentIndex = setting.valueGetter();
-    const uint8_t safe = (currentIndex < static_cast<uint8_t>(n)) ? currentIndex : 0;
-    setting.valueSetter(static_cast<uint8_t>((safe + 1) % n));
+void SettingsActivity::rebuildModel() {
+  sceneModel_.begin(UiScene::DataState::Ready);
+  // Battery
+  uint16_t bat = 0;
+  // HalPowerManager may not be available on host; guard.
 #ifdef CROSSPOINT_MURPHY_M4
-    if (setting.key && strcmp(setting.key, "uiFontSize") == 0) {
+  bat = powerManager.getBatteryPercentage();
+#else
+  bat = 80;
+#endif
+  sceneModel_.setBattery(bat);
+  sceneModel_.setPane(navState_.pane);
+  sceneModel_.setHub(navState_.hub);
+  if (navState_.pane == SettingsPane::Hub) {
+    sceneModel_.setPageTitle(L(Str::kSystemSettings));
+    sceneModel_.populateHubFromPolicy();
+    // Ensure hub selection is reflected (populateHubFromPolicy sets titles, selected via resolve)
+  } else {
+    const char* title = settingsHubCardTitleZh(navState_.hub);
+    sceneModel_.setPageTitle(title);
+    // Build window rows with real values
+    sceneModel_.clearWindow();
+    int flatCount = settingsFlatCount(navState_.hub, true);
+    const auto& vec = currentHubSettings();
+    for (int i=0;i<(int)SettingsScene::kMaxWindowRows;++i) {
+      int flatIndex = navState_.windowStart + i;
+      if (flatIndex < flatCount) {
+        auto fr = settingsFlatAt(navState_.hub, flatIndex, true);
+        if (fr.kind == SettingsFlatKind::Section) {
+          // Resolve section title via I18n where possible, else policy title
+          const char* secTitle = fr.titleZh;
+          // Try to use I18n for known sections
+          if (fr.section == 0 && navState_.hub == SettingsHubCard::DisplayReading) secTitle = L(Str::kSectionUiChrome);
+          else if (fr.section == 1 && navState_.hub == SettingsHubCard::DisplayReading) secTitle = L(Str::kSectionEinkRefresh);
+          else if (fr.section == 2 && navState_.hub == SettingsHubCard::DisplayReading) secTitle = L(Str::kSectionFrontlight);
+          else if (fr.section == 3 && navState_.hub == SettingsHubCard::DisplayReading) secTitle = L(Str::kSectionReaderDoor);
+          else if (fr.section == 4 && navState_.hub == SettingsHubCard::DisplayReading) secTitle = L(Str::kSectionPageTurn);
+          else if (fr.section == 0 && navState_.hub == SettingsHubCard::NetworkSync) secTitle = L(Str::kSectionNetworkToggles);
+          else if (fr.section == 1 && navState_.hub == SettingsHubCard::NetworkSync) secTitle = L(Str::kSectionSyncDoorways);
+          else if (fr.section == 0 && navState_.hub == SettingsHubCard::SystemMaintenance) secTitle = L(Str::kSectionSystem);
+          else if (fr.section == 1 && navState_.hub == SettingsHubCard::SystemMaintenance) secTitle = L(Str::kSectionMaintenance);
+          sceneModel_.setWindowRow(i, "", secTitle, "", true, false);
+        } else {
+          // Setting row
+          const SettingInfo* info = nullptr;
+          for (auto &s : vec) if (s.key && strcmp(s.key, fr.key)==0) { info = &s; break; }
+          std::string value;
+          const char* title = fr.key;
+          if (info) {
+            title = info->name;
+            value = valueTextForSetting(*info);
+          } else {
+            title = fr.titleZh ? fr.titleZh : fr.key;
+          }
+          int flatOfSelected = settingsFlatIndexOfSetting(navState_.hub, navState_.selectedRow, true);
+          bool selected = (flatIndex == flatOfSelected);
+          sceneModel_.setWindowRow(i, fr.key, title, value.c_str(), false, selected);
+        }
+      } else {
+        sceneModel_.setWindowRow(i, "", "", "", false, false);
+        // ensure isRow false for empty
+      }
+    }
+  }
+  sceneModel_.publish();
+}
+
+const std::vector<SettingInfo>& SettingsActivity::currentHubSettings() const {
+  switch (navState_.hub) {
+    case SettingsHubCard::DisplayReading: return displayReadingSettings_;
+    case SettingsHubCard::KeysOperations: return keysSettings_;
+    case SettingsHubCard::NetworkSync: return networkSettings_;
+    case SettingsHubCard::SystemMaintenance: return systemSettings_;
+    default: return displayReadingSettings_;
+  }
+}
+std::vector<SettingInfo>& SettingsActivity::currentHubSettings() {
+  switch (navState_.hub) {
+    case SettingsHubCard::DisplayReading: return displayReadingSettings_;
+    case SettingsHubCard::KeysOperations: return keysSettings_;
+    case SettingsHubCard::NetworkSync: return networkSettings_;
+    case SettingsHubCard::SystemMaintenance: return systemSettings_;
+    default: return displayReadingSettings_;
+  }
+}
+int SettingsActivity::currentHubSettingCount() const {
+  return static_cast<int>(currentHubSettings().size());
+}
+const SettingInfo* SettingsActivity::findSettingByKey(const char* key) const {
+  if (!key) return nullptr;
+  const auto& vec = currentHubSettings();
+  for (auto &s : vec) if (s.key && strcmp(s.key, key)==0) return &s;
+  return nullptr;
+}
+std::string SettingsActivity::valueTextForSetting(const SettingInfo& info) const {
+  std::string valueText;
+  if (info.type == SettingType::TOGGLE && info.valuePtr != nullptr) {
+    bool v = SETTINGS.*(info.valuePtr);
+    valueText = v ? L(Str::kOn) : L(Str::kOff);
+  } else if (info.type == SettingType::ENUM && info.valuePtr != nullptr) {
+    uint8_t v = SETTINGS.*(info.valuePtr);
+    if (v < info.enumValues.size()) valueText = info.enumValues[v];
+    else valueText = "?";
+  } else if (info.type == SettingType::ENUM && info.valueGetter) {
+    uint8_t idx = info.valueGetter();
+    if (idx < info.enumValues.size()) valueText = info.enumValues[idx];
+  } else if (info.type == SettingType::VALUE && info.signedValuePtr != nullptr) {
+    valueText = std::to_string((int)SETTINGS.*(info.signedValuePtr));
+  } else if (info.type == SettingType::VALUE && info.valuePtr != nullptr) {
+    int v = SETTINGS.*(info.valuePtr);
+    if (info.key && strcmp(info.key, "lineSpacing")==0) {
+      valueText = std::to_string(v/10) + "." + std::to_string(v%10) + L(Str::kValTimes);
+    } else if (info.key && strcmp(info.key, "refreshFrequency")==0) {
+      valueText = std::to_string(v) + L(Str::kValPagesFullRefresh);
+    } else {
+      valueText = std::to_string(v);
+    }
+  } else if (info.type == SettingType::ACTION && info.key && strcmp(info.key, "bluetooth")==0) {
+    try { auto &bt = BluetoothHIDManager::getInstance(); valueText = bt.isEnabled() ? L(Str::kOn) : L(Str::kOff); } catch(...) { valueText = L(Str::kError); }
+  } else if (info.type == SettingType::ACTION && info.key && strcmp(info.key, "switchBootSlot")==0) {
+#ifdef CROSSPOINT_MURPHY_M4
+    valueText = runningOtaLabel();
+#endif
+  }
+  return valueText;
+}
+void SettingsActivity::toggleCurrentSetting() {
+  int idx = navState_.selectedRow;
+  auto &vec = currentHubSettings();
+  if (idx <0 || idx >= (int)vec.size()) return;
+  const auto &setting = vec[idx];
+  if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
+    bool cur = SETTINGS.*(setting.valuePtr);
+    SETTINGS.*(setting.valuePtr) = !cur;
+    SETTINGS.saveToFile();
+    rebuildModel();
+  } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
+    size_t n = setting.enumValues.size();
+    if (n==0) return;
+    uint8_t cur = SETTINGS.*(setting.valuePtr);
+    if (cur >= n) cur = 0;
+    SETTINGS.*(setting.valuePtr) = (cur+1)%n;
+    SETTINGS.saveToFile();
+    rebuildModel();
+  } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
+    size_t n = setting.enumValues.size();
+    if (n==0) return;
+    uint8_t cur = setting.valueGetter();
+    uint8_t safe = cur < n ? cur : 0;
+    setting.valueSetter((safe+1)%n);
+#ifdef CROSSPOINT_MURPHY_M4
+    if (setting.key && strcmp(setting.key, "uiFontSize")==0) {
       EpdFontLoader::applySystemChrome(renderer);
     }
 #endif
-} else if (setting.type == SettingType::VALUE && setting.signedValuePtr != nullptr) {
-    // 有符号数值类型：打开数字选择器
-    const int currentValue = SETTINGS.*(setting.signedValuePtr);
-    NumberSelectionActivity::Config config;
-    config.title = (*currentSettings)[selectedSetting].name;
-    config.minValue = setting.valueRange.min;
-    config.maxValue = setting.valueRange.max;
-    config.smallStep = setting.valueRange.step;
-    config.largeStep = setting.valueRange.step * 5;
-    config.isSigned = true;
-    
-    auto signedPtr = setting.signedValuePtr;
+    rebuildModel();
+  } else if (setting.type == SettingType::VALUE && setting.signedValuePtr != nullptr) {
+    int cur = SETTINGS.*(setting.signedValuePtr);
+    NumberSelectionActivity::Config cfg;
+    cfg.title = vec[idx].name;
+    cfg.minValue = setting.valueRange.min;
+    cfg.maxValue = setting.valueRange.max;
+    cfg.smallStep = setting.valueRange.step;
+    cfg.largeStep = setting.valueRange.step*5;
+    cfg.isSigned = true;
+    auto ptr = setting.signedValuePtr;
+    int savedRow = navState_.selectedRow;
+    SettingsHubCard savedHub = navState_.hub;
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     exitActivity();
-    enterNewActivity(new NumberSelectionActivity(
-        renderer, mappedInput, config, currentValue,
-        [this, signedPtr](int value) {
-          SETTINGS.*(signedPtr) = static_cast<int8_t>(value);
-          SETTINGS.saveToFile();
-          exitActivity();
-          updateRequired = true;
-        },
-        [this]() {
-          exitActivity();
-          updateRequired = true;
-        }));
+    enterNewActivity(new NumberSelectionActivity(renderer, mappedInput, cfg, cur,
+      [this, ptr, savedRow, savedHub](int v){
+        SETTINGS.*(ptr) = (int8_t)v;
+        SETTINGS.saveToFile();
+        exitActivity();
+        navState_.selectedRow = savedRow;
+        navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel();
+        updateRequired = true;
+      },
+      [this, savedRow, savedHub](){
+        exitActivity();
+        navState_.selectedRow = savedRow;
+        navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel();
+        updateRequired = true;
+      }));
     xSemaphoreGive(renderingMutex);
-    return;  // 不在这里保存，回调里保存
-} else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
-    // 无符号数值类型：打开数字选择器
-    const int currentValue = SETTINGS.*(setting.valuePtr);
-    NumberSelectionActivity::Config config;
-    config.title = (*currentSettings)[selectedSetting].name;
-    config.minValue = setting.valueRange.min;
-    config.maxValue = setting.valueRange.max;
-    config.smallStep = setting.valueRange.step;
-    config.largeStep = setting.valueRange.step * 5;
-    config.isSigned = false;
-    // 根据设置名称设置单位或格式化函数
-    if (strcmp(setting.name, L(Str::kRefreshFrequency)) == 0) {
-      config.displayFormatter = [](int v) -> std::string {
-        return std::to_string(v) + L(Str::kValPagesFullRefresh);
-      };
-    } else if (strcmp(setting.name, L(Str::kLineSpacing)) == 0) {
-      config.displayFormatter = [](int v) -> std::string {
-        return std::to_string(v / 10) + "." + std::to_string(v % 10) + L(Str::kValTimes);
-      };
+    return;
+  } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
+    int cur = SETTINGS.*(setting.valuePtr);
+    NumberSelectionActivity::Config cfg;
+    cfg.title = vec[idx].name;
+    cfg.minValue = setting.valueRange.min;
+    cfg.maxValue = setting.valueRange.max;
+    cfg.smallStep = setting.valueRange.step;
+    cfg.largeStep = setting.valueRange.step*5;
+    cfg.isSigned = false;
+    if (strcmp(setting.name, L(Str::kRefreshFrequency))==0) {
+      cfg.displayFormatter = [](int v){ return std::to_string(v)+L(Str::kValPagesFullRefresh); };
+    } else if (strcmp(setting.name, L(Str::kLineSpacing))==0) {
+      cfg.displayFormatter = [](int v){ return std::to_string(v/10)+"."+std::to_string(v%10)+L(Str::kValTimes); };
     }
-    
-    auto valuePtr = setting.valuePtr;
+    auto ptr = setting.valuePtr;
+    int savedRow = navState_.selectedRow;
+    SettingsHubCard savedHub = navState_.hub;
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     exitActivity();
-    enterNewActivity(new NumberSelectionActivity(
-        renderer, mappedInput, config, currentValue,
-        [this, valuePtr](int value) {
-          SETTINGS.*(valuePtr) = static_cast<uint8_t>(value);
-          SETTINGS.saveToFile();
-          exitActivity();
-          updateRequired = true;
-        },
-        [this]() {
-          exitActivity();
-          updateRequired = true;
-        }));
+    enterNewActivity(new NumberSelectionActivity(renderer, mappedInput, cfg, cur,
+      [this, ptr, savedRow, savedHub](int v){
+        SETTINGS.*(ptr) = (uint8_t)v;
+        SETTINGS.saveToFile();
+        exitActivity();
+        navState_.selectedRow = savedRow;
+        navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel();
+        updateRequired = true;
+      },
+      [this, savedRow, savedHub](){
+        exitActivity();
+        navState_.selectedRow = savedRow;
+        navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel();
+        updateRequired = true;
+      }));
     xSemaphoreGive(renderingMutex);
-    return;  // 不在这里保存，回调里保存
-} else if (setting.type == SettingType::ACTION) {
-    // Use key (stable identifier) for ACTION matching, not name (which is translated)
-    const char* actKey = setting.key ? setting.key : "";
-    if (strcmp(actKey, "remapButtons") == 0) {
+    return;
+  } else if (setting.type == SettingType::ACTION) {
+    const char* k = setting.key ? setting.key : "";
+    if (strcmp(k, "remapButtons")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       exitActivity();
-      enterNewActivity(new ButtonRemapActivity(renderer, mappedInput, [this] {
+      enterNewActivity(new ButtonRemapActivity(renderer, mappedInput, [this, savedRow, savedHub]{
         exitActivity();
-        updateRequired = true;
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
       }));
       xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "koreader") == 0) {
+    } else if (strcmp(k, "readerLayout")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       exitActivity();
-      enterNewActivity(new KOReaderSettingsActivity(renderer, mappedInput, [this] {
+      enterNewActivity(new EpubReaderSettingsActivity(renderer, mappedInput, [this, savedRow, savedHub]{
         exitActivity();
-        updateRequired = true;
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
       }));
       xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "opds") == 0) {
+    } else if (strcmp(k, "bluetooth")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       exitActivity();
-      enterNewActivity(new CalibreSettingsActivity(renderer, mappedInput, [this] {
+      enterNewActivity(new SimpleBluetoothActivity(renderer, mappedInput, [this, savedRow, savedHub]{
         exitActivity();
-        updateRequired = true;
-            }));
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
+      }));
       xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "jianguo") == 0) {
-    xSemaphoreTake(renderingMutex, portMAX_DELAY);
-    exitActivity();
-    enterNewActivity(new JianGuoYunSettingsActivity(renderer, mappedInput, [this] {
-      exitActivity();
-      updateRequired = true;
-    }));
-      xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "dataCapsule") == 0) {
-    xSemaphoreTake(renderingMutex, portMAX_DELAY);
-    exitActivity();
-    enterNewActivity(new DataCapsuleSettingsActivity(renderer, mappedInput, [this] {
-      exitActivity();
-      updateRequired = true;
-    }));
-      xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "clearCache") == 0) {
+    } else if (strcmp(k, "koreader")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       exitActivity();
-      enterNewActivity(new ClearCacheActivity(renderer, mappedInput, [this] {
+      enterNewActivity(new KOReaderSettingsActivity(renderer, mappedInput, [this, savedRow, savedHub]{
         exitActivity();
-        updateRequired = true;
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
+      }));
+      xSemaphoreGive(renderingMutex);
+    } else if (strcmp(k, "jianguo")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      exitActivity();
+      enterNewActivity(new JianGuoYunSettingsActivity(renderer, mappedInput, [this, savedRow, savedHub]{
+        exitActivity();
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
+      }));
+      xSemaphoreGive(renderingMutex);
+    } else if (strcmp(k, "dataCapsule")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      exitActivity();
+      enterNewActivity(new DataCapsuleSettingsActivity(renderer, mappedInput, [this, savedRow, savedHub]{
+        exitActivity();
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
+      }));
+      xSemaphoreGive(renderingMutex);
+    } else if (strcmp(k, "clearCache")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      exitActivity();
+      enterNewActivity(new ClearCacheActivity(renderer, mappedInput, [this, savedRow, savedHub]{
+        exitActivity();
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
+      }));
+      xSemaphoreGive(renderingMutex);
+    } else if (strcmp(k, "resetSettings")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      exitActivity();
+      enterNewActivity(new ResetSettingsActivity(renderer, mappedInput, [this, savedRow, savedHub]{
+        exitActivity();
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
       }));
       xSemaphoreGive(renderingMutex);
 #ifdef CROSSPOINT_MURPHY_M4
-    } else if (strcmp(actKey, "developerOptions") == 0) {
+    } else if (strcmp(k, "developerOptions")==0) {
+      int savedRow = navState_.selectedRow; SettingsHubCard savedHub = navState_.hub;
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       exitActivity();
-      enterNewActivity(new DeveloperOptionsActivity(renderer, mappedInput, [this] {
+      enterNewActivity(new DeveloperOptionsActivity(renderer, mappedInput, [this, savedRow, savedHub]{
         exitActivity();
-        updateRequired = true;
+        navState_.selectedRow = savedRow; navState_.hub = savedHub;
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel(); updateRequired = true;
       }));
       xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "switchBootSlot") == 0) {
-      // Only otadata is updated; the app images, partition table and NVS stay
-      // untouched. Reboot into the other validated OTA app afterwards.
+    } else if (strcmp(k, "switchBootSlot")==0) {
       const auto* running = runningOtaPartition();
-      const char* target = (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0)
-                               ? L(Str::kApp1Custom)
-                               : L(Str::kApp0Official);
+      const char* target = (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) ? L(Str::kApp1Custom) : L(Str::kApp0Official);
       if (switchToOtherOtaSlot()) {
         GUI.drawPopup(renderer, target);
         delay(350);
@@ -521,49 +674,46 @@ void SettingsActivity::toggleCurrentSetting() {
       } else {
         GUI.drawPopup(renderer, L(Str::kUnknownBootSlot));
         delay(700);
+        rebuildModel();
         updateRequired = true;
       }
 #endif
-    } else if (strcmp(actKey, "sdOta") == 0) {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      exitActivity();
-      enterNewActivity(new SdOtaUpdateActivity(renderer, mappedInput, [this] {
-        exitActivity();
-        updateRequired = true;
-      }));
-      xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "sdOta") == 0) {
-      // duplicate sdOta key handled above
-      ;
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      exitActivity();
-      enterNewActivity(new SdOtaUpdateActivity(renderer, mappedInput, [this] {
-        exitActivity();
-        updateRequired = true;
-      }));
-      xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "bluetooth") == 0) {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      exitActivity();
-      enterNewActivity(new SimpleBluetoothActivity(renderer, mappedInput, [this] {
-        exitActivity();
-        updateRequired = true;
-      }));
-      xSemaphoreGive(renderingMutex);
-    } else if (strcmp(actKey, "resetSettings") == 0) {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      exitActivity();
-      enterNewActivity(new ResetSettingsActivity(renderer, mappedInput, [this] {
-        exitActivity();
-        updateRequired = true;
-      }));
-      xSemaphoreGive(renderingMutex);
+    } else if (strcmp(k, "bluetooth")==0 || strcmp(k, "resetSettings")==0) {
+      // handled
     }
   } else {
     return;
   }
-
   SETTINGS.saveToFile();
+  rebuildModel();
+}
+
+void SettingsActivity::openHubCard(SettingsHubCard card) {
+  navState_ = settingsNavOpenCard(navState_, card);
+  navState_ = settingsNavSyncWindow(navState_, card, true);
+  rebuildModel();
+}
+void SettingsActivity::handleHubConfirm() {
+  openHubCard(navState_.hub);
+}
+void SettingsActivity::handleL2Confirm() {
+  toggleCurrentSetting();
+}
+void SettingsActivity::handleL2TapIndex(int windowIndex) {
+  int flatIndex = navState_.windowStart + windowIndex;
+  int flatCount = settingsFlatCount(navState_.hub, true);
+  if (flatIndex <0 || flatIndex >= flatCount) return;
+  auto fr = settingsFlatAt(navState_.hub, flatIndex, true);
+  if (fr.kind == SettingsFlatKind::Section) return;
+  // Find settingIndex for this key
+  const auto& vec = currentHubSettings();
+  for (size_t i=0;i<vec.size();++i) if (vec[i].key && strcmp(vec[i].key, fr.key)==0) {
+    navState_.selectedRow = (int)i;
+    navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+    rebuildModel();
+    toggleCurrentSetting();
+    return;
+  }
 }
 
 void SettingsActivity::displayTaskLoop() {
@@ -580,97 +730,22 @@ void SettingsActivity::displayTaskLoop() {
 
 void SettingsActivity::render() const {
   renderer.clearScreen();
-
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-
-  auto metrics = UITheme::getInstance().getMetrics();
-
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, L(Str::kSystemSettings));
-
-  std::vector<TabInfo> tabs;
-  tabs.reserve(categoryCount);
-  for (int i = 0; i < categoryCount; i++) {
-    const char* tabName;
-    switch (i) {
-      case 0: tabName = L(Str::kCategoryDisplay); break;
-      case 1: tabName = L(Str::kCategoryControls); break;
-      case 2: tabName = L(Str::kCategorySystem); break;
-      default: tabName = ""; break;
-    }
-    tabs.push_back({tabName, selectedCategoryIndex == i});
+  SettingsScene::SettingsSnapshot snap{};
+  bool hasSnap = sceneModel_.copyLatest(snap);
+  if (!hasSnap) {
+    // fallback to empty
+    snap.state = UiScene::DataState::Loading;
   }
-  GUI.drawTabBar(renderer, Rect{0, metrics.topPadding + metrics.headerHeight + 4, pageWidth, metrics.tabBarHeight}, tabs,
-                 selectedSettingIndex == 0);
-
-
-  const auto& settings = *currentSettings;        
-  GUI.drawList(
-      renderer,
-      Rect{0, metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing, pageWidth,
-          pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.buttonHintsHeight +
-                        metrics.verticalSpacing * 2)},
-      settingsCount, selectedSettingIndex - 1, 
-      // 设置项名称：直接显示 name（已通过 L() 国际化）
-      [&settings](int index) { 
-          return std::string(settings[index].name); 
-      },
-      nullptr, nullptr,
-      // 第二个回调：设置项值（国际化显示）
-      [&settings](int i) {
-        std::string valueText = "";
-        if (settings[i].type == SettingType::TOGGLE && settings[i].valuePtr != nullptr) {
-          const bool value = SETTINGS.*(settings[i].valuePtr);
-          valueText = value ? L(Str::kOn) : L(Str::kOff);
-        } else if (settings[i].type == SettingType::ENUM && settings[i].valuePtr != nullptr) {
-          // Bound-check: raw SETTINGS fields must be indices into enumValues.
-          // Binding a non-index field (e.g. LUT frame-rate byte 0x88) OOBs and
-          // reboots when the System category is rendered.
-          const uint8_t value = SETTINGS.*(settings[i].valuePtr);
-          if (value < static_cast<uint8_t>(settings[i].enumValues.size())) {
-            valueText = settings[i].enumValues[value];
-          } else {
-            valueText = "?";
-          }
-        } else if (settings[i].type == SettingType::ENUM && settings[i].valueGetter) {
-          const uint8_t idx = settings[i].valueGetter();
-          if (idx < static_cast<uint8_t>(settings[i].enumValues.size())) {
-            valueText = settings[i].enumValues[idx];
-          }
-        } else if (settings[i].type == SettingType::VALUE && settings[i].signedValuePtr != nullptr) {
-          valueText = std::to_string(static_cast<int>(SETTINGS.*(settings[i].signedValuePtr)));
-        } else if (settings[i].type == SettingType::VALUE && settings[i].valuePtr != nullptr) {
-          // 数值型：特殊处理行间距显示为X.X倍格式
-          const int v = SETTINGS.*(settings[i].valuePtr);
-          if (settings[i].key && strcmp(settings[i].key, "lineSpacing") == 0) {
-            valueText = std::to_string(v / 10) + "." + std::to_string(v % 10) + L(Str::kValTimes);
-          } else if (settings[i].key && strcmp(settings[i].key, "refreshFrequency") == 0) {
-            valueText = std::to_string(v) + L(Str::kValPagesFullRefresh);
-          } else {
-            valueText = std::to_string(v);
-          }
-        } else if (settings[i].type == SettingType::ACTION &&
-            settings[i].key && strcmp(settings[i].key, "bluetooth") == 0) {
-          // 显示蓝牙状态
-          try {
-            auto& btMgr = BluetoothHIDManager::getInstance();
-            valueText = btMgr.isEnabled() ? L(Str::kOn) : L(Str::kOff);
-          } catch (...) {
-            valueText = L(Str::kError);
-          }
-        } else if (settings[i].type == SettingType::ACTION &&
-                   settings[i].key && strcmp(settings[i].key, "switchBootSlot") == 0) {
-#ifdef CROSSPOINT_MURPHY_M4
-          valueText = runningOtaLabel();
-#endif
-        }
-        return valueText;
-      });
-
-  // Draw help text
-  const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kToggle), L(Str::kUp), L(Str::kDown));
+  auto src = SettingsScene::SettingsSceneModel::bindingSource(snap);
+  UiScene::UiSceneAssets assets;
+  assets.clear();
+  UiScene::GfxSceneRenderer r;
+  if (navState_.pane == SettingsPane::Hub) {
+    r.render(murphy_settings_hub_m4theme, murphy_settings_hub_m4theme_len, src, assets, renderer);
+  } else {
+    r.render(murphy_settings_l2_m4theme, murphy_settings_l2_m4theme_len, src, assets, renderer);
+  }
+  const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kConfirm), L(Str::kUp), L(Str::kDown));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  // Always use standard refresh for settings screen
   renderer.displayBuffer();
 }
