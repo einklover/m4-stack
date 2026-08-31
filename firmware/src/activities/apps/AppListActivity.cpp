@@ -500,7 +500,7 @@ void AppListActivity::render() const {
       const bool selected = i == selectedIndex_;
       if (selected) renderer.fillRoundedRect(tile.x, tile.y, tile.width, tile.height, 12, Color::LightGray);
       const auto& item = items_[static_cast<size_t>(i)];
-      drawItemIcon(renderer, item, tile);
+      drawItemIcon(item, tile);
 
       const std::string label = M4UiText::truncated(renderer, UI_10_FONT_ID, item.label.c_str(), tile.width - 8);
       const int labelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, label.c_str());
