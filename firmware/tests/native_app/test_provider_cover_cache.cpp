@@ -409,29 +409,32 @@ int main() {
     assert(genFetches==0);
   }
 
-  // Contract: missing source does not invent a download; no HTTP/fetch; no convert; no file created
-  // Also proves that existing cover_171x254.bmp is NOT used as source in this worktree (no last-resort yet)
+  // Contract: missing source does not invent a download. Scene sizes last-resort
+  // from cover_171x254.bmp; empty dir stays empty. Never HTTP.
   {
     std::set<std::string> missFiles;
     int missFetches=0, missConverts=0;
+    std::string lastSrc;
     Backend b;
     b.exists = [&](const std::string& p){ return missFiles.count(p)!=0; };
     b.fetch = [&](const std::string&,const std::string&,size_t){ ++missFetches; return true; };
     b.fetchCancellable = [&](const std::string&,const std::string&,size_t,const std::function<bool()>&){ ++missFetches; return true; };
-    b.convert = [&](const std::string&,const std::string& t,int,int){ ++missConverts; missFiles.insert(t); return true; };
+    b.convert = [&](const std::string& s,const std::string& t,int,int){
+      ++missConverts; lastSrc=s; missFiles.insert(t); return true;
+    };
     b.remove = [&](const std::string& p){ missFiles.erase(p); };
 
     std::string dir = cacheDir("fanqie","missing-source");
     std::string tpl = bmpTemplatePath("fanqie","missing-source");
-    // No source.img, but fengyan 171x254 exists — must still not generate
-    missFiles.insert(dir + "/cover_171x254.bmp");
+    const std::string fb = dir + "/cover_171x254.bmp";
+    missFiles.insert(fb);
 
     auto r = ensureSizedCoverFromSource(tpl, 110, 180, b);
-    assert(r.thumbPath.empty() && !r.cacheHit && !r.generated);
+    assert(!r.thumbPath.empty() && r.generated && !r.cacheHit);
+    assert(lastSrc == fb);
     assert(missFetches==0);
-    assert(missConverts==0);
-    assert(missFiles.count(dir + "/cover_110x180.bmp")==0);
-    assert(missFiles.count(dir + "/cover_74x106.bmp")==0);
+    assert(missConverts==1);
+    assert(missFiles.count(dir + "/cover_110x180.bmp")==1);
 
     // Also test with absolutely empty dir
     std::string dir2 = cacheDir("fanqie","empty-dir");
@@ -439,7 +442,7 @@ int main() {
     auto r2 = ensureSizedCoverFromSource(tpl2, 74, 106, b);
     assert(r2.thumbPath.empty());
     assert(missFetches==0);
-    assert(missConverts==0);
+    assert(missConverts==1);
   }
 
   // Contract: convert failure removes partial target (no stale BMP)

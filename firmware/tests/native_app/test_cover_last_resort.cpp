@@ -38,11 +38,11 @@ int main() {
   assert(h.find("Never fetches") != std::string::npos && "last-resort must never HTTP");
   // Ensure fallback is not used when source.img exists (would appear before source check if buggy)
   // We only assert ordering if both substrings exist.
-  size_t posSourceMissing = h.find("!backend.exists(source)");
+  size_t posSourceExists = h.find("if (backend.exists(source))");
   size_t pos171 = h.find("cover_171x254");
-  if (posSourceMissing != std::string::npos && pos171 != std::string::npos) {
-    assert(pos171 > posSourceMissing && "171x254 fallback must be after source missing check (source.img has priority)");
-  }
+  assert(posSourceExists != std::string::npos && "source.img exists-check must remain");
+  assert(pos171 != std::string::npos);
+  assert(pos171 > posSourceExists && "171x254 fallback must be after source.img priority check");
 
   // Try to check that convert failure still cleans partial (if fallback exists, same rule)
   assert(h.find("backend.remove") != std::string::npos);

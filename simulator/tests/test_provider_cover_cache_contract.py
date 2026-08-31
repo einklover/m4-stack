@@ -153,17 +153,16 @@ class ProviderCoverCacheContracts(unittest.TestCase):
             # No production last-resort yet — this is expected for muse-tests lane; skip validation
             self.skipTest("last-resort cover_171x254 API not in this worktree yet (Lane A) — guard passes")
         else:
-            # If it exists, it must be guarded: only when source.img missing, and not over source.img
-            # Must still never fetch, must still produce 1-bit exact size
             combined = header + source
             self.assertIn("source.img", combined)
-            # Fallback should mention cover_171x254 near source missing check
-            idx_source_missing = combined.find("!backend.exists(source)")
-            idx_171 = combined.find("cover_171x254")
-            self.assertNotEqual(idx_source_missing, -1)
-            self.assertNotEqual(idx_171, -1)
-            self.assertGreater(idx_171, idx_source_missing, "last-resort cover_171x254 must be after source missing check")
             self.assertIn("Never fetches", header)
+            self.assertIn("fallbackBmpPathInDir", header)
+            self.assertIn("bmpFileTo1BitBmpWithSize", source)
+            idx_src = header.find("if (backend.exists(source))")
+            idx_fb = header.find("fallbackBmpPathInDir")
+            self.assertNotEqual(idx_src, -1)
+            self.assertNotEqual(idx_fb, -1)
+            self.assertGreater(idx_fb, idx_src, "last-resort must run only after source.img exists-check")
 
 
 if __name__ == "__main__":
