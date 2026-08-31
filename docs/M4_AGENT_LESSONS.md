@@ -5,13 +5,31 @@
 
 ## 0. 调度硬规则
 
-- **不要使用 Codex Sol 子代理。** 当前 M4 工作流只使用用户明确允许的非 Sol 代理；视觉/常规实现优先 Muse，复杂架构/并发审计可用 Luna。
+- **不要使用 Codex Sol 子代理。** 当前 M4 工作流只使用用户明确允许的非 Sol 代理；视觉/常规实现优先 Muse，复杂架构/并发审计可用 Luna。派活按能力，不要平均拆：表在 `docs/M4_AGENT_PROFILES.md`「因材施教」。Muse=快施工（白名单+bbox）；Luna=外科（生命周期/路由，不要像素）；Grok=merge/QEMU/胶水。不要派子代理去点 QEMU。
 - 多 worktree 编排（2026-08-31）：协调者留在 `m4-critical-ui-home`；三个子代理分别在 `m4-home-muse-impl` / `m4-home-luna-audit` / `m4-home-muse-tests`。流程见 `docs/M4_ORCHESTRATION.md`，模型画像见 `docs/M4_AGENT_PROFILES.md`。Git 互推是共享对象库上的本地 branch merge，禁止 `git push origin`。
 - Luna Max = `codex/gpt-5.6-luna` + thinking `max` + `full-access`。Muse Code Ultra = `muse-acp/muse-spark-1.2-contributor` + thinking `ultra` + `auto_accept`。`list_profiles` 为空时不要猜 profile 名。
 - 创建新 agent 前先看正在运行的同类任务；同一连续任务优先复用，但不要为了复用而复用。
-- **`send_agent_prompt` 返回 running 不代表任务真的开始了。** 下发后必须再查 `get_agent_status` + `get_agent_activity`，确认 `lastUserMessageAt/activeTurn/activity` 已进入新任务，再向用户说“已开始”。此前 Logo/字体任务就出现过“API 返回 running，但 activity 仍停留在旧任务”的情况。
+- **`send_agent_prompt` / `create_agent` 返回 running 不代表任务真的开始了。** 下发后必须再查 `get_agent_status` + `get_agent_activity`，确认 `lastUserMessageAt/activeTurn/activity` 已进入新任务，再向用户说“已开始”。此前 Logo/字体任务就出现过“API 返回 running，但 activity 仍停留在旧任务”的情况。Luna Max 在 2026-08-31 编排启动时 `status=running` 但 `lastUserMessageAt=null`、activity 空，约 15s 后才出现 user prompt。Muse Ultra 几乎立刻有 activity。
 - 不要创建 noop/验证专用重复 agent。能用当前 agent 或顶层终端验证时，不额外开 agent。
 - 给子代理的 prompt 要明确：工作区、允许修改的文件/范围、禁止事项、验收命令、截图/上传要求、不能伪造的数据、不能提交/清理 dirty worktree。
+- Muse Ultra 在不能改测试文件时，会把快照探针尺寸写进生产（Round 1：`ensureSizedCoverFromSource` 对 64×64/50×80 禁用 last-resort）。下一轮 prompt 必须写死「不要为了旧测试绿而在生产里硬编码探针尺寸」。
+- Lane 之间用源码子串当契约会在合入时碎（Round 1 tests 要 `!backend.exists(source)`，impl 改成正向 `if (backend.exists(source))`）。合入由协调者改测试，不要让 impl 迁就字符串扫描。
+- 真 BMP→1-bit 转换不能用 mock `convert` / fake BMP 当证据。要证转换器就链 `JpegToBmpConverter` 或 `bmpFileTo1BitBmpWithSize`，否则标「未证」。
+- zsh 下 `INC="-std=c++17 -I foo"; $GXX $INC` 不会拆参数。host 编译命令把每个 `-I` 写开。
+- 「仅新建测试文件」不够：Muse tests 会 **append 已有** `test_plugin_home_icon_resource.py`。加强锁可留；若要禁改，prompt 写「禁止 `git add` 已存在的测试文件」。
+- 子代理还在跑时，不要把 `agent/home-orch-integration` merge 进它的 worktree。Round 2 只拉齐了已收工的 Muse A/C；Luna B 等 notify。
+- 本机 `python3 -m pytest` 走 Homebrew 3.14，没有 pytest。用 `/opt/anaconda3/bin/pytest`。`/usr/bin/python3` 才有 PIL。
+- Dock 加 `builtin.files` 不等于能打开文件管理：`onGoToNativeApp` 只认 M4x package id，未知 id 会掉进 `onGoToApps()`。Round 2 已在 integration `4a34f22` 把 `builtin.files` → 文件传输、`builtin.settings` → 设置。
+- Luna 抽屉实现了产品行为但没用契约字面量 `builtin.files`。Native 扫描测试仍会红。合入后由协调者加 canonical id，不要打回重写。
+- Home dock 四个空方块（含 compiled `builtin.files`）不是 decoder/SD 问题：`addApp` 写的是 `draft_`，`publishHomeSceneWithAssetsCtx` 却扫 `draftPublication().snapshot`，`publish()` 才拷贝 snapshot。合入后 `appCount` 一直是 0，assets 从未挂上。QEMU 标签对、图标全是 `drawRect` placeholder。修法：decode 前 `draftPub.snapshot = model.draftSnapshot()`。Native host 测不到这条，因为不跑 `HomeActivity` 发布路径。
+- compiled 1-bit `kBuiltinFilesIcon` 与 packaged `icon_home.bmp` 一样是 BMP 约定（1=纸/白）。`draw1BitAsset` 是 1=黑墨。文件 decoder 的 1bpp 路径会 `isBlack=!bitSet`，compiled 路径不会，不反相就是近黑方块。
+- `mockup-icon-*.png` 曾从 mockup 裁错区域（最近阅读封面角 / 「全部」），转 1-bit 后只剩几条线。QEMU 看起来像乱码而不是图标。必须从 `home-mockup.jpg` 的 dock 行（文件夹 / 微信气泡 / 番茄 / J）重裁。黑像素占比约 15% 才像线稿图标；2% 基本是裁错了。
+- QEMU panel frame `ssd1677-frame.pbm` 是物理 800×480。逻辑竖屏要用 `/usr/bin/python3` + PIL `Image.ROTATE_270` 转 480×800。`ROTATE_90` 会上下颠倒。Homebrew python3.14 没有 PIL，`./m4sim screenshot foo.png` 只会写出 `foo.pbm`。
+- `m4adb install --transport usb` 在 QEMU `--no-daemon` 下，49KB 的晋江包会在分片中途 `SerialException: write failed: [Errno 5]`，随后 QEMU 被 SIGTERM。WeRead/Fanqie 小包 USB 安装是成功的。更大包：先 `./m4sim stop`，再用 `mcopy -o -i murphy-sd.img plugin/icon_home.bmp ::/apps/<id>/icon_home.bmp` 写 FAT，再 `--skip-build` 重启。不要在 QEMU 开着 SD 时写镜像。
+- App 抽屉里的「文件管理」走 `UIIcon::Folder` + `renderer.drawIcon`（4 灰抖动），不是 dock 用的 compiled 1-bit `icon_home`。插件项才会画 `icon_home.bmp`。这不是 decoder 失败。
+- QEMU 视觉验收最大浪费不是缺子代理，而是 **同一条串口上反复整机重启 × `--ready-seconds 120`**。keep-alive 的 ping 通常第 2 次（约 10s）就 READY，但协调者用 `get_command_or_subagent_output(timeout=130s)` 把每次开机空等到满 120s。图标更新应在 **QEMU 停着时** `mcopy` 三个 `icon_home.bmp`，然后 **只 boot 一次** 再截 Home + 点「更多」。不要 USB 装 49KB 包、不要为每张图重启。子代理不能并行抢同一个 PTY / 同一张 SD；可并行的是 packing、host 测试、裁图，且必须在第一次开机前做完。
+- `./m4sim run --keep-alive` 必须用 **后台 + `timeout: 0`**。工具默认 120s/180s 会 SIGTERM 整个 process group，QEMU 看起来像“自己挂了”。`--ready-seconds` 用 20 即可，不要 120。
+- `--ready-seconds` 是 ping 重试的 **deadline**，READY 后立刻返回。skip-build plugin-debug 实测第 2 次 ping（约 10s）就 READY。协调者不要对 `--keep-alive` 做 `get_command_or_subagent_output(120s)`——那个进程本来就不会退出。Agent 配方：`./m4sim run --plugin-debug --skip-build --no-net --ready-seconds 20`（默认 `--detach`，READY 后返回，QEMU 继续跑）。只有人要盯着终端时才 `--keep-alive`。
 
 ## 1. 共享工作区 / Git：最容易造成二次事故
 
@@ -523,3 +541,18 @@ R1–R24 在 `/tmp` 把脏树 `firmware/src` 逐步叠到 `259cdbf7` 隔离树�
   `开局地摊卖大力` 图，不再是空框。运行目录
   `/tmp/m4sim-home-covers-fix.82YCwn`，截图 `home-boot.png`。
   不必再开番茄目录；有 `recent.bin` + `source.img` 即可证明 generate-on-miss。
+
+## 2026-08-31 — Wi-Fi「Connected, but could not save」是 mkdir 把已存在目录当失败
+
+- 现象链：设置里连上路由器 → 红字 `Connected, but could not save Wi-Fi` → 微信读书
+  `no_saved_wifi` / 确认键重试。根因不是射频，是凭据没写上 SD。
+- `WifiCredentialStore::saveCredentials` 曾 `if (!SdMan.mkdir("/.crosspoint")) return false;`。
+  SdFat 在目录**已经存在**时 `mkdir` 返回 false。主页 recents/设置第一次启动就会创建
+  `/.crosspoint`，所以之后每一次 Wi-Fi 保存都失败。其它 store（RecentBooks、Settings、
+  KOReader）都忽略 mkdir 返回值。
+- 修复：仅在 `!exists("/.crosspoint")` 时 mkdir；保存失败不再把已连通的 STA 标成
+  `CONNECTION_FAILED`（本会话 `net.isConnected()` 仍可用）。
+- 回归：`/tmp/test_wifi_state`（g++-14 + `wifi_store_shims`）和
+  `python3 simulator/tests/test_wifi_state_contract.py`。不要再把「mkdir 失败」当成
+  凭据事务失败，除非目录确实不存在且创建失败。
+- 这种一行契约 bug 不要开子代理。

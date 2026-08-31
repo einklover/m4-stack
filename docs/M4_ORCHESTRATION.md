@@ -9,13 +9,31 @@
 | 角色 | 模型 | worktree | 分支 | 本轮文件所有权 |
 |---|---|---|---|---|
 | 协调者 | Grok（本对话） | `m4-critical-ui-home`（原脏树，不自动提交） | `feature/critical-ui-home` | 文档、合并、验收 |
-| Lane A 实现 | Muse Code Ultra `muse-acp/muse-spark-1.2-contributor` thinking `ultra` | `m4-home-muse-impl` | `agent/home-muse-impl` | Home 封面生成路径与 JPEG 转换 |
-| Lane B 审计/硬化 | Luna Max `codex/gpt-5.6-luna` thinking `max` | `m4-home-luna-audit` | `agent/home-luna-audit` | Scene 生命周期 / UAF / cancelled 路径 |
-| Lane C 测试 | Muse Code Ultra 同上 | `m4-home-muse-tests` | `agent/home-muse-tests` | 仅 `firmware/tests/**` 与 `simulator/tests/**` |
+| Lane A 实现 | Muse Code Ultra `muse-acp/muse-spark-1.2-contributor` thinking `ultra` | `m4-home-muse-impl` | `agent/home-muse-impl` | Round 2：插件/内置 dock 图标与 Home apps 绑定 |
+| Lane B 抽屉 | Luna Max `codex/gpt-5.6-luna` thinking `max` | `m4-home-luna-audit` | `agent/home-luna-audit` | Round 2：`AppListActivity` 宫格抽屉 + `main.cpp` 路由 |
+| Lane C 测试 | Muse Code Ultra 同上 | `m4-home-muse-tests` | `agent/home-muse-tests` | Round 2：仅**新建** tests（图标包装、抽屉清单、全部/更多） |
 
 路径前缀：`/Volumes/z/paseo/workspaces/paseo/worktrees/041rfr5o/`。
 
 Paseo 工程：`prj_60a33d4e07df23cb`。原工作区：`wks_4bffa6a42500d80b`（M4 Critical UI Home）。
+
+Round 2 已验收（2026-08-31）：主页 dock 图标 + 应用抽屉。任务书 `docs/orchestration/rounds/round-2-TASK.md`。QEMU 证据 `docs/orchestration/rounds/round-2-qemu-dock.md`（integration `d60e53a`）。画像与派活：`docs/M4_AGENT_PROFILES.md`。
+
+| Lane | workspace | agentId | 模型 | 状态 |
+|---|---|---|---|---|
+| Muse impl | `wks_b8e2f0526b8a7ec5` | `b8097d28-b8bf-4009-b37a-6406bec37b35` | muse ultra | 完成 `78f3573`，已 merge `6ba9e01`；图标裁错行，协调者 recrop `499fa66` |
+| Luna drawer | `wks_826b87d19f04fb03` | `7622f512-31d8-42a1-bc1d-0d3056c4afac` | luna max | 完成 `33b592e`，已 merge `74e7959`；协调者补 id/路由 `4a34f22`、arity `7e603c7` |
+| Muse tests | `wks_b9a03c8d859f7f56` | `23cce95f-ef1d-4e12-add6-b1014bd1372c` | muse ultra | 完成 `be4f9f4`，已 merge `e7fbae4`；host 测不到发布陷阱/裁错图 |
+
+Round 1 已完成（2026-08-31）：
+
+| Lane | workspace | agentId | 模型 |
+|---|---|---|---|
+| Muse impl | `wks_b8e2f0526b8a7ec5` | `3ac81e41-16b8-49b2-b33d-c7d92f729093` | muse ultra |
+| Luna audit | `wks_826b87d19f04fb03` | `ed7a83d7-5364-411a-bdd3-a6ba51d05f62` | luna max |
+| Muse tests | `wks_b9a03c8d859f7f56` | `123078ed-ebcd-4d25-9882-77b6b489fe72` | muse ultra |
+
+快照 commit：`f2b216e`。父对话 / 回调目标：`cec57f71-8e9b-43e5-805a-58cf824c7853`。Heartbeat `8dfc4861` 每 20 分钟回本对话（最多 6 次 / 12h），盯 QEMU Home/抽屉截图。
 
 Git 对象库共用：`/Volumes/z/paseo/m4crosspoint/work/m4-stack/.git`。所谓「互相推送」是 **本地分支互 merge**，不是 `git push origin`。
 
