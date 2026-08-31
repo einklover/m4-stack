@@ -57,6 +57,10 @@ bool decodeBuiltinFilesIconForPublication(HomeScene::HomeScenePublication& pub,
                                           const UiScene::AssetKey& key,
                                           std::function<bool()> isCancelled = nullptr);
 
+// Return a sheet-derived 62x64 1-bit icon for a matched builtin app id.
+// Bytes are row-major, MSB-first, with 1 meaning black ink; nullptr means no sheet match.
+const uint8_t* builtinSheetIcon(const char* id);
+
 // Host helper — fills a small compiled 1-bit fallback icon (used when BMP missing but we want a placeholder asset).
 bool fillFallbackAppIcon(uint8_t* out, uint16_t w, uint16_t h, uint16_t stride, uint8_t pattern);
 

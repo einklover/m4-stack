@@ -116,10 +116,10 @@ const uint8_t* builtinIconBitmap(const UIIcon icon) {
   }
 }
 
-void drawPluginIcon(const GfxRenderer& renderer, const std::vector<uint8_t>& icon, const int x, const int y) {
-  if (icon.size() < HomeScene::kHomeAppIconBytes) return;
+void draw1BitIcon(const GfxRenderer& renderer, const uint8_t* icon, const int x, const int y) {
+  if (!icon) return;
   for (uint16_t row = 0; row < HomeScene::kHomeAppIconH; ++row) {
-    const uint8_t* rowBits = icon.data() + static_cast<size_t>(row) * HomeScene::kHomeAppIconStride;
+    const uint8_t* rowBits = icon + static_cast<size_t>(row) * HomeScene::kHomeAppIconStride;
     for (uint16_t col = 0; col < HomeScene::kHomeAppIconW; ++col) {
       if (rowBits[col >> 3] & static_cast<uint8_t>(0x80 >> (col & 7))) {
         renderer.drawPixel(x + col, y + row, true);
@@ -135,8 +135,14 @@ void AppListActivity::drawItemIcon(const DrawerItem& item, const TouchHitGeometr
   const int iconY = tile.y + iconTopPadding;
   if (item.plugin && !item.pluginIcon.empty()) {
     const int iconX = tile.x + (tile.width - HomeScene::kHomeAppIconW) / 2;
-    drawPluginIcon(renderer, item.pluginIcon, iconX,
-                   iconY + (kDrawerIconSlot - HomeScene::kHomeAppIconH) / 2);
+    draw1BitIcon(renderer, item.pluginIcon.data(), iconX,
+                 iconY + (kDrawerIconSlot - HomeScene::kHomeAppIconH) / 2);
+    return;
+  }
+
+  if (const uint8_t* bitmap = HomeSceneAssetDecoder::builtinSheetIcon(item.id.c_str())) {
+    const int iconX = tile.x + (tile.width - HomeScene::kHomeAppIconW) / 2;
+    draw1BitIcon(renderer, bitmap, iconX, iconY + (kDrawerIconSlot - HomeScene::kHomeAppIconH) / 2);
     return;
   }
 
