@@ -137,3 +137,14 @@ def test_drawer_is_grid_not_plain_list():
         f"has_grid_impl={has_grid_impl}, has_drawList={has_drawList}. Expected RED until Luna converts AppListActivity from plain list. "
         "Note: comment 'APK-like drawer' alone does not count."
     )
+
+
+def test_drawer_labels_ellipsize_by_four_codepoints_not_pixel_width():
+    src = _read(APP_LIST_CPP)
+    assert "utf8EllipsizeChars" in src, (
+        "Drawer labels must ellipsize by UTF-8 codepoint count so four CJK glyphs "
+        "(文件管理 / 微信读书) stay intact."
+    )
+    assert "kDrawerLabelMaxChars" in src
+    # Pixel-width truncate at tile.width-8 turns 「文件管理」 into 「文件管…」.
+    assert "truncated(renderer, UI_10_FONT_ID, item.label.c_str(), tile.width - 8)" not in src

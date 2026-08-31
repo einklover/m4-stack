@@ -47,10 +47,10 @@ def test_hero_status_and_title_baselines():
     assert title["font"] in ("ui_18_bold","ui_20_bold")
     author = _find(nodes, text="$current.author")
     assert 207 <= author["rect"][0] <= 211
-    assert 185 <= author["rect"][1] <= 189, f"author y {author['rect'][1]} not 187±2"
+    assert 196 <= author["rect"][1] <= 200, f"author y {author['rect'][1]} not 198±2"
     source = _find(nodes, text="$current.source")
     assert 207 <= source["rect"][0] <= 211
-    assert 207 <= source["rect"][1] <= 211, f"source y {source['rect'][1]} not 209±2"
+    assert 218 <= source["rect"][1] <= 222, f"source y {source['rect'][1]} not 220±2"
 
 def test_progress_text_baseline_left():
     n = _find(_nodes(), text="$home.current.progress_text")

@@ -86,7 +86,7 @@
         209,
         142,
         220,
-        28
+        52
       ],
       "text": "$current.title",
       "font": "ui_20_bold",
@@ -97,7 +97,7 @@
       "type": "text",
       "rect": [
         209,
-        187,
+        198,
         220,
         18
       ],
@@ -110,7 +110,7 @@
       "type": "text",
       "rect": [
         209,
-        209,
+        220,
         220,
         18
       ],
@@ -174,7 +174,7 @@
       "x": 28,
       "y": 380,
       "item_width": 129,
-      "item_height": 174,
+      "item_height": 184,
       "gap": 14,
       "direction": "horizontal",
       "children": [
@@ -195,7 +195,7 @@
             0,
             136,
             129,
-            18
+            44
           ],
           "text": "$item.title",
           "font": "ui_14_regular",

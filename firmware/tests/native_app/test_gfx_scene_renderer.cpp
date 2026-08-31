@@ -62,9 +62,9 @@ struct SceneBuilder {
     size_t s=0; if(f&kFlagVisibleIf) out[s++]=vis; if(f&kFlagAction){ out[s++]=act; out[s++]=arg==kInvalidBindingId?0:1; if(arg!=kInvalidBindingId) out[s++]=arg; } return s;
   }
   void addClear(uint8_t color=0){ uint8_t p[1]={color}; add(kNodeClear,0,p,1); }
-  void addText(const char* lit,BindingId b=kInvalidBindingId,uint8_t f=0,BindingId vis=kInvalidBindingId,ActionId act=kInvalidActionId,BindingId arg=kInvalidBindingId,uint16_t x=0,uint16_t y=0,uint8_t font=16,uint16_t width=180,uint8_t align=0){
+  void addText(const char* lit,BindingId b=kInvalidBindingId,uint8_t f=0,BindingId vis=kInvalidBindingId,ActionId act=kInvalidActionId,BindingId arg=kInvalidBindingId,uint16_t x=0,uint16_t y=0,uint8_t font=16,uint16_t width=180,uint8_t align=0,uint16_t height=24){
     uint8_t pay[128]={}; size_t s=pref(pay,f,vis,act,arg);
-    put16(pay+s,x); put16(pay+s+2,y); put16(pay+s+4,width); put16(pay+s+6,24);
+    put16(pay+s,x); put16(pay+s+2,y); put16(pay+s+4,width); put16(pay+s+6,height);
     pay[s+8]=font; pay[s+9]=0; pay[s+10]=align; pay[s+11]=1;
     pay[s+12]= b==kInvalidBindingId?0:1; pay[s+13]= b==kInvalidBindingId?0:b;
     size_t litN=b==kInvalidBindingId?strlen(lit):0; put16(pay+s+14,(uint16_t)litN);
@@ -338,6 +338,57 @@ void testAllNodeTypes(){
   (void)sawIcon;
 }
 
+void testTwoLineTitleWrapsThenEllipsizes(){
+  struct WidthSpy : SpyGfx {
+    static int codepoints(const char* t){
+      int n=0;
+      for(const unsigned char* p=reinterpret_cast<const unsigned char*>(t); p && *p; ){
+        ++n;
+        if(*p<0x80) ++p;
+        else if((*p&0xE0)==0xC0) p+=2;
+        else if((*p&0xF0)==0xE0) p+=3;
+        else p+=4;
+      }
+      return n;
+    }
+    int getTextWidth(int, const char* t, int=0,float=1) const { return codepoints(t)*10; }
+    int getLineHeight(int) const { return 16; }
+  };
+  SceneBuilder b;
+  // 12 ASCII chars, 10px each, rect 50x44 → 5 chars/line, 2 lines, last line ellipsis.
+  b.addText("ABCDEFGHIJKL",kInvalidBindingId,0,kInvalidBindingId,kInvalidActionId,
+            kInvalidBindingId,10,20,16,50,0,44);
+  uint8_t pkg[2304]={}; size_t len=b.finish(pkg);
+  SceneBindingSource src{nullptr, [](const void*,BindingId, const SceneItemContext*, ResolvedValue*)->bool{return false;}, nullptr};
+  WidthSpy gfx; UiSceneAssets assets;
+  assert(GfxSceneRenderer{}.render(pkg,len,src,assets,gfx));
+  int textCalls=0;
+  for(auto &c: gfx.calls) if(c.name=="drawText") ++textCalls;
+  assert(textCalls==2);
+  assert(gfx.calls[0].name=="drawText" && gfx.calls[0].y==20);
+  assert(gfx.calls[0].text=="ABCDE");
+  assert(gfx.calls[1].name=="drawText" && gfx.calls[1].y==36);
+  assert(gfx.calls[1].text==std::string("FGHI")+"\xE2\x80\xA6");
+}
+
+void testShortTitleStaysOneLineInTallRect(){
+  struct WidthSpy : SpyGfx {
+    int getTextWidth(int, const char* t, int=0,float=1) const {
+      int n=0; if(t) while(t[n]) ++n; return n*10;
+    }
+    int getLineHeight(int) const { return 16; }
+  };
+  SceneBuilder b;
+  b.addText("Hi",kInvalidBindingId,0,kInvalidBindingId,kInvalidActionId,
+            kInvalidBindingId,10,20,16,50,0,44);
+  uint8_t pkg[2304]={}; size_t len=b.finish(pkg);
+  SceneBindingSource src{nullptr, [](const void*,BindingId, const SceneItemContext*, ResolvedValue*)->bool{return false;}, nullptr};
+  WidthSpy gfx; UiSceneAssets assets;
+  assert(GfxSceneRenderer{}.render(pkg,len,src,assets,gfx));
+  assert(gfx.calls.size()==1);
+  assert(gfx.calls[0].name=="drawText" && gfx.calls[0].text=="Hi");
+}
+
 void testPackageBitmapOverlay(){
   SpyGfx gfx; UiSceneAssets assets;
   static const uint8_t pix[8]={0xFF,0x81,0x81,0x81,0x81,0x81,0xFF,0x00};
@@ -357,6 +408,8 @@ int main(){
   testNamedIconWithoutAssetUsesBoundedPlaceholder();
   testNoForbiddenIoInRenderPath();
   testAllNodeTypes();
+  testTwoLineTitleWrapsThenEllipsizes();
+  testShortTitleStaysOneLineInTallRect();
   testPackageBitmapOverlay();
   // Final integration: render real murphy_default with spy and check all node types emit without forbidden I/O
   {

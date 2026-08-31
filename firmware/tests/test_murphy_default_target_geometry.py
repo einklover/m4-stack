@@ -33,7 +33,7 @@ def test_target_effect_geometry_480x800():
     recent = _first(nodes, "repeat", source="$recent")
     assert [recent["x"], recent["y"], recent["item_width"], recent["gap"]] == [28, 380, 129, 14]
     assert recent["children"][0]["rect"] == [18, 0, 92, 122]
-    assert recent["children"][1]["rect"] == [0, 136, 129, 18]
+    assert recent["children"][1]["rect"] == [0, 136, 129, 44]
 
     # Scope C: verified target effect480 has no long line anywhere y=540..624 — ensure no erroneous divider
     for n in nodes:

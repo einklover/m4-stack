@@ -16,6 +16,8 @@
 
 回调：`create_agent` / `send_agent_prompt` 保持 `notifyOnFinish: true`。`send_agent_prompt` 的 `running` 不够，必须再看 `get_agent_status` + `get_agent_activity` 的 `lastUserMessageAt`。
 
+语言：给 Muse / Luna 的 prompt **一律英文**。对人回复中文。收到英文用户消息时，当作远程 agent 调用，用英文交卷。对人展示截图用对话内 markdown，不要图床。
+
 ## Luna Max（`gpt-5.6-luna` · thinking max）
 
 ### 适合
@@ -83,8 +85,9 @@
 - 测和验收；host 先于 QEMU，QEMU 先于「看起来行」
 - 每轮追加本文件，而不是只留在聊天里
 - 原工作区 `m4-critical-ui-home` 保持用户脏状态，不在这里 `reset`/`clean`/自动 commit
-- **只留给自己的活**：merge、canonical id 胶水、跨 lane 路由、`draftSnapshot` 这类 host 测不到的发布路径、QEMU 单会话（stop / detach / mcopy / 截图 / share-image）、小补丁（mkdir-exists、drawItemIcon 参数个数）
+- **只留给自己的活**：merge、canonical id 胶水、跨 lane 路由、`draftSnapshot` 这类 host 测不到的发布路径、QEMU 单会话（stop / detach / mcopy / 截图 / share-image）、**真正十来行的胶水**（mkdir-exists、drawItemIcon 参数、OpenCurrentBook 改 `currentPath`）
 - Round 2 自评：合入与 host 测是对的；QEMU 验收把 `--keep-alive` + `--ready-seconds 120` 当成等待，USB 装 49KB 包，开机 4 次。视觉验收不要派子代理，但自己也不要空等。配方见 lessons：`--detach --ready-seconds 20`，图标在停机 `mcopy`
+- **Home 两行书名 + 去重 mini（2026-08-31）**：协调者自己改了 theme 槽、`GfxSceneRenderer` 换行、几何 pytest、skip-hero。产品对，墙钟偏长。用户随后明确：这种任务交给 Muse，协调者只负责审核修改。以后同类**禁止**协调者整包施工。
 
 ## 因材施教（按能力派活，不要平均拆）
 
@@ -97,6 +100,7 @@
 | 新建 host/pytest 契约，允许 RED | **Muse tests** | impl（会改生产让旧测试绿）；Luna（会把测试写成审计论文） | 「禁止 `git add` 已有测试」；禁止 fake BMP 当转换器证据；不要用会碎的 `!exists` 极性扫描 |
 | merge、id 胶水、QEMU、mcopy、截图 | **Grok 协调者** | 任何子代理 | 单 PTY / 单 SD；`--detach --ready-seconds 20`；`timeout: 0` 才允许 keep-alive |
 | 像素对照、主题预览、图标是否像效果图 | Muse **出图** + Grok **QEMU 验收** | Luna（QEMU 抽屉功能对、系统图标丑也交差） | Muse 交 host 绿不够；协调者看 framebuffer |
+| 主题槽/两行换行/几何 pytest（多文件视觉抛光） | **Muse impl** 施工，**Grok 审 diff + QEMU** | 协调者整包做（会在诊断和 cwd 上泡）；Luna | prompt 写死 rect、max 2 行、ellipsis 在最后一行、禁止 `#include M4UiText.h`、禁止改 Scene 框架；几何锁文件列表；host 测命令写开 |
 | 真机 flash / APP0 / origin push | 人 | 所有模型 | — |
 
 ### 怎么写给谁听
@@ -105,7 +109,11 @@
 - **Luna Max**：慢、完整、架构判断准。短处是标识符不跟扫描测试走、偶发 API 对不上（禁 PIO 所以自己编不过）、视觉用系统 glyph 交差。把它当外科医生：生命周期、路由、并发。产品行为用中文验收，字面量由协调者事后补。
 - **两个 Muse 不要做同一类活**：一个 impl、一个 tests。否则抢文件或互相把契约写成对方实现。
 - **不要用子代理加速 QEMU**。可并行的是开机前的裁图 / pack / host 测，且必须在第一次 `m4sim run` 之前做完。
-- **小问题协调者直接修**（用户原话）。mkdir-exists、canonical id、`drawItemIcon` 参数、snapshot 拷贝、recrop，都不要再开一轮 Luna。大麻烦才开子代理：新 Scene 生命周期、新抽屉交互、新转换器。
+- **十来行胶水协调者直接修**（用户原话「小问题你就直接修」的边界）：mkdir-exists、canonical id、`drawItemIcon` 参数、snapshot 拷贝、OpenCurrentBook→`currentPath`、抽屉四字省略调用点。**不要**把「theme.json + 渲染器换行 + 四五个几何测试」算小问题——那是 Muse 施工、协调者审核。
+- **不要把审核变成自己重写。** Muse 交卷后：读 diff、补它漏的绑定/路由、host 复跑、一次 QEMU。发现裁错行/换行没接到 payload 再打回或自己补最小胶水，不要从 renderer 重读一遍。
+- **亲自上手前先问 Muse 位置。** 定位 prompt **用英文**：absolute workspace path, product behavior, return only `path + symbol + ~10 lines`，禁止改文件。不要在协调者树里自己 grep 半小时。Muse 当索引，Grok 当手术刀。
+- **对人中文、对子代理英文。** 中文对话截图 `![...](本地png)` 内嵌，不要 share-image。英文进来 = 远程 agent，回英文 + URL。
+- **小改动节奏**（仅限上面那类十来行）：在真正有那份源码的 worktree 改调用点 → **立刻 PIO，不要先停 QEMU** → host 测与 PIO 并行 → SUCCESS 后再 `--skip-build --ready-seconds 20` 开机截图。细则 `docs/M4_AGENT_LESSONS.md`「2026-08-31 — 小改动：先 PIO，再停 QEMU」。
 
 ### 下一轮建议拆法（若还做 Home 抛光）
 

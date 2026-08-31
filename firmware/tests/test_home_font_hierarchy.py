@@ -27,8 +27,8 @@ def test_current_title_prominence():
     n = _find(_nodes(), text="$current.title")
     # Title should be most prominent: 20_bold (larger than 18) per target title larger than metadata
     assert n["font"] in ("ui_20_bold", "ui_18_bold"), f"title font {n['font']} not prominent"
-    # Rect height should be >=28 to allow larger glyphs without clipping; allow <=2px variance
-    assert 28 <= n["rect"][3] <= 32, f"title rect h {n['rect'][3]} not 28-32 for baseline"
+    # Two-line title slot (~52px) so long book names wrap before ellipsis
+    assert 48 <= n["rect"][3] <= 56, f"title rect h {n['rect'][3]} not 48-56 for 2-line wrap"
 
 def test_section_headers_hierarchy():
     for text in ("最近阅读", "应用"):
@@ -50,7 +50,7 @@ def test_recent_and_app_labels():
     n = _find(_nodes(), source="$recent")
     child = n["children"][1]
     assert child["font"] == "ui_14_regular", f"recent title font {child['font']}"
-    assert child["rect"][3] == 18
+    assert child["rect"][3] == 44
     n = _find(_nodes(), source="$apps")
     child = n["children"][1]
     assert child["font"] == "ui_12_regular"

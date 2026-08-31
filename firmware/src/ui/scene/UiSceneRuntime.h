@@ -69,6 +69,7 @@ struct RenderEvent {
   uint8_t font = 0;
   uint8_t style = 0;
   uint8_t align = 0;
+  bool ellipsis = false;
   int32_t value = 0;
   TextView text{};
   SceneItemContext item{};
@@ -379,6 +380,7 @@ inline bool executeCommand(const SceneCommand& command,
     event.font = pgm_read_byte(command.payload + offset + 8);
     event.style = pgm_read_byte(command.payload + offset + 9);
     event.align = pgm_read_byte(command.payload + offset + 10);
+    event.ellipsis = pgm_read_byte(command.payload + offset + 11) != 0;
     const uint8_t isBinding = pgm_read_byte(command.payload + offset + 12);
     const BindingId binding = pgm_read_byte(command.payload + offset + 13);
     uint16_t length = 0;

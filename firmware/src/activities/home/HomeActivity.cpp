@@ -200,15 +200,17 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     }
   }
   if (isCancelled()) return false;
-  for (size_t i = 0; i < ctx.recentBooks.size() && i < 3; ++i) {
+  uint8_t itemIndex = 0;
+  for (size_t i = 1; i < ctx.recentBooks.size() && itemIndex < 3; ++i) {
     if (isCancelled()) return false;
     const RecentBook& b = ctx.recentBooks[i];
     if (tryEnsureCoverThumbInCtx(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH,
                                  isCancelled)) {
       std::string thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
-      UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, static_cast<uint8_t>(i)};
+      UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, itemIndex};
       (void)HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled);
     }
+    itemIndex++;
     if (isCancelled()) return false;
   }
   const auto apps = M4xRegistry::load();
@@ -265,8 +267,11 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
     ctx.model.setCurrentPaths(current.path.c_str(), current.originalSourcePath.c_str());
   }
   uint8_t recentIndex = 0;
-  for (const RecentBook& book : ctx.recentBooks) {
+  // Mini recents skip books[0] (already the hero) so the strip shows 3 unique titles.
+  for (size_t i = 0; i < ctx.recentBooks.size(); ++i) {
     if (isCancelled()) return;
+    if (i == 0) continue;
+    const RecentBook& book = ctx.recentBooks[i];
     if (ctx.model.addRecent(book.title.c_str(), book.author.c_str(), "", book.coverBmpPath.c_str(), book.progress)) {
       ctx.model.setRecentPaths(recentIndex++, book.path.c_str(), book.originalSourcePath.c_str());
     }
@@ -359,10 +364,9 @@ bool HomeActivity::dispatchHomeSceneAction(
   if (!backendCtx) return false;
   HomeScene::HomeSceneSnapshot snapshot{};
   if (!backendCtx->model.copyLatest(snapshot)) return false;
-  if (action.action == HomeScene::kActionOpenCurrentBook && snapshot.recentCount > 0) {
-    const auto& book = snapshot.recent[0];
-    onSelectBook(homeSceneText(snapshot, book.path),
-                 homeSceneText(snapshot, book.originalSource));
+  if (action.action == HomeScene::kActionOpenCurrentBook) {
+    onSelectBook(homeSceneText(snapshot, snapshot.currentPath),
+                 homeSceneText(snapshot, snapshot.currentOriginalSource));
   } else if (action.action == HomeScene::kActionOpenHistory) {
     onRecentsOpen();
   } else if (action.action == HomeScene::kActionOpenApps) {

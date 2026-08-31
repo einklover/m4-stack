@@ -360,7 +360,7 @@ def resolve_serial_backend(art: Path | None = None) -> tuple[str, str | None]:
 
 
 def boot_qemu(qemu: Path, flash: Path, sd: Path | None, *,
-              open_eth: bool = True, psram_mb: int = 8) -> tuple[subprocess.Popen, str, Path]:
+              open_eth: bool = True, hostfwd: bool = True, psram_mb: int = 8) -> tuple[subprocess.Popen, str, Path]:
     ART.mkdir(parents=True, exist_ok=True)
     qlog = ART / "qemu.log"
     frame = ART / "ssd1677-frame.pbm"
@@ -398,7 +398,12 @@ def boot_qemu(qemu: Path, flash: Path, sd: Path | None, *,
         "-serial", serial_arg,
     ]
     if open_eth:
-        cmd += ["-nic", "user,model=open_eth,hostfwd=tcp::18080-:80,hostfwd=tcp::18081-:81"]
+        # Guest outbound only is enough for Fanqie/JJWXC. Default hostfwd :18080
+        # collides with mihomo/ControlCenter on this machine.
+        nic = "user,model=open_eth"
+        if hostfwd:
+            nic += ",hostfwd=tcp::18080-:80,hostfwd=tcp::18081-:81"
+        cmd += ["-nic", nic]
     print("+", " ".join(shlex.quote(x) for x in cmd), flush=True)
     with qlog.open("w", encoding="utf-8") as lf:
         proc = subprocess.Popen(cmd, cwd=ROOT, stdout=lf, stderr=subprocess.STDOUT, text=True)
@@ -513,7 +518,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     flash = resolve_flash(args)
     sd = None if args.no_sd else ensure_sd(fresh=bool(args.fresh_sd), size_mb=int(args.sd_size_mb))
 
-    proc, pty, qlog = boot_qemu(qemu, flash, sd, open_eth=not args.no_net, psram_mb=int(args.psram_mb))
+    proc, pty, qlog = boot_qemu(
+        qemu, flash, sd,
+        open_eth=not args.no_net,
+        hostfwd=not bool(getattr(args, "no_hostfwd", False)),
+        psram_mb=int(args.psram_mb),
+    )
     try:
         info = wait_m4adb_ready(pty, proc, seconds=float(args.ready_seconds), qemu_log=qlog)
         serial_mode = "pipe" if str(pty).endswith(".pipe") else "pty"
@@ -717,6 +727,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--sd-size-mb", type=int, default=64)
     run.add_argument("--no-sd", action="store_true")
     run.add_argument("--no-net", action="store_true")
+    run.add_argument("--no-hostfwd", action="store_true",
+                     help="open_eth without tcp::18080/18081 (guest outbound only)")
     run.add_argument("--psram-mb", type=int, default=8, choices=(8, 16, 32))
     run.add_argument("--ready-seconds", type=float, default=90.0)
     mode = run.add_mutually_exclusive_group()

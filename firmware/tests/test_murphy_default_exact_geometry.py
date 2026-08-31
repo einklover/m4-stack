@@ -71,16 +71,16 @@ def test_hero_text_and_progress_exact():
     x,y,w,h = n["rect"]
     assert 207 <= x <= 211, f"title x {x} not 209±2"
     assert 140 <= y <= 144, f"title y {y} not 142±2"
-    # Author 209,187
+    # Author sits under the 2-line title slot (title h=52 → y=198)
     n = nodes[8]
     x,y,w,h = n["rect"]
     assert 207 <= x <= 211
-    assert 185 <= y <= 189, f"author y {y} not 187±2"
-    # Source 209,209
+    assert 196 <= y <= 200, f"author y {y} not 198±2"
+    # Source 209,220
     n = nodes[9]
     x,y,w,h = n["rect"]
     assert 207 <= x <= 211
-    assert 207 <= y <= 211, f"source y {y} not 209±2"
+    assert 218 <= y <= 222, f"source y {y} not 220±2"
     # Progress left text 209,253
     n = nodes[10]
     x,y,w,h = n["rect"]
@@ -117,6 +117,7 @@ def test_recent_header_and_repeat_exact():
     assert 90 <= c0["rect"][2] <= 94, f"recent cover w {c0['rect'][2]} not 92±2"
     assert 120 <= c0["rect"][3] <= 124, f"recent cover h {c0['rect'][3]} not 122±2"
     assert 134 <= c1["rect"][1] <= 138, f"recent title y {c1['rect'][1]} not 136±2"
+    assert 42 <= c1["rect"][3] <= 46, f"recent title h {c1['rect'][3]} not 44±2"
 
 def test_apps_header_and_repeat_exact():
     t = json.loads(THEME.read_text())

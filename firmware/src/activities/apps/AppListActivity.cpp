@@ -25,6 +25,7 @@
 #include "util/M4ListTouchPolicy.h"
 #include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
+#include <Utf8.h>
 
 #include <algorithm>
 #include <cstring>
@@ -37,6 +38,7 @@ constexpr int kDrawerGapX = 8;
 constexpr int kDrawerGapY = 8;
 constexpr int kDrawerIconSlot = 64;
 constexpr int kBuiltinIconSize = 32;
+constexpr size_t kDrawerLabelMaxChars = 4;
 
 M4ListTouchPolicy::DialogTwoButtonLayout uninstallDialogLayout(const GfxRenderer& renderer) {
   return M4ListTouchPolicy::makeCenteredTwoButtons(renderer.getScreenWidth(), renderer.getScreenHeight() - 190,
@@ -502,7 +504,9 @@ void AppListActivity::render() const {
       const auto& item = items_[static_cast<size_t>(i)];
       drawItemIcon(item, tile);
 
-      const std::string label = M4UiText::truncated(renderer, UI_10_FONT_ID, item.label.c_str(), tile.width - 8);
+      // Character-count ellipsis, not pixel-width: four CJK glyphs must stay
+      // intact (「文件管理」). Pixel truncate at tile.width-8 became 「文件管…」.
+      const std::string label = utf8EllipsizeChars(item.label.c_str(), kDrawerLabelMaxChars);
       const int labelWidth = M4UiText::textWidth(renderer, UI_10_FONT_ID, label.c_str());
       const int labelY = tile.y + kDrawerIconSlot + 8;
       M4UiText::draw(renderer, UI_10_FONT_ID, tile.x + std::max(0, (tile.width - labelWidth) / 2), labelY,

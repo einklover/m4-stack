@@ -5,6 +5,10 @@
 
 ## 0. 调度硬规则
 
+- **协调者禁止自己施工多文件视觉/主题/换行。** 用户已定：theme 槽、Gfx wrap、几何 pytest、图标裁切这类活交给 Muse Code Ultra；Grok 只审 diff、补十来行绑定/路由胶水、host 复跑、一次 QEMU。不要把「小问题直接修」扩成 renderer + theme + 五套测试。审核不要变成自己重写。
+- **即使要亲自上手，也先把 Muse 当脚手架，不要自己搜半天。** 两行书名那轮慢的是协调者在错误 cwd 里 grep / 读 renderer / 找几何测试，不是那 10 行胶水。Muse 改不好、diff 要打回、或胶水必须自己写时：复用已有 Muse（不要新开 noop），prompt 只问 path + symbol + ~10 lines of context，禁止它再改代码。拿到路径后再 `read_file` 动手。禁止用协调者全库搜索代替这一问。工作区写死 integration 绝对路径。**给 Muse / Luna 的 prompt 用英文**（定位、施工、打回都一样）；对真人用户用中文。
+- **语言分流。** 用户说中文 → 当面对人，回复中文。用户说英文 → 当其他 agent 在远程调本对话，回复英文、按 agent 协议交卷（路径、命令、artifact URL）。不要把英文远程调用当成闲聊。
+- **中文对话里图片不要图床。** 对真人：截图转 RGB PNG 后用对话内 markdown 直接显示（`![说明](本地png路径)`），不要 `share-image` / Catbox / Litterbox。英文远程调用才给可拉取的 URL。1-bit `m4adb` PNG 先转 RGB，否则对话里打不开。
 - **不要使用 Codex Sol 子代理。** 当前 M4 工作流只使用用户明确允许的非 Sol 代理；视觉/常规实现优先 Muse，复杂架构/并发审计可用 Luna。派活按能力，不要平均拆：表在 `docs/M4_AGENT_PROFILES.md`「因材施教」。Muse=快施工（白名单+bbox）；Luna=外科（生命周期/路由，不要像素）；Grok=merge/QEMU/胶水。不要派子代理去点 QEMU。
 - 多 worktree 编排（2026-08-31）：协调者留在 `m4-critical-ui-home`；三个子代理分别在 `m4-home-muse-impl` / `m4-home-luna-audit` / `m4-home-muse-tests`。流程见 `docs/M4_ORCHESTRATION.md`，模型画像见 `docs/M4_AGENT_PROFILES.md`。Git 互推是共享对象库上的本地 branch merge，禁止 `git push origin`。
 - Luna Max = `codex/gpt-5.6-luna` + thinking `max` + `full-access`。Muse Code Ultra = `muse-acp/muse-spark-1.2-contributor` + thinking `ultra` + `auto_accept`。`list_profiles` 为空时不要猜 profile 名。
@@ -30,6 +34,9 @@
 - QEMU 视觉验收最大浪费不是缺子代理，而是 **同一条串口上反复整机重启 × `--ready-seconds 120`**。keep-alive 的 ping 通常第 2 次（约 10s）就 READY，但协调者用 `get_command_or_subagent_output(timeout=130s)` 把每次开机空等到满 120s。图标更新应在 **QEMU 停着时** `mcopy` 三个 `icon_home.bmp`，然后 **只 boot 一次** 再截 Home + 点「更多」。不要 USB 装 49KB 包、不要为每张图重启。子代理不能并行抢同一个 PTY / 同一张 SD；可并行的是 packing、host 测试、裁图，且必须在第一次开机前做完。
 - `./m4sim run --keep-alive` 必须用 **后台 + `timeout: 0`**。工具默认 120s/180s 会 SIGTERM 整个 process group，QEMU 看起来像“自己挂了”。`--ready-seconds` 用 20 即可，不要 120。
 - `--ready-seconds` 是 ping 重试的 **deadline**，READY 后立刻返回。skip-build plugin-debug 实测第 2 次 ping（约 10s）就 READY。协调者不要对 `--keep-alive` 做 `get_command_or_subagent_output(120s)`——那个进程本来就不会退出。Agent 配方：`./m4sim run --plugin-debug --skip-build --no-net --ready-seconds 20`（默认 `--detach`，READY 后返回，QEMU 继续跑）。只有人要盯着终端时才 `--keep-alive`。
+- App 抽屉标签不要用 `M4UiText::truncated(..., tile.width-8)`。UI_10 下四个汉字宽于格子，像素截断会变成「文件管…」。产品规则是按 UTF-8 码点数：`utf8EllipsizeChars(label, 4)`，四个字显示全，超过四个字才加 `…`。Host 测 `firmware/tests/native_app/test_utf8_ellipsize.cpp`。
+- **十来行固件 UI 修补不要开子代理，也不要串行停 QEMU。** 完整节奏见文末「2026-08-31 — 小改动：先 PIO，再停 QEMU」。目标：改完 → PIO 与 host 测重叠 → 一次 `--ready-seconds 20` 开机截图。实测抽屉四字省略约 8–10 分钟，一半是先停机再全量编、再在协调者树里搜 `AppListActivity`。
+- **工具默认 cwd 是协调者 `m4-critical-ui-home`。** 每一条 `pio` / `g++` / `pytest` / `compile_home_theme` / `./m4sim` 都必须先 `cd` 到 integration（或当前真正跑 QEMU 的那棵树）。相对路径会编错树、改错 generated header、pytest 报 No such file。grep 工具的 workspace 也是协调者，搜 integration 文件要给绝对 path。
 
 ## 1. 共享工作区 / Git：最容易造成二次事故
 
@@ -73,6 +80,9 @@ PLATFORMIO_BUILD_CACHE_DIR=$HOME/.cache/murphy-m4/platformio-build-cache \
 ### 规则
 - 首次失败如果是 `platforms.lock` 权限，**立即切 `/tmp` 隔离目录**，不要重复撞默认路径。
 - 最终验收必须记录 exit code / SUCCESS / RAM / Flash；“build 进程存在”不算成功。
+- 改完源码立刻 `pio run -e murphy_m4_qemu_plugin`。**不要先 `./m4sim stop`。** 正在跑的 QEMU 已经把上一份 firmware 载进 `flash-16m.bin`，编译 `firmware.bin` 不抢 PTY / SD。Host `g++` / pytest 与 PIO 并行。PIO SUCCESS 后再 stop + `--skip-build` 开机。
+- 同一 worktree 不要并发两份 PIO。PIO 与 **已在跑的 QEMU** 不是同一类冲突。
+- 若只改了 1–2 个 `.cpp` 却重编了 SdFat / FrameworkArduino：先看这次 `pio run` 是否重写了 `*Html.generated.h` / `center-kernel`（时间戳一变会打脏依赖图）。那是增量失败，不是省略号这类改动本身需要全量。
 
 ## 3. QEMU：Preview 绿 ≠ 真机/QEMU 绿
 
@@ -155,25 +165,18 @@ PLATFORMIO_BUILD_CACHE_DIR=$HOME/.cache/murphy-m4/platformio-build-cache \
 - `RecentBook` 只有可信 progress percent 时，只显示 percent；没有可信 `current/total chapter/page` 就不要假造 `120 / 336`。
 - Preview 可以用 sample data帮助画图，但 production runtime 必须 unavailable → empty/hidden/fallback，不得生成假业务数据。
 
-## 10. 图片上传：不要每次重新找服务
+## 10. 图片：中文对话内嵌，英文远程才用 URL
 
-已知可用/曾用过：
+对人（中文）：
 
-- `~/.local/bin/share-image`：本地 VPS 图床 helper；服务曾经 502，不要无限重试。
-- Litterbox：临时图床，曾出现客户端里看不到/链接体验不稳定。
-- **Catbox 永久直链**：目前展示给用户更可靠，形式：`https://files.catbox.moe/<id>.png`。
+- 逻辑 480×800 RGB PNG 后，回复里写 `![Home](path.png)`，让对话直接出图。
+- **不要** `share-image`、Catbox、Litterbox。图床是给远程 agent 拉文件的，不是给人看的。
+- `m4adb screenshot` 常为 1-bit；对话/read_file 打不开 mode 1。先 `/usr/bin/python3` + PIL 转 RGB。物理 800×480 PBM 用 `ROTATE_270` 再转。
 
-经验：
-- 用户要“看图”时，优先 Catbox 直链。
-- 上传失败先判断服务 5xx/网络，不要误判成截图没生成。
-- 本地截图生成、上传成功是两个独立验收项。
+对远程 agent（英文）：
 
-Catbox 上传示例：
-
-```bash
-curl -sS -F 'reqtype=fileupload' -F 'fileToUpload=@path/to/image.png' \
-  https://catbox.moe/user/api.php
-```
+- 给可拉取的 URL（`share-image` 或其它）。不要假设对方能渲染本机路径。
+- `share-image` 曾 502，不要无限重试。上传失败先看服务，不要误判成截图没生成。
 
 ## 11. “验证代理”常见浪费模式
 
@@ -556,3 +559,40 @@ R1–R24 在 `/tmp` 把脏树 `firmware/src` 逐步叠到 `259cdbf7` 隔离树�
   `python3 simulator/tests/test_wifi_state_contract.py`。不要再把「mkdir 失败」当成
   凭据事务失败，除非目录确实不存在且创建失败。
 - 这种一行契约 bug 不要开子代理。
+
+## 2026-08-31 — 小改动：先 PIO，再停 QEMU
+
+抽屉「四个字显示全」是十来行修补，产品正确，过程偏慢（约 8–10 分钟）。慢的不是 QEMU：`--ready-seconds 20 --detach` 第 2 次 ping（约 8s）就 READY，点「更多」+ `ROTATE_270` 截图约 3s。慢的是改之前读太广、改之后先停模拟器再全量编。
+
+### 不要做
+- 为十来行开 Muse / Luna。调度往返比改代码久。
+- 在协调者树 `m4-critical-ui-home` 里搜 `AppListActivity` 宫格。Luna 合入后的抽屉在 **integration**（`m4-home-orch-integration`）。协调者树没有那份文件，grep 空结果会空转一轮。
+- 先读 `M4UiTextPolicy` / 抽新政策头 / 加源码扫描 pytest，再改那一行 `truncated(..., tile.width-8)`。调用点改掉、两条断言（4 字原样、5 字加 `…`）就够。
+- 先 `./m4sim stop` 再 PIO。串行停机把 4 分钟编译变成「停机 + 编译 + 开机」。
+- host `g++` 的 cwd 留在协调者树。integration 的新 `test_utf8_ellipsize.cpp` 会报 No such file。
+- `--ready-seconds 120`、对 `--keep-alive` 做 120s `get_command_or_subagent_output`。
+
+### 一次做对
+1. 在 **integration** 改调用点（或当前真正跑 QEMU 的那棵树）。
+2. 立刻 `PLATFORMIO_HOME_DIR=/tmp/pio_home2 pio run -e murphy_m4_qemu_plugin -j1`。QEMU 若在跑，让它接着跑。
+3. 同一时刻在 integration cwd 跑 host 测：`g++-14 -std=c++17 -I firmware/lib/Utf8 firmware/lib/Utf8/Utf8.cpp firmware/tests/native_app/test_utf8_ellipsize.cpp`。
+4. PIO SUCCESS 后：`M4SIM_TMP=/tmp/m4sim-home-r2-dock ./m4sim stop`，然后 `./m4sim run --plugin-debug --skip-build --no-hostfwd --ready-seconds 20`（默认 `--detach`）。
+5. `m4adb tap 437 611`（「更多」），`/usr/bin/python3` + PIL `ROTATE_270`，`share-image`。
+
+目标墙钟：改完到截图 ≈ PIO 时长 + 15s，而不是 PIO + 停机等待 + 探索轮次。
+
+## 2026-08-31 — Home mini 不要重复 hero；书名最多两排
+
+产品：四本最近阅读应是 1 hero + 3 本不同的书；封面书名最多两排，超出才 `…`。
+
+### 绑定
+- `setCurrent(books[0])` 之后，`addRecent` 和 mini cover decode 都必须从 `books[1]` 起，`itemIndex` 0..2。`homeRecentBooksCount=4` 才能填满 3 个 mini。
+- 跳过 hero 之后，`kActionOpenCurrentBook` 不能再读 `snapshot.recent[0]`（那是第一本 mini）。改用 `snapshot.currentPath` / `currentOriginalSource`。
+- cover key 必须跟 `addRecent` 下标对齐，否则会张冠李戴。
+
+### 排版
+- 编译器把 ellipsis 打在 text payload offset+11；runtime 以前跳过这个字节。要写进 `RenderEvent.ellipsis`。
+- `GfxSceneRenderer` 以前一次 `drawText` 不裁切，mini 书名会串列。`drawSceneText`：rect.h>20 且 (h≥2×lineH 或 h≥36) 才允许 2 行；装得下就原样画，装不下才在最后一行加 `…`。不要 `#include M4UiText.h`（绑死 `GfxRenderer`，SpyGfx 编不过）。
+- hero 标题槽 `[209,142,220,52]`，author/source 下移到 198/220；mini `$item.title` `[0,136,129,44]`，`item_height` 184。改完必须 `compile_home_theme.py --emit-header`。
+- SpyGfx `getTextWidth` 恒 50、`truncatedText` 恒 `"..."`。短字面 "A"/"B" 必须走单行原串；wrap 测用每码点 10px 的 WidthSpy。
+- 几何锁：`test_murphy_default_exact_geometry.py` / `test_home_typography_polish.py` / `test_home_font_hierarchy.py` / `test_murphy_default_target_geometry.py`。`test_home_scene_runtime.cpp` 里 `$recent` x=42 y=405 是旧主题坐标，与当前 28/380 不一致，不要当回归绿。

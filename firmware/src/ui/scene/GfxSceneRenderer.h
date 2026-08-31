@@ -57,6 +57,108 @@ class GfxSceneRenderer {
         (event.align == 2 ? remaining : remaining / 2));
   }
 
+  static size_t utf8CharBytes(const char* s) {
+    if (!s || s[0] == '\0') return 0;
+    const unsigned char c = static_cast<unsigned char>(s[0]);
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;
+  }
+
+  template <typename Gfx>
+  static size_t fitUtf8Prefix(const Gfx& gfx, int fontId, const char* text,
+                              size_t len, int maxW) {
+    if (!text || len == 0 || maxW <= 0) return 0;
+    char tmp[256];
+    size_t best = 0;
+    size_t i = 0;
+    while (i < len && text[i] != '\0') {
+      const size_t n = utf8CharBytes(text + i);
+      if (n == 0 || i + n > len) break;
+      const size_t next = i + n;
+      if (next >= sizeof(tmp)) break;
+      memcpy(tmp, text, next);
+      tmp[next] = '\0';
+      if (gfx.getTextWidth(fontId, tmp) > maxW) break;
+      best = next;
+      i = next;
+    }
+    return best;
+  }
+
+  // Wrap at most 2 lines inside ev.rect. Ellipsis only when a 2-line slot
+  // still cannot hold the remaining glyphs (or a 1-line slot overflows).
+  template <typename Gfx>
+  static void drawSceneText(const Gfx& gfx,
+                            const UiSceneRuntime::RenderEvent& ev,
+                            const char* buf) {
+    if (!buf || buf[0] == '\0') return;
+    const int fontId = runtimeFontId(ev.font);
+    const int maxW = ev.rect.width;
+    int lineH = gfx.getLineHeight(fontId);
+    if (lineH <= 0) lineH = 16;
+    int maxLines = 1;
+    if (ev.rect.height > 20 &&
+        (ev.rect.height >= lineH * 2 || ev.rect.height >= 36)) {
+      maxLines = 2;
+    }
+    const int fullW = gfx.getTextWidth(fontId, buf);
+    if (maxW <= 0 || fullW <= maxW || maxLines <= 1) {
+      if (ev.ellipsis && maxW > 0 && fullW > maxW) {
+        char lineBuf[256];
+        static const char kEllipsis[] = "\xE2\x80\xA6";
+        const int ellW = gfx.getTextWidth(fontId, kEllipsis);
+        const int budget = maxW > ellW ? maxW - ellW : 0;
+        size_t take = fitUtf8Prefix(gfx, fontId, buf, strlen(buf), budget);
+        if (take > sizeof(lineBuf) - 4) take = sizeof(lineBuf) - 4;
+        memcpy(lineBuf, buf, take);
+        memcpy(lineBuf + take, kEllipsis, 3);
+        lineBuf[take + 3] = '\0';
+        gfx.drawText(fontId, alignedTextX(gfx, ev, lineBuf), ev.rect.y, lineBuf, true);
+      } else {
+        gfx.drawText(fontId, alignedTextX(gfx, ev, buf), ev.rect.y, buf, true);
+      }
+      return;
+    }
+    const size_t total = strlen(buf);
+    size_t offset = 0;
+    int y = ev.rect.y;
+    for (int line = 0; line < maxLines && offset < total; ++line) {
+      const bool last = (line == maxLines - 1);
+      const char* rest = buf + offset;
+      const size_t restLen = total - offset;
+      char lineBuf[256];
+      size_t take = 0;
+      if (last && ev.ellipsis && gfx.getTextWidth(fontId, rest) > maxW) {
+        static const char kEllipsis[] = "\xE2\x80\xA6";
+        const int ellW = gfx.getTextWidth(fontId, kEllipsis);
+        const int budget = maxW > ellW ? maxW - ellW : 0;
+        take = fitUtf8Prefix(gfx, fontId, rest, restLen, budget);
+        if (take > sizeof(lineBuf) - 4) take = sizeof(lineBuf) - 4;
+        memcpy(lineBuf, rest, take);
+        memcpy(lineBuf + take, kEllipsis, 3);
+        lineBuf[take + 3] = '\0';
+      } else {
+        take = last ? restLen : fitUtf8Prefix(gfx, fontId, rest, restLen, maxW);
+        if (!last && take == 0) {
+          take = utf8CharBytes(rest);
+          if (take == 0 || take > restLen) break;
+        }
+        if (last && gfx.getTextWidth(fontId, rest) > maxW) {
+          take = fitUtf8Prefix(gfx, fontId, rest, restLen, maxW);
+        }
+        if (take > sizeof(lineBuf) - 1) take = sizeof(lineBuf) - 1;
+        memcpy(lineBuf, rest, take);
+        lineBuf[take] = '\0';
+      }
+      gfx.drawText(fontId, alignedTextX(gfx, ev, lineBuf), y, lineBuf, true);
+      offset += take;
+      y += lineH;
+    }
+  }
+
   // Draw a single 1-bit asset at dst. Black ink only, white = no-op.
   // Asset is 1bpp MSB first, stride bytes per row, 1=black.
   template <typename Gfx>
@@ -242,18 +344,11 @@ class GfxSceneRenderer {
           break;
         }
         case UiScene::kNodeText: {
-          // TextView -> null-terminated tmp buffer (max 255 per compile)
           char buf[256]{};
           size_t n = ev.text.size < 255 ? ev.text.size : 255;
           for (size_t i = 0; i < n; ++i) buf[i] = static_cast<char>(ev.text.readByte(static_cast<uint16_t>(i)));
           buf[n] = '\0';
-          // Use system chrome path: directly call gfx.drawText with font/style.
-          if (n > 0) {
-            // Truncate if needed via gfx.truncatedText is optional; source already bounded.
-            gfx.drawText(runtimeFontId(ev.font), alignedTextX(gfx, ev, buf), ev.rect.y, buf, true);
-          } else if (ev.text.size == 0 && ev.text.data == nullptr) {
-            // empty literal: still count as text node but no draw
-          }
+          if (n > 0) drawSceneText(gfx, ev, buf);
           break;
         }
         case UiScene::kNodeCover: {
@@ -408,7 +503,7 @@ class GfxSceneRenderer {
           case UiScene::kNodeText: {
             char buf[256]={}; size_t n=ev.text.size<255?ev.text.size:255;
             for(size_t i=0;i<n;++i) buf[i]=(char)ev.text.readByte((uint16_t)i);
-            buf[n]='\0'; if(n>0) gfx.drawText(GfxSceneRenderer::runtimeFontId(ev.font),GfxSceneRenderer::alignedTextX(gfx,ev,buf),ev.rect.y,buf,true);
+            buf[n]='\0'; if(n>0) GfxSceneRenderer::drawSceneText(gfx,ev,buf);
             break;
           }
           case UiScene::kNodeCover: {

@@ -70,13 +70,13 @@ int main() {
   for (size_t i=0;i<cmdCount;++i) {
     const auto& command = cmds[i];
     if (command.type == kNodeText && command.flags == 0 && command.payloadLen >= 16 &&
-        UiScene::readU16(command.payload + 2) == 302) {
+        UiScene::readU16(command.payload + 2) == 253) {
       assert(pgm_read_byte(command.payload + 12) == 1);
       assert(pgm_read_byte(command.payload + 13) == 16);
       foundProgressTextBinding = true;
     }
     if (command.type == kNodeProgress && command.flags == 0 && command.payloadLen >= 11 &&
-        UiScene::readU16(command.payload + 2) == 325) {
+        UiScene::readU16(command.payload + 2) == 278) {
       assert(pgm_read_byte(command.payload + 10) == 15);
       foundNumericProgressBinding = true;
     }

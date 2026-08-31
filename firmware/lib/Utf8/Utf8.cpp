@@ -46,3 +46,24 @@ void utf8TruncateChars(std::string& str, const size_t numChars) {
     utf8RemoveLastChar(str);
   }
 }
+
+std::string utf8EllipsizeChars(const char* text, const size_t maxChars, const char* ellipsis) {
+  if (!text || !*text) return {};
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(text);
+  const unsigned char* cut = p;
+  size_t count = 0;
+  while (*p) {
+    const unsigned char* before = p;
+    if (utf8NextCodepoint(&p) == 0 || p <= before) break;
+    ++count;
+    if (count <= maxChars) {
+      cut = p;
+    } else {
+      break;
+    }
+  }
+  if (count <= maxChars) return std::string(text);
+  std::string out(text, static_cast<size_t>(cut - reinterpret_cast<const unsigned char*>(text)));
+  if (ellipsis && *ellipsis) out += ellipsis;
+  return out;
+}
