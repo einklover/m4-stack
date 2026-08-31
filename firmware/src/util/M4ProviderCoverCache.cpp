@@ -11,6 +11,7 @@
 #include "apps/providers/M4Psram.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <string>
 
@@ -59,6 +60,32 @@ void writeLe32(FsFile& file, uint32_t value) {
     file.write(static_cast<uint8_t>(value & 0xffu));
     value >>= 8;
   }
+}
+
+bool writeBmpHeader1bit(FsFile& file, int width, int height) {
+  const int rowBytes = (width + 31) / 32 * 4;
+  const int imageSize = rowBytes * height;
+  const uint32_t fileSize = 62u + static_cast<uint32_t>(imageSize);
+  if (file.write('B') != 1 || file.write('M') != 1) return false;
+  writeLe32(file, fileSize);
+  writeLe32(file, 0);
+  writeLe32(file, 62);
+  writeLe32(file, 40);
+  writeLe32(file, static_cast<uint32_t>(width));
+  writeLe32(file, static_cast<uint32_t>(-height));
+  writeLe16(file, 1);
+  writeLe16(file, 1);
+  writeLe32(file, 0);
+  writeLe32(file, static_cast<uint32_t>(imageSize));
+  writeLe32(file, 2835);
+  writeLe32(file, 2835);
+  writeLe32(file, 2);
+  writeLe32(file, 2);
+  uint8_t palette[8] = {0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x00};
+  for (uint8_t v : palette) {
+    if (file.write(v) != 1) return false;
+  }
+  return true;
 }
 
 bool writePngBmpHeader(FsFile& file, int width, int height) {
@@ -199,6 +226,236 @@ bool pngFileToBmpStream(const std::string& sourcePath, const std::string& target
   return ok;
 }
 
+bool bmpFileTo1BitBmpWithSize(const std::string& sourcePath, const std::string& targetPath,
+                                   int dstW, int dstH) {
+  if (dstW <= 0 || dstH <= 0 || dstW > 2048 || dstH > 3072 ||
+      !M4NativeProviderHeavyGate::heapHealthy(0x420)) {
+    return false;
+  }
+  FsFile src;
+  if (!SdMan.openFileForRead("M4Cover", sourcePath.c_str(), src)) return false;
+
+  auto readU16 = [](FsFile& f, uint16_t& out) -> bool {
+    int c0 = f.read();
+    int c1 = f.read();
+    if (c0 < 0 || c1 < 0) return false;
+    out = static_cast<uint16_t>(static_cast<uint8_t>(c0) | (static_cast<uint16_t>(static_cast<uint8_t>(c1)) << 8));
+    return true;
+  };
+  auto readU32 = [](FsFile& f, uint32_t& out) -> bool {
+    int c0 = f.read();
+    int c1 = f.read();
+    int c2 = f.read();
+    int c3 = f.read();
+    if (c0 < 0 || c1 < 0 || c2 < 0 || c3 < 0) return false;
+    out = static_cast<uint32_t>(static_cast<uint8_t>(c0)) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(c1)) << 8) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(c2)) << 16) |
+          (static_cast<uint32_t>(static_cast<uint8_t>(c3)) << 24);
+    return true;
+  };
+  auto readI32 = [&](FsFile& f, int32_t& out) -> bool {
+    uint32_t u;
+    if (!readU32(f, u)) return false;
+    out = static_cast<int32_t>(u);
+    return true;
+  };
+
+  if (!src.seek(0)) { src.close(); return false; }
+  uint16_t bfType;
+  if (!readU16(src, bfType) || bfType != 0x4D42) { src.close(); return false; }
+  uint32_t bfSizeDummy;
+  if (!readU32(src, bfSizeDummy)) { src.close(); return false; }
+  uint32_t reserved;
+  if (!readU32(src, reserved)) { src.close(); return false; }
+  uint32_t bfOffBits;
+  if (!readU32(src, bfOffBits)) { src.close(); return false; }
+  uint32_t biSize;
+  if (!readU32(src, biSize) || biSize < 40) { src.close(); return false; }
+  int32_t biWidth;
+  if (!readI32(src, biWidth)) { src.close(); return false; }
+  int32_t biHeightRaw;
+  if (!readI32(src, biHeightRaw)) { src.close(); return false; }
+  if (biWidth == INT32_MIN || biHeightRaw == INT32_MIN) { src.close(); return false; }
+  const bool topDown = biHeightRaw < 0;
+  const int srcW = static_cast<int>(biWidth);
+  const int srcH = topDown ? -biHeightRaw : biHeightRaw;
+  uint16_t planes;
+  if (!readU16(src, planes) || planes != 1) { src.close(); return false; }
+  uint16_t bpp;
+  if (!readU16(src, bpp)) { src.close(); return false; }
+  const bool validBpp = (bpp == 1 || bpp == 2 || bpp == 4 || bpp == 8 || bpp == 24 || bpp == 32);
+  if (!validBpp) { src.close(); return false; }
+  uint32_t comp;
+  if (!readU32(src, comp)) { src.close(); return false; }
+  if (!(comp == 0 || (bpp == 32 && comp == 3))) { src.close(); return false; }
+  uint32_t biSizeImageDummy;
+  if (!readU32(src, biSizeImageDummy)) { src.close(); return false; }
+  uint32_t xPels, yPels;
+  if (!readU32(src, xPels)) { src.close(); return false; }
+  if (!readU32(src, yPels)) { src.close(); return false; }
+  uint32_t colorsUsed;
+  if (!readU32(src, colorsUsed) || colorsUsed > 256) { src.close(); return false; }
+  uint32_t colorsImportant;
+  if (!readU32(src, colorsImportant)) { src.close(); return false; }
+
+  if (srcW <= 0 || srcH <= 0 || srcW > 2048 || srcH > 3072) { src.close(); return false; }
+  const int srcRowBytes = (srcW * bpp + 31) / 32 * 4;
+  if (srcRowBytes <= 0 || srcRowBytes > 8192) { src.close(); return false; }
+
+  // Palette
+  uint8_t paletteLum[256];
+  for (int i = 0; i < 256; ++i) paletteLum[i] = static_cast<uint8_t>(i);
+  uint32_t palEntries = 0;
+  if (bpp <= 8) {
+    palEntries = colorsUsed ? colorsUsed : (1u << bpp);
+    if (palEntries > 256) palEntries = 256;
+  }
+  if (palEntries > 0) {
+    const uint32_t paletteOffset = 14u + biSize;
+    if (!src.seek(paletteOffset)) { src.close(); return false; }
+    for (uint32_t i = 0; i < palEntries; ++i) {
+      uint8_t rgb[4];
+      if (src.read(rgb, 4) != 4) { src.close(); return false; }
+      paletteLum[i] = static_cast<uint8_t>((77u * rgb[2] + 150u * rgb[1] + 29u * rgb[0]) >> 8);
+    }
+  }
+  if (!src.seek(bfOffBits)) { src.close(); return false; }
+
+  const size_t srcPixels = static_cast<size_t>(srcW) * static_cast<size_t>(srcH);
+  uint8_t* srcGray = static_cast<uint8_t*>(M4Psram::mallocPrefer(srcPixels));
+  if (!srcGray) { src.close(); return false; }
+  uint8_t* rawRow = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(srcRowBytes)));
+  if (!rawRow) { M4Psram::freePrefer(srcGray); src.close(); return false; }
+
+  bool loadOk = true;
+  for (int i = 0; i < srcH; ++i) {
+    if (src.read(rawRow, static_cast<size_t>(srcRowBytes)) != srcRowBytes) { loadOk = false; break; }
+    const int y = topDown ? i : (srcH - 1 - i);
+    uint8_t* dst = srcGray + static_cast<size_t>(y) * static_cast<size_t>(srcW);
+    switch (bpp) {
+      case 1: {
+        for (int x = 0; x < srcW; ++x) {
+          const uint8_t idx = (rawRow[x >> 3] & (0x80 >> (x & 7))) ? 1 : 0;
+          dst[x] = paletteLum[idx];
+        }
+        break;
+      }
+      case 2: {
+        for (int x = 0; x < srcW; ++x) {
+          const uint8_t idx = (rawRow[x >> 2] >> (6 - ((x & 3) * 2))) & 0x03;
+          dst[x] = paletteLum[idx];
+        }
+        break;
+      }
+      case 4: {
+        for (int x = 0; x < srcW; ++x) {
+          const uint8_t v = rawRow[x >> 1];
+          const uint8_t idx = (x & 1) ? (v & 0x0F) : (v >> 4);
+          dst[x] = paletteLum[idx];
+        }
+        break;
+      }
+      case 8: {
+        for (int x = 0; x < srcW; ++x) dst[x] = paletteLum[rawRow[x]];
+        break;
+      }
+      case 24: {
+        for (int x = 0; x < srcW; ++x) {
+          const uint8_t b = rawRow[x * 3 + 0];
+          const uint8_t g = rawRow[x * 3 + 1];
+          const uint8_t r = rawRow[x * 3 + 2];
+          dst[x] = static_cast<uint8_t>((77u * r + 150u * g + 29u * b) >> 8);
+        }
+        break;
+      }
+      case 32: {
+        for (int x = 0; x < srcW; ++x) {
+          const uint8_t b = rawRow[x * 4 + 0];
+          const uint8_t g = rawRow[x * 4 + 1];
+          const uint8_t r = rawRow[x * 4 + 2];
+          dst[x] = static_cast<uint8_t>((77u * r + 150u * g + 29u * b) >> 8);
+        }
+        break;
+      }
+      default: loadOk = false; break;
+    }
+    if (!loadOk) break;
+  }
+  M4Psram::freePrefer(rawRow);
+  src.close();
+  if (!loadOk) { M4Psram::freePrefer(srcGray); return false; }
+
+  // Compute aspect-fill crop
+  int srcCropW = srcW;
+  int srcCropH = srcH;
+  int srcX0 = 0;
+  int srcY0 = 0;
+  if (static_cast<uint64_t>(srcW) * static_cast<uint64_t>(dstH) > static_cast<uint64_t>(srcH) * static_cast<uint64_t>(dstW)) {
+    srcCropW = static_cast<int>(static_cast<uint64_t>(srcH) * static_cast<uint64_t>(dstW) / static_cast<uint64_t>(dstH));
+    if (srcCropW < 1) srcCropW = 1;
+    if (srcCropW > srcW) srcCropW = srcW;
+    srcX0 = (srcW - srcCropW) / 2;
+  } else {
+    srcCropH = static_cast<int>(static_cast<uint64_t>(srcW) * static_cast<uint64_t>(dstH) / static_cast<uint64_t>(dstW));
+    if (srcCropH < 1) srcCropH = 1;
+    if (srcCropH > srcH) srcCropH = srcH;
+    srcY0 = (srcH - srcCropH) / 2;
+  }
+
+  FsFile out;
+  if (!SdMan.openFileForWrite("M4Cover", targetPath.c_str(), out)) {
+    M4Psram::freePrefer(srcGray);
+    return false;
+  }
+  if (!writeBmpHeader1bit(out, dstW, dstH)) {
+    out.close();
+    M4Psram::freePrefer(srcGray);
+    return false;
+  }
+  const int rowBytesDst = (dstW + 31) / 32 * 4;
+  uint8_t* targetRow = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(rowBytesDst)));
+  if (!targetRow) {
+    out.close();
+    M4Psram::freePrefer(srcGray);
+    return false;
+  }
+  auto* dither = new Atkinson1BitDitherer(dstW);
+  bool ok = true;
+  for (int ty = 0; ty < dstH; ++ty) {
+    std::memset(targetRow, 0, static_cast<size_t>(rowBytesDst));
+    const int srcYStart = srcY0 + ty * srcCropH / dstH;
+    int srcYEnd = srcY0 + (ty + 1) * srcCropH / dstH;
+    if (srcYEnd <= srcYStart) srcYEnd = srcYStart + 1;
+    if (srcYEnd > srcY0 + srcCropH) srcYEnd = srcY0 + srcCropH;
+    for (int tx = 0; tx < dstW; ++tx) {
+      const int srcXStart = srcX0 + tx * srcCropW / dstW;
+      int srcXEnd = srcX0 + (tx + 1) * srcCropW / dstW;
+      if (srcXEnd <= srcXStart) srcXEnd = srcXStart + 1;
+      if (srcXEnd > srcX0 + srcCropW) srcXEnd = srcX0 + srcCropW;
+      int sum = 0;
+      int count = 0;
+      for (int sy = srcYStart; sy < srcYEnd; ++sy) {
+        const uint8_t* row = srcGray + static_cast<size_t>(sy) * static_cast<size_t>(srcW);
+        for (int sx = srcXStart; sx < srcXEnd; ++sx) {
+          sum += row[sx];
+          ++count;
+        }
+      }
+      const uint8_t gray = count ? static_cast<uint8_t>(sum / count) : 0;
+      const uint8_t bit = dither ? dither->processPixel(gray, tx) : static_cast<uint8_t>(gray >= 128 ? 1 : 0);
+      if (bit) targetRow[tx >> 3] |= static_cast<uint8_t>(0x80 >> (tx & 7));
+    }
+    if (dither) dither->nextRow();
+    if (out.write(targetRow, static_cast<size_t>(rowBytesDst)) != rowBytesDst) { ok = false; break; }
+  }
+  delete dither;
+  M4Psram::freePrefer(targetRow);
+  M4Psram::freePrefer(srcGray);
+  out.close();
+  return ok;
+}
+
 bool copyFile(const std::string& sourcePath, const std::string& targetPath) {
   FsFile source;
   FsFile target;
@@ -235,13 +492,16 @@ bool convertCoverFile(const std::string& source, const std::string& target, int 
   const auto format = sniffFile(sniff);
   sniff.close();
   if (format == ImageFormat::Bmp) {
-    if (oneBit) return false;
-    FsFile input;
-    if (!SdMan.openFileForRead("M4Cover", source.c_str(), input)) return false;
-    Bitmap bitmap(input);
-    const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok;
-    input.close();
-    return valid && copyFile(source, target);
+    if (!oneBit) {
+      FsFile input;
+      if (!SdMan.openFileForRead("M4Cover", source.c_str(), input)) return false;
+      Bitmap bitmap(input);
+      const bool valid = bitmap.parseHeaders() == BmpReaderError::Ok;
+      input.close();
+      return valid && copyFile(source, target);
+    }
+    // One-bit exact: scale the BMP (including 2-bit Fengyan 171x254) to WxH via dithered 1-bit.
+    return bmpFileTo1BitBmpWithSize(source, target, width, height);
   }
   if (format == ImageFormat::Png) return pngFileToBmpStream(source, target, width, height);
   if (format != ImageFormat::Jpeg) return false;
