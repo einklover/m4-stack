@@ -58,6 +58,7 @@ class AppListActivity final : public ActivityWithSubactivity {
     bool plugin = false;
     BuiltinAction builtin = BuiltinAction::Settings;
     int appIndex = -1;
+    std::string id;
     std::string label;
     UIIcon icon = UIIcon::Library;
     std::vector<uint8_t> pluginIcon;

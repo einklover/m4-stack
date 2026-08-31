@@ -584,6 +584,14 @@ void onGoToApps() {
 }
 
 void onGoToNativeApp(const std::string& appId) {
+  if (appId == "builtin.files") {
+    onGoToFileTransfer();
+    return;
+  }
+  if (appId == "builtin.settings") {
+    onGoToSettings();
+    return;
+  }
 #ifdef CROSSPOINT_MURPHY_M4
   if (!M4xIsValidPackageId(appId)) {
     onGoToApps();

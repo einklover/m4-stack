@@ -166,9 +166,11 @@ void AppListActivity::reload() {
 
   std::vector<DrawerItem> items;
   items.reserve(8 + apps.size());
-  const auto addBuiltin = [&items](const BuiltinAction action, const char* label, const UIIcon icon) {
+  const auto addBuiltin = [&items](const BuiltinAction action, const char* id, const char* label,
+                                   const UIIcon icon) {
     DrawerItem item;
     item.builtin = action;
+    item.id = id ? id : "";
     item.label = label ? label : "";
     item.icon = icon;
     items.push_back(std::move(item));
@@ -176,28 +178,29 @@ void AppListActivity::reload() {
 
   // Keep the non-Fengyan home destinations available from the drawer. Optional
   // entries use the same configured-state checks as the legacy home menu.
-  addBuiltin(BuiltinAction::FileTransfer, L(Str::kFileManager), UIIcon::Folder);
-  addBuiltin(BuiltinAction::RecentBooks, L(Str::kReadingHistory), UIIcon::Recent);
+  addBuiltin(BuiltinAction::FileTransfer, "builtin.files", L(Str::kFileManager), UIIcon::Folder);
+  addBuiltin(BuiltinAction::RecentBooks, "builtin.history", L(Str::kReadingHistory), UIIcon::Recent);
   if (std::strlen(SETTINGS.opdsServerUrl) > 0) {
-    addBuiltin(BuiltinAction::Opds, L(Str::kOPDSBrowser), UIIcon::Hotspot);
+    addBuiltin(BuiltinAction::Opds, "builtin.opds", L(Str::kOPDSBrowser), UIIcon::Hotspot);
   }
   if (std::strlen(SETTINGS.jgUsername) > 0) {
-    addBuiltin(BuiltinAction::JianGuo, L(Str::kJianGuoDisk), UIIcon::Transfer);
+    addBuiltin(BuiltinAction::JianGuo, "builtin.jianguo", L(Str::kJianGuoDisk), UIIcon::Transfer);
   }
   if (std::strlen(SETTINGS.dcUsername) > 0) {
-    addBuiltin(BuiltinAction::DataCapsule, L(Str::kDataCapsule), UIIcon::Cog);
+    addBuiltin(BuiltinAction::DataCapsule, "builtin.datacapsule", L(Str::kDataCapsule), UIIcon::Cog);
   }
   if (BookmarkStore::hasAnyBookmarks()) {
-    addBuiltin(BuiltinAction::BookmarkNotes, L(Str::kBookmarkNotes), UIIcon::Book);
+    addBuiltin(BuiltinAction::BookmarkNotes, "builtin.bookmarks", L(Str::kBookmarkNotes), UIIcon::Book);
   }
-  addBuiltin(BuiltinAction::Network, L(Str::kNetworkManage), UIIcon::Wifi);
-  addBuiltin(BuiltinAction::Settings, L(Str::kSystemSettings), UIIcon::Settings);
+  addBuiltin(BuiltinAction::Network, "builtin.network", L(Str::kNetworkManage), UIIcon::Wifi);
+  addBuiltin(BuiltinAction::Settings, "builtin.settings", L(Str::kSystemSettings), UIIcon::Settings);
 
   for (size_t i = 0; i < apps.size(); ++i) {
     const auto& app = apps[i];
     DrawerItem item;
     item.plugin = true;
     item.appIndex = static_cast<int>(i);
+    item.id = app.id;
     item.label = app.name.empty() ? app.id : app.name;
     item.icon = UIIcon::Library;
 
