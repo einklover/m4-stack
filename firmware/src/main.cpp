@@ -1555,9 +1555,7 @@ void loop() {
       return;
     } else if (!currentActivity->isHomeActivity() && mappedInputManager.wasHistoryGesture()) {
       Serial.printf("[%lu] [M4-GESTURE] history (bottom bar)\n", millis());
-      if (dynamic_cast<RecentBooksActivity*>(currentActivity) == nullptr) {
-        onGoToRecentBooks();
-      }
+      onGoToRecentBooks();
       return;
     } else if (!currentActivity->isHomeActivity() && mappedInputManager.wasBackGesture()) {
       Serial.printf("[%lu] [M4-GESTURE] back (edge swipe / bottom bar)\n", millis());
