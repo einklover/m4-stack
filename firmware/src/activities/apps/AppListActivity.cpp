@@ -192,7 +192,7 @@ void AppListActivity::reload() {
 
   // Keep the non-Fengyan home destinations available from the drawer. Optional
   // entries use the same configured-state checks as the legacy home menu.
-  addBuiltin(BuiltinAction::FileTransfer, "builtin.files", L(Str::kFileManager), UIIcon::Folder);
+  addBuiltin(BuiltinAction::FileManager, "builtin.files", L(Str::kFileManager), UIIcon::Folder);
   addBuiltin(BuiltinAction::RecentBooks, "builtin.history", L(Str::kReadingHistory), UIIcon::Recent);
   if (std::strlen(SETTINGS.opdsServerUrl) > 0) {
     addBuiltin(BuiltinAction::Opds, "builtin.opds", L(Str::kOPDSBrowser), UIIcon::Hotspot);
@@ -286,8 +286,8 @@ void AppListActivity::moveSelection(const int delta) {
 
 void AppListActivity::activateBuiltin(const BuiltinAction action) {
   switch (action) {
-    case BuiltinAction::FileTransfer:
-      if (callbacks_.onFileTransferOpen) callbacks_.onFileTransferOpen();
+    case BuiltinAction::FileManager:
+      if (callbacks_.onFileManagerOpen) callbacks_.onFileManagerOpen();
       return;
     case BuiltinAction::RecentBooks:
       if (callbacks_.onRecentBooksOpen) callbacks_.onRecentBooksOpen();

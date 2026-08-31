@@ -65,7 +65,6 @@ static volatile bool gM4QemuScreenMode = true;
 #include "activities/home/MyLibraryActivity.h"
 #include "activities/home/RecentBooksActivity.h"
 #include "activities/network/CrossPointWebServerActivity.h"
-#include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/ReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/apps/AppListActivity.h"
@@ -533,6 +532,7 @@ void enterDeepSleep() {
 
 void onGoHome();
 void onGoHomeAnimated(bool animateEntry, int animationDirection);
+void onGoToMyLibrary();
 void onGoToMyLibraryWithPath(const std::string& path);
 void onGoToRecentBooks();
 void onGoToBrowser();
@@ -565,27 +565,32 @@ void onGoToSettings() {
 
 void onGoToNetwork() {
   exitActivity();
-  enterNewActivity(new WifiSelectionActivity(renderer, mappedInputManager, [](const bool) { onGoHome(); }));
+  // Network management is the existing Settings Network & Sync L2. Keep the
+  // transfer server behind the explicit USB/debug wifi_transfer hook below;
+  // neither AppList label should land on CrossPointWebServer.
+  enterNewActivity(new SettingsActivity(renderer, mappedInputManager, onGoHome, SettingsHubCard::NetworkSync,
+                                         SettingsPane::Category));
 }
 
 void onGoToApps() {
   exitActivity();
-  AppListActivity::Callbacks callbacks{
-      onGoToSettings,
-      onGoToFileTransfer,
-      onGoToRecentBooks,
-      onGoToBrowser,
-      onGoToJianGuoYun,
-      onGoToDataCapsule,
-      onGoToBookmarkNotes,
-      onGoToNetwork,
-  };
+  AppListActivity::Callbacks callbacks;
+  // Keep this wiring named: aggregate position changes previously let a
+  // drawer label land in a sibling destination after callback edits.
+  callbacks.onSettingsOpen = onGoToSettings;
+  callbacks.onFileManagerOpen = onGoToMyLibrary;
+  callbacks.onRecentBooksOpen = onGoToRecentBooks;
+  callbacks.onOpdsOpen = onGoToBrowser;
+  callbacks.onJianGuoOpen = onGoToJianGuoYun;
+  callbacks.onDataCapsuleOpen = onGoToDataCapsule;
+  callbacks.onBookmarkNotesOpen = onGoToBookmarkNotes;
+  callbacks.onNetworkOpen = onGoToNetwork;
   enterNewActivity(new AppListActivity(renderer, mappedInputManager, onGoHome, std::move(callbacks)));
 }
 
 void onGoToNativeApp(const std::string& appId) {
   if (appId == "builtin.files") {
-    onGoToFileTransfer();
+    onGoToMyLibrary();
     return;
   }
   if (appId == "builtin.settings") {
