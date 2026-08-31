@@ -32,8 +32,8 @@ struct SettingsNavState {
 constexpr int kSettingsHubCardCount = 4;
 constexpr int kSettingsL2Window = 8;
 constexpr int kSettingsContentTop = 68;
-constexpr int kSettingsHubItemH = 140;
-constexpr int kSettingsHubGap = 12;
+constexpr int kSettingsHubItemH = 100;
+constexpr int kSettingsHubGap = 8;
 constexpr int kSettingsL2ItemH = 80;
 constexpr int kSettingsL2Gap = 4;
 

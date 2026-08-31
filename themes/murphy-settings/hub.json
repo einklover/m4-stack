@@ -21,7 +21,7 @@
     {"type": "line", "x": 23, "y": 52, "x2": 456, "y2": 52, "width": 1, "color": "black"},
     {"type": "repeat", "source": "$hub.cards", "limit": 4, "x": 24, "y": 68, "item_width": 432, "item_height": 100, "gap": 8, "direction": "vertical", "action": "open_hub_card", "action_arg": "$item.id", "children": [
       {"type": "round_rect", "rect": [0, 12, 4, 76], "r": 0, "fill": true, "visible_if": "$item.selected"},
-      {"type": "text", "rect": [24, 32, 380, 36], "text": "$item.title", "font": "ui_24_bold", "align": "left", "ellipsis": true}
+      {"type": "text", "rect": [24, 32, 380, 36], "text": "$item.title", "font": "ui_22_bold", "align": "left", "ellipsis": true}
     ]}
   ]
 }
