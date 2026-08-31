@@ -211,6 +211,45 @@ class GfxSceneRenderer {
     return true;
   }
 
+  // Visible placeholder for missing covers (hero 138x191 + mini 92x122).
+  // Not empty white: rounded border + diagonal cross + centered book spine.
+  template <typename Gfx>
+  static void drawCoverPlaceholder(const Gfx& gfx, const UiSceneRuntime::RenderEvent& ev) {
+    const int rx = ev.rect.x;
+    const int ry = ev.rect.y;
+    const int rw = ev.rect.width;
+    const int rh = ev.rect.height;
+    const int r = ev.radius;
+    if (rw <= 0 || rh <= 0) return;
+    // Outer border (rounded when radius set)
+    if (r > 0) {
+      gfx.drawRoundedRect(rx, ry, rw, rh, 1, r, true);
+    } else {
+      gfx.drawRect(rx, ry, rw, rh, 1, true);
+    }
+    if (rw < 12 || rh < 12) return;
+    // Diagonal cross (inset 3px from border so it doesn't overlap the stroke)
+    const int x0 = rx + 3;
+    const int y0 = ry + 3;
+    const int x1 = rx + rw - 4;
+    const int y1 = ry + rh - 4;
+    if (x1 > x0 && y1 > y0) {
+      gfx.drawLine(x0, y0, x1, y1, true);
+      gfx.drawLine(x1, y0, x0, y1, true);
+    }
+    // Centered book-rect ( ~40% of cover, centered )
+    const int bw = rw * 2 / 5;
+    const int bh = rh / 4;
+    if (bw >= 12 && bh >= 8) {
+      const int bx = rx + (rw - bw) / 2;
+      const int by = ry + (rh - bh) / 2;
+      gfx.drawRect(bx, by, bw, bh, 1, true);
+      // Small spine line inside the book rect
+      const int spineX = bx + bw / 4;
+      gfx.drawLine(spineX, by, spineX, by + bh - 1, true);
+    }
+  }
+
   // Cover rendering: aspect-fill (preserve aspect, center-crop), rounded clipping, 1px outer stroke last.
   // Destination rect size is respected; do NOT blit at native asset size.
   // Missing asset still falls back to placeholder elsewhere.
@@ -361,21 +400,17 @@ class GfxSceneRenderer {
             if (a && a->valid()) {
               drawCoverAsset(gfx, *a, ev);
             } else {
-              // Fallback placeholder: 1px border
-              gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
+              drawCoverPlaceholder(gfx, ev);
             }
           } else if (ev.text.size > 0) {
-            // Text fallback (path) — still attempt asset by item index if available
             const UiSceneAsset* a = assets.get(assetKey(ev));
             if (a && a->valid()) {
               drawCoverAsset(gfx, *a, ev);
             } else {
-              // Placeholder: draw rect + first glyph
-              gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
-              // optional: draw first glyph centered — keep minimal for test
+              drawCoverPlaceholder(gfx, ev);
             }
           } else {
-            gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
+            drawCoverPlaceholder(gfx, ev);
           }
           break;
         }
@@ -511,9 +546,9 @@ class GfxSceneRenderer {
             break;
           }
           case UiScene::kNodeCover: {
-            if(ev.assetBinding!=kInvalidBindingId){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);}
-            else if(ev.text.size>0){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);}
-            else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);
+            if(ev.assetBinding!=kInvalidBindingId){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else GfxSceneRenderer::drawCoverPlaceholder(gfx,ev);}
+            else if(ev.text.size>0){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else GfxSceneRenderer::drawCoverPlaceholder(gfx,ev);}
+            else GfxSceneRenderer::drawCoverPlaceholder(gfx,ev);
             break;
           }
           case UiScene::kNodeProgress: {
