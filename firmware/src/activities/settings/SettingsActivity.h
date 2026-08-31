@@ -156,6 +156,11 @@ class SettingsActivity final : public ActivityWithSubactivity {
   std::vector<SettingInfo> networkSettings_;
   std::vector<SettingInfo> systemSettings_;
 
+  // AppList can enter the existing Network & Sync L2 directly. Keep the
+  // default constructor behavior for the system-settings tile.
+  const SettingsPane initialPane_;
+  const SettingsHubCard initialHub_;
+
   const std::function<void()> onGoHome;
 
   static void taskTrampoline(void* param);
@@ -175,8 +180,13 @@ class SettingsActivity final : public ActivityWithSubactivity {
 
  public:
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                            const std::function<void()>& onGoHome)
-      : ActivityWithSubactivity("Settings", renderer, mappedInput), onGoHome(onGoHome) {}
+                            const std::function<void()>& onGoHome,
+                            SettingsHubCard initialHub = SettingsHubCard::DisplayReading,
+                            SettingsPane initialPane = SettingsPane::Hub)
+      : ActivityWithSubactivity("Settings", renderer, mappedInput),
+        initialPane_(initialPane),
+        initialHub_(initialHub),
+        onGoHome(onGoHome) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
