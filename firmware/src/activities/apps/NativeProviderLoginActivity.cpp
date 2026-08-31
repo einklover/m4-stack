@@ -127,7 +127,7 @@ void NativeProviderLoginActivity::render(bool force) {
 
   const bool retry = startFailed_ || snap.phase == M4NativeProviderLogin::Phase::Error ||
                      snap.phase == M4NativeProviderLogin::Phase::Cancelled;
-  const auto labels = mappedInput.mapLabels("« 返回", retry ? "重试" : "", "", "");
+  const auto labels = mappedInput.mapLabels("返回", retry ? "重试" : "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }

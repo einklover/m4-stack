@@ -187,7 +187,8 @@
             122
           ],
           "radius": 5,
-          "binding": "$item.cover"
+          "binding": "$item.cover",
+          "action": "open_current_book"
         },
         {
           "type": "text",
@@ -200,7 +201,8 @@
           "text": "$item.title",
           "font": "ui_16_regular",
           "align": "center",
-          "ellipsis": true
+          "ellipsis": true,
+          "action": "open_current_book"
         }
       ]
     },

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <type_traits>
 
+#include "generated/murphy_default_m4theme.h"
 #include "ui/pages/HomeSceneModel.h"
 
 using namespace HomeScene;
@@ -122,6 +123,7 @@ void testActionTargetsAreNumericAndPure() {
   model.begin(UiScene::DataState::Ready);
   assert(model.setCurrent("Book", "", "", "/book.bmp", 1));
   assert(model.addRecent("Recent", "", "", "/recent.bmp", 2));
+  assert(model.setRecentPaths(0, "/recent.epub", "weread://recent"));
   assert(model.addApp("weread", "WeRead", "book"));
   assert(model.publish());
 
@@ -130,6 +132,8 @@ void testActionTargetsAreNumericAndPure() {
   assert(target.action == kActionOpenCurrentBook);
   assert(target.itemIndex == kInvalidItemIndex);
   UiSceneRuntime::SceneItemContext recent{true, kBindingRecent, 0, 1};
+  assert(model.actionTarget(kActionOpenCurrentBook, &recent, &target));
+  assert(target.action == kActionOpenCurrentBook && target.itemIndex == 0);
   assert(model.actionTarget(kActionOpenHistory, nullptr, &target));
   assert(target.itemIndex == kInvalidItemIndex);
   assert(model.actionTarget(kActionOpenApps, nullptr, &target));
@@ -140,11 +144,40 @@ void testActionTargetsAreNumericAndPure() {
   assert(!model.actionTarget(kActionOpenApp, nullptr, &target));
 }
 
+void testRecentCoverHitTargets() {
+  HomeSceneModel model;
+  model.begin(UiScene::DataState::Ready);
+  assert(model.setCurrent("Hero", "", "", "", 0));
+  for (uint8_t i = 0; i < 3; ++i) {
+    assert(model.addRecent("Recent", "", "", "", 0));
+    assert(model.setRecentPaths(i, "/recent.epub", ""));
+  }
+  assert(model.publish());
+
+  HomeSceneSnapshot snapshot{};
+  assert(model.copyLatest(snapshot));
+  const auto source = HomeSceneModel::bindingSource(snapshot);
+  const int centers[] = {92, 235, 378};
+  for (uint8_t i = 0; i < 3; ++i) {
+    UiSceneRuntime::HitResult hit{};
+    assert(UiSceneRuntime::hitTestScene(murphy_default_m4theme,
+                                        murphy_default_m4theme_len, source,
+                                        centers[i], 440, &hit));
+    assert(hit.action == kActionOpenCurrentBook && hit.item.valid &&
+           hit.item.sourceBinding == kBindingRecent && hit.item.index == i);
+    HomeSceneActionTarget target{};
+    assert(HomeSceneModel::actionTarget(snapshot, hit.action, &hit.item,
+                                        &target));
+    assert(target.itemIndex == i);
+  }
+}
+
 }  // namespace
 
 int main() {
   testLoadingReadyAndStaleRetention();
   testFixedCapacityAndBindings();
   testActionTargetsAreNumericAndPure();
+  testRecentCoverHitTargets();
   return 0;
 }
