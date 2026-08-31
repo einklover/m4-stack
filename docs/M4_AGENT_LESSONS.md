@@ -596,3 +596,9 @@ R1–R24 在 `/tmp` 把脏树 `firmware/src` 逐步叠到 `259cdbf7` 隔离树�
 - hero 标题槽 `[209,142,220,52]`，author/source 下移到 198/220；mini `$item.title` `[0,136,129,44]`，`item_height` 184。改完必须 `compile_home_theme.py --emit-header`。
 - SpyGfx `getTextWidth` 恒 50、`truncatedText` 恒 `"..."`。短字面 "A"/"B" 必须走单行原串；wrap 测用每码点 10px 的 WidthSpy。
 - 几何锁：`test_murphy_default_exact_geometry.py` / `test_home_typography_polish.py` / `test_home_font_hierarchy.py` / `test_murphy_default_target_geometry.py`。`test_home_scene_runtime.cpp` 里 `$recent` x=42 y=405 是旧主题坐标，与当前 28/380 不一致，不要当回归绿。
+
+## 2026-08-31 — Settings Hub ui_24_bold 编译过但 QEMU 空白：FONT_MAP ≠ runtimeFontId
+
+- `compile_home_theme.py` FONT_MAP 里 `ui_24_bold` → 25 可编译，`murphy_settings_hub_m4theme.h` 也生成，但 `GfxSceneRenderer::runtimeFontId` 只把 12→UI_12、13→UI_12、14/15→NOTOSANS_14、16/17→NOTOSANS_16、18/19/20/21/22/23→NOTOSANS_18，`default` 原样返回 25，`GfxRenderer::getTextWidth(25)` 找不到字体直接不画，QEMU 卡片标题全白。
+- 已验证：`grep -R UI_.*_FONT_ID firmware/src/fontIds.h` 只有 `UI_10` (11) 和 `UI_12` (13) 声明，`UI_14` 等走 NOTOSANS。Hub 页标题 `ui_20_bold` (21→18) 可画，分类 `ui_24_bold` (25) 不可。改为 `ui_22_bold` (23→18) 后 100px 卡片文字在 QEMU 正常出现，且与 `kSettingsHubItemH` 100 居中 `[24,32,380,36]` 对齐。
+- 一次性正确做法：改前先 `grep UI_.*_FONT_ID` + `runtimeFontId` switch，选已声明且映射到最大 NOTOSANS_18 的 `ui_22`（不要发明 `UI_14`），改后 QEMU 截 Hub 再验 `01-home`/`03-hub` 是否有文字与 `返回|主页|历史`。
