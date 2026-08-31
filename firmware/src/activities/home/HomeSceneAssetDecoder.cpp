@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdlib>
 #include <cstring>
+
+#include "apps/providers/M4Psram.h"
 
 #ifdef CROSSPOINT_MURPHY_M4
 #include <Bitmap.h>
@@ -166,16 +169,21 @@ bool decodeBmpBytesTo1Bit(const uint8_t* bmpData, size_t bmpLen, uint8_t* out1Bi
       paletteLum[i] = static_cast<uint8_t>((77u * r + 150u * g + 29u * b) >> 8);
     }
   }
-  // Clear output
   const size_t outBytes = static_cast<size_t>(expStride) * expH;
-  std::memset(out1Bit, 0, outBytes);
+  uint8_t* decoded = static_cast<uint8_t*>(M4Psram::mallocPrefer(outBytes));
+  if (!decoded) return false;
+  // Decode into scratch so cancellation cannot expose a partial asset.
+  std::memset(decoded, 0, outBytes);
   // Decode row by row into 1-bit MSB first, 1=black
   // Cancellation between rows
   for (uint16_t y = 0; y < expH; ++y) {
-    if (isCancelled && isCancelled()) return false;
+    if (isCancelled && isCancelled()) {
+      M4Psram::freePrefer(decoded);
+      return false;
+    }
     const uint16_t srcY = topDown ? y : static_cast<uint16_t>(expH - 1 - y);
     const uint8_t* row = bmpData + bfOffBits + static_cast<size_t>(srcY) * rowBytes;
-    uint8_t* outRow = out1Bit + static_cast<size_t>(y) * expStride;
+    uint8_t* outRow = decoded + static_cast<size_t>(y) * expStride;
     for (uint16_t x = 0; x < expW; ++x) {
       uint8_t lum = 0;
       if (bpp == 32) {
@@ -205,6 +213,12 @@ bool decodeBmpBytesTo1Bit(const uint8_t* bmpData, size_t bmpLen, uint8_t* out1Bi
       }
     }
   }
+  if (isCancelled && isCancelled()) {
+    M4Psram::freePrefer(decoded);
+    return false;
+  }
+  std::memcpy(out1Bit, decoded, outBytes);
+  M4Psram::freePrefer(decoded);
   return true;
 }
 
@@ -288,7 +302,15 @@ bool decodeBmpFileTo1Bit(const char* path, uint8_t* out1Bit, uint16_t expW, uint
     useReadNextRow = true;
   }
   const size_t outBytes = static_cast<size_t>(expStride) * expH;
-  std::memset(out1Bit, 0, outBytes);
+  uint8_t* decoded = static_cast<uint8_t*>(M4Psram::mallocPrefer(outBytes));
+  if (!decoded) {
+    free(rowBuf);
+    if (tmp2bpp) free(tmp2bpp);
+    f.close();
+    return false;
+  }
+  // Decode into scratch so cancellation cannot expose a partial asset.
+  std::memset(decoded, 0, outBytes);
   // Bitmap stores topDown flag; we need to handle accordingly.
   // Bitmap::readNextRow advances sequentially from first stored row (which is bottom-up or topDown).
   // For bottom-up BMP, first read returns bottom row; we need to place correctly.
@@ -301,7 +323,7 @@ bool decodeBmpFileTo1Bit(const char* path, uint8_t* out1Bit, uint16_t expW, uint
     }
     uint8_t* outRow = nullptr;
     const uint16_t y = bmp.isTopDown() ? i : static_cast<uint16_t>(expH - 1 - i);
-    outRow = out1Bit + static_cast<size_t>(y) * expStride;
+    outRow = decoded + static_cast<size_t>(y) * expStride;
     if (useReadNextRow) {
       // readNextRow expects out buffer sized to (w+3)/4 and rowBuffer sized to rowBytes
       if (bmp.readNextRow(tmp2bpp, rowBuf) != BmpReaderError::Ok) {
@@ -342,9 +364,14 @@ bool decodeBmpFileTo1Bit(const char* path, uint8_t* out1Bit, uint16_t expW, uint
   free(rowBuf);
   if (tmp2bpp) free(tmp2bpp);
   f.close();
-  if (cancelled) return false;
+  if (cancelled || (isCancelled && isCancelled())) {
+    M4Psram::freePrefer(decoded);
+    return false;
+  }
+  std::memcpy(out1Bit, decoded, outBytes);
+  M4Psram::freePrefer(decoded);
   // If cancelled between rows, caller will degrade.
-  return !cancelled;
+  return true;
 }
 
 #else
