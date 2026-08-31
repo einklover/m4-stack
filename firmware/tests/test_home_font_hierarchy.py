@@ -19,41 +19,41 @@ def _find(nodes, text=None, binding=None, source=None):
 
 def test_murphy_logo_font_weight_and_height():
     n = _find(_nodes(), text="Murphy M4")
-    # Target logo ink h~17, need bold weight and 16+ size; keep position but increase weight
-    assert n["font"] == "ui_16_bold", f"Murphy M4 font {n['font']} != ui_16_bold (target hierarchy bold)"
+    # HomeRef header role: bold 22px while keeping the measured header rect.
+    assert n["font"] == "ui_22_bold", f"Murphy M4 font {n['font']} != ui_22_bold"
     assert n["rect"][3] >= 24 and n["rect"][3] <= 26, f"logo rect h {n['rect'][3]} not 24-26"
 
 def test_current_title_prominence():
     n = _find(_nodes(), text="$current.title")
-    # Title should be most prominent: 20_bold (larger than 18) per target title larger than metadata
-    assert n["font"] in ("ui_20_bold", "ui_18_bold"), f"title font {n['font']} not prominent"
+    # HomeRef hero role: 24px bold and larger than all metadata.
+    assert n["font"] == "ui_24_bold", f"title font {n['font']} != ui_24_bold"
     # Two-line title slot (~52px) so long book names wrap before ellipsis
     assert 48 <= n["rect"][3] <= 56, f"title rect h {n['rect'][3]} not 48-56 for 2-line wrap"
 
 def test_section_headers_hierarchy():
     for text in ("最近阅读", "应用"):
         n = _find(_nodes(), text=text)
-        # Section headers should be bolder/larger than metadata (14) => 16_bold
-        assert n["font"] == "ui_16_bold", f"{text} font {n['font']} != ui_16_bold"
+        # HomeRef section role: 20px bold, distinct from 16px metadata.
+        assert n["font"] == "ui_20_bold", f"{text} font {n['font']} != ui_20_bold"
 
 def test_metadata_and_progress_hierarchy():
     for text in ("$current.author", "$current.source"):
         n = _find(_nodes(), text=text)
-        assert n["font"] == "ui_14_regular", f"{text} font {n['font']}"
+        assert n["font"] == "ui_16_regular", f"{text} font {n['font']}"
         assert n["rect"][3] == 18
     n = _find(_nodes(), text="继续阅读")
-    assert n["font"] == "ui_14_regular"
+    assert n["font"] == "ui_16_regular"
     n = _find(_nodes(), text="$home.current.progress_text")
-    assert n["font"] == "ui_12_regular"
+    assert n["font"] == "ui_16_regular"
 
 def test_recent_and_app_labels():
     n = _find(_nodes(), source="$recent")
     child = n["children"][1]
-    assert child["font"] == "ui_14_regular", f"recent title font {child['font']}"
+    assert child["font"] == "ui_16_regular", f"recent title font {child['font']}"
     assert child["rect"][3] == 44
     n = _find(_nodes(), source="$apps")
     child = n["children"][1]
-    assert child["font"] == "ui_12_regular"
+    assert child["font"] == "ui_16_regular"
     assert child["rect"][3] == 18
 
 def test_battery_percentage_font():
