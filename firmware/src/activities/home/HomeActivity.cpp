@@ -365,8 +365,14 @@ bool HomeActivity::dispatchHomeSceneAction(
   HomeScene::HomeSceneSnapshot snapshot{};
   if (!backendCtx->model.copyLatest(snapshot)) return false;
   if (action.action == HomeScene::kActionOpenCurrentBook) {
-    onSelectBook(homeSceneText(snapshot, snapshot.currentPath),
-                 homeSceneText(snapshot, snapshot.currentOriginalSource));
+    if (action.itemIndex < snapshot.recentCount) {
+      const auto& recent = snapshot.recent[action.itemIndex];
+      onSelectBook(homeSceneText(snapshot, recent.path),
+                   homeSceneText(snapshot, recent.originalSource));
+    } else {
+      onSelectBook(homeSceneText(snapshot, snapshot.currentPath),
+                   homeSceneText(snapshot, snapshot.currentOriginalSource));
+    }
   } else if (action.action == HomeScene::kActionOpenHistory) {
     onRecentsOpen();
   } else if (action.action == HomeScene::kActionOpenApps) {

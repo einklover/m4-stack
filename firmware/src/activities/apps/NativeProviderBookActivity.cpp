@@ -506,7 +506,7 @@ void NativeProviderBookActivity::renderDetail() {
     }
   }
 
-  const auto labels = mappedInput.mapLabels("« 返回", "", "", "");
+  const auto labels = mappedInput.mapLabels("返回", "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
@@ -740,7 +740,7 @@ void NativeProviderBookActivity::renderCatalogLoading(bool force) {
 
   const bool failed = mine && c.phase == M4NativeProviderCatalog::Phase::Error;
   const char* primary = authRequired ? "登录" : (failed ? "重试" : "");
-  const auto labels = mappedInput.mapLabels("« 返回", primary, "", "");
+  const auto labels = mappedInput.mapLabels("返回", primary, "", "");
 
   // Full diagnostic surface on failure/auth so a phone photo is enough to triage.
   if (failed || authRequired || !failureCode.empty()) {
@@ -798,7 +798,7 @@ void NativeProviderBookActivity::renderLoading(bool force) {
   const bool chapterFailed =
       !failureCode.empty() || st.state == M4ContentProvider::ChapterReady::Error;
   const char* primary = authRequired ? "登录" : (chapterFailed ? "重试" : "");
-  const auto labels = mappedInput.mapLabels("« 返回", primary, "", "");
+  const auto labels = mappedInput.mapLabels("返回", primary, "", "");
 
   if (chapterFailed || authRequired) {
     auto snap = M4ErrorScreen::chapterFail(
@@ -830,7 +830,7 @@ void NativeProviderBookActivity::renderLoading(bool force) {
 }
 
 void NativeProviderBookActivity::renderError() {
-  const auto labels = mappedInput.mapLabels("« 返回", "重试", "", "");
+  const auto labels = mappedInput.mapLabels("返回", "重试", "", "");
   std::vector<std::string> diag;
   M4ErrorScreen::appendCode(diag, error_);
   M4ErrorScreen::addKV(diag, "provider: ", providerId_);

@@ -115,6 +115,27 @@ struct Prefix {
   bool hasArgument = false;
 };
 
+// A repeat/group action is metadata for the content it contains. Keep that
+// metadata separate from Prefix so a child action can override it without
+// carrying the parent's payload offset or visibility condition.
+struct ActionMetadata {
+  ActionId action = UiScene::kInvalidActionId;
+  BindingId argumentBinding = UiScene::kInvalidBindingId;
+  bool hasAction = false;
+  bool hasArgument = false;
+};
+
+inline ActionMetadata effectiveAction(const Prefix& prefix,
+                                      const ActionMetadata& inherited) {
+  if (!prefix.hasAction) return inherited;
+  ActionMetadata result{};
+  result.action = prefix.action;
+  result.argumentBinding = prefix.argumentBinding;
+  result.hasAction = true;
+  result.hasArgument = prefix.hasArgument;
+  return result;
+}
+
 inline bool readU16At(const SceneCommand& command, size_t offset,
                       uint16_t* out) {
   if (!out || !command.payload || offset > command.payloadLen ||
@@ -188,13 +209,14 @@ inline bool visible(const Prefix& prefix, const SceneBindingSource& source,
          value.kind == ValueKind::Bool && value.boolean;
 }
 
-inline bool actionArgument(const Prefix& prefix, const SceneBindingSource& source,
+inline bool actionArgument(const ActionMetadata& action,
+                           const SceneBindingSource& source,
                            const SceneItemContext& item, TextView* out) {
   if (!out) return false;
   *out = TextView{};
-  if (!prefix.hasArgument) return true;
+  if (!action.hasArgument) return true;
   ResolvedValue value{};
-  if (!source.read(prefix.argumentBinding, item.valid ? &item : nullptr,
+  if (!source.read(action.argumentBinding, item.valid ? &item : nullptr,
                   &value) ||
       value.kind != ValueKind::Text)
     return false;
@@ -202,25 +224,28 @@ inline bool actionArgument(const Prefix& prefix, const SceneBindingSource& sourc
   return true;
 }
 
-inline void fillMetadata(const Prefix& prefix, const SceneBindingSource& source,
+inline void fillMetadata(const ActionMetadata& action,
+                         const SceneBindingSource& source,
                          const SceneItemContext& item, RenderEvent* event) {
-  event->action = prefix.hasAction ? prefix.action : UiScene::kInvalidActionId;
+  event->action = action.hasAction ? action.action : UiScene::kInvalidActionId;
   event->item = item;
-  if (!actionArgument(prefix, source, item, &event->argument))
+  if (!actionArgument(action, source, item, &event->argument))
     event->action = UiScene::kInvalidActionId;
 }
 
-inline bool emitSimple(const Prefix& prefix, const SceneBindingSource& source,
+inline bool emitSimple(const ActionMetadata& action,
+                       const SceneBindingSource& source,
                        const SceneItemContext& item, SceneRenderSink sink,
                        RenderEvent event) {
-  fillMetadata(prefix, source, item, &event);
+  fillMetadata(action, source, item, &event);
   return sink.write(event);
 }
 
 inline bool executeCommand(const SceneCommand& command,
                            const SceneBindingSource& source,
-                           const SceneItemContext& item, int16_t dx, int16_t dy,
-                           SceneRenderSink sink, uint8_t depth);
+                           const SceneItemContext& item,
+                           const ActionMetadata& inheritedAction, int16_t dx,
+                           int16_t dy, SceneRenderSink sink, uint8_t depth);
 
 template <typename Visitor>
 inline bool forEachEmbedded(const uint8_t* data, size_t length,
@@ -246,8 +271,9 @@ inline bool forEachEmbedded(const uint8_t* data, size_t length,
 
 inline bool executeChildren(const SceneCommand& command, size_t offset,
                             uint16_t count, const SceneBindingSource& source,
-                            const SceneItemContext& item, int16_t dx, int16_t dy,
-                            SceneRenderSink sink, uint8_t depth) {
+                            const SceneItemContext& item,
+                            const ActionMetadata& inheritedAction, int16_t dx,
+                            int16_t dy, SceneRenderSink sink, uint8_t depth) {
   if (depth >= kMaxDepth || offset > command.payloadLen ||
       command.payloadLen - offset < 2) return false;
   uint16_t childCount = UiScene::readU16(command.payload + offset);
@@ -257,8 +283,10 @@ inline bool executeChildren(const SceneCommand& command, size_t offset,
   bool ok = true;
   return forEachEmbedded(children, length, childCount, command.offset,
                          [&](const SceneCommand& child) {
-                           if (!executeCommand(child, source, item, dx, dy,
-                                                sink, depth + 1)) {
+                           if (!executeCommand(child, source, item,
+                                                inheritedAction, dx, dy,
+                                                sink,
+                                                depth + 1)) {
                              ok = false;
                              return false;
                            }
@@ -268,6 +296,7 @@ inline bool executeChildren(const SceneCommand& command, size_t offset,
 }
 
 inline bool executeRepeat(const SceneCommand& command, const Prefix& prefix,
+                          const ActionMetadata& action,
                           const SceneBindingSource& source,
                           const SceneItemContext& parent, SceneRenderSink sink,
                           uint8_t depth) {
@@ -302,8 +331,9 @@ inline bool executeRepeat(const SceneCommand& command, const Prefix& prefix,
     ok = forEachEmbedded(command.payload + childOffset, childLength,
                           childCount, command.offset,
                           [&](const SceneCommand& child) {
-                            return executeCommand(child, source, item, itemX,
-                                                   itemY, sink, depth + 1);
+                            return executeCommand(child, source, item, action,
+                                                   itemX, itemY, sink,
+                                                   depth + 1);
                           });
   }
   (void)parent;
@@ -312,21 +342,23 @@ inline bool executeRepeat(const SceneCommand& command, const Prefix& prefix,
 
 inline bool executeCommand(const SceneCommand& command,
                            const SceneBindingSource& source,
-                           const SceneItemContext& item, int16_t dx, int16_t dy,
-                           SceneRenderSink sink, uint8_t depth) {
+                           const SceneItemContext& item,
+                           const ActionMetadata& inheritedAction, int16_t dx,
+                           int16_t dy, SceneRenderSink sink, uint8_t depth) {
   Prefix prefix{};
   if (!readPrefix(command, &prefix) ||
       !visible(prefix, source, item)) return true;
+  const ActionMetadata action = effectiveAction(prefix, inheritedAction);
 
   if (command.type == UiScene::kNodeRepeat) {
-    return executeRepeat(command, prefix, source, item, sink, depth);
+    return executeRepeat(command, prefix, action, source, item, sink, depth);
   }
   if (command.type == UiScene::kNodeGroup) {
     if (command.payloadLen - prefix.offset < 2) return false;
     const uint16_t childCount =
         UiScene::readU16(command.payload + prefix.offset);
     return executeChildren(command, prefix.offset, childCount, source, item,
-                           dx, dy, sink, depth);
+                           action, dx, dy, sink, depth);
   }
 
   RenderEvent event{};
@@ -336,12 +368,12 @@ inline bool executeCommand(const SceneCommand& command,
   if (command.type == UiScene::kNodeClear) {
     if (command.payloadLen - offset < 1) return false;
     event.color = pgm_read_byte(command.payload + offset);
-    return emitSimple(prefix, source, item, sink, event);
+    return emitSimple(action, source, item, sink, event);
   }
   if (command.type == UiScene::kNodeBitmap) {
     if (!readRect(command, offset, &event.rect, dx, dy) ||
         !readString(command, offset + 8, &event.text, &offset)) return false;
-    return emitSimple(prefix, source, item, sink, event);
+    return emitSimple(action, source, item, sink, event);
   }
   if (command.type == UiScene::kNodeLine) {
     uint16_t x = 0, y = 0, x2 = 0, y2 = 0;
@@ -358,7 +390,7 @@ inline bool executeCommand(const SceneCommand& command,
     event.y2 = static_cast<int16_t>(y2 + dy);
     event.width = pgm_read_byte(command.payload + offset + 8);
     event.color = pgm_read_byte(command.payload + offset + 9);
-    return emitSimple(prefix, source, item, sink, event);
+    return emitSimple(action, source, item, sink, event);
   }
   if (command.type == UiScene::kNodeRect ||
       command.type == UiScene::kNodeRoundRect) {
@@ -372,7 +404,7 @@ inline bool executeCommand(const SceneCommand& command,
         (command.type == UiScene::kNodeRoundRect ? 10 : 8);
     event.width = pgm_read_byte(command.payload + styleOffset);
     event.fill = pgm_read_byte(command.payload + styleOffset + 1);
-    return emitSimple(prefix, source, item, sink, event);
+    return emitSimple(action, source, item, sink, event);
   }
   if (command.type == UiScene::kNodeText) {
     if (!readRect(command, offset, &event.rect, dx, dy) ||
@@ -395,7 +427,7 @@ inline bool executeCommand(const SceneCommand& command,
       event.text = TextView::fromProgmem(
           reinterpret_cast<const char*>(command.payload + offset + 16), length);
     }
-    return emitSimple(prefix, source, item, sink, event);
+    return emitSimple(action, source, item, sink, event);
   }
   if (command.type == UiScene::kNodeCover) {
     if (!readRect(command, offset, &event.rect, dx, dy) ||
@@ -407,17 +439,25 @@ inline bool executeCommand(const SceneCommand& command,
       ResolvedValue value{};
       const BindingId binding = pgm_read_byte(command.payload + offset + 11);
       event.assetBinding = binding;
-      if (!source.read(binding, item.valid ? &item : nullptr, &value)) return true;
+      if (!source.read(binding, item.valid ? &item : nullptr, &value)) {
+        // Keep an actionable cover's geometry even while its bitmap is
+        // unavailable; the renderer supplies the visible placeholder.
+        return action.hasAction && item.valid
+                   ? emitSimple(action, source, item, sink, event)
+                   : true;
+      }
       if (value.kind == ValueKind::Text) {
         event.text = value.text;
       } else if (value.kind == ValueKind::Asset) {
         event.hasAsset = true;
         event.assetIndex = value.assetIndex;
       } else {
-        return true;
+        return action.hasAction && item.valid
+                   ? emitSimple(action, source, item, sink, event)
+                   : true;
       }
     }
-    return emitSimple(prefix, source, item, sink, event);
+    return emitSimple(action, source, item, sink, event);
   }
   if (command.type == UiScene::kNodeProgress ||
       command.type == UiScene::kNodeBattery) {
@@ -433,7 +473,7 @@ inline bool executeCommand(const SceneCommand& command,
     event.value = value.number;
     if (command.type == UiScene::kNodeProgress)
       event.radius = UiScene::readU16(command.payload + offset + 8);
-    return emitSimple(prefix, source, item, sink, event);
+    return emitSimple(action, source, item, sink, event);
   }
   if (command.type == UiScene::kNodeIcon) {
     if (!readRect(command, offset, &event.rect, dx, dy) ||
@@ -445,18 +485,25 @@ inline bool executeCommand(const SceneCommand& command,
       ResolvedValue value{};
       const BindingId binding = pgm_read_byte(command.payload + offset);
       event.assetBinding = binding;
-      if (!source.read(binding,
-                       item.valid ? &item : nullptr, &value)) return true;
+      if (!source.read(binding, item.valid ? &item : nullptr, &value)) {
+        // As with covers, an actionable icon remains a useful hit target
+        // while its bitmap is being resolved.
+        return action.hasAction && item.valid
+                   ? emitSimple(action, source, item, sink, event)
+                   : true;
+      }
       if (value.kind == ValueKind::Text) {
         event.text = value.text;
       } else if (value.kind == ValueKind::Asset) {
         event.hasAsset = true;
         event.assetIndex = value.assetIndex;
       } else {
-        return true;
+        return action.hasAction && item.valid
+                   ? emitSimple(action, source, item, sink, event)
+                   : true;
       }
     }
-    return emitSimple(prefix, source, item, sink, event);
+    return emitSimple(action, source, item, sink, event);
   }
   return false;
 }
@@ -488,8 +535,8 @@ inline bool renderScene(const uint8_t* data, size_t len,
   bool ok = true;
   const bool parsed = UiScene::forEachCommand(
       data, len, [&](const SceneCommand& command) {
-        if (!detail::executeCommand(command, source, SceneItemContext{}, 0, 0,
-                                    sink, 0)) {
+        if (!detail::executeCommand(command, source, SceneItemContext{},
+                                    detail::ActionMetadata{}, 0, 0, sink, 0)) {
           ok = false;
         }
         return true;

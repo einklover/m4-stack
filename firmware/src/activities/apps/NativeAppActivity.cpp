@@ -554,7 +554,7 @@ void NativeAppActivity::render() {
   flowVisible_ = false;
 
   if (!error_.empty()) {
-    const auto labels = mappedInput.mapLabels("« 返回", "关闭提示", "", "");
+    const auto labels = mappedInput.mapLabels("返回", "关闭提示", "", "");
     std::vector<std::string> diag;
     M4ErrorScreen::appendCode(diag, error_);
     M4ErrorScreen::addKV(diag, "app_id: ", app_.id);

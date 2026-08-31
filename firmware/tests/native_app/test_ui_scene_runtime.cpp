@@ -139,20 +139,24 @@ struct SceneBuilder {
   void addRepeat(BindingId source, uint8_t limit, uint16_t x, uint16_t y,
                  uint16_t itemWidth, uint16_t itemHeight, uint16_t gap,
                  const uint8_t* children, size_t childrenSize,
-                 uint16_t childCount) {
+                 uint16_t childCount, ActionId action = kInvalidActionId,
+                 BindingId argument = kInvalidBindingId) {
     uint8_t payload[512]{};
-    payload[0] = source;
-    payload[1] = limit;
-    put16(payload + 2, x);
-    put16(payload + 4, y);
-    put16(payload + 6, itemWidth);
-    put16(payload + 8, itemHeight);
-    put16(payload + 10, gap);
-    payload[12] = 0;
-    payload[13] = 0;
-    put16(payload + 14, childCount);
-    std::memcpy(payload + 16, children, childrenSize);
-    add(kNodeRepeat, 0, payload, 16 + childrenSize);
+    const uint8_t flags = action == kInvalidActionId ? 0 : kFlagAction;
+    const size_t prefixSize = prefix(payload, flags, kInvalidBindingId, action,
+                                     argument);
+    payload[prefixSize] = source;
+    payload[prefixSize + 1] = limit;
+    put16(payload + prefixSize + 2, x);
+    put16(payload + prefixSize + 4, y);
+    put16(payload + prefixSize + 6, itemWidth);
+    put16(payload + prefixSize + 8, itemHeight);
+    put16(payload + prefixSize + 10, gap);
+    payload[prefixSize + 12] = 0;
+    payload[prefixSize + 13] = 0;
+    put16(payload + prefixSize + 14, childCount);
+    std::memcpy(payload + prefixSize + 16, children, childrenSize);
+    add(kNodeRepeat, flags, payload, prefixSize + 16 + childrenSize);
   }
 
   size_t finish() {
@@ -334,7 +338,8 @@ static SceneBuilder makeScene() {
   SceneBuilder::put16(childPayload + textSize + 14, 0);
   childSize += SceneBuilder::command(recentChildren + childSize, kNodeText, 0,
                                      childPayload, textSize + 16);
-  builder.addRepeat(20, 3, 20, 300, 100, 110, 10, recentChildren, childSize, 2);
+  builder.addRepeat(20, 3, 20, 300, 100, 110, 10, recentChildren, childSize, 2,
+                    0, 32);
 
   uint8_t appChildren[256]{};
   size_t appChildSize = 0;
@@ -428,6 +433,10 @@ void testRenderAndHitTest() {
   HitResult hit{};
   assert(hitTestScene(scene.package, sceneLength, source, 230, 110, &hit));
   assert(hit.action == 0 && !hit.item.valid);
+  assert(hitTestScene(scene.package, sceneLength, source, 30, 310, &hit));
+  assert(hit.action == 0 && hit.item.valid && hit.item.sourceBinding == 20 &&
+         hit.item.index == 0);
+  assert(equals(hit.argument, "Recent A"));
   assert(hitTestScene(scene.package, sceneLength, source, 250, 510, &hit));
   assert(hit.action == 3 && hit.item.valid && hit.item.index == 2);
   assert(equals(hit.argument, "fanqie"));
