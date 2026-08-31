@@ -8,6 +8,7 @@
 #include "ui/scene/UiSceneRuntime.h"
 #include "ui/scene/UiScenePackage.h"
 #include "fontIds.h"
+#include "util/M4FixedRuntimeUiFonts.h"
 
 namespace UiScene {
 
@@ -37,9 +38,11 @@ class GfxSceneRenderer {
       case 18:
       case 19: return NOTOSANS_18_FONT_ID;
       case 20:
-      case 21: return NOTOSANS_18_FONT_ID;
+      case 21: return M4FixedRuntimeUiFonts::kHubTitleFontId; // Hub title 20px free
       case 22:
-      case 23: return NOTOSANS_18_FONT_ID;
+      case 23: return M4FixedRuntimeUiFonts::kHubCategoryFontId; // Hub category 24px free
+      case 24:
+      case 25: return M4FixedRuntimeUiFonts::kHubCategoryFontId; // ui_24 also 24px free
       default: return sceneFontId;
     }
   }
@@ -291,6 +294,7 @@ class GfxSceneRenderer {
               const UiSceneAssets& assets,
               const Gfx& gfx) const {
     if (!packageData || packageLen == 0) return false;
+    M4FixedRuntimeUiFonts::ensureHubFaces(const_cast<Gfx&>(gfx));
 
     struct Ctx {
       const Gfx* gfx;
