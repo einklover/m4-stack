@@ -12,7 +12,7 @@ constexpr ThemeMetrics values = {
     .batteryHeight = 13,
     .topPadding = HomeRef::HeaderSafeTop,
     .batteryBarHeight = 46,
-    .headerHeight = 46,
+    .headerHeight = HomeRef::HeaderH,
     .verticalSpacing = 14,
     .contentSidePadding = 20,
 // Murphy M4 is always touch: taller rows for finger targets (see M4TouchListMetrics).
