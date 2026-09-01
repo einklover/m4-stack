@@ -8,6 +8,7 @@ import subprocess
 REQUIRED_SENTINELS = (
     "open-m4-sdk/libs/hardware/BatteryMonitor/library.json",
     "open-m4-sdk/libs/hardware/InputManager/library.json",
+    "open-m4-sdk/libs/hardware/MemoryManager/library.json",
     "open-m4-sdk/libs/display/FreeInkDisplay/library.json",
     "open-m4-sdk/libs/hardware/SDCardManager/library.json",
     "open-m4-sdk/libs/hardware/BoardConfig/library.json",
