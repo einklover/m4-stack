@@ -4,6 +4,7 @@
 #include <JpegToBmpConverter.h>
 #include <PNGdec.h>
 #include <SDCardManager.h>
+#include <CoverDither.h>
 
 #include "apps/M4xJsonStream.h"
 #include "apps/providers/M4NativeProviderHttp.h"
@@ -41,13 +42,12 @@ class FileSink final : public M4xJsonStream::Sink {
 struct PngBmpContext {
   PNG* decoder = nullptr;
   FsFile* output = nullptr;
-  uint8_t* targetRow = nullptr;
+  uint8_t* targetImage = nullptr;
   uint16_t* sourceRow = nullptr;
   int sourceWidth = 0;
   int sourceHeight = 0;
   int targetWidth = 0;
   int targetHeight = 0;
-  int rowBytes = 0;
 };
 
 void writeLe16(FsFile& file, uint16_t value) {
@@ -157,29 +157,25 @@ uint8_t luminance565(uint16_t pixel) {
 int pngDraw(PNGDRAW* draw) {
   if (!draw || !draw->pUser) return 0;
   auto* ctx = static_cast<PngBmpContext*>(draw->pUser);
-  if (!ctx->decoder || !ctx->output || !ctx->targetRow || !ctx->sourceRow ||
+  if (!ctx->decoder || !ctx->targetImage || !ctx->sourceRow ||
       draw->iWidth != ctx->sourceWidth || draw->y < 0 || draw->y >= ctx->sourceHeight) {
     return 0;
   }
   ctx->decoder->getLineAsRGB565(draw, ctx->sourceRow, PNG_RGB565_LITTLE_ENDIAN, 0x00ffffffu);
-  for (int x = 0; x < ctx->targetWidth; ++x) {
-    const int sourceX = x * ctx->sourceWidth / ctx->targetWidth;
-    ctx->targetRow[x] = luminance565(ctx->sourceRow[sourceX]);
-  }
-  std::fill(ctx->targetRow + ctx->targetWidth, ctx->targetRow + ctx->rowBytes, 0);
-
   const int firstTargetY = draw->y * ctx->targetHeight / ctx->sourceHeight;
   const int nextTargetY = (draw->y + 1) * ctx->targetHeight / ctx->sourceHeight;
   for (int targetY = firstTargetY; targetY < nextTargetY; ++targetY) {
-    if (ctx->output->write(ctx->targetRow, static_cast<size_t>(ctx->rowBytes)) != ctx->rowBytes) {
-      return 0;
+    for (int x = 0; x < ctx->targetWidth; ++x) {
+      const int sourceX = x * ctx->sourceWidth / ctx->targetWidth;
+      ctx->targetImage[static_cast<size_t>(targetY) * static_cast<size_t>(ctx->targetWidth) + x] =
+          luminance565(ctx->sourceRow[sourceX]);
     }
   }
   return 1;
 }
 
 bool pngFileToBmpStream(const std::string& sourcePath, const std::string& targetPath,
-                        int width, int height) {
+                        int width, int height, bool oneBit) {
   if (width <= 0 || height <= 0 || width > 2048 || height > 3072 ||
       !M4NativeProviderHeavyGate::heapHealthy(0x420)) {
     return false;
@@ -197,33 +193,67 @@ bool pngFileToBmpStream(const std::string& sourcePath, const std::string& target
   }
   const int sourceWidth = decoder->getWidth();
   const int sourceHeight = decoder->getHeight();
-  if (sourceWidth <= 0 || sourceHeight <= 0 || sourceWidth > 2048 || sourceHeight > 3072 ||
-      !writePngBmpHeader(output, width, height)) {
+  if (sourceWidth <= 0 || sourceHeight <= 0 || sourceWidth > 2048 || sourceHeight > 3072) {
     output.close();
     decoder->close();
     return false;
   }
 
-  const int rowBytes = (width + 3) & ~3;
-  auto* targetRow = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(rowBytes)));
+  auto* targetImage = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(width) * height));
   auto* sourceRow = static_cast<uint16_t*>(M4Psram::mallocPrefer(
       static_cast<size_t>(sourceWidth) * sizeof(uint16_t)));
-  if (!targetRow || !sourceRow) {
-    M4Psram::freePrefer(targetRow);
+  if (!targetImage || !sourceRow) {
+    M4Psram::freePrefer(targetImage);
     M4Psram::freePrefer(sourceRow);
     output.close();
     decoder->close();
     return false;
   }
 
-  PngBmpContext ctx{decoder.get(), &output, targetRow, sourceRow, sourceWidth, sourceHeight,
-                    width, height, rowBytes};
+  PngBmpContext ctx{decoder.get(), &output, targetImage, sourceRow, sourceWidth, sourceHeight,
+                    width, height};
   const bool ok = decoder->decode(&ctx, PNG_CHECK_CRC) == PNG_SUCCESS;
-  M4Psram::freePrefer(targetRow);
+  bool writeOk = ok;
+  uint8_t* ditherWork = nullptr;
+  uint8_t* ditherSmooth = nullptr;
+  if (writeOk && oneBit) {
+    ditherWork = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(width) * height));
+    ditherSmooth = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(width) * height));
+    writeOk = ditherWork && ditherSmooth && M4CoverDither::prepare(targetImage, ditherWork, ditherSmooth, width, height);
+  }
+  if (writeOk) {
+    if (oneBit) {
+      writeOk = writeBmpHeader1bit(output, width, height);
+      const int rowBytes = (width + 31) / 32 * 4;
+      uint8_t* row = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(rowBytes)));
+      for (int y = 0; row && y < height && writeOk; ++y) {
+        std::memset(row, 0, static_cast<size_t>(rowBytes));
+        for (int x = 0; x < width; ++x)
+          if (M4CoverDither::pixelToBit(targetImage, ditherWork, width, x, y))
+            row[x >> 3] |= static_cast<uint8_t>(0x80 >> (x & 7));
+        writeOk = output.write(row, static_cast<size_t>(rowBytes)) == rowBytes;
+      }
+      if (!row) writeOk = false;
+      M4Psram::freePrefer(row);
+    } else {
+      writeOk = writePngBmpHeader(output, width, height);
+      const int rowBytes = (width + 3) & ~3;
+      for (int y = 0; y < height && writeOk; ++y) {
+        if (output.write(targetImage + static_cast<size_t>(y) * width, static_cast<size_t>(width)) != width)
+          writeOk = false;
+        uint8_t padding[3] = {0, 0, 0};
+        const int paddingBytes = rowBytes - width;
+        if (paddingBytes && output.write(padding, static_cast<size_t>(paddingBytes)) != paddingBytes) writeOk = false;
+      }
+    }
+  }
+  M4Psram::freePrefer(ditherWork);
+  M4Psram::freePrefer(ditherSmooth);
+  M4Psram::freePrefer(targetImage);
   M4Psram::freePrefer(sourceRow);
   output.close();
   decoder->close();
-  return ok;
+  return writeOk;
 }
 
 bool bmpFileTo1BitBmpWithSize(const std::string& sourcePath, const std::string& targetPath,
@@ -420,7 +450,14 @@ bool bmpFileTo1BitBmpWithSize(const std::string& sourcePath, const std::string& 
     M4Psram::freePrefer(srcGray);
     return false;
   }
-  auto* dither = new Atkinson1BitDitherer(dstW);
+  const size_t targetPixels = static_cast<size_t>(dstW) * static_cast<size_t>(dstH);
+  auto* targetGray = static_cast<uint8_t*>(M4Psram::mallocPrefer(targetPixels));
+  auto* ditherWork = static_cast<uint8_t*>(M4Psram::mallocPrefer(targetPixels));
+  auto* ditherSmooth = static_cast<uint8_t*>(M4Psram::mallocPrefer(targetPixels));
+  if (!targetGray || !ditherWork || !ditherSmooth) {
+    M4Psram::freePrefer(targetGray); M4Psram::freePrefer(ditherWork); M4Psram::freePrefer(ditherSmooth);
+    M4Psram::freePrefer(targetRow); out.close(); return false;
+  }
   bool ok = true;
   for (int ty = 0; ty < dstH; ++ty) {
     std::memset(targetRow, 0, static_cast<size_t>(rowBytesDst));
@@ -442,14 +479,24 @@ bool bmpFileTo1BitBmpWithSize(const std::string& sourcePath, const std::string& 
           ++count;
         }
       }
-      const uint8_t gray = count ? static_cast<uint8_t>(sum / count) : 0;
-      const uint8_t bit = dither ? dither->processPixel(gray, tx) : static_cast<uint8_t>(gray >= 128 ? 1 : 0);
-      if (bit) targetRow[tx >> 3] |= static_cast<uint8_t>(0x80 >> (tx & 7));
+      targetGray[ty * dstW + tx] = count ? static_cast<uint8_t>(sum / count) : 0;
     }
-    if (dither) dither->nextRow();
-    if (out.write(targetRow, static_cast<size_t>(rowBytesDst)) != rowBytesDst) { ok = false; break; }
   }
-  delete dither;
+  if (ok && M4CoverDither::prepare(targetGray, ditherWork, ditherSmooth, dstW, dstH)) {
+    for (int y = 0; y < dstH && ok; ++y) {
+      std::memset(targetRow, 0, static_cast<size_t>(rowBytesDst));
+      for (int x = 0; x < dstW; ++x) {
+        if (M4CoverDither::pixelToBit(targetGray, ditherWork, dstW, x, y))
+          targetRow[x >> 3] |= static_cast<uint8_t>(0x80 >> (x & 7));
+      }
+      if (out.write(targetRow, static_cast<size_t>(rowBytesDst)) != rowBytesDst) ok = false;
+    }
+  } else {
+    ok = false;
+  }
+  M4Psram::freePrefer(targetGray);
+  M4Psram::freePrefer(ditherWork);
+  M4Psram::freePrefer(ditherSmooth);
   M4Psram::freePrefer(targetRow);
   M4Psram::freePrefer(srcGray);
   out.close();
@@ -503,7 +550,7 @@ bool convertCoverFile(const std::string& source, const std::string& target, int 
     // One-bit exact: scale the BMP (including 2-bit Fengyan 171x254) to WxH via dithered 1-bit.
     return bmpFileTo1BitBmpWithSize(source, target, width, height);
   }
-  if (format == ImageFormat::Png) return pngFileToBmpStream(source, target, width, height);
+  if (format == ImageFormat::Png) return pngFileToBmpStream(source, target, width, height, oneBit);
   if (format != ImageFormat::Jpeg) return false;
   FsFile input;
   FsFile output;

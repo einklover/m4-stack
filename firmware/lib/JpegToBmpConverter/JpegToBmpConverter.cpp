@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "BitmapHelpers.h"
+#include "CoverDither.h"
 
 // Context structure for picojpeg callback
 struct JpegReadContext {
@@ -349,6 +350,21 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     return false;
   }
 
+  uint8_t* coverGray = nullptr;
+  uint8_t* coverWork = nullptr;
+  uint8_t* coverSmooth = nullptr;
+  if (oneBit && exactTarget) {
+    const size_t coverPixels = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight);
+    coverGray = static_cast<uint8_t*>(malloc(coverPixels));
+    coverWork = static_cast<uint8_t*>(malloc(coverPixels));
+    coverSmooth = static_cast<uint8_t*>(malloc(coverPixels));
+    if (!coverGray || !coverWork || !coverSmooth) {
+      free(coverGray); free(coverWork); free(coverSmooth);
+      free(mcuRowBuffer); free(rowBuffer);
+      return false;
+    }
+  }
+
   // Create ditherer if enabled
   // Use OUTPUT dimensions for dithering (after prescaling)
   AtkinsonDitherer* atkinsonDitherer = nullptr;
@@ -397,6 +413,9 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
           Serial.printf("[%lu] [JPG] JPEG decode MCU failed at (%d, %d) with error code: %d\n", millis(), mcuX, mcuY,
                         mcuStatus);
         }
+        free(coverGray);
+        free(coverWork);
+        free(coverSmooth);
         free(mcuRowBuffer);
         free(rowBuffer);
         return false;
@@ -449,6 +468,9 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
             const uint8_t gray = mcuRowBuffer[bufferY * imageInfo.m_width + x];
             rowBuffer[x] = adjustPixel(gray);
           }
+        } else if (oneBit && exactTarget) {
+          for (int x = 0; x < outWidth; ++x)
+            coverGray[bufferY * outWidth + x] = mcuRowBuffer[bufferY * imageInfo.m_width + x];
         } else if (oneBit) {
           // 1-bit output with Atkinson dithering for better quality
           for (int x = 0; x < outWidth; x++) {
@@ -482,7 +504,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
           else if (fsDitherer)
             fsDitherer->nextRow();
         }
-        bmpOut.write(rowBuffer, bytesPerRow);
+        if (!(oneBit && exactTarget)) bmpOut.write(rowBuffer, bytesPerRow);
       } else {
         // Fixed-point area averaging for exact fit scaling
         // For each output pixel X, accumulate source pixels that map to it
@@ -530,6 +552,10 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
               const uint8_t gray = (rowCount[x] > 0) ? (rowAccum[x] / rowCount[x]) : 0;
               rowBuffer[x] = adjustPixel(gray);
             }
+          } else if (oneBit && exactTarget) {
+            for (int x = 0; x < outWidth; ++x)
+              coverGray[currentOutY * outWidth + x] =
+                  rowCount[x] > 0 ? static_cast<uint8_t>(rowAccum[x] / rowCount[x]) : 0;
           } else if (oneBit) {
             // 1-bit output with Atkinson dithering for better quality
             for (int x = 0; x < outWidth; x++) {
@@ -564,7 +590,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
               fsDitherer->nextRow();
           }
 
-          bmpOut.write(rowBuffer, bytesPerRow);
+          if (!(oneBit && exactTarget)) bmpOut.write(rowBuffer, bytesPerRow);
           currentOutY++;
 
           // Reset accumulators for next output row
@@ -594,9 +620,25 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   if (atkinson1BitDitherer) {
     delete atkinson1BitDitherer;
   }
+  bool coverProcessed = true;
+  if (oneBit && exactTarget) {
+    coverProcessed = M4CoverDither::prepare(coverGray, coverWork, coverSmooth, outWidth, outHeight);
+    for (int y = 0; y < outHeight && coverProcessed; ++y) {
+      memset(rowBuffer, 0, bytesPerRow);
+      for (int x = 0; x < outWidth; ++x) {
+        if (M4CoverDither::pixelToBit(coverGray, coverWork, outWidth, x, y))
+          rowBuffer[x >> 3] |= static_cast<uint8_t>(0x80 >> (x & 7));
+      }
+      coverProcessed = bmpOut.write(rowBuffer, bytesPerRow) == bytesPerRow;
+    }
+  }
+  free(coverGray);
+  free(coverWork);
+  free(coverSmooth);
   free(mcuRowBuffer);
   free(rowBuffer);
 
+  if (!coverProcessed) return false;
   Serial.printf("[%lu] [JPG] Successfully converted JPEG to BMP\n", millis());
   return true;
 }
