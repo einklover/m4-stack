@@ -564,12 +564,9 @@ void onGoToSettings() {
 }
 
 void onGoToNetwork() {
-  exitActivity();
-  // Network management is the existing Settings Network & Sync L2. Keep the
-  // transfer server behind the explicit USB/debug wifi_transfer hook below;
-  // neither AppList label should land on CrossPointWebServer.
-  enterNewActivity(new SettingsActivity(renderer, mappedInputManager, onGoHome, SettingsHubCard::NetworkSync,
-                                         SettingsPane::Category));
+  // Network management and file transfer share the three-method CrossPoint
+  // chooser; the AppList file manager keeps its separate MyLibrary route.
+  onGoToFileTransfer();
 }
 
 void onGoToApps() {

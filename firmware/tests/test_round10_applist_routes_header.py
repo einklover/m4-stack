@@ -1,4 +1,4 @@
-"""Round 10 host contract: builtin labels, destinations, and header inset."""
+"""Round 10b host contract: builtin destinations and stronger header inset."""
 
 from pathlib import Path
 
@@ -58,20 +58,23 @@ def test_builtin_labels_use_explicit_named_destinations():
         assert f"callbacks.{field} = {destination};" in main_cpp
 
 
-def test_files_and_network_routes_are_not_transfer_or_wifi_only():
+def test_files_stay_library_and_network_opens_crosspoint_transfer():
     main_cpp = _source(MAIN_CPP)
     native_route = _function(main_cpp, "void onGoToNativeApp(")
     network_route = _function(main_cpp, "void onGoToNetwork()")
+    transfer_route = _function(main_cpp, "void onGoToFileTransfer()")
 
     assert 'if (appId == "builtin.files")' in native_route
     assert "onGoToMyLibrary();" in native_route
     assert "onGoToFileTransfer();" not in native_route
 
-    assert "new SettingsActivity" in network_route
-    assert "SettingsHubCard::NetworkSync" in network_route
-    assert "SettingsPane::Category" in network_route
+    assert "onGoToFileTransfer();" in network_route
+    assert "new SettingsActivity" not in network_route
+    assert "SettingsHubCard::NetworkSync" not in network_route
+    assert "SettingsPane::Category" not in network_route
     assert "NetworkModeSelectionActivity" not in network_route
     assert "new WifiSelectionActivity" not in network_route
+    assert "new CrossPointWebServerActivity" in transfer_route
 
 
 def test_transfer_stays_reachable_via_usb_debug_hook():
@@ -87,7 +90,7 @@ def test_non_home_header_has_measured_safe_top():
     fengyan_h = _source(FENGYAN_H)
     fengyan_cpp = _source(FENGYAN_CPP)
 
-    assert "HeaderSafeTop = 12" in home_ref
+    assert "HeaderSafeTop = 20" in home_ref
     assert ".topPadding = HomeRef::HeaderSafeTop" in fengyan_h
     assert "HomeHeaderTitleBaseline" in fengyan_cpp
     assert "HeaderTitleBaseline" in fengyan_cpp
