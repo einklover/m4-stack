@@ -4,12 +4,11 @@
 #include <freertos/task.h>
 
 #include <functional>
-#include <memory>
 #include <string>
 
 #include "NetworkModeSelectionActivity.h"
 #include "activities/ActivityWithSubactivity.h"
-#include "network/CrossPointWebServer.h"
+#include "network/M4FileTransferService.h"
 
 enum class WebServerActivityState {
   MODE_SELECTION,
@@ -32,7 +31,7 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
 
   NetworkMode networkMode = NetworkMode::JOIN_NETWORK;
   bool isApMode = false;
-  std::unique_ptr<CrossPointWebServer> webServer;
+  M4FileTransferService fileTransferService;
   std::string connectedIP;
   std::string connectedSSID;
   std::string setupError;
@@ -41,6 +40,8 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   PendingParentAction pendingParentAction = PendingParentAction::None;
 
   static void taskTrampoline(void* param);
+  static bool webPumpAbortCheck(void* context);
+  bool pollWebPumpAbort();
   [[noreturn]] void displayTaskLoop();
   void render() const;
   void renderServerRunning() const;
@@ -52,7 +53,6 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   void onWifiSelectionComplete(bool connected);
   void startAccessPoint();
   void startWebServer();
-  void stopWebServer();
 
  public:
   explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -72,8 +72,8 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
     return false;
 #else
-    return webServer && webServer->isRunning();
+    return fileTransferService.webServerRunning();
 #endif
   }
-  bool preventAutoSleep() override { return webServer && webServer->isRunning(); }
+  bool preventAutoSleep() override { return fileTransferService.webServerRunning(); }
 };
