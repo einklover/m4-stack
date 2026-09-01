@@ -597,7 +597,10 @@ Result acquireProviderCover(const Request& request) {
     return ok;
   };
   backend.convert = [](const std::string& source, const std::string& target, int width, int height) {
-    return convertCoverFile(source, target, width, height, false);
+    const bool isHomeSceneSize = (width == 110 && height == 180) || (width == 74 && height == 106);
+    // Home scene covers must be 1-bit exact-size BMPs (same path as ensureSized). Other
+    // provider sizes (e.g. detail) keep the legacy 8-bit path.
+    return convertCoverFile(source, target, width, height, isHomeSceneSize);
   };
   backend.remove = [](const std::string& path) { SdMan.remove(path.c_str()); };
   return acquire(request, backend);
