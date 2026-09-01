@@ -18,6 +18,7 @@ BOOTSTRAP = ROOT / "scripts" / "bootstrap_deps.sh"
 REQUIRED_SENTINELS = (
     "open-m4-sdk/libs/hardware/BatteryMonitor/library.json",
     "open-m4-sdk/libs/hardware/InputManager/library.json",
+    "open-m4-sdk/libs/hardware/MemoryManager/library.json",
     "open-m4-sdk/libs/display/FreeInkDisplay/library.json",
     "open-m4-sdk/libs/hardware/SDCardManager/library.json",
     "open-m4-sdk/libs/hardware/BoardConfig/library.json",
@@ -62,6 +63,7 @@ def test_m4_pre_script_bootstraps_only_when_sentinels_are_missing() -> None:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.touch()
 
+        assert "open-m4-sdk/libs/hardware/MemoryManager/library.json" in module.REQUIRED_SENTINELS
         assert module.REQUIRED_SENTINELS == REQUIRED_SENTINELS
         assert module.missing_dependencies(firmware) == list(REQUIRED_SENTINELS)
         assert module.ensure_dependencies(firmware, runner=fake_runner) is True
