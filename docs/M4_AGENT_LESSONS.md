@@ -640,3 +640,9 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - Symptom: new worktree / isolated `PLATFORMIO_HOME_DIR` fails at bootstrap with HTTP 404 on `einklover/m4-device@f86b134`.
 - Cause: archive is private; bare `curl` 404s. Old worktrees only worked because reconstructed trees were already on disk and gitignored.
 - Fix: vendor `open-m4-sdk`, Epub/Lua/expat/miniz/picojpeg, `builtinFonts`, `updater_fw.bin` in-tree; `bootstrap_deps.sh` verifies only (no network). Un-ignore those paths. Third parties must not need the private repo.
+
+## 2026-09-01 — Settings L2 Hub-matched type + right scroll progress
+
+- Round-14 `ui_18` still looked small vs Hub cards because Hub row titles are `ui_24_bold` → `kHubCategoryFontId` (~24px). L2 page/row titles must use `ui_24_bold` too. Do **not** use `ui_20`/`ui_22` for “bigger”: those still map to `SMALL_FONT_ID` (~16px) in `runtimeFontId`. The older “prefer ui_22” note is obsolete once `kHubCategoryFontId` is wired for 24/25.
+- Keep L2 `item_height=80` / `gap=4` / `limit=8` (content bottom exactly 736). Raising row height to Hub’s 100 with window 8 overflows the footer.
+- 「右边要有进度条」on L2 means the **Fengyan list scrollbar** (track + thumb for `windowStart` in a long flattened list), not a theme `progress` node. Scene-ize lost `FengyanTheme::drawList`’s right bar; restore it in `SettingsActivity::render` after the L2 package (`x=468`, `w=4`, only when `flatCount > kSettingsL2Window`). Keep theme free of `progress`/`icon`/`cover`.

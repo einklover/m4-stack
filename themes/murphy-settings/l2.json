@@ -16,14 +16,14 @@
   },
   "nodes": [
     {"type": "clear", "color": "white"},
-    {"type": "text", "rect": [24, 24, 280, 28], "text": "$page.title", "font": "ui_18_bold", "align": "left", "ellipsis": true},
+    {"type": "text", "rect": [24, 20, 320, 32], "text": "$page.title", "font": "ui_24_bold", "align": "left", "ellipsis": true},
     {"type": "battery", "rect": [432, 24, 24, 12], "binding": "$system.battery"},
     {"type": "line", "x": 23, "y": 52, "x2": 456, "y2": 52, "width": 1, "color": "black"},
     {"type": "repeat", "source": "$page.rows", "limit": 8, "x": 24, "y": 68, "item_width": 432, "item_height": 80, "gap": 4, "direction": "vertical", "action": "activate_setting", "action_arg": "$item.id", "children": [
       {"type": "round_rect", "rect": [0, 12, 4, 56], "r": 0, "fill": true, "visible_if": "$item.selected"},
-      {"type": "text", "rect": [20, 26, 260, 28], "text": "$item.title", "font": "ui_18_regular", "align": "left", "ellipsis": true, "visible_if": "$item.is_row"},
-      {"type": "text", "rect": [20, 28, 400, 24], "text": "$item.title", "font": "ui_16_regular", "align": "left", "ellipsis": true, "visible_if": "$item.is_section"},
-      {"type": "text", "rect": [280, 26, 140, 24], "text": "$item.value", "font": "ui_16_regular", "align": "right", "ellipsis": true, "visible_if": "$item.is_row"}
+      {"type": "text", "rect": [20, 22, 240, 36], "text": "$item.title", "font": "ui_24_bold", "align": "left", "ellipsis": true, "visible_if": "$item.is_row"},
+      {"type": "text", "rect": [20, 26, 400, 28], "text": "$item.title", "font": "ui_18_regular", "align": "left", "ellipsis": true, "visible_if": "$item.is_section"},
+      {"type": "text", "rect": [280, 24, 140, 32], "text": "$item.value", "font": "ui_18_regular", "align": "right", "ellipsis": true, "visible_if": "$item.is_row"}
     ]}
   ]
 }

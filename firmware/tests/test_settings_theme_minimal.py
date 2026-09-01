@@ -93,10 +93,13 @@ def test_settings_theme_no_forbidden_node_types():
         forbidden = []
         for n in all_ns:
             t = n.get("type", "")
+            # Hub: still ban icon/cover/progress. L2 list scroll progress is drawn
+            # in SettingsActivity::render (Fengyan list grammar), not as a theme node.
             if t in ("icon", "cover", "progress"):
                 forbidden.append((t, n.get("rect"), n.get("binding")))
         assert not forbidden, (
             f"{label} must not contain node type icon/cover/progress per spec §2 (no icons, no borders). "
+            f"L2 right-edge scroll bar is an Activity overlay, not a theme progress node. "
             f"Found {forbidden}. Theme: {p}"
         )
 
@@ -192,12 +195,12 @@ def test_settings_chrome_rects_match_spec():
                 txt = tn.get("text", "")
                 assert txt == "系统设置" or txt.startswith("$"), f"hub title text must be '系统设置' or $page.title, got {txt!r}"
         else:
-            # L2 enlarged per round-14: [24,24,280,28] ui_18_bold -> NOTOSANS_18
-            title_nodes = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 24, 280, 28]]
-            assert title_nodes, f"{label} must have title text rect [24,24,280,28] per round-14. Nodes: {nodes[:3]} at {p}"
+            # L2 Hub-matched type: same chrome rect as Hub, ui_24_bold -> kHubCategoryFontId (~24px)
+            title_nodes = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 20, 320, 32]]
+            assert title_nodes, f"{label} must have title text rect [24,20,320,32] (Hub-matched). Nodes: {nodes[:3]} at {p}"
             for tn in title_nodes:
                 font = tn.get("font", "")
-                assert font == "ui_18_bold", f"{label} title font must be ui_18_bold (round-14), got {font} in {tn}"
+                assert font == "ui_24_bold", f"{label} title font must be ui_24_bold (Hub-matched), got {font} in {tn}"
                 txt = tn.get("text", "")
                 assert txt == "$page.title" or "系统设置" in txt or txt.startswith("$"), f"l2 title text must be $page.title (or literal), got {txt!r}"
 
@@ -250,35 +253,33 @@ def test_settings_chrome_rects_match_spec():
         assert title.get("font") == "ui_24_bold", f"hub title font ui_24_bold, got {title.get('font')}"
         assert title.get("text") == "$item.title" or "$item.title" in str(title.get("text")), f"hub title text must be $item.title, got {title.get('text')}"
 
-    # L2-specific (round-14 enlarged: page/ui_18_bold, row/ui_18_regular, section+value/ui_16_regular)
+    # L2-specific (Hub-matched type: page+row ui_24_bold, section+value ui_18_regular)
     if l2.is_file():
         theme = _load_json(l2)
         nodes = theme.get("nodes", [])
         r = next((n for n in nodes if n.get("type") == "repeat" and n.get("limit") == 8), None)
         assert r is not None, f"l2 must have repeat limit 8 at {l2}"
-        assert r.get("item_width") == 432 and r.get("item_height") == 80, f"l2 repeat item 432x80 per round-14 (80 kept, 18px fits), got {r}"
+        assert r.get("item_width") == 432 and r.get("item_height") == 80, f"l2 repeat item 432x80 (footer lock), got {r}"
         assert r.get("gap") == 4, f"l2 gap 4, got {r.get('gap')}"
         children = r.get("children", [])
         tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [0, 12, 4, 56]), None)
-        assert tick is not None, f"l2 repeat must have selected bar [0,12,4,56] per round-14 (kept 80px), children={children}"
+        assert tick is not None, f"l2 repeat must have selected bar [0,12,4,56], children={children}"
         assert tick.get("fill") is True or tick.get("fill") == 1
         assert tick.get("stroke", 0) == 0
         assert tick.get("r", tick.get("radius", 0)) == 0
         assert tick.get("visible_if") == "$item.selected"
-        # setting name [20,26,260,28] ui_18_regular $item.title visible_if $item.is_row (enlarged)
-        name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [20, 26, 260, 28]), None)
-        assert name is not None, f"l2 must have setting name [20,26,260,28] per round-14, children={children}"
-        assert name.get("font") == "ui_18_regular", f"l2 name font ui_18_regular (round-14), got {name.get('font')}"
+        # setting name matches Hub card title face
+        name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [20, 22, 240, 36]), None)
+        assert name is not None, f"l2 must have setting name [20,22,240,36] Hub-matched, children={children}"
+        assert name.get("font") == "ui_24_bold", f"l2 name font ui_24_bold (Hub-matched), got {name.get('font')}"
         assert name.get("visible_if") == "$item.is_row", f"name visible_if $item.is_row, got {name.get('visible_if')}"
-        # group name [20,28,400,24] ui_16_regular $item.title visible_if $item.is_section (enlarged from ui_14)
-        group = next((c for c in children if c.get("type") == "text" and c.get("rect") == [20, 28, 400, 24]), None)
-        assert group is not None, f"l2 must have group title [20,28,400,24] per round-14"
-        assert group.get("font") == "ui_16_regular"
+        group = next((c for c in children if c.get("type") == "text" and c.get("rect") == [20, 26, 400, 28]), None)
+        assert group is not None, f"l2 must have group title [20,26,400,28]"
+        assert group.get("font") == "ui_18_regular"
         assert group.get("visible_if") == "$item.is_section"
-        # value [280,26,140,24] right ui_16_regular $item.value visible_if $item.is_row (enlarged from ui_14)
-        value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [280, 26, 140, 24]), None)
-        assert value is not None, f"l2 must have value [280,26,140,24] per round-14"
-        assert value.get("font") == "ui_16_regular"
+        value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [280, 24, 140, 32]), None)
+        assert value is not None, f"l2 must have value [280,24,140,32]"
+        assert value.get("font") == "ui_18_regular"
         assert value.get("align") == "right", f"value align right, got {value.get('align')}"
         assert value.get("visible_if") == "$item.is_row"
         assert value.get("text") == "$item.value"

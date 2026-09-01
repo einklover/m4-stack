@@ -744,6 +744,27 @@ void SettingsActivity::render() const {
     r.render(murphy_settings_hub_m4theme, murphy_settings_hub_m4theme_len, src, assets, renderer);
   } else {
     r.render(murphy_settings_l2_m4theme, murphy_settings_l2_m4theme_len, src, assets, renderer);
+    // Right-edge scroll progress (same grammar as FengyanTheme::drawList).
+    // Theme JSON stays clear of progress nodes; overlay sits in the 24px margin
+    // past the L2 repeat (x=24..456) so value text is not clipped.
+    const int flatCount = settingsFlatCount(navState_.hub, true);
+    if (flatCount > kSettingsL2Window) {
+      constexpr int kBarW = 4;
+      constexpr int kBarX = 468;
+      const int trackY = kSettingsContentTop;
+      const int trackH =
+          kSettingsL2Window * kSettingsL2ItemH + (kSettingsL2Window - 1) * kSettingsL2Gap;
+      int thumbH = (trackH * kSettingsL2Window) / flatCount;
+      if (thumbH < 24) thumbH = 24;
+      if (thumbH > trackH) thumbH = trackH;
+      const int maxStart = flatCount - kSettingsL2Window;
+      int thumbY = trackY;
+      if (maxStart > 0) {
+        thumbY = trackY + ((trackH - thumbH) * navState_.windowStart) / maxStart;
+      }
+      renderer.drawLine(kBarX + kBarW / 2, trackY, kBarX + kBarW / 2, trackY + trackH, true);
+      renderer.fillRect(kBarX, thumbY, kBarW, thumbH, true);
+    }
   }
   const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kConfirm), L(Str::kUp), L(Str::kDown));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
