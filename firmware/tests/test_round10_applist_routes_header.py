@@ -1,4 +1,4 @@
-"""Round 10b host contract: builtin destinations and stronger header inset."""
+"""Round 11 host contract: builtin destinations and balanced non-Home header."""
 
 from pathlib import Path
 
@@ -85,12 +85,15 @@ def test_transfer_stays_reachable_via_usb_debug_hook():
     assert 'hooks.openFileTransferUi = []() { onGoToFileTransferUsb(); };' in main_cpp
 
 
-def test_non_home_header_has_measured_safe_top():
+def test_non_home_header_uses_balanced_geometry():
     home_ref = _source(HOME_REF_H)
     fengyan_h = _source(FENGYAN_H)
     fengyan_cpp = _source(FENGYAN_CPP)
 
     assert "HeaderSafeTop = 20" in home_ref
+    assert "HeaderH = 46" in home_ref
+    assert "HeaderTitleBaseline = 38" in home_ref
     assert ".topPadding = HomeRef::HeaderSafeTop" in fengyan_h
+    assert ".headerHeight = HomeRef::HeaderH" in fengyan_h
     assert "HomeHeaderTitleBaseline" in fengyan_cpp
     assert "HeaderTitleBaseline" in fengyan_cpp
