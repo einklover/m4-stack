@@ -65,6 +65,9 @@ jobs:
           g++ -std=c++20 firmware/tests/native_app/test_m4_runtime_memory_snapshot.cpp \
             -o "$RUNNER_TEMP/test_m4_runtime_memory_snapshot"
           "$RUNNER_TEMP/test_m4_runtime_memory_snapshot"
+          g++ -std=c++20 firmware/tests/native_app/test_m4_runtime_memory_facade_contract.cpp \
+            -o "$RUNNER_TEMP/test_m4_runtime_memory_facade_contract"
+          "$RUNNER_TEMP/test_m4_runtime_memory_facade_contract"
 
       - name: Build patched QEMU only on cache miss
         if: steps.qemu-cache.outputs.cache-hit != 'true'
