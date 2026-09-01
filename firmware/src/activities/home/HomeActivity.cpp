@@ -149,6 +149,15 @@ void HomeActivity::loadRecentBooksInto(BackendContext& ctx, int maxBooks) {
     if (static_cast<int>(ctx.recentBooks.size()) >= maxBooks) break;
     if (M4ContentProvider::isHistoryUri(book.path.c_str())) {
       book.progress = loadBookProgress(book.originalSourcePath.empty() ? book.path : book.originalSourcePath);
+      // Heal missing coverBmpPath for provider recents created before cover was
+      // bound (early detail→reader race). Store the deterministic template so
+      // Home can retry ensureSized/dither without reopening detail.
+      if (book.coverBmpPath.empty()) {
+        std::string pid, bid;
+        if (M4ContentProvider::parseHistoryUri(book.path.c_str(), pid, bid)) {
+          book.coverBmpPath = M4ProviderCoverCache::bmpTemplatePath(pid, bid);
+        }
+      }
       ctx.recentBooks.push_back(book);
       continue;
     }
@@ -181,7 +190,19 @@ bool HomeActivity::tryEnsureCoverThumbInCtx(BackendContext& ctx, const std::stri
   return SdMan.exists(thumb.c_str());
 }
 
-bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
+bool HomeActivity::tryDecodeCoverThumbIfExists(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
+                                              const std::function<bool()>& cancelled) {
+  if (coverBmpPath.empty()) return false;
+  std::string thumb = UITheme::getCoverThumbPath(coverBmpPath, w, h);
+  if (!SdMan.exists(thumb.c_str())) return false;
+  // Do not call ensureSized here — this is the fast, cache-hit-only path for
+  // first publish. Placeholder will show for misses; async refresh handles them.
+  (void)ctx;
+  (void)cancelled;
+  return true; // caller will decode using thumb path
+}
+
+bool HomeActivity::publishHomeSceneWithAssetsFastCtx(BackendContext& ctx) {
   uint32_t epoch = ctx.epoch.load(std::memory_order_acquire);
   auto isCancelled = [&ctx, epoch]() -> bool {
     return ctx.cancelled.load(std::memory_order_acquire) ||
@@ -189,10 +210,13 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
   };
   if (isCancelled()) return false;
   HomeScene::HomeScenePublication& draftPub = ctx.model.draftPublication();
+  // Fast path: only decode covers whose sized thumb already exists on SD.
+  // Missing thumbs stay as missing assets → GfxSceneRenderer draws drawCoverPlaceholder
+  // (rounded border + diagonal cross + book spine). Do NOT block on ensureSized.
   if (!ctx.recentBooks.empty()) {
     const RecentBook& cur = ctx.recentBooks.front();
-    if (tryEnsureCoverThumbInCtx(ctx, cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH,
-                                 isCancelled)) {
+    if (tryDecodeCoverThumbIfExists(ctx, cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH,
+                                    isCancelled)) {
       std::string thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
       UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
       if (isCancelled()) return false;
@@ -204,8 +228,8 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
   for (size_t i = 1; i < ctx.recentBooks.size() && itemIndex < 3; ++i) {
     if (isCancelled()) return false;
     const RecentBook& b = ctx.recentBooks[i];
-    if (tryEnsureCoverThumbInCtx(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH,
-                                 isCancelled)) {
+    if (tryDecodeCoverThumbIfExists(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH,
+                                    isCancelled)) {
       std::string thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
       UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, itemIndex};
       (void)HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled);
@@ -221,7 +245,6 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     const auto& snap = draftPub.snapshot;
     for (uint8_t i = 0; i < snap.appCount; ++i) {
       if (isCancelled()) return false;
-      // Extract app id from snapshot text arena.
       std::string appId;
       {
         auto view = snap.textView(snap.apps[i].id);
@@ -241,12 +264,61 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     }
   }
   if (isCancelled()) return false;
-  if (isCancelled()) return false;
   if (ctx.model.publish()) {
     ctx.updateRequired.store(true, std::memory_order_release);
     return true;
   }
   return false;
+}
+
+void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch) {
+  auto isCancelled = [&ctx, epoch]() -> bool {
+    return ctx.cancelled.load(std::memory_order_acquire) || ctx.epoch.load(std::memory_order_acquire) != epoch;
+  };
+  if (isCancelled()) return;
+  bool anyDecoded = false;
+  HomeScene::HomeScenePublication& draftPub = ctx.model.draftPublication();
+  // Hero slot
+  if (!ctx.recentBooks.empty()) {
+    const RecentBook& cur = ctx.recentBooks.front();
+    std::string thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
+    if (!cur.coverBmpPath.empty() && !SdMan.exists(thumb.c_str())) {
+      if (isCancelled()) return;
+      if (tryEnsureCoverThumbInCtx(ctx, cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH, isCancelled)) {
+        if (isCancelled()) return;
+        // Recompute thumb after ensure (ensure may have created it)
+        thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
+        UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
+        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) anyDecoded = true;
+      }
+    }
+  }
+  if (isCancelled()) return;
+  uint8_t itemIndex = 0;
+  for (size_t i = 1; i < ctx.recentBooks.size() && itemIndex < 3; ++i) {
+    if (isCancelled()) return;
+    const RecentBook& b = ctx.recentBooks[i];
+    std::string thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
+    if (!b.coverBmpPath.empty() && !SdMan.exists(thumb.c_str())) {
+      if (tryEnsureCoverThumbInCtx(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH, isCancelled)) {
+        if (isCancelled()) return;
+        thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
+        UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, itemIndex};
+        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) anyDecoded = true;
+      }
+    }
+    itemIndex++;
+    if (isCancelled()) return;
+  }
+  if (anyDecoded && !isCancelled()) {
+    if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
+  }
+}
+
+bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
+  // Backwards compat: now implemented as fast publish. Callers that need
+  // blocking ensure should call refreshMissingCoversInCtx separately.
+  return publishHomeSceneWithAssetsFastCtx(ctx);
 }
 
 void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
@@ -316,7 +388,12 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
   }
   if (ctx.recentBooks.empty() && !hasApps) ctx.model.begin(UiScene::DataState::Empty);
   if (isCancelled()) return;
-  (void)publishHomeSceneWithAssetsCtx(ctx);
+  // First paint: publish all chrome plus placeholder for missing covers (fast, no ensureSized/dither).
+  (void)publishHomeSceneWithAssetsFastCtx(ctx);
+  if (isCancelled()) return;
+  // Async refresh: ensure sized thumbs (slow JPEG→1-bit dither) and republish covers when ready.
+  // Cache-hit BMPs were already decoded in fast path; this handles misses.
+  refreshMissingCoversInCtx(ctx, epoch);
 }
 
 // Legacy wrappers kept for non-refactored call sites (should not be used in M4 path).

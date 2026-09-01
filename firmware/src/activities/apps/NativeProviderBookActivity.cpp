@@ -13,6 +13,7 @@
 #include "apps/providers/M4NativeProviderCatalog.h"
 #include "apps/providers/M4NativeProviderManager.h"
 #include "components/UITheme.h"
+#include "util/M4ProviderCoverCache.h"
 #include "fontIds.h"
 #include "RecentBooksStore.h"
 #include "util/M4ErrorScreen.h"
@@ -328,6 +329,22 @@ void NativeProviderBookActivity::loadBookDetail() {
   const auto metrics = UITheme::getInstance().getMetrics();
   detail_ = M4NativeProviderBookDetail::seed(req);
   detailError_.clear();
+  // Bind deterministic cover template early so early detail→reader race still
+  // stores a valid coverBmpPath for RecentBooks/Home retry (bug A). The async
+  // fetch will later populate source.img; Home can then ensureSized without
+  // reopening detail.
+  if (providerCoverBmpPath_.empty()) {
+    // Use the same helper that Home and cache use for the template.
+    // Include the provider cover cache header lazily via string construction
+    // to avoid extra dependency here; keep path format consistent.
+    // Template is "/.crosspoint/provider_covers/<hex>/cover_[WIDTH]x[HEIGHT].bmp"
+    // We compute via cache helper if available, else fallback to manual hex.
+    // For minimal dependency, compute directly via M4ProviderCoverCache helper.
+    // This requires including that header; do it via forward string.
+    // Simpler: set to bmpTemplatePath directly.
+    providerCoverBmpPath_ = M4ProviderCoverCache::bmpTemplatePath(providerId_, bookId_);
+    updateRecentProviderMetadata(providerId_, bookId_, detail_, providerCoverBmpPath_);
+  }
   updateRecentProviderMetadata(providerId_, bookId_, detail_);
 
   // Paint the immediately available discovery/history model first (FAST only).
@@ -362,7 +379,10 @@ void NativeProviderBookActivity::pollDetailLoading() {
   }
   const std::string coverPath = updateRecentProviderMetadata(providerId_, bookId_, detail_, snap.coverBmpPath);
   if (!coverPath.empty()) providerCoverBmpPath_ = coverPath;
-  renderDetail();
+  // Only render detail UI if still in Detail state; otherwise the activity
+  // has moved to Reader/CatalogLoading and should not ceil the detail screen.
+  // The RecentBooks update above still persists the cover for Home retry.
+  if (state_ == State::Detail) renderDetail();
 }
 
 void NativeProviderBookActivity::cancelDetailLoading() {
@@ -548,7 +568,11 @@ void NativeProviderBookActivity::openToc() {
 }
 
 void NativeProviderBookActivity::startReading() {
-  cancelDetailLoading();
+  // Do NOT cancel detail cover fetch when entering reader — keep the async
+  // cover acquire alive so RecentBooks/Home can still get the cover even if
+  // user tapped "Read" before detail/cover finished (bug A). The poll below
+  // will still update RecentBooks after the activity leaves Detail.
+  // cancelDetailLoading() is deferred to onExit or explicit error handling.
   pendingCatalogAction_ = PendingCatalogAction::StartReading;
   if (!titles_ && !prepareCatalog()) {
     error_.clear();
@@ -897,8 +921,12 @@ void NativeProviderBookActivity::loop() {
     }
   }
 
+  // Poll detail cover progress even after leaving Detail (e.g. reader opened
+  // before detail finished) so RecentBooks still gets the cover for Home
+  // retry without reopening detail (bug A).
+  if (detailLoading_) pollDetailLoading();
+
   if (state_ == State::Detail) {
-    pollDetailLoading();
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
       onExitBook_();
       return;

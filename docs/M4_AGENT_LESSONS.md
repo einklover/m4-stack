@@ -641,6 +641,13 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - Cause: archive is private; bare `curl` 404s. Old worktrees only worked because reconstructed trees were already on disk and gitignored.
 - Fix: vendor `open-m4-sdk`, Epub/Lua/expat/miniz/picojpeg, `builtinFonts`, `updater_fw.bin` in-tree; `bootstrap_deps.sh` verifies only (no network). Un-ignore those paths. Third parties must not need the private repo.
 
+## 2026-09-01 — Home cover placeholder must not block first paint; heal empty cover path on return
+
+- Bug A: plugin detail cover `source.img` not yet downloaded → tap Read before detail task finishes → `RecentBooks` stored empty `coverBmpPath` → Home never retried, cover missing forever until reopen detail.
+- Fixes: (1) bind deterministic `M4ProviderCoverCache::bmpTemplatePath(pid,bid)` into `providerCoverBmpPath` / `RecentBooks` even before async fetch (`NativeProviderBookActivity::loadBookDetail` early bind, `TxtReader::persistOpenHistory` + `switchToProviderChapter` fallback); (2) don’t cancel detail cover fetch on `startReading`; (3) poll `M4NativeProviderBookDetailAsync` even after leaving `Detail` so `RECENT_BOOKS` still gets the cover; (4) heal old rows in `HomeActivity::loadRecentBooksInto` by re-deriving template from `m4cp://` URI so `ensureSized` can retry without reopening detail.
+- Bug B: `HomeActivity::publishHomeSceneWithAssetsCtx` blocked on `ensureSizedCoverFromSource` (JPEG→1-bit dither) before first `publish()`, so user saw empty borders. Fix: `publishHomeSceneWithAssetsFastCtx` only decodes thumbs that already exist on SD (cache-hit immediate); missing thumbs stay as missing assets → `GfxSceneRenderer::drawCoverPlaceholder` (rounded border + diagonal cross + book spine). Publish chrome+placeholders first, then `refreshMissingCoversInCtx` does slow `ensureSized` + decode and republishes covers only. Do not invent a second placeholder — reuse the existing one.
+- Check: ensure fast publish slice contains `tryDecodeCoverThumbIfExists` but not `ensureSizedCoverFromSource`; refresh slice contains the ensure. Host test `test_home_cover_placeholder_async.cpp` proves this.
+
 ## 2026-09-01 — Settings L2 Hub-matched type + right scroll progress
 
 - Round-14 `ui_18` still looked small vs Hub cards because Hub row titles are `ui_24_bold` → `kHubCategoryFontId` (~24px). L2 page/row titles must use `ui_24_bold` too. Do **not** use `ui_20`/`ui_22` for “bigger”: those still map to `SMALL_FONT_ID` (~16px) in `runtimeFontId`. The older “prefer ui_22” note is obsolete once `kHubCategoryFontId` is wired for 24/25.

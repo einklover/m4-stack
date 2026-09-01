@@ -97,14 +97,15 @@ class ProviderCoverCacheContracts(unittest.TestCase):
 
     def test_ensure_sized_missing_source_does_not_invent_download(self):
         header = HEADER.read_text(encoding="utf-8")
-        # When source.img missing, must return empty thumbPath without fetching
-        self.assertIn('if (!backend.exists(source))', header)
-        miss_slice = header[header.find('if (!backend.exists(source))'):header.find('if (!backend.convert(source, target, width, height)')]
-        self.assertIn("out.thumbPath.clear();", miss_slice)
-        self.assertIn("return out;", miss_slice)
-        # And must not call fetch in that branch
-        self.assertNotIn("backend.fetch", miss_slice)
-        self.assertNotIn("M4NativeProviderHttp", miss_slice)
+        # When source.img missing, must return empty thumbPath without fetching.
+        # Header uses `if (backend.exists(source)) { ... }` positive branch for generate,
+        # and the else branch (last resort) handles missing source without fetch.
+        # Check that missing-source path does not fetch and clears thumb for probes.
+        ensure_slice = header[header.find("inline EnsureSizedResult ensureSizedCoverFromSource"):header.find("inline Result acquire")]
+        self.assertIn("backend.exists(source)", ensure_slice)
+        # The generate branch is guarded by exists(source); missing source must not call fetch
+        self.assertNotIn("backend.fetch", ensure_slice)
+        self.assertIn("out.thumbPath.clear();", ensure_slice)
 
     def test_ensure_sized_convert_failure_removes_partial_target(self):
         header = HEADER.read_text(encoding="utf-8")
@@ -145,12 +146,8 @@ class ProviderCoverCacheContracts(unittest.TestCase):
     def test_last_resort_from_171x254_is_guarded_or_absent(self):
         header = HEADER.read_text(encoding="utf-8")
         source = CACHE.read_text(encoding="utf-8")
-        # In this worktree Lane A fallback may not exist yet — test must be guarded.
-        # Comment "// (171x254)" is expected documentation, not implementation. Guard on actual
-        # fallback file string "cover_171x254.bmp" so comment alone does not trigger.
         has_171 = "cover_171x254" in header or "cover_171x254" in source
         if not has_171:
-            # No production last-resort yet — this is expected for muse-tests lane; skip validation
             self.skipTest("last-resort cover_171x254 API not in this worktree yet (Lane A) — guard passes")
         else:
             combined = header + source
@@ -158,8 +155,10 @@ class ProviderCoverCacheContracts(unittest.TestCase):
             self.assertIn("Never fetches", header)
             self.assertIn("fallbackBmpPathInDir", header)
             self.assertIn("bmpFileTo1BitBmpWithSize", source)
-            idx_src = header.find("if (backend.exists(source))")
-            idx_fb = header.find("fallbackBmpPathInDir")
+            # Ensure last-resort occurs after source block: search within ensure function
+            ensure_slice = header[header.find("inline EnsureSizedResult ensureSizedCoverFromSource"):header.find("inline Result acquire")]
+            idx_src = ensure_slice.find("if (backend.exists(source))")
+            idx_fb = ensure_slice.find("fallbackBmpPathInDir")
             self.assertNotEqual(idx_src, -1)
             self.assertNotEqual(idx_fb, -1)
             self.assertGreater(idx_fb, idx_src, "last-resort must run only after source.img exists-check")
