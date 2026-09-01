@@ -20,7 +20,8 @@ constexpr int16_t HeaderPadX = 27;
 constexpr int16_t HeaderIcon = 22;
 constexpr int16_t HeaderDividerX = 47;  // reference Home has no vertical header divider
 constexpr int16_t HeaderTitleX = 58;
-constexpr int16_t HeaderTitleBaseline = 31;
+// Tune title ink against the centered status glyphs independently of SafeTop.
+constexpr int16_t HeaderTitleBaseline = 38;
 constexpr int16_t HeaderTimeX = 314;   // non-Home Fengyan compatibility
 constexpr int16_t HeaderWifiX = 366;
 constexpr int16_t HeaderBatteryTextX = 400;
