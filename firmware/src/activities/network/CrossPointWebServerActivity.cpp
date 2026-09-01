@@ -21,6 +21,7 @@
 #include "util/M4UiText.h"
 #include "network/NetworkConstants.h"
 #include "qemu/M4QemuNet.h"
+#include "util/M4RuntimeMemory.h"
 #include "util/QRCodeHelper.h"
 
 using namespace NetworkConstants;
@@ -34,6 +35,12 @@ void logInternalHeap(const char* where) {
                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                 static_cast<unsigned>(ESP.getFreeHeap()));
 }
+
+void logNavigationRequest(const WebServerActivityState state, const bool isApMode) {
+  Serial.printf("[%lu] [WEBACT] nav_request state=%u mode=%s\n", millis(), static_cast<unsigned>(state),
+                isApMode ? "ap" : "sta");
+  m4LogRuntimeMemory("file-transfer-nav-request");
+}
 }  // namespace
 
 void CrossPointWebServerActivity::taskTrampoline(void* param) {
@@ -42,6 +49,7 @@ void CrossPointWebServerActivity::taskTrampoline(void* param) {
 
 void CrossPointWebServerActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
+  m4LogRuntimeMemory("file-transfer-enter");
   logInternalHeap("onEnter");
 
   renderingMutex = xSemaphoreCreateMutex();
@@ -78,6 +86,11 @@ void CrossPointWebServerActivity::onEnter() {
 }
 
 void CrossPointWebServerActivity::onExit() {
+  const unsigned long exitStarted = millis();
+  Serial.printf("[%lu] [WEBACT] exit_begin state=%u mode=%s\n", millis(), static_cast<unsigned>(state),
+                isApMode ? "ap" : "sta");
+  m4LogRuntimeMemory("file-transfer-exit-begin");
+
   ActivityWithSubactivity::onExit();
   pendingParentAction = PendingParentAction::None;
   state = WebServerActivityState::SHUTTING_DOWN;
@@ -99,8 +112,16 @@ void CrossPointWebServerActivity::onExit() {
   delay(300);
 #endif
   logInternalHeap("after network stop");
+  m4LogRuntimeMemory("file-transfer-after-network-stop");
 
-  if (renderingMutex) xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  unsigned long renderMutexWaitMs = 0;
+  if (renderingMutex) {
+    const unsigned long mutexWaitStarted = millis();
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    renderMutexWaitMs = static_cast<unsigned long>(millis() - mutexWaitStarted);
+  }
+  Serial.printf("[%lu] [WEBACT] render_mutex_wait_ms=%lu\n", millis(), renderMutexWaitMs);
+
   if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
@@ -109,6 +130,9 @@ void CrossPointWebServerActivity::onExit() {
     vSemaphoreDelete(renderingMutex);
     renderingMutex = nullptr;
   }
+
+  m4LogRuntimeMemory("file-transfer-exit-end");
+  Serial.printf("[%lu] [WEBACT] exit_ms=%lu\n", millis(), static_cast<unsigned long>(millis() - exitStarted));
 }
 
 void CrossPointWebServerActivity::showSetupError(const char* message) {
@@ -257,7 +281,6 @@ void CrossPointWebServerActivity::startAccessPoint() {
   snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", apIP[0], apIP[1], apIP[2], apIP[3]);
   connectedIP = ipStr;
   connectedSSID = AP_SSID;
-
   if (MDNS.begin(AP_HOSTNAME)) {
     Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
   }
@@ -274,6 +297,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
 }
 
 void CrossPointWebServerActivity::startWebServer() {
+  m4LogRuntimeMemory("file-transfer-server-start-before");
   logInternalHeap("before web server start");
   webServer.reset(new (std::nothrow) CrossPointWebServer());
   if (!webServer) {
@@ -290,6 +314,7 @@ void CrossPointWebServerActivity::startWebServer() {
   state = WebServerActivityState::SERVER_RUNNING;
   updateRequired = true;
   logInternalHeap("after web server start");
+  m4LogRuntimeMemory("file-transfer-server-start-after");
 
   if (renderingMutex) xSemaphoreTake(renderingMutex, portMAX_DELAY);
   render();
@@ -297,10 +322,14 @@ void CrossPointWebServerActivity::startWebServer() {
 }
 
 void CrossPointWebServerActivity::stopWebServer() {
+  const unsigned long stopStarted = millis();
+  const bool hadServer = static_cast<bool>(webServer);
   if (webServer) {
     if (webServer->isRunning()) webServer->stop();
     webServer.reset();
   }
+  Serial.printf("[%lu] [WEBACT] server_stop_ms=%lu had_server=%d\n", millis(),
+                static_cast<unsigned long>(millis() - stopStarted), hadServer ? 1 : 0);
 }
 
 void CrossPointWebServerActivity::loop() {
@@ -327,8 +356,12 @@ void CrossPointWebServerActivity::loop() {
   };
 
   if (wantsExit()) {
-    if (state == WebServerActivityState::ERROR) reopenModeSelection();
-    else onGoBack();
+    if (state == WebServerActivityState::ERROR) {
+      reopenModeSelection();
+    } else {
+      logNavigationRequest(state, isApMode);
+      onGoBack();
+    }
     return;
   }
   if (state != WebServerActivityState::SERVER_RUNNING) return;
@@ -364,6 +397,7 @@ void CrossPointWebServerActivity::loop() {
       esp_task_wdt_reset();
       mappedInput.update();
       if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        logNavigationRequest(state, isApMode);
         onGoBack();
         return;
       }
