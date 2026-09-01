@@ -4,7 +4,7 @@
 
 **Goal:** Produce a reproducible, AI-friendly Murphy M4-only repository baseline, verify it from a clean clone, and promote the verified branch tip to GitHub `main` while preserving history.
 
-**Architecture:** Keep large SDK/font/vendor trees reconstructed from the pinned `einklover/m4-device@f86b134` archive rather than committing them. Make the M4 build self-bootstrap before local library discovery, then provide one canonical documentation path for humans/agents and remove host-specific or stale simulator assumptions that break clean clones. Preserve the already hardware-tested buzzer/direct-boot/shutdown-wallpaper behavior unchanged.
+**Architecture:** Track the reasonably sized SDK/library sources directly in this repository, generate the ignored production font artifact from a builder-supplied TTF, and make the M4 build use only this checkout plus public PlatformIO packages. Preserve the already hardware-tested buzzer/direct-boot/shutdown-wallpaper behavior unchanged.
 
 **Tech Stack:** ESP32-S3 / Arduino + ESP-IDF through PlatformIO, Python 3 helper scripts and contract tests, Bash bootstrap/flash tools, CMake host simulator, patched Espressif QEMU v3, Git/GitHub.
 
@@ -15,8 +15,7 @@
 - Production hardware target is Murphy M4; production build environment is `murphy_m4`.
 - QEMU build environments must never be flashed to hardware.
 - Ordinary hardware flashing is APP1-only; never write/erase bootloader, partition table, NVS, or original APP0 without explicit human approval.
-- Reconstructed dependencies remain pinned to `einklover/m4-device@f86b134` unless the spec is explicitly revised.
-- Do not vendor the ~159 MB `firmware/lib/EpdFont/builtinFonts/` tree into Git in this rebuild.
+- The M4 SDK/library sources are tracked; generated `firmware/lib/EpdFont/builtinFonts/` output remains ignored.
 - Existing GPIO46 buzzer sanitizer, direct Home/Reader startup, and default shutdown wallpaper behavior must not regress.
 - Hardware validation claims require hardware evidence; simulator/QEMU evidence must be labeled as such.
 - No secrets, device captures, local absolute paths, or generated build outputs may be committed.
@@ -104,7 +103,7 @@ git commit -m "fix(m4): finalize boot and shutdown behavior"
 
 **Interfaces:**
 - Produces: `missing_dependencies(firmware_dir: Path) -> list[str]` and `ensure_dependencies(firmware_dir: Path, runner=subprocess.run) -> bool` in `bootstrap_m4_deps.py`.
-- Consumes: root `scripts/bootstrap_deps.sh`, pinned archive `einklover/m4-device@f86b134`.
+- Consumes: root `scripts/bootstrap_deps.sh` as an offline completeness validator.
 - Later tasks rely on: `cd firmware && pio run -e murphy_m4` succeeding from a clone with reconstructed directories absent.
 
 - [ ] **Step 1: Normalize the interrupted dependency contract and run it RED.**
@@ -119,7 +118,6 @@ REQUIRED_SENTINELS = (
     "open-m4-sdk/libs/hardware/BoardConfig/library.json",
     "open-m4-sdk/libs/hardware/FrontlightManager/library.json",
     "open-m4-sdk/libs/hardware/PowerManager/library.json",
-    "src/network/updater_fw.bin",
     "lib/Epub/Epub.h",
     "lib/Lua/src/lua.h",
     "lib/expat/expat.h",
@@ -172,7 +170,7 @@ This step is complete only when the realistic missing-dependency test in Step 6 
 
 - [ ] **Step 4: Harden the root bootstrap enough to fail clearly and remain pinned.**
 
-Keep `M4_DEVICE_SHA=f86b134`. Validate all sentinels after copy. Preserve the current QEMU-only `InputManager` patch behavior. Print the exact archive pin and actionable network/tool failure context. Do not download when the helper determines all sentinels already exist.
+Validate all tracked dependency sentinels. Preserve the current QEMU-only `InputManager` patch behavior. Print actionable missing-path context and do not access the network when the checkout is complete.
 
 - [ ] **Step 5: Fix ignore comments to describe reconstructed dependencies accurately.**
 
@@ -289,7 +287,7 @@ Explain repository map, first files to read, how to choose firmware/simulator/pl
 
 - [ ] **Step 4: Add `docs/BUILD_AND_DEPS.md`.**
 
-Document all reconstructed paths, exact pin `f86b134`, automatic flow, manual `bash scripts/bootstrap_deps.sh`, PlatformIO dependencies/cache, prerequisites (`curl`, `tar`, Python, PlatformIO), and clean-clone troubleshooting.
+Document all tracked dependency paths, the manual `bash scripts/bootstrap_deps.sh` validator, PlatformIO dependencies/cache, prerequisites (Python and PlatformIO), and clean-clone troubleshooting.
 
 - [ ] **Step 5: Add `docs/DEVICE_AND_M4ADB.md`.**
 

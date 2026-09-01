@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Regression contract for automatic M4 dependency reconstruction."""
+"""Regression contract for the in-tree M4 dependency validator."""
 
 from importlib.util import module_from_spec, spec_from_file_location
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 from tempfile import TemporaryDirectory
 
@@ -22,13 +23,11 @@ REQUIRED_SENTINELS = (
     "open-m4-sdk/libs/hardware/BoardConfig/library.json",
     "open-m4-sdk/libs/hardware/FrontlightManager/library.json",
     "open-m4-sdk/libs/hardware/PowerManager/library.json",
-    "src/network/updater_fw.bin",
     "lib/Epub/Epub.h",
     "lib/Lua/src/lua.h",
     "lib/expat/expat.h",
     "lib/miniz/miniz.h",
     "lib/picojpeg/picojpeg.h",
-    "lib/EpdFont/builtinFonts/all.h",
 )
 
 
@@ -84,6 +83,10 @@ def test_root_bootstrap_is_vendored_and_repairs_qemu_patch_without_network() -> 
     assert "github.com/einklover" not in source
     assert "m4-device/archive" not in source
     assert "curl -fL" not in source
+    assert stat.S_IMODE(BOOTSTRAP.stat().st_mode) == 0o755
+    patch_definition = source.index("patch_qemu_input_manager()")
+    no_op = source.index("if ((${#missing[@]} != 0)); then")
+    assert patch_definition < no_op
     assert source.count("patch_qemu_input_manager") == 2
 
     with TemporaryDirectory() as temp:
@@ -148,7 +151,13 @@ def test_root_bootstrap_is_vendored_and_repairs_qemu_patch_without_network() -> 
         assert "Epub.h" in missing.stderr
 
 
+def test_font_guard_reads_platformio_build_flags() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "BUILD_FLAGS" in source
+
+
 if __name__ == "__main__":
     test_m4_pre_script_bootstraps_only_when_sentinels_are_missing()
     test_root_bootstrap_is_vendored_and_repairs_qemu_patch_without_network()
+    test_font_guard_reads_platformio_build_flags()
     print("m4 dependency bootstrap contract: PASS")

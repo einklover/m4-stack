@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# Verify in-tree FreeInk SDK + third-party libs (vendored in this monorepo).
+# Validate the dependencies vendored by this repository and repair the QEMU
+# InputManager compatibility patch when an older in-tree SDK copy is present.
 # Run from repo root: bash scripts/bootstrap_deps.sh
-#
-# These trees used to be reconstructed from the private archive
-# einklover/m4-device@f86b134. They are now committed under firmware/ so
-# clean clones and third parties do not need that private repo.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,24 +15,21 @@ REQUIRED_SENTINELS=(
   "open-m4-sdk/libs/hardware/BoardConfig/library.json"
   "open-m4-sdk/libs/hardware/FrontlightManager/library.json"
   "open-m4-sdk/libs/hardware/PowerManager/library.json"
-  "src/network/updater_fw.bin"
   "lib/Epub/Epub.h"
   "lib/Lua/src/lua.h"
   "lib/expat/expat.h"
   "lib/miniz/miniz.h"
   "lib/picojpeg/picojpeg.h"
-  "lib/EpdFont/builtinFonts/all.h"
 )
 
 fail() {
   echo "ERROR: $*" >&2
-  echo "       M4 dependencies are vendored in-tree under firmware/." >&2
-  echo "       Restore the missing paths from git; do not fetch private archives." >&2
+  echo "       all required M4 build inputs must come from this m4-stack checkout" >&2
   exit 1
 }
 
 patch_qemu_input_manager() {
-  local im="$FW/open-m4-sdk/libs/hardware/InputManager/src/InputManager.cpp"
+  local im="${FW}/open-m4-sdk/libs/hardware/InputManager/src/InputManager.cpp"
   if [[ ! -f "$im" ]] || grep -q 'M4_QEMU_PLUGIN_DEBUG' "$im"; then
     return
   fi
@@ -76,13 +70,13 @@ PY
 
 missing=()
 for path in "${REQUIRED_SENTINELS[@]}"; do
-  [[ -f "$FW/$path" ]] || missing+=("$path")
+  [[ -f "${FW}/${path}" ]] || missing+=("$path")
 done
 if ((${#missing[@]} != 0)); then
-  fail "vendored M4 dependencies are missing: ${missing[*]}"
+  fail "missing tracked M4 dependencies: ${missing[*]}"
 fi
 
+# This must happen before the successful no-op return: old copied SDK trees
+# may predate the patch, while the complete-dependency path must stay offline.
 patch_qemu_input_manager
-echo "==> M4 dependencies present in-tree (vendored); no network fetch"
-echo "    next: cd firmware && pio run -e murphy_m4"
-echo "    sim:  cd simulator && cmake -B build && cmake --build build && ctest --test-dir build --output-on-failure"
+echo "==> M4 dependencies are vendored in m4-stack; no download needed"

@@ -3,8 +3,6 @@
 #include <functional>
 #include <string>
 
-#include "network/SdOtaUpdater.h"
-
 class OtaManager {
  public:
   enum Error {
@@ -40,8 +38,8 @@ class OtaManager {
   /// 校验已下载的 firmware.bin 的 MD5
   Error verifyMd5();
 
-  /// 调用 SdOtaUpdater 执行刷机（刷机完成后需重启）
-  Error flashFirmware(SdOtaUpdater::ProgressCallback progress = nullptr);
+  /// 将已校验的固件直接写入官方 app0（刷机完成后需重启）
+  Error flashFirmware(ProgressCallback progress = nullptr);
 
   /// 清理 /update/ 目录中的下载文件
   void cleanupDownloadedFiles();
@@ -80,7 +78,6 @@ class OtaManager {
 
  private:
   UpdateInfo updateInfo;
-  SdOtaUpdater sdUpdater;
 
   static constexpr const char* RELEASE_API_URL =
       "https://gitee.com/api/v5/repos/daixinchun/xteink-x3/releases/latest";

@@ -443,7 +443,7 @@ void OnlineOtaActivity::loop() {
       if (freeHeap < 50 * 1024) {  // 低于50KB
         Serial.printf("[%lu] [OnlineOTA] Insufficient memory, showing warning\n", millis());
         xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        errorMessage = std::string(L(Str::kInsufficientMemory)) + std::to_string(freeHeap / 1024) + "KB" + L(Str::kPleaseRebootAndSdUpdate);
+        errorMessage = std::string(L(Str::kInsufficientMemory)) + std::to_string(freeHeap / 1024) + "KB)";
         state = FLASH_FAILED;  // 复用失败状态显示
         xSemaphoreGive(renderingMutex);
         updateRequired = true;

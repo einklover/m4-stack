@@ -5,6 +5,8 @@
 #include <MD5Builder.h>
 #include <SDCardManager.h>
 #include <WiFi.h>
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 
 #include "HttpDownloader.h"
 #include "GbkToUtf8.h"
@@ -291,24 +293,77 @@ OtaManager::Error OtaManager::verifyMd5() {
   return MD5_MISMATCH;
 }
 
-OtaManager::Error OtaManager::flashFirmware(SdOtaUpdater::ProgressCallback progress) {
-  // 先检查 SD 卡上的固件文件
-  auto checkResult = sdUpdater.checkSdCard();
-  if (checkResult != SdOtaUpdater::OK) {
-    Serial.printf("[%lu] [OTA] SD card check failed: %d\n", millis(), checkResult);
-    return (checkResult == SdOtaUpdater::NO_UPDATE) ? FILE_ERROR : FLASH_ERROR;
+OtaManager::Error OtaManager::flashFirmware(ProgressCallback progress) {
+  if (!SdMan.ready() || !SdMan.exists(SD_FIRMWARE_PATH)) {
+    Serial.printf("[%lu] [OTA] Verified firmware is not available on SD\n", millis());
+    return FILE_ERROR;
   }
 
-  Serial.printf("[%lu] [OTA] Starting flash, firmware size: %zu bytes\n", millis(), sdUpdater.getFirmwareSize());
+  FsFile file;
+  if (!SdMan.openFileForRead("OTA", SD_FIRMWARE_PATH, file)) {
+    Serial.printf("[%lu] [OTA] Failed to open verified firmware\n", millis());
+    return FILE_ERROR;
+  }
 
-  // 调用 SdOtaUpdater 执行刷机
-  auto flashResult = sdUpdater.flashUpdaterAndReboot(progress);
-  if (flashResult != SdOtaUpdater::OK) {
-    Serial.printf("[%lu] [OTA] Flash failed: %d\n", millis(), flashResult);
+  const size_t firmwareSize = file.fileSize();
+  const esp_partition_t* target = esp_partition_find_first(
+      ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (!target || (running && target->address == running->address)) {
+    Serial.printf("[%lu] [OTA] Official app0 is not a safe OTA target\n", millis());
+    file.close();
+    return FLASH_ERROR;
+  }
+  if (firmwareSize == 0 || firmwareSize > target->size) {
+    Serial.printf("[%lu] [OTA] Firmware size %zu exceeds app0 capacity %u\n",
+                  millis(), firmwareSize, target->size);
+    file.close();
     return FLASH_ERROR;
   }
 
-  Serial.printf("[%lu] [OTA] Flash complete, reboot required\n", millis());
+  esp_ota_handle_t handle;
+  esp_err_t err = esp_ota_begin(target, firmwareSize, &handle);
+  if (err != ESP_OK) {
+    Serial.printf("[%lu] [OTA] esp_ota_begin failed: %s\n", millis(), esp_err_to_name(err));
+    file.close();
+    return FLASH_ERROR;
+  }
+
+  constexpr size_t chunkSize = 4096;
+  uint8_t buffer[chunkSize];
+  size_t written = 0;
+  while (written < firmwareSize) {
+    const size_t bytesRead = file.read(buffer, sizeof(buffer));
+    if (bytesRead == 0) {
+      Serial.printf("[%lu] [OTA] Firmware read failed at %zu\n", millis(), written);
+      esp_ota_abort(handle);
+      file.close();
+      return FLASH_ERROR;
+    }
+    err = esp_ota_write(handle, buffer, bytesRead);
+    if (err != ESP_OK) {
+      Serial.printf("[%lu] [OTA] Write failed at %zu: %s\n", millis(), written, esp_err_to_name(err));
+      esp_ota_abort(handle);
+      file.close();
+      return FLASH_ERROR;
+    }
+    written += bytesRead;
+    if (progress) progress(written, firmwareSize);
+  }
+  file.close();
+
+  err = esp_ota_end(handle);
+  if (err != ESP_OK) {
+    Serial.printf("[%lu] [OTA] esp_ota_end failed: %s\n", millis(), esp_err_to_name(err));
+    return FLASH_ERROR;
+  }
+  err = esp_ota_set_boot_partition(target);
+  if (err != ESP_OK) {
+    Serial.printf("[%lu] [OTA] Set app0 boot partition failed: %s\n", millis(), esp_err_to_name(err));
+    return FLASH_ERROR;
+  }
+
+  Serial.printf("[%lu] [OTA] Firmware written to app0; reboot required\n", millis());
   return OK;
 }
 

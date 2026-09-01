@@ -1,5 +1,8 @@
 # M4 Stack clean-main rebuild design
 
+> Status: historical rebuild design. Its dependency-bootstrap architecture was
+> superseded by the self-contained public-checkout implementation.
+
 Date: 2026-08-26
 Branch: `main-rebuild-20260826`
 Base: `origin/main` at `e6da618`
@@ -23,7 +26,7 @@ A partially written dependency-bootstrap contract exists from an interrupted att
 
 ### 1. Reproducible dependency bootstrap
 
-The repository intentionally does not commit the large reconstructed dependency trees:
+The public checkout tracks the reasonably sized M4 SDK and library sources:
 
 - `firmware/open-m4-sdk/`
 - `firmware/lib/Epub/`
@@ -31,22 +34,13 @@ The repository intentionally does not commit the large reconstructed dependency 
 - `firmware/lib/expat/`
 - `firmware/lib/miniz/`
 - `firmware/lib/picojpeg/`
-- `firmware/lib/EpdFont/builtinFonts/`
-- `firmware/src/network/updater_fw.bin`
 
-They are reconstructed from the pinned `einklover/m4-device@f86b134` archive by `scripts/bootstrap_deps.sh`.
+`firmware/lib/EpdFont/builtinFonts/` is generated locally from a
+builder-supplied TTF and remains ignored.
 
-The new main must make this automatic for M4 builds. `cd firmware && pio run -e murphy_m4` must:
-
-1. check a small set of dependency sentinel files before the M4 environment resolves local `file://` libraries and the embedded updater image;
-2. do nothing and perform no network access when the dependency set is already present;
-3. run the pinned root bootstrap exactly once when any required sentinel is missing;
-4. fail with a clear actionable error when bootstrap/network/archive validation fails;
-5. affect M4 environments only, not legacy X3/X4 environments.
-
-The manual `bash scripts/bootstrap_deps.sh` path remains supported and documented.
-
-The 159 MB `builtinFonts` source/header tree will **not** be committed merely to make cloning easier. The build should obtain the pinned dependency snapshot automatically. A later font-storage redesign may reduce this tree, but it is not required for this rebuild.
+The public M4 build uses only this checkout plus PlatformIO's normal public
+package downloads. `scripts/bootstrap_deps.sh` is an offline validator for
+tracked dependency paths and does not fetch another repository.
 
 ### 2. Repository entry points for humans and AI agents
 

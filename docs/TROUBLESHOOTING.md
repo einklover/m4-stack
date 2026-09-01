@@ -2,9 +2,9 @@
 
 Use the smallest diagnostic that distinguishes the failure. Preserve logs and unknown worktree changes while investigating.
 
-## Missing vendored libraries
+## Missing reconstructed libraries
 
-Symptoms include missing `open-m4-sdk`, `Epub`, `Lua`, font headers, or `updater_fw.bin` during an M4 build. These trees are **vendored in git** under `firmware/`. Restore them with `git checkout --` on the missing paths (or re-clone). `bash scripts/bootstrap_deps.sh` only verifies sentinels and applies the QEMU InputManager patch — it does **not** download `einklover/m4-device` or any other private archive.
+Symptoms include missing `open-m4-sdk`, `Epub`, `Lua`, or font headers during an M4 build. Run `bash scripts/bootstrap_deps.sh` from the repository root; it validates the tracked source dependencies offline and reports the missing path.
 
 ## PlatformIO not found
 

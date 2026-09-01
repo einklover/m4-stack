@@ -11,7 +11,7 @@
 /**
  * Online OTA update activity.
  * Checks for firmware updates from the server, downloads, verifies MD5,
- * and flashes using the existing SdOtaUpdater pipeline.
+ * and flashes the verified image directly into the official OTA slot.
  */
 class OnlineOtaActivity : public ActivityWithSubactivity {
   enum State {
