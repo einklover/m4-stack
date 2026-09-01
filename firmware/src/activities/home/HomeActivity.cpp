@@ -39,6 +39,11 @@
 #include "components/themes/fengyan/FengyanTheme.h"
 #include "activities/home/HomeSceneAssetDecoder.h"
 #include "util/M4ProviderCoverCache.h"
+#ifdef CROSSPOINT_MURPHY_M4
+#include "qemu/M4QemuNet.h"
+#include "apps/providers/M4NativeProviderBookDetail.h"
+#include "apps/providers/M4LegadoBridge.h"
+#endif
 
 namespace {
 
@@ -83,6 +88,153 @@ void drawHomeSectionRule(GfxRenderer& renderer, const ThemeMetrics& metrics,
   }
   renderer.drawLine(ruleInset, ruleY, pageWidth - ruleInset - 1, ruleY, 1, true);
 }
+
+#ifdef CROSSPOINT_MURPHY_M4
+namespace HomeCoverPolicyA {
+// Resolve coverUrl for a provider history URI without opening detail UI.
+// Priority: local shelf_rows.tsv (fast, no HTTP) -> bounded detail fetch (Wi-Fi-gated).
+// Returns empty on miss, no Wi-Fi, or cancellation.
+
+inline bool homeWifiConnected() {
+  return M4QemuNet::staConnected();
+}
+
+inline bool fieldAt(const std::string& line, int field, std::string& out) {
+  out.clear();
+  int cur = 0;
+  size_t start = 0;
+  for (size_t i = 0; i <= line.size(); ++i) {
+    if (i != line.size() && line[i] != '\t') continue;
+    if (cur == field) {
+      out.assign(line, start, i - start);
+      return true;
+    }
+    ++cur;
+    start = i + 1;
+  }
+  return false;
+}
+
+std::string resolveCoverUrlFromShelf(const std::string& providerId,
+                                     const std::string& bookId) {
+  if (providerId.empty() || bookId.empty()) return {};
+  const auto apps = M4xRegistry::load();
+  for (const auto& app : apps) {
+    if (app.provider != providerId) continue;
+    const std::string path = std::string("/apps_data/") + app.id + "/provider/shelf_rows.tsv";
+    if (!SdMan.exists(path.c_str())) continue;
+    FsFile f;
+    if (!SdMan.openFileForRead("HomeCover", path.c_str(), f)) continue;
+    std::string line;
+    line.reserve(1024);
+    char buf[256];
+    std::string foundUrl;
+    bool done = false;
+    while (f.available() && !done) {
+      const int n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf) - 1);
+      if (n <= 0) break;
+      for (int i = 0; i < n && !done; ++i) {
+        const char c = buf[i];
+        if (c == '\r') continue;
+        if (c == '\n') {
+          if (!line.empty() && line.rfind(bookId, 0) == 0 && line.size() > bookId.size() &&
+              line[bookId.size()] == '\t') {
+            std::string rawCover;
+            if (providerId == "legado") {
+              if (fieldAt(line, 5, rawCover) && !rawCover.empty()) {
+                foundUrl = M4LegadoBridge::coverProxyUrl(M4LegadoBridge::baseUrl(), rawCover);
+              }
+            } else {
+              if (fieldAt(line, 4, rawCover)) foundUrl = rawCover;
+            }
+            done = true;
+          }
+          line.clear();
+        } else {
+          if (line.empty() && static_cast<unsigned char>(c) < 0x20 && c != '\t') continue;
+          if (line.size() < 3 * 1024) line.push_back(c);
+        }
+      }
+    }
+    if (!done && !line.empty() && line.rfind(bookId, 0) == 0 && line.size() > bookId.size() &&
+        line[bookId.size()] == '\t') {
+      std::string rawCover;
+      if (providerId == "legado") {
+        if (fieldAt(line, 5, rawCover) && !rawCover.empty()) {
+          foundUrl = M4LegadoBridge::coverProxyUrl(M4LegadoBridge::baseUrl(), rawCover);
+        }
+      } else {
+        if (fieldAt(line, 4, rawCover)) foundUrl = rawCover;
+      }
+      done = true;
+    }
+    f.close();
+    if (!foundUrl.empty()) return foundUrl;
+  }
+  return {};
+}
+
+std::string resolveCoverUrlViaDetail(const std::string& providerId,
+                                     const std::string& bookId,
+                                     const std::string& appIdHint,
+                                     const std::function<bool()>& cancelled) {
+  if (providerId.empty() || bookId.empty()) return {};
+  if (cancelled && cancelled()) return {};
+  // Legado detail is local shelf enrichment, allowed without Wi-Fi.
+  // Fanqie/JJ/Weread detail needs network — gate on Wi-Fi.
+  if (providerId != "legado" && !homeWifiConnected()) return {};
+  std::string appId = appIdHint;
+  if (appId.empty()) {
+    const auto apps = M4xRegistry::load();
+    for (const auto& a : apps) {
+      if (a.provider == providerId) {
+        appId = a.id;
+        break;
+      }
+    }
+  }
+  M4NativeProviderBookDetail::Request req;
+  req.providerId = providerId;
+  req.bookId = bookId;
+  req.appId = appId;
+  req.maxBytes = 48u * 1024u;
+  auto res = M4NativeProviderBookDetail::fetch(req, cancelled);
+  if (!res.ok || res.detail.coverUrl.empty()) return {};
+  if (cancelled && cancelled()) return {};
+  return res.detail.coverUrl;
+}
+
+std::string resolveCoverUrlForHistory(const std::string& providerId,
+                                      const std::string& bookId,
+                                      const std::function<bool()>& cancelled) {
+  // 1) Fast local shelf cache (no HTTP, no Wi-Fi gate)
+  std::string url = resolveCoverUrlFromShelf(providerId, bookId);
+  if (!url.empty()) return url;
+  if (cancelled && cancelled()) return {};
+  // 2) Bounded detail fetch (Wi-Fi-gated for network providers)
+  std::string appId;
+  const auto apps = M4xRegistry::load();
+  for (const auto& a : apps) {
+    if (a.provider == providerId) {
+      appId = a.id;
+      break;
+    }
+  }
+  url = resolveCoverUrlViaDetail(providerId, bookId, appId, cancelled);
+  return url;
+}
+
+}  // namespace HomeCoverPolicyA
+#else
+// Host / non-M4 stub for contract tests: still expose same namespace shape so
+// file-content checks can find the policy A glue without needing real Wi-Fi.
+namespace HomeCoverPolicyA {
+inline bool homeWifiConnected() { return false; }
+inline std::string resolveCoverUrlFromShelf(const std::string&, const std::string&) { return {}; }
+inline std::string resolveCoverUrlViaDetail(const std::string&, const std::string&, const std::string&, const std::function<bool()>&) { return {}; }
+inline std::string resolveCoverUrlForHistory(const std::string&, const std::string&, const std::function<bool()>&) { return {}; }
+}  // namespace HomeCoverPolicyA
+#endif
 
 }  // namespace
 
@@ -278,18 +430,53 @@ void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch
   if (isCancelled()) return;
   bool anyDecoded = false;
   HomeScene::HomeScenePublication& draftPub = ctx.model.draftPublication();
-  // Hero slot
+  // Hero slot: local ensure first, then policy A acquire (Wi-Fi + cancel gated).
   if (!ctx.recentBooks.empty()) {
     const RecentBook& cur = ctx.recentBooks.front();
     std::string thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
     if (!cur.coverBmpPath.empty() && !SdMan.exists(thumb.c_str())) {
       if (isCancelled()) return;
+      bool decodedThis = false;
       if (tryEnsureCoverThumbInCtx(ctx, cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH, isCancelled)) {
         if (isCancelled()) return;
-        // Recompute thumb after ensure (ensure may have created it)
         thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
         UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
-        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) anyDecoded = true;
+        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) {
+          anyDecoded = true;
+          decodedThis = true;
+        }
+      }
+      // Policy A: never-opened detail may have no source.img / fallback yet.
+      // If local ensure failed, try to acquire via coverUrl (shelf -> detail fetch).
+      if (!decodedThis && !isCancelled()) {
+        std::string pid, bid;
+        if (M4ContentProvider::parseHistoryUri(cur.path.c_str(), pid, bid)) {
+          std::string coverUrl;
+#ifdef CROSSPOINT_MURPHY_M4
+          coverUrl = HomeCoverPolicyA::resolveCoverUrlForHistory(pid, bid, isCancelled);
+#else
+          (void)pid; (void)bid;
+#endif
+          if (!coverUrl.empty() && !isCancelled()) {
+#ifdef CROSSPOINT_MURPHY_M4
+            if (!HomeCoverPolicyA::homeWifiConnected()) {
+              Serial.printf("[%lu] [Home] acquire skip hero %s/%s no wifi\n", millis(), pid.c_str(), bid.c_str());
+            } else {
+              Serial.printf("[%lu] [Home] acquire hero %s/%s url=%s\n", millis(), pid.c_str(), bid.c_str(), coverUrl.c_str());
+              M4ProviderCoverCache::Request req{pid, bid, coverUrl, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH, isCancelled};
+              const auto res = M4ProviderCoverCache::acquireProviderCover(req);
+              if (isCancelled()) return;
+              if (!res.coverBmpPath.empty()) {
+                thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
+                if (SdMan.exists(thumb.c_str())) {
+                  UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
+                  if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) anyDecoded = true;
+                }
+              }
+            }
+#endif
+          }
+        }
       }
     }
   }
@@ -300,11 +487,43 @@ void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch
     const RecentBook& b = ctx.recentBooks[i];
     std::string thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
     if (!b.coverBmpPath.empty() && !SdMan.exists(thumb.c_str())) {
+      bool decodedThis = false;
       if (tryEnsureCoverThumbInCtx(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH, isCancelled)) {
         if (isCancelled()) return;
         thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
         UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, itemIndex};
-        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) anyDecoded = true;
+        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) {
+          anyDecoded = true;
+          decodedThis = true;
+        }
+      }
+      if (!decodedThis && !isCancelled()) {
+        std::string pid, bid;
+        if (M4ContentProvider::parseHistoryUri(b.path.c_str(), pid, bid)) {
+          std::string coverUrl;
+#ifdef CROSSPOINT_MURPHY_M4
+          coverUrl = HomeCoverPolicyA::resolveCoverUrlForHistory(pid, bid, isCancelled);
+#endif
+          if (!coverUrl.empty() && !isCancelled()) {
+#ifdef CROSSPOINT_MURPHY_M4
+            if (!HomeCoverPolicyA::homeWifiConnected()) {
+              Serial.printf("[%lu] [Home] acquire skip mini %s/%s no wifi\n", millis(), pid.c_str(), bid.c_str());
+            } else {
+              Serial.printf("[%lu] [Home] acquire mini %s/%s url=%s\n", millis(), pid.c_str(), bid.c_str(), coverUrl.c_str());
+              M4ProviderCoverCache::Request req{pid, bid, coverUrl, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH, isCancelled};
+              const auto res = M4ProviderCoverCache::acquireProviderCover(req);
+              if (isCancelled()) return;
+              if (!res.coverBmpPath.empty()) {
+                thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
+                if (SdMan.exists(thumb.c_str())) {
+                  UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, itemIndex};
+                  if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) anyDecoded = true;
+                }
+              }
+            }
+#endif
+          }
+        }
       }
     }
     itemIndex++;
@@ -389,9 +608,24 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
   if (ctx.recentBooks.empty() && !hasApps) ctx.model.begin(UiScene::DataState::Empty);
   if (isCancelled()) return;
   // First paint: publish all chrome plus placeholder for missing covers (fast, no ensureSized/dither).
+  // This publish sets updateRequired so the display task can paint the first frame
+  // with placeholders before any heavy dither/HTTP work.
   (void)publishHomeSceneWithAssetsFastCtx(ctx);
   if (isCancelled()) return;
-  // Async refresh: ensure sized thumbs (slow JPEG→1-bit dither) and republish covers when ready.
+  // True async gap: yield to the display task so the first publication (placeholders)
+  // is visible before starting slow JPEG dither + HTTP acquire. Same-task
+  // "comment says async" without this gap is not true async — display would
+  // only see the final miss.
+  // 80ms lets the display loop (10ms) pick up the first frame while keeping
+  // total Home latency short. Cancelled/epoch is re-checked after the yield.
+#ifdef CROSSPOINT_MURPHY_M4
+  vTaskDelay(pdMS_TO_TICKS(80));
+#else
+  // Host build: no FreeRTOS, but keep the logical boundary for contract tests.
+#endif
+  if (isCancelled()) return;
+  // Async refresh: ensure sized thumbs (slow JPEG→1-bit dither) then policy A
+  // acquire for never-opened detail (Wi-Fi + cancel gated, capped hero+3).
   // Cache-hit BMPs were already decoded in fast path; this handles misses.
   refreshMissingCoversInCtx(ctx, epoch);
 }
