@@ -72,6 +72,7 @@ jobs:
 
       - name: P1A host contracts
         run: |
+          python3 firmware/tests/test_m4_file_transfer_lifecycle_telemetry_contract.py
           g++ -std=c++20 firmware/tests/native_app/test_m4_file_transfer_service_contract.cpp \
             -o "$RUNNER_TEMP/test_m4_file_transfer_service_contract"
           "$RUNNER_TEMP/test_m4_file_transfer_service_contract"
