@@ -5,7 +5,6 @@ artifacts/fonts/release/*.epdfont
 artifacts/fonts/source/
 backups/
 build/
-tools/preview_output/
 artifacts/
 # Local IDE / runtime (do not commit)
 compile_commands.json
@@ -17,5 +16,5 @@ build/m4adb/
 **/session.json
 simulator/build*/
 
-# Vendored FreeInk SDK + third-party trees live in-tree (open-m4-sdk, Epub, Lua,
-# expat, miniz, picojpeg, EpdFont/builtinFonts). Do not re-ignore them.
+# Generated font headers from a user-supplied TTF (never commit).
+lib/EpdFont/builtinFonts

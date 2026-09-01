@@ -639,7 +639,7 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 ## 2026-09-01 — Vendor FreeInk trees; stop private m4-device fetch
 - Symptom: new worktree / isolated `PLATFORMIO_HOME_DIR` fails at bootstrap with HTTP 404 on `einklover/m4-device@f86b134`.
 - Cause: archive is private; bare `curl` 404s. Old worktrees only worked because reconstructed trees were already on disk and gitignored.
-- Fix: vendor `open-m4-sdk`, Epub/Lua/expat/miniz/picojpeg, `builtinFonts`, `updater_fw.bin` in-tree; `bootstrap_deps.sh` verifies only (no network). Un-ignore those paths. Third parties must not need the private repo.
+- Fix: vendor `open-m4-sdk`, Epub/Lua/expat/miniz/picojpeg in-tree; treat `builtinFonts` as generated/local-only; remove the legacy SD intermediary updater. `bootstrap_deps.sh` verifies sentinels only (no network). Third parties must not need a private device archive.
 
 ## 2026-09-01 — Home cover placeholder must not block first paint; heal empty cover path on return
 

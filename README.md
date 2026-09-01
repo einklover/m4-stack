@@ -23,7 +23,11 @@ pio run -e murphy_m4 -j1
 
 The production image is written to `firmware/.pio/build/murphy_m4/firmware.bin`.
 
-FreeInk SDK trees (`open-m4-sdk`, Epub/Lua/expat/miniz/picojpeg, `builtinFonts`, `updater_fw.bin`) are **vendored in git** under `firmware/`. `scripts/bootstrap_deps.sh` only verifies sentinels — it does not download private archives. See [Build and dependencies](docs/BUILD_AND_DEPS.md).
+M4 SDK and library sources are vendored in this repository. The dependency
+pre-script validates them and performs no repository download. Generated
+bitmap fonts are optional for the production/QEMU profiles; if building a
+profile without `OMIT_FONTS`, provide a compatible local TTF and follow
+[Build and dependencies](docs/BUILD_AND_DEPS.md).
 
 ## Simulator
 

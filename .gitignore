@@ -11,6 +11,9 @@ compile_commands.json
 *.session.json
 **/session.json
 
+# M4 SDK and libraries are vendored; generated fonts remain local-only.
+firmware/lib/EpdFont/builtinFonts/
+
 # Artifacts / secrets
 firmware/backups/
 firmware/firmware.bin

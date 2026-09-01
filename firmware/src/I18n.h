@@ -65,7 +65,6 @@
   STR(kBluetoothSettings,       "蓝牙设置",          "藍牙設置") \
   STR(kJianGuoConfig,           "坚果云配置",        "堅果雲配置") \
   STR(kDataCapsuleConfig,       "数据胶囊配置",      "數據膠囊配置") \
-  STR(kSdCardUpdate,            "SD卡升级",          "SD卡升級") \
   STR(kResetSettings,           "还原为初始设置",     "還原為初始設置") \
   STR(kClearCache,              "清理缓存",          "清理緩存") \
   STR(kSwitchBootSlot,          "切换启动区",        "切換啟動區") \
@@ -427,23 +426,9 @@
   STR(kSwitchToPortrait,       "切换为按钮在下侧竖屏", "切換為按鈕在下側豎屏") \
   STR(kSwitchToLandscape,      "切换为按钮在右侧横屏", "切換為按鈕在右側橫屏") \
   STR(kTxtSyncNotSupported,    "TXT暂不支持同步",    "TXT暫不支持同步") \
-  /* --- SD卡升级 --- */ \
-  STR(kSdCardUpdateTitle,       "SD卡更新",           "SD卡更新") \
-  STR(kCheckingSdCard,         "检查SD卡...",        "檢查SD卡...") \
-  STR(kNoUpdateFileFound,      "未找到更新文件",     "未找到更新文件") \
-  STR(kPutFirmwareIn,          "请将 firmware.bin 放入", "請將 firmware.bin 放入") \
-  STR(kSdCardUpdateDir,        "SD卡 /update/ 目录", "SD卡 /update/ 目錄") \
-  STR(kUpdateFileFound,        "发现更新文件",       "發現更新文件") \
-  STR(kFileSize,               "大小: ",             "大小: ") \
-  STR(kDoNotPowerOff,          "刷写过程中请勿断电!", "刷寫過程中請勿斷電!") \
-  STR(kStartFlashing,          "开始刷写",           "開始刷寫") \
-  STR(kPreparingUpdate,        "正在准备更新...",     "正在準備更新...") \
-  STR(kUpdateFailed,           "更新失败",           "更新失敗") \
-  STR(kAutoUpdateAfterReboot,  "重启后自动完成更新", "重啟後自動完成更新") \
-  /* --- OTA在线升级（剩余） --- */ \
+  /* --- OTA在线升级 --- */ \
   STR(kUpgradingFirmware,      "正在升级固件，请勿关机或操作设备...", "正在升級固件，請勿關機或操作設備...") \
   STR(kInsufficientMemory,     "可用内存不足(",       "可用內存不足(") \
-  STR(kPleaseRebootAndSdUpdate, ")，请重启后点击SD卡升级", ")，請重啟後點擊SD卡升級") \
   STR(kNetworkRequestFailed,   "网络请求失败",       "網絡請求失敗") \
   STR(kVersionParseFailed,     "版本信息解析失败",   "版本信息解析失敗") \
   STR(kWifiDisconnected,       "WiFi连接已断开",     "WiFi連接已斷開") \
