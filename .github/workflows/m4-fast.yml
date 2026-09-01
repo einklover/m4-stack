@@ -70,6 +70,12 @@ jobs:
             -o "$RUNNER_TEMP/test_m4_runtime_memory_facade_contract"
           "$RUNNER_TEMP/test_m4_runtime_memory_facade_contract"
 
+      - name: P1A host contracts
+        run: |
+          g++ -std=c++20 firmware/tests/native_app/test_m4_file_transfer_service_contract.cpp \
+            -o "$RUNNER_TEMP/test_m4_file_transfer_service_contract"
+          "$RUNNER_TEMP/test_m4_file_transfer_service_contract"
+
       - name: Build patched QEMU only on cache miss
         if: steps.qemu-cache.outputs.cache-hit != 'true'
         run: |
