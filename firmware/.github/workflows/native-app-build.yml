@@ -26,50 +26,23 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Reconstruct unvendored SDK and libraries
+      - name: Verify vendored FreeInk SDK trees
         shell: bash
         run: |
           set -euo pipefail
-
-          fetch_tree() {
-            local url="$1"
-            local dst="$2"
-            local tarball="$3"
-            rm -rf "$dst"
-            mkdir -p "$dst"
-            curl -fL --retry 3 --retry-delay 2 "$url" -o "$tarball"
-            tar -xzf "$tarball" -C "$dst" --strip-components=1
-          }
-
-          # All unvendored SDK/libraries come from einklover/m4-device (the
-          # one source local builds use): open-m4-sdk holds the custom FreeInk
-          # SDK with Waveform Lab windowed-refresh + InputManager touch-stream
-          # APIs absent from upstream, and lib/ holds the vendored Epub/expat/
-          # miniz/picojpeg/Lua/builtinFonts. Pin to commit for reproducibility.
-          fetch_tree \
-            https://github.com/einklover/m4-device/archive/f86b134.tar.gz \
-            /tmp/m4-device /tmp/m4-device.tar.gz
-          test -d /tmp/m4-device/open-m4-sdk || { echo 'missing open-m4-sdk'; exit 2; }
-          rm -rf open-m4-sdk
-          cp -a /tmp/m4-device/open-m4-sdk open-m4-sdk
-
-          for src in lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts; do
-            test -d "/tmp/m4-device/$src" || { echo "missing m4-device $src"; exit 2; }
-          done
-          rm -rf lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts
-          for src in lib/Epub lib/expat lib/miniz lib/picojpeg lib/Lua lib/EpdFont/builtinFonts; do
-            cp -a "/tmp/m4-device/$src" "lib/${src#lib/}"
-          done
-
+          # FreeInk SDK + Epub/Lua/expat/miniz/picojpeg/builtinFonts are
+          # committed under firmware/. Do not fetch private m4-device archives.
           for p in \
             open-m4-sdk/libs/hardware/BatteryMonitor/library.json \
+            open-m4-sdk/libs/display/FreeInkDisplay/library.json \
+            src/network/updater_fw.bin \
             lib/Epub/Epub.h \
             lib/Lua/src/lua.h \
             lib/expat/expat.h \
             lib/miniz/miniz.h \
             lib/picojpeg/picojpeg.h \
             lib/EpdFont/builtinFonts/all.h; do
-            test -f "$p" || { echo 'missing reconstructed dependency: '"$p"; exit 2; }
+            test -f "$p" || { echo "missing vendored dependency: $p"; exit 2; }
           done
 
       - name: Install PlatformIO
