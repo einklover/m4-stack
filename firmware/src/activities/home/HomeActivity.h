@@ -14,6 +14,9 @@
 #include "../../RecentBooksStore.h"
 #include "ui/pages/HomeSceneModel.h"
 #include "ui/scene/UiSceneAssets.h"
+#ifdef CROSSPOINT_MURPHY_M4
+#include "../../util/M4RuntimeMemory.h"
+#endif
 
 struct Rect;
 
@@ -133,7 +136,11 @@ class HomeActivity final : public Activity {
         onDataCapsuleOpen(onDataCapsuleOpen),
         onBookmarkNotesOpen(onBookmarkNotesOpen),
         onAppsOpen(onAppsOpen),
-        onOpenNativeApp(onOpenNativeApp) {}
+        onOpenNativeApp(onOpenNativeApp) {
+#ifdef CROSSPOINT_MURPHY_M4
+    m4LogRuntimeMemory("home-enter");
+#endif
+  }
   void onEnter() override;
   void onExit() override;
   void loop() override;
