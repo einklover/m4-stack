@@ -62,6 +62,7 @@ jobs:
       - name: P0 host contracts
         run: |
           python3 firmware/tests/test_m4_dependency_bootstrap_contract.py
+          python3 firmware/tests/test_m4_runtime_memory_integration_contract.py
           g++ -std=c++20 firmware/tests/native_app/test_m4_runtime_memory_snapshot.cpp \
             -o "$RUNNER_TEMP/test_m4_runtime_memory_snapshot"
           "$RUNNER_TEMP/test_m4_runtime_memory_snapshot"
