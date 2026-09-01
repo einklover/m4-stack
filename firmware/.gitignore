@@ -17,11 +17,5 @@ build/m4adb/
 **/session.json
 simulator/build*/
 
-# Generated/reconstructed dependency trees from einklover/m4-device@f86b134 (never commit)
-lib/Epub
-lib/Lua
-lib/expat
-lib/miniz
-lib/picojpeg
-lib/EpdFont/builtinFonts
-open-m4-sdk
+# Vendored FreeInk SDK + third-party trees live in-tree (open-m4-sdk, Epub, Lua,
+# expat, miniz, picojpeg, EpdFont/builtinFonts). Do not re-ignore them.

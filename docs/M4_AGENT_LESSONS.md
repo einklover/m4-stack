@@ -617,3 +617,26 @@ R1–R24 在 `/tmp` 把脏树 `firmware/src` 逐步叠到 `259cdbf7` 隔离树�
 - `x=40..200` first-ink on AppList includes the vertical divider at `rect.y+12` — that is not title glyph top.
 - `flash_app1_once.sh` / any `awk '/m4adb\.py/'` kill will SIGTERM **any** shell whose argv still contains that substring (heredoc flash scripts, interactive wrappers). Put flash/daemon orchestration in a **file** and match only `Python .../m4adb.py daemon` PIDs.
 - `/dev/cu.usbmodem101` present ≠ flashable: esptool "No serial data received" + bridge "等待响应超时" means CDC enumerated but app/JTAG silent. pyserial open/DTR toggle can still read 0 bytes. Do not loop APP1 writes; ask for USB re-seat / hardware reset, then one flash.
+
+## 2026-09-01 — PNG provider covers bypass exact 1-bit conversion
+
+### 症状
+
+`ensureSizedCoverFromSource(...)` is expected to produce an exact W×H 1-bit scene BMP, but the current PNG branch calls `pngFileToBmpStream(...)`. That path writes an 8-bit grayscale BMP with direct resize; it does not perform the centered aspect-fill crop, box-average downsample, or Atkinson dithering used by the BMP/JPEG paths. The device decoder later thresholds it into the 1-bit publication arena, which can hide the artifact-level mismatch.
+
+### 一次性正确做法
+
+Before claiming PNG parity or tuning cover dither/crop, add an output-level PNG regression or route PNG through an exact 1-bit conversion path. Do not infer parity from the current static contracts or fake-backend cache tests.
+
+### 验证
+
+Inspect `M4ProviderCoverCache.cpp` around `convertCoverFile(...)` and the `pngDraw(...)`/`writePngBmpHeader(...)` path; the existing tests do not exercise PNG output pixels or bit depth.
+
+## 2026-09-01 — Cover edge retention must distinguish contours from impulses
+
+The local `max-min` range used as an edge gate also treats an isolated bright/dark pixel as a strong edge, so bilateral smoothing cannot remove that speckle. For a compact 3×3 gate, compare opposing pairs (left/right, up/down, and both diagonals): a symmetric impulse scores near zero while a real contour scores high. Keep single-pixel screens in flat regions, and only pull a gated contour toward a hard threshold or apply clipped local contrast; otherwise the screen pattern turns the edge into noise.
+
+## 2026-09-01 — Vendor FreeInk trees; stop private m4-device fetch
+- Symptom: new worktree / isolated `PLATFORMIO_HOME_DIR` fails at bootstrap with HTTP 404 on `einklover/m4-device@f86b134`.
+- Cause: archive is private; bare `curl` 404s. Old worktrees only worked because reconstructed trees were already on disk and gitignored.
+- Fix: vendor `open-m4-sdk`, Epub/Lua/expat/miniz/picojpeg, `builtinFonts`, `updater_fw.bin` in-tree; `bootstrap_deps.sh` verifies only (no network). Un-ignore those paths. Third parties must not need the private repo.

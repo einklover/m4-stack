@@ -21,7 +21,7 @@ Read `HANDOFF.md`, `docs/FAST_FIRMWARE_DEV.md`, and the task-specific docs befor
 - `murphy_m4_qemu` and `murphy_m4_qemu_plugin` are simulator-only profiles. Never flash either profile to a device.
 - Use the smallest relevant host, contract, simulator, or plugin test first. Reuse PlatformIO and patched-QEMU caches; build once and use `--skip-build` for subsequent journeys where supported.
 - A production compile is not hardware evidence. A host model or QEMU pass is not hardware evidence. Claim device behavior only with a real-device result and record the command and artifact.
-- Do not commit reconstructed SDK/library trees, `.pio`, firmware binaries, plugin `.m4x` packages, credentials, or device captures.
+- Keep the vendored in-tree FreeInk trees under `firmware/` (`open-m4-sdk`, `lib/Epub`, `lib/Lua`, `lib/expat`, `lib/miniz`, `lib/picojpeg`, `lib/EpdFont/builtinFonts`, `src/network/updater_fw.bin`). Do not fetch private `einklover/m4-device` archives. Do not commit `.pio`, plugin `.m4x` packages, credentials, or device captures.
 
 ## Device safety
 

@@ -79,12 +79,12 @@ def test_m4_pre_script_bootstraps_only_when_sentinels_are_missing() -> None:
         assert calls == []
 
 
-def test_root_bootstrap_repairs_qemu_patch_without_downloading_complete_tree() -> None:
+def test_root_bootstrap_is_vendored_and_repairs_qemu_patch_without_network() -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
-    patch_definition = source.index("patch_qemu_input_manager()")
-    no_op = source.index("if ((${#missing[@]} == 0)); then")
-    assert patch_definition < no_op
-    assert source.count("patch_qemu_input_manager") == 3
+    assert "github.com/einklover" not in source
+    assert "m4-device/archive" not in source
+    assert "curl -fL" not in source
+    assert source.count("patch_qemu_input_manager") == 2
 
     with TemporaryDirectory() as temp:
         root = Path(temp) / "repo"
@@ -127,13 +127,28 @@ def test_root_bootstrap_repairs_qemu_patch_without_downloading_complete_tree() -
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        assert "fetch" not in result.stdout
+        assert "github.com" not in result.stdout.lower()
+        assert "vendored" in result.stdout.lower() or "in-tree" in result.stdout.lower()
         assert "M4_QEMU_PLUGIN_DEBUG" in input_manager.read_text(encoding="utf-8"), (
             result.stdout + result.stderr + "\n" + input_manager.read_text(encoding="utf-8")
         )
 
+        # Missing sentinels must fail locally — never attempt a private download.
+        (firmware / "lib/Epub/Epub.h").unlink()
+        missing = subprocess.run(
+            ["bash", str(script)],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert missing.returncode != 0
+        assert "github.com" not in missing.stdout + missing.stderr
+        assert "Epub.h" in missing.stderr
+
 
 if __name__ == "__main__":
     test_m4_pre_script_bootstraps_only_when_sentinels_are_missing()
-    test_root_bootstrap_repairs_qemu_patch_without_downloading_complete_tree()
+    test_root_bootstrap_is_vendored_and_repairs_qemu_patch_without_network()
     print("m4 dependency bootstrap contract: PASS")
