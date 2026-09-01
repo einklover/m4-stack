@@ -9,8 +9,10 @@
   "author": "einklover",
   "description": "1.1.0 Native：Legado 开源阅读书源，复用系统 provider（分类/热推/目录/正文），测试端点 192.168.0.118:1122",
   "files": [
+    "icon_home.bmp",
     "main.xml"
   ],
+  "icon": "icon_home.bmp",
   "permissions": [
     "filesystem.appdata",
     "network"

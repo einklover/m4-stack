@@ -7,6 +7,7 @@ PLUGINS = [
     ("plugins/m4-weread-plugin", "com.weread.client"),
     ("plugins/m4-fanqie-plugin", "com.fanqie.client"),
     ("plugins/m4-jjwxc-plugin", "com.jjwxc.client"),
+    ("plugins/m4-legado-plugin", "com.legado.client"),
 ]
 
 def test_manifest_declares_icon_and_file_exists():

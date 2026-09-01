@@ -608,3 +608,12 @@ R1–R24 在 `/tmp` 把脏树 `firmware/src` 逐步叠到 `259cdbf7` 隔离树�
 - `UiSceneRuntime` previously kept an action only on a repeat prefix. The repeated cover/title render events therefore had no action metadata, so Home cards and Settings rows could look present while taps were ignored.
 - Pass effective action metadata through groups and repeats. For actionable repeated covers/icons, preserve the geometry while an asset binding is unavailable so the renderer can show a placeholder and the hit target remains live.
 - Regression requires both host hit-test coverage and a QEMU `m4adb tap` followed by `m4adb ui` and a screenshot; a production compile alone does not prove the interaction.
+
+## 2026-09-01 — Non-Home header title vs status ink + USB flash stalls
+
+- Device AppList with `HeaderSafeTop=20` / `HeaderTitleBaseline=31` / `HeaderH=46`: title first ink **y=25**, status/wifi first ink **y=35** (~10px title-high). Raising SafeTop alone moves the whole header via `dy=rect.y`; wifi/battery sit at `rect.y + (HeaderH-icon)/2`. Human asked only to move **title text**; SafeTop 12→20 and interim 28/38/52 dropped the entire status bar. Device Home status first-ink ≈24 vs AppList ≈35.
+- Correct control: **`HeaderSafeTop = 0`** (bar back at original/Home-adjacent Y) and **`HeaderTitleBaseline`** only (38 inside the 46px band). Do not raise SafeTop or HeaderH to “create air”. Fengyan `.headerHeight` stays `HomeRef::HeaderH`.
+- Round 9 labeled sheet (`docs/orchestration/assets/icon-design-sheet-round9.png`) maps **番茄小说=tomato (r3c1)** and **开源阅读=open book (r3c3)**. Luna mapped the open book onto `com.fanqie.client` because the prompt said “three distinct book-like cells”. Do not override labeled cells. Glyph crop must exclude caption (tomato ink bbox `(132,731,301,895)`); caption starts ~y=932.
+- `x=40..200` first-ink on AppList includes the vertical divider at `rect.y+12` — that is not title glyph top.
+- `flash_app1_once.sh` / any `awk '/m4adb\.py/'` kill will SIGTERM **any** shell whose argv still contains that substring (heredoc flash scripts, interactive wrappers). Put flash/daemon orchestration in a **file** and match only `Python .../m4adb.py daemon` PIDs.
+- `/dev/cu.usbmodem101` present ≠ flashable: esptool "No serial data received" + bridge "等待响应超时" means CDC enumerated but app/JTAG silent. pyserial open/DTR toggle can still read 0 bytes. Do not loop APP1 writes; ask for USB re-seat / hardware reset, then one flash.
