@@ -6,7 +6,8 @@
     800
   ],
   "bindings": {
-    "$home.current.progress_text": 16
+    "$home.current.progress_text": 16,
+    "$home.brand_text": 3
   },
   "nodes": [
     {
@@ -18,10 +19,10 @@
       "rect": [
         24,
         24,
-        160,
+        280,
         24
       ],
-      "text": "Murphy M4",
+      "text": "$home.brand_text",
       "font": "ui_22_bold",
       "align": "left"
     },

@@ -427,27 +427,54 @@ void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch
   auto isCancelled = [&ctx, epoch]() -> bool {
     return ctx.cancelled.load(std::memory_order_acquire) || ctx.epoch.load(std::memory_order_acquire) != epoch;
   };
-  if (isCancelled()) return;
+  auto publishBrand = [&](const char* text) {
+    if (isCancelled()) return;
+    ctx.model.setBrandText(text);
+    if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
+  };
+  auto hasAsset = [&](const UiScene::AssetKey& key) -> bool {
+    HomeScene::HomeScenePublication& draftPub = ctx.model.draftPublication();
+    for (uint8_t i = 0; i < draftPub.assetCount; ++i) {
+      if (draftPub.entries[i].key == key) return true;
+    }
+    return false;
+  };
+  if (isCancelled()) { publishBrand("Murphy M4"); return; }
+  publishBrand("解析封面");
+  if (isCancelled()) { publishBrand("Murphy M4"); return; }
   bool anyDecoded = false;
   HomeScene::HomeScenePublication& draftPub = ctx.model.draftPublication();
-  // Hero slot: local ensure first, then policy A acquire (Wi-Fi + cancel gated).
+  // Hero slot: also handle fast-path decode fail (thumb exists but asset missing -> corrupt)
   if (!ctx.recentBooks.empty()) {
     const RecentBook& cur = ctx.recentBooks.front();
     std::string thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
-    if (!cur.coverBmpPath.empty() && !SdMan.exists(thumb.c_str())) {
-      if (isCancelled()) return;
+    UiScene::AssetKey heroKey{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
+    bool heroHasAsset = hasAsset(heroKey);
+    bool heroNeeds = false;
+    if (cur.coverBmpPath.empty()) {
+      heroNeeds = false;
+    } else if (!SdMan.exists(thumb.c_str()) || !heroHasAsset) {
+      heroNeeds = true;
+      if (SdMan.exists(thumb.c_str()) && !heroHasAsset) {
+        SdMan.remove(thumb.c_str());
+      }
+    }
+    if (heroNeeds) {
+      if (isCancelled()) { publishBrand("Murphy M4"); return; }
+      publishBrand("生成大封面");
       bool decodedThis = false;
       if (tryEnsureCoverThumbInCtx(ctx, cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH, isCancelled)) {
-        if (isCancelled()) return;
+        if (isCancelled()) { publishBrand("Murphy M4"); return; }
+        publishBrand("解码封面");
         thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
-        UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
-        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) {
+        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), heroKey, isCancelled)) {
           anyDecoded = true;
           decodedThis = true;
+          if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
+        } else {
+          if (SdMan.exists(thumb.c_str())) SdMan.remove(thumb.c_str());
         }
       }
-      // Policy A: never-opened detail may have no source.img / fallback yet.
-      // If local ensure failed, try to acquire via coverUrl (shelf -> detail fetch).
       if (!decodedThis && !isCancelled()) {
         std::string pid, bid;
         if (M4ContentProvider::parseHistoryUri(cur.path.c_str(), pid, bid)) {
@@ -460,17 +487,29 @@ void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch
           if (!coverUrl.empty() && !isCancelled()) {
 #ifdef CROSSPOINT_MURPHY_M4
             if (!HomeCoverPolicyA::homeWifiConnected()) {
+              publishBrand("等待 Wi-Fi");
               Serial.printf("[%lu] [Home] acquire skip hero %s/%s no wifi\n", millis(), pid.c_str(), bid.c_str());
             } else {
+              publishBrand("下载原图");
               Serial.printf("[%lu] [Home] acquire hero %s/%s url=%s\n", millis(), pid.c_str(), bid.c_str(), coverUrl.c_str());
               M4ProviderCoverCache::Request req{pid, bid, coverUrl, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH, isCancelled};
+              publishBrand("生成大封面");
               const auto res = M4ProviderCoverCache::acquireProviderCover(req);
-              if (isCancelled()) return;
+              if (isCancelled()) { publishBrand("Murphy M4"); return; }
               if (!res.coverBmpPath.empty()) {
                 thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
+                if (!SdMan.exists(thumb.c_str())) {
+                  publishBrand("生成大封面");
+                  if (tryEnsureCoverThumbInCtx(ctx, cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH, isCancelled)) {
+                    thumb = UITheme::getCoverThumbPath(cur.coverBmpPath, HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH);
+                  }
+                }
                 if (SdMan.exists(thumb.c_str())) {
-                  UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
-                  if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) anyDecoded = true;
+                  publishBrand("解码封面");
+                  if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), heroKey, isCancelled)) {
+                    anyDecoded = true;
+                    if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
+                  }
                 }
               }
             }
@@ -480,21 +519,34 @@ void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch
       }
     }
   }
-  if (isCancelled()) return;
+  if (isCancelled()) { publishBrand("Murphy M4"); return; }
   uint8_t itemIndex = 0;
   for (size_t i = 1; i < ctx.recentBooks.size() && itemIndex < 3; ++i) {
-    if (isCancelled()) return;
+    if (isCancelled()) { publishBrand("Murphy M4"); return; }
     const RecentBook& b = ctx.recentBooks[i];
     std::string thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
-    if (!b.coverBmpPath.empty() && !SdMan.exists(thumb.c_str())) {
+    UiScene::AssetKey miniKey{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, itemIndex};
+    bool hasMini = hasAsset(miniKey);
+    bool miniNeeds = false;
+    if (b.coverBmpPath.empty()) {
+      miniNeeds = false;
+    } else if (!SdMan.exists(thumb.c_str()) || !hasMini) {
+      miniNeeds = true;
+      if (SdMan.exists(thumb.c_str()) && !hasMini) SdMan.remove(thumb.c_str());
+    }
+    if (miniNeeds) {
+      publishBrand("生成小封面");
       bool decodedThis = false;
       if (tryEnsureCoverThumbInCtx(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH, isCancelled)) {
-        if (isCancelled()) return;
+        if (isCancelled()) { publishBrand("Murphy M4"); return; }
+        publishBrand("解码封面");
         thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
-        UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, itemIndex};
-        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) {
+        if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), miniKey, isCancelled)) {
           anyDecoded = true;
           decodedThis = true;
+          if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
+        } else {
+          if (SdMan.exists(thumb.c_str())) SdMan.remove(thumb.c_str());
         }
       }
       if (!decodedThis && !isCancelled()) {
@@ -507,17 +559,29 @@ void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch
           if (!coverUrl.empty() && !isCancelled()) {
 #ifdef CROSSPOINT_MURPHY_M4
             if (!HomeCoverPolicyA::homeWifiConnected()) {
+              publishBrand("等待 Wi-Fi");
               Serial.printf("[%lu] [Home] acquire skip mini %s/%s no wifi\n", millis(), pid.c_str(), bid.c_str());
             } else {
+              publishBrand("下载原图");
               Serial.printf("[%lu] [Home] acquire mini %s/%s url=%s\n", millis(), pid.c_str(), bid.c_str(), coverUrl.c_str());
               M4ProviderCoverCache::Request req{pid, bid, coverUrl, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH, isCancelled};
+              publishBrand("生成小封面");
               const auto res = M4ProviderCoverCache::acquireProviderCover(req);
-              if (isCancelled()) return;
+              if (isCancelled()) { publishBrand("Murphy M4"); return; }
               if (!res.coverBmpPath.empty()) {
                 thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
+                if (!SdMan.exists(thumb.c_str())) {
+                  publishBrand("生成小封面");
+                  if (tryEnsureCoverThumbInCtx(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH, isCancelled)) {
+                    thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
+                  }
+                }
                 if (SdMan.exists(thumb.c_str())) {
-                  UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, itemIndex};
-                  if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) anyDecoded = true;
+                  publishBrand("解码封面");
+                  if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), miniKey, isCancelled)) {
+                    anyDecoded = true;
+                    if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
+                  }
                 }
               }
             }
@@ -527,8 +591,9 @@ void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch
       }
     }
     itemIndex++;
-    if (isCancelled()) return;
+    if (isCancelled()) { publishBrand("Murphy M4"); return; }
   }
+  publishBrand("Murphy M4");
   if (anyDecoded && !isCancelled()) {
     if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
   }
@@ -605,13 +670,33 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
     hasApps = ctx.model.addApp("com.fanqie.client", "番茄", "tomato") || hasApps;
     hasApps = ctx.model.addApp("com.jjwxc.client", "晋江", "library") || hasApps;
   }
-  if (ctx.recentBooks.empty() && !hasApps) ctx.model.begin(UiScene::DataState::Empty);
-  if (isCancelled()) return;
+  if (ctx.recentBooks.empty() && !hasApps) {
+    ctx.model.begin(UiScene::DataState::Empty);
+    ctx.model.setBrandText("Murphy M4");
+  }
+  if (isCancelled()) {
+    ctx.model.setBrandText("Murphy M4");
+    (void)ctx.model.publish();
+    ctx.updateRequired.store(true, std::memory_order_release);
+    return;
+  }
   // First paint: publish all chrome plus placeholder for missing covers (fast, no ensureSized/dither).
   // This publish sets updateRequired so the display task can paint the first frame
   // with placeholders before any heavy dither/HTTP work.
+  // Brand starts as Murphy M4 (set in begin), fast publish shows it.
   (void)publishHomeSceneWithAssetsFastCtx(ctx);
-  if (isCancelled()) return;
+  if (isCancelled()) {
+    ctx.model.setBrandText("Murphy M4");
+    (void)ctx.model.publish();
+    ctx.updateRequired.store(true, std::memory_order_release);
+    return;
+  }
+  // Publish intermediate brand status before slow work so display paints it.
+  // This ensures "解析封面" is visible before any dither/HTTP, not only after.
+  {
+    ctx.model.setBrandText("解析封面");
+    if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
+  }
   // True async gap: yield to the display task so the first publication (placeholders)
   // is visible before starting slow JPEG dither + HTTP acquire. Same-task
   // "comment says async" without this gap is not true async — display would
@@ -623,11 +708,27 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
 #else
   // Host build: no FreeRTOS, but keep the logical boundary for contract tests.
 #endif
-  if (isCancelled()) return;
+  if (isCancelled()) {
+    ctx.model.setBrandText("Murphy M4");
+    (void)ctx.model.publish();
+    ctx.updateRequired.store(true, std::memory_order_release);
+    return;
+  }
   // Async refresh: ensure sized thumbs (slow JPEG→1-bit dither) then policy A
   // acquire for never-opened detail (Wi-Fi + cancel gated, capped hero+3).
   // Cache-hit BMPs were already decoded in fast path; this handles misses.
   refreshMissingCoversInCtx(ctx, epoch);
+  if (isCancelled()) {
+    ctx.model.setBrandText("Murphy M4");
+    (void)ctx.model.publish();
+    ctx.updateRequired.store(true, std::memory_order_release);
+    return;
+  }
+  // Ensure brand restored after refresh (refresh also restores, but double-ensure idempotent)
+  {
+    ctx.model.setBrandText("Murphy M4");
+    if (ctx.model.publish()) ctx.updateRequired.store(true, std::memory_order_release);
+  }
 }
 
 // Legacy wrappers kept for non-refactored call sites (should not be used in M4 path).

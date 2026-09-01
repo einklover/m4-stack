@@ -332,6 +332,33 @@ inline Result acquire(const Request& request, const Backend& backend) {
     out.coverBmpPath.clear();
     return out;
   }
+  // Home scene: use ensureSized path (1-bit exact, dual-write, keep source) rather than
+  // direct 1-bit convert which may fail where 8-bit+ensure succeeded. Keep source even
+  // if 1-bit dither fails; caller can retry ensure on next Home entry. This restores
+  // R16's 8-bit acquire + ensureSized reliability while keeping R17 dual-write invariant.
+  if (isHomeSceneSize(request.width, request.height)) {
+    const std::string dir = cacheDir(request.providerId, request.bookId);
+    // ensureHomeSceneSizesFromSource generates both 110x180 and 74x106 from the same
+    // source (or fallback 171x254) as 1-bit exact BMPs, never fetches, keeps source.
+    // Use it so hero production also writes mini and source is preserved.
+    bool any = ensureHomeSceneSizesFromSource(dir, backend, request.cancelled);
+    (void)any;
+    if (!backend.exists(target)) {
+      // Primary still missing after ensure attempt — keep source but signal failure.
+      if (request.cancelled && request.cancelled()) {
+        // Cancel keeps source, but still no thumb.
+      } else {
+        // ensure already cleaned partial target; just return empty.
+      }
+      out.coverBmpPath.clear();
+      return out;
+    }
+    if (request.cancelled && request.cancelled()) {
+      // Cancel-after-success keeps the file (same as ensureSized).
+      return out;
+    }
+    return out;
+  }
   const bool primaryOk = backend.convert(source, target, request.width, request.height) && backend.exists(target);
   if (!primaryOk) {
     if (backend.remove) backend.remove(target);
@@ -341,23 +368,6 @@ inline Result acquire(const Request& request, const Backend& backend) {
   if (request.cancelled && request.cancelled()) {
     // Cancel-after-success keeps the file (same as ensureSized). Primary is already valid.
     return out;
-  }
-  // Dual-size Home scene: when producing a Home size, also produce the complementary
-  // size from the same source in the same pass (110 <-> 74). One download -> two BMPs.
-  if (isHomeSceneSize(request.width, request.height)) {
-    int otherW = 0, otherH = 0;
-    if (homeSceneOtherSize(request.width, request.height, otherW, otherH)) {
-      const std::string otherTarget =
-          concreteBmpPath(request.providerId, request.bookId, otherW, otherH);
-      if (!backend.exists(otherTarget) && !(request.cancelled && request.cancelled())) {
-        const bool otherOk =
-            backend.convert(source, otherTarget, otherW, otherH) && backend.exists(otherTarget);
-        if (!otherOk) {
-          if (backend.remove) backend.remove(otherTarget);
-        }
-        // Cancel-after-success for the complementary keeps the file as well.
-      }
-    }
   }
   return out;
 }

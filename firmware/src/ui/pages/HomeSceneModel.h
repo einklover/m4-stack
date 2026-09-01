@@ -16,6 +16,7 @@ namespace HomeScene {
 // IDs are part of the generated Home scene ABI. Keep them numeric and stable.
 constexpr UiScene::BindingId kBindingSystemBattery = 1;
 constexpr UiScene::BindingId kBindingWifiConnected = 2;
+constexpr UiScene::BindingId kBindingBrandText = 3;
 constexpr UiScene::BindingId kBindingCurrentExists = 10;
 constexpr UiScene::BindingId kBindingCurrentTitle = 11;
 constexpr UiScene::BindingId kBindingCurrentAuthor = 12;
@@ -78,6 +79,7 @@ struct HomeSceneSnapshot {
   uint8_t appCount = 0;
   int32_t battery = 0;
   int32_t currentProgress = 0;
+  HomeTextRef brandText{};
   HomeTextRef currentProgressText{};
   HomeTextRef currentTitle{};
   HomeTextRef currentAuthor{};
@@ -232,6 +234,7 @@ class HomeSceneModel final {
 
   bool setBattery(int32_t percent);
   bool setWifiConnected(bool connected);
+  bool setBrandText(const char* text);
   bool setSelectedIndex(uint8_t index);
   bool setCurrent(const char* title, const char* author, const char* source,
                   const char* cover, int32_t progress);

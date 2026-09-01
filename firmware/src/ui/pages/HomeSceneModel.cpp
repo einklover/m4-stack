@@ -13,6 +13,14 @@ namespace HomeScene {
 HomeSceneSnapshot HomeSceneModel::initialSnapshot() {
   HomeSceneSnapshot snapshot{};
   snapshot.state = UiScene::DataState::Loading;
+  const char* defaultBrand = "Murphy M4";
+  size_t len = 0;
+  while (defaultBrand[len] != '\0' && len < kMaxTextBytes) ++len;
+  if (len > 0 && len < kMaxTextBytes) {
+    std::memcpy(snapshot.text, defaultBrand, len);
+    snapshot.brandText = HomeTextRef{0, static_cast<uint16_t>(len)};
+    snapshot.textUsed = static_cast<uint16_t>(len);
+  }
   return snapshot;
 }
 
@@ -95,6 +103,14 @@ HomeTextRef HomeSceneModel::appendText(const char* value) {
 void HomeSceneModel::begin(UiScene::DataState state) {
   draft_ = HomeSceneSnapshot{};
   draft_.state = state;
+  const char* defaultBrand = "Murphy M4";
+  size_t len = 0;
+  while (defaultBrand[len] != '\0' && len < kMaxTextBytes) ++len;
+  if (len > 0 && len < kMaxTextBytes) {
+    std::memcpy(draft_.text, defaultBrand, len);
+    draft_.brandText = HomeTextRef{0, static_cast<uint16_t>(len)};
+    draft_.textUsed = static_cast<uint16_t>(len);
+  }
   *draftPubPtr_ = HomeScenePublication{};
   draftPubPtr_->snapshot = draft_;
 }
@@ -159,6 +175,14 @@ bool HomeSceneModel::setBattery(int32_t percent) {
 
 bool HomeSceneModel::setWifiConnected(bool connected) {
   draft_.wifiConnected = connected;
+  return true;
+}
+
+bool HomeSceneModel::setBrandText(const char* text) {
+  if (!text || text[0] == '\0') text = "Murphy M4";
+  const char* values[] = {text};
+  if (!canAppend(values, 1)) return false;
+  draft_.brandText = appendText(text);
   return true;
 }
 
@@ -299,6 +323,11 @@ bool HomeSceneModel::resolve(const void* user, UiScene::BindingId binding,
   if (!user || !out) return false;
   const auto& snapshot = *static_cast<const HomeSceneSnapshot*>(user);
   *out = UiSceneRuntime::ResolvedValue{};
+  if (binding == kBindingBrandText) {
+    out->kind = UiSceneRuntime::ValueKind::Text;
+    out->text = snapshot.textView(snapshot.brandText);
+    return out->text.data != nullptr;
+  }
   if (binding == kBindingSystemBattery) {
     out->kind = UiSceneRuntime::ValueKind::Int;
     out->number = snapshot.battery;
