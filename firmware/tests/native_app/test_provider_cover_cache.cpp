@@ -636,8 +636,8 @@ int main() {
       int calls=0;
       auto toggleCancelled = [&]() -> bool {
         ++calls;
-        // first call (pre-convert) is false, second call (post-convert) is true
-        return calls >= 2;
+        // Calls: 1=top, 2=pre-source, 3=post-convert. Need 3 to reach post-convert.
+        return calls >= 3;
       };
       // Need to ensure source exists and pre-cancel false on first call
       // Use a backend where convert inserts file, then post-cancel true should still return generated true (per header logic)

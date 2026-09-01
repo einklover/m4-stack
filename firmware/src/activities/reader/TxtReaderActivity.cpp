@@ -30,6 +30,7 @@
 #include "util/M4HistoryReopen.h"
 #include "apps/M4ContentProviderSession.h"
 #include "apps/providers/M4NativeProviderManager.h"
+#include "util/M4ProviderCoverCache.h"
 #include "apps/providers/M4NativeWifi.h"
 #include "RecentBooksStore.h"
 
@@ -478,8 +479,15 @@ void TxtReaderActivity::persistOpenHistory() {
                                              ? providerHistory.title
                                              : (pluginSession_.titleOverride.empty() ? fileName
                                                                                        : pluginSession_.titleOverride);
+        // Heal missing cover path for early reader race: if detail cover not yet
+        // bound, store the deterministic template so Home can retry ensureSized
+        // without reopening detail (bug A). Home's healing also covers old rows.
+        std::string coverForRecents = pluginSession_.providerCoverBmpPath;
+        if (coverForRecents.empty()) {
+          coverForRecents = M4ProviderCoverCache::bmpTemplatePath(pluginSession_.providerId, pluginSession_.bookId);
+        }
         RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor,
-                             pluginSession_.providerCoverBmpPath, filePath);
+                             coverForRecents, filePath);
         M4ContentProviderSession::markHistoryRegistered(pluginSession_.providerId, pluginSession_.bookId);
         Serial.printf("[WRCP] history_uri=%s appId=%s cache=%s\n", uri.c_str(), appId.c_str(), filePath.c_str());
       } else {
@@ -783,8 +791,12 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
           !snap.title.empty() ? snap.title
                               : (pluginSession_.titleOverride.empty() ? pluginSession_.bookId
                                                                       : pluginSession_.titleOverride);
+      std::string coverForRecents = pluginSession_.providerCoverBmpPath;
+      if (coverForRecents.empty()) {
+        coverForRecents = M4ProviderCoverCache::bmpTemplatePath(pluginSession_.providerId, pluginSession_.bookId);
+      }
       RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor,
-                           pluginSession_.providerCoverBmpPath, abs);
+                           coverForRecents, abs);
     }
   }
 
