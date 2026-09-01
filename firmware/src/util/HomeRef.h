@@ -15,17 +15,19 @@ constexpr int16_t HeaderY = 0;
 constexpr int16_t HeaderH = 46;
 // Non-Home Fengyan headers need physical top air; Home's generated reference
 // scene owns its own 60px header and does not use this inset.
-constexpr int16_t HeaderSafeTop = 20;
+constexpr int16_t HeaderSafeTop = 0;
 constexpr int16_t HeaderPadX = 27;
 constexpr int16_t HeaderIcon = 22;
 constexpr int16_t HeaderDividerX = 47;  // reference Home has no vertical header divider
 constexpr int16_t HeaderTitleX = 58;
 // Tune title ink against the centered status glyphs independently of SafeTop.
 constexpr int16_t HeaderTitleBaseline = 38;
-constexpr int16_t HeaderTimeX = 314;   // non-Home Fengyan compatibility
-constexpr int16_t HeaderWifiX = 366;
-constexpr int16_t HeaderBatteryTextX = 400;
-constexpr int16_t HeaderBatteryX = 438;
+// Right-packed status cluster: battery at far right with PagePad-like inset,
+// wifi and clock to its left with even 12px gaps. Title max width stops before clock.
+constexpr int16_t HeaderTimeX = 314;
+constexpr int16_t HeaderWifiX = 364;
+constexpr int16_t HeaderBatteryTextX = 398;
+constexpr int16_t HeaderBatteryX = 431;
 constexpr int16_t HeaderBatteryW = 29;
 constexpr int16_t HeaderBatteryH = 13;
 

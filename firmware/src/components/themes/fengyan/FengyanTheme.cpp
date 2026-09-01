@@ -125,12 +125,11 @@ void drawLineIconJinjiang(const GfxRenderer& renderer, int x, int y, int s) {
 }
 
 void drawWifiGlyph(const GfxRenderer& renderer, int x, int y, int s) {
-  const int cx = x + s / 2;
+  const int cx = x + s / 2 - 6;
   const int cy = y + s - 4;
   renderer.fillRect(cx, cy, 2, 2, true);
   const int radii[] = {5, 10, 15};
   for (int r : radii) {
-    renderer.drawArc(r, cx, cy, -1, -1, HomeRef::Stroke, true);
     renderer.drawArc(r, cx, cy, 1, -1, HomeRef::Stroke, true);
   }
 }
@@ -210,11 +209,7 @@ const uint8_t* iconForName(UIIcon icon) {
 
 void FengyanTheme::drawBattery(const GfxRenderer& renderer, Rect rect, const bool showPercentage) const {
   const uint16_t percentage = powerManager.getBatteryPercentage();
-  
-  const auto smallFace = M4UiText::resolveSystem(renderer, SMALL_FONT_ID);
-  const int fontHeight = renderer.getLineHeight(smallFace.fontId);
-  const int batteryYOffset = (fontHeight - rect.height) / 2;
-  
+
   if (showPercentage) {
     const auto percentageText = std::to_string(percentage) + "%";
     M4UiText::drawSystem(renderer, SMALL_FONT_ID,
@@ -223,7 +218,7 @@ void FengyanTheme::drawBattery(const GfxRenderer& renderer, Rect rect, const boo
   }
 
   const int x = rect.x;
-  const int y = rect.y + batteryYOffset;
+  const int y = rect.y;
   const int battWidth = FengyanMetrics::values.batteryWidth - 4;
   const int battHeight = rect.height;
 
@@ -273,21 +268,33 @@ void FengyanTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char
     return;
   }
   const int dy = rect.y - HomeRef::HeaderY;
-  const int battY = rect.y + (HomeRef::HeaderH - HomeRef::HeaderBatteryH) / 2;
+  // Align clock, wifi, battery and title to one optical center inside the 46px band.
+  const auto smallFace = M4UiText::resolveSystem(renderer, SMALL_FONT_ID);
+  const int smallH = renderer.getLineHeight(smallFace.fontId);
+  const int ui12H = renderer.getLineHeight(UI_12_FONT_ID);
+  const int titleTopForCenter = textTop(renderer, UI_12_FONT_ID, HomeRef::HeaderTitleBaseline + dy);
+  const int statusCenter = titleTopForCenter + ui12H / 2;
+  const int battY = statusCenter - HomeRef::HeaderBatteryH / 2;
+  const int wifiY = statusCenter - HomeRef::HeaderIcon / 2;
+  const int clockY = statusCenter - smallH / 2;
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
   if (showBatteryPercentage) {
     const uint16_t percentage = powerManager.getBatteryPercentage();
     const auto percentageText = std::to_string(percentage) + "%";
-    M4UiText::drawSystem(renderer, SMALL_FONT_ID, rect.x + HomeRef::HeaderBatteryTextX,
-                         textTop(renderer, SMALL_FONT_ID, HomeRef::HeaderTitleBaseline + dy),
+    const int textW = M4UiText::systemTextWidth(renderer, SMALL_FONT_ID, percentageText.c_str());
+    const int batteryX = rect.x + HomeRef::HeaderBatteryX;
+    const int percentX = batteryX - 4 - textW;
+    // Keep percent immediately left of battery; wifi is already left of percent with even gap via constants.
+    M4UiText::drawSystem(renderer, SMALL_FONT_ID, percentX,
+                         statusCenter - smallH / 2,
                          percentageText.c_str());
   }
   drawBattery(renderer,
               Rect{rect.x + HomeRef::HeaderBatteryX, battY, HomeRef::HeaderBatteryW, HomeRef::HeaderBatteryH},
               false);
 
-  drawWifiGlyph(renderer, rect.x + HomeRef::HeaderWifiX, rect.y + (HomeRef::HeaderH - HomeRef::HeaderIcon) / 2,
+  drawWifiGlyph(renderer, rect.x + HomeRef::HeaderWifiX, wifiY,
                 HomeRef::HeaderIcon);
 
   time_t now = time(nullptr);
@@ -296,7 +303,7 @@ void FengyanTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char
     char clock[8];
     std::snprintf(clock, sizeof(clock), "%02d:%02d", local.tm_hour, local.tm_min);
     M4UiText::drawSystem(renderer, SMALL_FONT_ID, rect.x + HomeRef::HeaderTimeX,
-                         textTop(renderer, SMALL_FONT_ID, HomeRef::HeaderTitleBaseline + dy), clock);
+                         clockY, clock);
   }
 
   renderer.drawLine(rect.x + HomeRef::HeaderDividerX, rect.y + 12,
