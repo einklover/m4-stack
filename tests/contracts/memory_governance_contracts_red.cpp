@@ -1,5 +1,5 @@
 // P2 memory governance host/QEMU contract.
-// GREEN migration: validate the deterministic governance implementation.
+// GREEN migration: validate deterministic budget and lifecycle ownership invariants.
 
 #include <cassert>
 #include <cstddef>
@@ -18,6 +18,17 @@ int main() {
 
   // Release restores bounded capacity.
   governance.release(32 * 1024);
+  assert(governance.remaining() == 64 * 1024);
+
+  // Ownership lifecycle acquire creates a tracked owner.
+  assert(governance.acquireOwnership(16 * 1024));
+  assert(governance.ownershipRecords() == 1);
+  assert(governance.hasLifecycleLeak());
+
+  // Ownership release clears lifecycle leak state and restores capacity.
+  governance.releaseOwnership(16 * 1024);
+  assert(governance.ownershipRecords() == 0);
+  assert(!governance.hasLifecycleLeak());
   assert(governance.remaining() == 64 * 1024);
 
   // Fragmentation policy remains deterministic for host/QEMU checks.
