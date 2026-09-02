@@ -224,7 +224,7 @@ void M4FileTransferAuxiliaryServer::onWebSocketEvent(const uint8_t num, const WS
       static size_t lastProgressSent = 0;
       if (wsUploadReceived_ - lastProgressSent >= 65536 || wsUploadReceived_ >= wsUploadSize_) {
         if (wsServer_) {
-          const String progress = "PROGRESS:" + String(wsUploadReceived_) + ":" + String(wsUploadSize_);
+          String progress = "PROGRESS:" + String(wsUploadReceived_) + ":" + String(wsUploadSize_);
           wsServer_->sendTXT(num, progress);
         }
         lastProgressSent = wsUploadReceived_;
