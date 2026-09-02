@@ -17,19 +17,36 @@ if missing_files:
     raise SystemExit("P1C transport files missing:\n  " + "\n  ".join(missing_files))
 
 activity = ACTIVITY_H.read_text(encoding="utf-8") + "\n" + ACTIVITY_CPP.read_text(encoding="utf-8")
-service = SERVICE_H.read_text(encoding="utf-8") + "\n" + SERVICE_CPP.read_text(encoding="utf-8")
+service_h = SERVICE_H.read_text(encoding="utf-8")
+service_cpp = SERVICE_CPP.read_text(encoding="utf-8")
+service = service_h + "\n" + service_cpp
 routes = ROUTES_H.read_text(encoding="utf-8") + "\n" + ROUTES_CPP.read_text(encoding="utf-8")
 aux = AUX_H.read_text(encoding="utf-8") + "\n" + AUX_CPP.read_text(encoding="utf-8")
 transport = service + "\n" + routes + "\n" + aux
 
-required_server_contract = [
+# Keep the public service header host-compilable. ESP-IDF implementation types
+# belong behind the private HttpRuntime boundary in the .cpp.
+forbidden_public_esp = [
     "esp_http_server.h",
     "httpd_handle_t",
+    "httpd_req_t",
+]
+public_leaks = [needle for needle in forbidden_public_esp if needle in service_h]
+if public_leaks:
+    raise SystemExit(
+        "P1C leaked ESP-IDF HTTP types into M4FileTransferService public header:\n  "
+        + "\n  ".join(public_leaks)
+    )
+
+required_server_contract = [
+    "esp_http_server.h",
+    "httpd_handle_t httpServer",
     "httpd_start(",
     "httpd_register_uri_handler(",
     "httpd_stop(",
     "httpd_req_recv(",
-    "descriptor.user_ctx = this",
+    "descriptor.user_ctx = context",
+    "std::unique_ptr<HttpRuntime>",
 ]
 missing_server_contract = [needle for needle in required_server_contract if needle not in transport]
 if missing_server_contract:
@@ -65,25 +82,37 @@ if "handleWebClients" in service:
         )
 
 required_routes = [
-    'registerUri("/", HTTP_GET',
-    'registerUri("/files", HTTP_GET',
-    'registerUri("/api/status", HTTP_GET',
-    'registerUri("/api/files", HTTP_GET',
-    'registerUri("/download", HTTP_GET',
-    'registerUri("/upload", HTTP_POST',
-    'registerUri("/mkdir", HTTP_POST',
-    'registerUri("/rename", HTTP_POST',
-    'registerUri("/move", HTTP_POST',
-    'registerUri("/delete", HTTP_POST',
-    'registerUri("/settings", HTTP_GET',
-    'registerUri("/api/settings", HTTP_GET',
-    'registerUri("/api/settings", HTTP_POST',
+    '"/", HTTP_GET',
+    '"/files", HTTP_GET',
+    '"/api/status", HTTP_GET',
+    '"/api/files", HTTP_GET',
+    '"/download", HTTP_GET',
+    '"/upload", HTTP_POST',
+    '"/mkdir", HTTP_POST',
+    '"/rename", HTTP_POST',
+    '"/move", HTTP_POST',
+    '"/delete", HTTP_POST',
+    '"/settings", HTTP_GET',
+    '"/api/settings", HTTP_GET',
+    '"/api/settings", HTTP_POST',
 ]
-missing_routes = [needle for needle in required_routes if needle not in service]
+missing_routes = [needle for needle in required_routes if needle not in service_cpp]
 if missing_routes:
     raise SystemExit(
         "P1C esp_http_server route registration contract missing:\n  "
         + "\n  ".join(missing_routes)
+    )
+
+# user_ctx must point to an object owned by the service runtime, not Activity
+# state or a stack temporary.
+required_context = [
+    "runtime.httpRoutes.get()",
+    "req->user_ctx",
+]
+missing_context = [needle for needle in required_context if needle not in service_cpp]
+if missing_context:
+    raise SystemExit(
+        "P1C service-owned handler context contract missing:\n  " + "\n  ".join(missing_context)
     )
 
 required_bounds = [

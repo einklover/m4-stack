@@ -4,14 +4,47 @@
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <WiFi.h>
+#include <esp_http_server.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include <cstring>
+#include <memory>
 #include <new>
 
 #include "network/M4FileTransferAuxiliaryServer.h"
 #include "network/M4FileTransferHttpRoutes.h"
 #include "network/NetworkConstants.h"
 #include "qemu/M4QemuNet.h"
+
+class M4FileTransferService::HttpRuntime final {
+ public:
+  httpd_handle_t httpServer = nullptr;
+  std::unique_ptr<M4FileTransferHttpRoutes> httpRoutes;
+  std::unique_ptr<M4FileTransferAuxiliaryServer> auxiliaryServer;
+  SemaphoreHandle_t storageMutex = nullptr;
+};
+
+namespace {
+using RouteMethod = esp_err_t (M4FileTransferHttpRoutes::*)(httpd_req_t*) const;
+
+bool registerUri(const httpd_handle_t server, const char* uri, const httpd_method_t method,
+                 const httpd_uri_func_t handler, void* context) {
+  if (!server || !uri || !handler || !context) return false;
+  httpd_uri_t descriptor{};
+  descriptor.uri = uri;
+  descriptor.method = method;
+  descriptor.handler = handler;
+  descriptor.user_ctx = context;
+  return httpd_register_uri_handler(server, &descriptor) == ESP_OK;
+}
+
+template <RouteMethod Method>
+esp_err_t routeHandler(httpd_req_t* req) {
+  auto* routes = req ? static_cast<M4FileTransferHttpRoutes*>(req->user_ctx) : nullptr;
+  return routes ? (routes->*Method)(req) : ESP_FAIL;
+}
+}  // namespace
 
 M4FileTransferService::M4FileTransferService() = default;
 
@@ -63,18 +96,8 @@ bool M4FileTransferService::beginAccessPoint(const char* ssid, const char* passw
   return true;
 }
 
-bool M4FileTransferService::registerUri(const char* uri, const httpd_method_t method, const HttpHandler handler) {
-  if (!httpServer || !uri || !handler) return false;
-  httpd_uri_t descriptor{};
-  descriptor.uri = uri;
-  descriptor.method = method;
-  descriptor.handler = handler;
-  descriptor.user_ctx = this;
-  return httpd_register_uri_handler(httpServer, &descriptor) == ESP_OK;
-}
-
 M4FileTransferService::WebServerStartResult M4FileTransferService::beginWebServer() {
-  if (httpServer) return WebServerStartResult::Started;
+  if (webServerRunning()) return WebServerStartResult::Started;
 
   const wifi_mode_t wifiMode = WiFi.getMode();
   const bool staReady = M4QemuNet::staConnected() || ((wifiMode & WIFI_MODE_STA) && WiFi.status() == WL_CONNECTED);
@@ -85,12 +108,19 @@ M4FileTransferService::WebServerStartResult M4FileTransferService::beginWebServe
     return WebServerStartResult::StartupFailed;
   }
 
-  storageMutex = xSemaphoreCreateMutex();
-  if (!storageMutex) return WebServerStartResult::AllocationFailed;
+  httpRuntime.reset(new (std::nothrow) HttpRuntime());
+  if (!httpRuntime) return WebServerStartResult::AllocationFailed;
+  auto& runtime = *httpRuntime;
 
-  httpRoutes.reset(new (std::nothrow) M4FileTransferHttpRoutes(storageMutex));
-  auxiliaryServer.reset(new (std::nothrow) M4FileTransferAuxiliaryServer(storageMutex));
-  if (!httpRoutes || !auxiliaryServer) {
+  runtime.storageMutex = xSemaphoreCreateMutex();
+  if (!runtime.storageMutex) {
+    stopWebServer();
+    return WebServerStartResult::AllocationFailed;
+  }
+
+  runtime.httpRoutes.reset(new (std::nothrow) M4FileTransferHttpRoutes(runtime.storageMutex));
+  runtime.auxiliaryServer.reset(new (std::nothrow) M4FileTransferAuxiliaryServer(runtime.storageMutex));
+  if (!runtime.httpRoutes || !runtime.auxiliaryServer) {
     stopWebServer();
     return WebServerStartResult::AllocationFailed;
   }
@@ -106,28 +136,34 @@ M4FileTransferService::WebServerStartResult M4FileTransferService::beginWebServe
   config.send_wait_timeout = 5;
 
   Serial.printf("[%lu] [HTTPD] starting esp_http_server on port %u\n", millis(), config.server_port);
-  if (httpd_start(&httpServer, &config) != ESP_OK || !httpServer) {
-    httpServer = nullptr;
+  if (httpd_start(&runtime.httpServer, &config) != ESP_OK || !runtime.httpServer) {
+    runtime.httpServer = nullptr;
     stopWebServer();
     return WebServerStartResult::StartupFailed;
   }
 
+  void* routeContext = runtime.httpRoutes.get();
   const bool routesRegistered =
-      registerUri("/", HTTP_GET, rootHandler) && registerUri("/files", HTTP_GET, filesHandler) &&
-      registerUri("/api/status", HTTP_GET, statusHandler) && registerUri("/api/files", HTTP_GET, fileListHandler) &&
-      registerUri("/download", HTTP_GET, downloadHandler) && registerUri("/upload", HTTP_POST, uploadHandler) &&
-      registerUri("/mkdir", HTTP_POST, mkdirHandler) && registerUri("/rename", HTTP_POST, renameHandler) &&
-      registerUri("/move", HTTP_POST, moveHandler) && registerUri("/delete", HTTP_POST, deleteHandler) &&
-      registerUri("/settings", HTTP_GET, settingsPageHandler) &&
-      registerUri("/api/settings", HTTP_GET, settingsGetHandler) &&
-      registerUri("/api/settings", HTTP_POST, settingsPostHandler);
+      registerUri(runtime.httpServer, "/", HTTP_GET, routeHandler<&M4FileTransferHttpRoutes::handleRoot>, routeContext) &&
+      registerUri(runtime.httpServer, "/files", HTTP_GET, routeHandler<&M4FileTransferHttpRoutes::handleFileList>, routeContext) &&
+      registerUri(runtime.httpServer, "/api/status", HTTP_GET, routeHandler<&M4FileTransferHttpRoutes::handleStatus>, routeContext) &&
+      registerUri(runtime.httpServer, "/api/files", HTTP_GET, routeHandler<&M4FileTransferHttpRoutes::handleFileListData>, routeContext) &&
+      registerUri(runtime.httpServer, "/download", HTTP_GET, routeHandler<&M4FileTransferHttpRoutes::handleDownload>, routeContext) &&
+      registerUri(runtime.httpServer, "/upload", HTTP_POST, routeHandler<&M4FileTransferHttpRoutes::handleUpload>, routeContext) &&
+      registerUri(runtime.httpServer, "/mkdir", HTTP_POST, routeHandler<&M4FileTransferHttpRoutes::handleCreateFolder>, routeContext) &&
+      registerUri(runtime.httpServer, "/rename", HTTP_POST, routeHandler<&M4FileTransferHttpRoutes::handleRename>, routeContext) &&
+      registerUri(runtime.httpServer, "/move", HTTP_POST, routeHandler<&M4FileTransferHttpRoutes::handleMove>, routeContext) &&
+      registerUri(runtime.httpServer, "/delete", HTTP_POST, routeHandler<&M4FileTransferHttpRoutes::handleDelete>, routeContext) &&
+      registerUri(runtime.httpServer, "/settings", HTTP_GET, routeHandler<&M4FileTransferHttpRoutes::handleSettingsPage>, routeContext) &&
+      registerUri(runtime.httpServer, "/api/settings", HTTP_GET, routeHandler<&M4FileTransferHttpRoutes::handleGetSettings>, routeContext) &&
+      registerUri(runtime.httpServer, "/api/settings", HTTP_POST, routeHandler<&M4FileTransferHttpRoutes::handlePostSettings>, routeContext);
   if (!routesRegistered) {
     Serial.printf("[%lu] [HTTPD] failed to register one or more file-transfer routes\n", millis());
     stopWebServer();
     return WebServerStartResult::StartupFailed;
   }
 
-  if (!auxiliaryServer->begin()) {
+  if (!runtime.auxiliaryServer->begin()) {
     stopWebServer();
     return WebServerStartResult::AllocationFailed;
   }
@@ -141,7 +177,7 @@ void M4FileTransferService::processDns() {
 }
 
 void M4FileTransferService::pollAuxiliary() {
-  if (auxiliaryServer) auxiliaryServer->poll();
+  if (httpRuntime && httpRuntime->auxiliaryServer) httpRuntime->auxiliaryServer->poll();
 }
 
 bool M4FileTransferService::handleWebClients(const int maxIters, const unsigned long budgetMs,
@@ -154,26 +190,38 @@ bool M4FileTransferService::handleWebClients(const int maxIters, const unsigned 
   return abortCheck && abortCheck(abortContext);
 }
 
+bool M4FileTransferService::webServerRunning() const {
+  return httpRuntime && httpRuntime->httpServer != nullptr;
+}
+
 void M4FileTransferService::stopWebServer() {
   const unsigned long stopStarted = millis();
-  const bool hadServer = httpServer != nullptr;
+  const bool hadServer = webServerRunning();
 
+  if (!httpRuntime) {
+    Serial.printf("[%lu] [WEBACT] server_stop_ms=%lu had_server=0\n", millis(),
+                  static_cast<unsigned long>(millis() - stopStarted));
+    return;
+  }
+
+  auto& runtime = *httpRuntime;
   // Release any WebSocket-held storage lock before stopping the HTTP task.
-  if (auxiliaryServer) {
-    auxiliaryServer->stop();
-    auxiliaryServer.reset();
+  if (runtime.auxiliaryServer) {
+    runtime.auxiliaryServer->stop();
+    runtime.auxiliaryServer.reset();
   }
 
-  if (httpServer) {
-    httpd_stop(httpServer);
-    httpServer = nullptr;
+  if (runtime.httpServer) {
+    httpd_stop(runtime.httpServer);
+    runtime.httpServer = nullptr;
   }
 
-  httpRoutes.reset();
-  if (storageMutex) {
-    vSemaphoreDelete(storageMutex);
-    storageMutex = nullptr;
+  runtime.httpRoutes.reset();
+  if (runtime.storageMutex) {
+    vSemaphoreDelete(runtime.storageMutex);
+    runtime.storageMutex = nullptr;
   }
+  httpRuntime.reset();
 
   Serial.printf("[%lu] [WEBACT] server_stop_ms=%lu had_server=%d\n", millis(),
                 static_cast<unsigned long>(millis() - stopStarted), hadServer ? 1 : 0);
@@ -215,73 +263,4 @@ void M4FileTransferService::stop(const bool isApMode) {
   WiFi.mode(WIFI_OFF);
   delay(300);
 #endif
-}
-
-M4FileTransferService* M4FileTransferService::fromRequest(httpd_req_t* req) {
-  return req ? static_cast<M4FileTransferService*>(req->user_ctx) : nullptr;
-}
-
-esp_err_t M4FileTransferService::rootHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleRoot(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::filesHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleFileList(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::statusHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleStatus(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::fileListHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleFileListData(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::downloadHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleDownload(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::uploadHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleUpload(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::mkdirHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleCreateFolder(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::renameHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleRename(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::moveHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleMove(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::deleteHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleDelete(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::settingsPageHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleSettingsPage(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::settingsGetHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handleGetSettings(req) : ESP_FAIL;
-}
-
-esp_err_t M4FileTransferService::settingsPostHandler(httpd_req_t* req) {
-  auto* service = fromRequest(req);
-  return service && service->httpRoutes ? service->httpRoutes->handlePostSettings(req) : ESP_FAIL;
 }

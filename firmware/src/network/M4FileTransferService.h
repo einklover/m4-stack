@@ -1,15 +1,9 @@
 #pragma once
 
-#include <esp_http_server.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-
 #include <memory>
 #include <string>
 
 class DNSServer;
-class M4FileTransferAuxiliaryServer;
-class M4FileTransferHttpRoutes;
 
 class M4FileTransferService final {
  public:
@@ -39,7 +33,7 @@ class M4FileTransferService final {
   bool handleWebClients(int maxIters, unsigned long budgetMs, AbortCheck abortCheck = nullptr,
                         void* abortContext = nullptr);
 
-  bool webServerRunning() const { return httpServer != nullptr; }
+  bool webServerRunning() const;
   bool hasDnsServer() const { return static_cast<bool>(dnsServer); }
 
   void stopWebServer();
@@ -47,31 +41,12 @@ class M4FileTransferService final {
   void stop(bool isApMode);
 
  private:
-  using HttpHandler = esp_err_t (*)(httpd_req_t* req);
+  class HttpRuntime;
 
-  httpd_handle_t httpServer = nullptr;
-  std::unique_ptr<M4FileTransferHttpRoutes> httpRoutes;
-  std::unique_ptr<M4FileTransferAuxiliaryServer> auxiliaryServer;
+  std::unique_ptr<HttpRuntime> httpRuntime;
   std::unique_ptr<DNSServer> dnsServer;
-  SemaphoreHandle_t storageMutex = nullptr;
   bool mdnsRunning = false;
 
   bool beginMdns(const char* hostname);
   void stopDiscovery();
-  bool registerUri(const char* uri, httpd_method_t method, HttpHandler handler);
-
-  static M4FileTransferService* fromRequest(httpd_req_t* req);
-  static esp_err_t rootHandler(httpd_req_t* req);
-  static esp_err_t filesHandler(httpd_req_t* req);
-  static esp_err_t statusHandler(httpd_req_t* req);
-  static esp_err_t fileListHandler(httpd_req_t* req);
-  static esp_err_t downloadHandler(httpd_req_t* req);
-  static esp_err_t uploadHandler(httpd_req_t* req);
-  static esp_err_t mkdirHandler(httpd_req_t* req);
-  static esp_err_t renameHandler(httpd_req_t* req);
-  static esp_err_t moveHandler(httpd_req_t* req);
-  static esp_err_t deleteHandler(httpd_req_t* req);
-  static esp_err_t settingsPageHandler(httpd_req_t* req);
-  static esp_err_t settingsGetHandler(httpd_req_t* req);
-  static esp_err_t settingsPostHandler(httpd_req_t* req);
 };
