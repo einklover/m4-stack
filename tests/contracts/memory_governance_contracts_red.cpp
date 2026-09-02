@@ -20,16 +20,32 @@ int main() {
   governance.release(32 * 1024);
   assert(governance.remaining() == 64 * 1024);
 
-  // Ownership lifecycle acquire creates a tracked owner.
+  // Single owner lifecycle coverage.
   assert(governance.acquireOwnership(16 * 1024));
   assert(governance.ownershipRecords() == 1);
   assert(governance.hasLifecycleLeak());
 
-  // Ownership release clears lifecycle leak state and restores capacity.
   governance.releaseOwnership(16 * 1024);
   assert(governance.ownershipRecords() == 0);
   assert(!governance.hasLifecycleLeak());
   assert(governance.remaining() == 64 * 1024);
+
+  // Service/activity boundary simulation:
+  // service owner acquires resources, then activity owner acquires resources.
+  assert(governance.acquireOwnership(8 * 1024));
+  assert(governance.acquireOwnership(4 * 1024));
+  assert(governance.ownershipRecords() == 2);
+  assert(governance.hasLifecycleLeak());
+
+  // Activity exits first while service still owns resources.
+  governance.releaseOwnership(4 * 1024);
+  assert(governance.ownershipRecords() == 1);
+  assert(governance.hasLifecycleLeak());
+
+  // Service shutdown releases the final ownership record.
+  governance.releaseOwnership(8 * 1024);
+  assert(governance.ownershipRecords() == 0);
+  assert(!governance.hasLifecycleLeak());
 
   // Fragmentation policy remains deterministic for host/QEMU checks.
   assert(governance.fragmentationStable());
