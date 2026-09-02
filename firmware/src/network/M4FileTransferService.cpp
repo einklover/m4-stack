@@ -29,7 +29,7 @@ namespace {
 using RouteMethod = esp_err_t (M4FileTransferHttpRoutes::*)(httpd_req_t*) const;
 
 bool registerUri(const httpd_handle_t server, const char* uri, const httpd_method_t method,
-                 const httpd_uri_func_t handler, void* context) {
+                 esp_err_t (*handler)(httpd_req_t*), void* context) {
   if (!server || !uri || !handler || !context) return false;
   httpd_uri_t descriptor{};
   descriptor.uri = uri;
