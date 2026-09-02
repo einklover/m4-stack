@@ -6,17 +6,22 @@ ACTIVITY_H = ROOT / "firmware/src/activities/network/CrossPointWebServerActivity
 ACTIVITY_CPP = ROOT / "firmware/src/activities/network/CrossPointWebServerActivity.cpp"
 SERVICE_H = ROOT / "firmware/src/network/M4FileTransferService.h"
 SERVICE_CPP = ROOT / "firmware/src/network/M4FileTransferService.cpp"
+ROUTES_H = ROOT / "firmware/src/network/M4FileTransferHttpRoutes.h"
+ROUTES_CPP = ROOT / "firmware/src/network/M4FileTransferHttpRoutes.cpp"
+AUX_H = ROOT / "firmware/src/network/M4FileTransferAuxiliaryServer.h"
+AUX_CPP = ROOT / "firmware/src/network/M4FileTransferAuxiliaryServer.cpp"
 
-activity_h = ACTIVITY_H.read_text(encoding="utf-8")
-activity_cpp = ACTIVITY_CPP.read_text(encoding="utf-8")
-service_h = SERVICE_H.read_text(encoding="utf-8")
-service_cpp = SERVICE_CPP.read_text(encoding="utf-8")
-service = service_h + "\n" + service_cpp
-activity = activity_h + "\n" + activity_cpp
+paths = [ACTIVITY_H, ACTIVITY_CPP, SERVICE_H, SERVICE_CPP, ROUTES_H, ROUTES_CPP, AUX_H, AUX_CPP]
+missing_files = [str(path.relative_to(ROOT)) for path in paths if not path.exists()]
+if missing_files:
+    raise SystemExit("P1C transport files missing:\n  " + "\n  ".join(missing_files))
 
-# P1C ownership: M4FileTransferService owns the ESP-IDF server handle and
-# registration lifecycle. The Activity must no longer drive synchronous HTTP
-# servicing through CrossPointWebServer::handleClient().
+activity = ACTIVITY_H.read_text(encoding="utf-8") + "\n" + ACTIVITY_CPP.read_text(encoding="utf-8")
+service = SERVICE_H.read_text(encoding="utf-8") + "\n" + SERVICE_CPP.read_text(encoding="utf-8")
+routes = ROUTES_H.read_text(encoding="utf-8") + "\n" + ROUTES_CPP.read_text(encoding="utf-8")
+aux = AUX_H.read_text(encoding="utf-8") + "\n" + AUX_CPP.read_text(encoding="utf-8")
+transport = service + "\n" + routes + "\n" + aux
+
 required_server_contract = [
     "esp_http_server.h",
     "httpd_handle_t",
@@ -24,61 +29,69 @@ required_server_contract = [
     "httpd_register_uri_handler(",
     "httpd_stop(",
     "httpd_req_recv(",
-    "user_ctx",
+    "descriptor.user_ctx = this",
 ]
-missing_server_contract = [needle for needle in required_server_contract if needle not in service]
+missing_server_contract = [needle for needle in required_server_contract if needle not in transport]
 if missing_server_contract:
     raise SystemExit(
         "P1C esp_http_server ownership contract missing:\n  "
         + "\n  ".join(missing_server_contract)
     )
 
-forbidden_polling = [
+forbidden_legacy_ownership = [
+    "std::unique_ptr<CrossPointWebServer>",
     "webServer->handleClient()",
-    "fileTransferService.handleWebClients(",
 ]
-leaked_polling = [needle for needle in forbidden_polling if needle in service + "\n" + activity]
-if leaked_polling:
+legacy = [needle for needle in forbidden_legacy_ownership if needle in service + "\n" + activity]
+if legacy:
     raise SystemExit(
-        "P1C still depends on synchronous Activity/service HTTP polling:\n  "
-        + "\n  ".join(leaked_polling)
+        "P1C still owns/services browser HTTP through legacy WebServer polling:\n  "
+        + "\n  ".join(legacy)
     )
 
-# Existing browser/file-manager routes are compatibility surface. P1C changes
-# transport ownership, not route vocabulary.
+# P1C may temporarily retain the P1B Activity-facing method signature so the
+# transport switch is one reversible commit, but its implementation must be an
+# auxiliary-only pump. HTTP itself is serviced by the httpd task.
+if "handleWebClients" in service:
+    required_compat = [
+        "browser HTTP is serviced by esp_http_server",
+        "pollAuxiliary();",
+    ]
+    missing_compat = [needle for needle in required_compat if needle not in service]
+    if missing_compat:
+        raise SystemExit(
+            "P1C transitional Activity pump is not explicitly auxiliary-only:\n  "
+            + "\n  ".join(missing_compat)
+        )
+
 required_routes = [
-    '"/"',
-    '"/files"',
-    '"/api/status"',
-    '"/api/files"',
-    '"/download"',
-    '"/upload"',
-    '"/mkdir"',
-    '"/rename"',
-    '"/move"',
-    '"/delete"',
-    '"/settings"',
-    '"/api/settings"',
+    'registerUri("/", HTTP_GET',
+    'registerUri("/files", HTTP_GET',
+    'registerUri("/api/status", HTTP_GET',
+    'registerUri("/api/files", HTTP_GET',
+    'registerUri("/download", HTTP_GET',
+    'registerUri("/upload", HTTP_POST',
+    'registerUri("/mkdir", HTTP_POST',
+    'registerUri("/rename", HTTP_POST',
+    'registerUri("/move", HTTP_POST',
+    'registerUri("/delete", HTTP_POST',
+    'registerUri("/settings", HTTP_GET',
+    'registerUri("/api/settings", HTTP_GET',
+    'registerUri("/api/settings", HTTP_POST',
 ]
-missing_routes = [route for route in required_routes if route not in service_cpp]
+missing_routes = [needle for needle in required_routes if needle not in service]
 if missing_routes:
     raise SystemExit(
         "P1C esp_http_server route registration contract missing:\n  "
         + "\n  ".join(missing_routes)
     )
 
-# Handler callbacks must resolve through service-owned context, never Activity
-# state. Keep the direct ownership boundary source-visible.
-if "CrossPointWebServerActivity" in service:
-    raise SystemExit("P1C HTTP service must not target CrossPointWebServerActivity state directly")
-
-# Request/body processing must remain explicitly bounded. The migration uses a
-# fixed chunk size rather than allocating a request-sized body buffer.
 required_bounds = [
     "HTTP_BODY_CHUNK_SIZE",
     "HTTP_MAX_BODY_SIZE",
+    "HTTP_CONTROL_BODY_SIZE",
 ]
-missing_bounds = [needle for needle in required_bounds if needle not in service]
+missing_bounds = [needle for needle in required_bounds if needle not in routes]
 if missing_bounds:
     raise SystemExit(
         "P1C bounded request/body contract missing:\n  " + "\n  ".join(missing_bounds)
@@ -90,15 +103,39 @@ unbounded_patterns = [
     "new char[req->content_len]",
     "new uint8_t[req->content_len]",
 ]
-found_unbounded = [needle for needle in unbounded_patterns if needle in service_cpp]
+found_unbounded = [needle for needle in unbounded_patterns if needle in routes]
 if found_unbounded:
     raise SystemExit(
         "P1C request handling allocates from unbounded content_len:\n  "
         + "\n  ".join(found_unbounded)
     )
 
-# P0/P1A observability must surround the new server lifecycle. Existing labels
-# are intentionally retained so RED/GREEN evidence remains comparable.
+serialization_contract = [
+    "xSemaphoreCreateMutex()",
+    "StorageGuard",
+    "storageMutex",
+]
+missing_serialization = [needle for needle in serialization_contract if needle not in service + routes]
+if missing_serialization:
+    raise SystemExit(
+        "P1C storage serialization contract missing:\n  " + "\n  ".join(missing_serialization)
+    )
+
+auxiliary_contract = [
+    "WebSocketsServer",
+    "WS_PORT = 81",
+    "udp_.begin(LOCAL_UDP_PORT)",
+    "pollAuxiliary()",
+]
+missing_aux = [needle for needle in auxiliary_contract if needle not in service + aux]
+if missing_aux:
+    raise SystemExit(
+        "P1C auxiliary WebSocket/UDP compatibility contract missing:\n  " + "\n  ".join(missing_aux)
+    )
+
+if "CrossPointWebServerActivity" in service:
+    raise SystemExit("P1C HTTP service must not target CrossPointWebServerActivity state directly")
+
 required_memory_breadcrumbs = [
     'm4LogRuntimeMemory("file-transfer-server-start-before")',
     'm4LogRuntimeMemory("file-transfer-server-start-after")',
