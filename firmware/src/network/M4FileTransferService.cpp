@@ -12,6 +12,8 @@
 #include "network/CrossPointWebServer.h"
 #include "network/NetworkConstants.h"
 
+M4FileTransferService::M4FileTransferService() = default;
+
 M4FileTransferService::~M4FileTransferService() {
   if (webServer) {
     if (webServer->isRunning()) webServer->stop();
