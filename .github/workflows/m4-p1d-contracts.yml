@@ -19,6 +19,34 @@ jobs:
       - name: P1D navigation supervisor detach contract
         run: python3 firmware/tests/test_m4_navigation_supervisor_contract.py
 
-# P1D RED phase only:
+  firmware-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PlatformIO
+        run: |
+          python3 -m pip install --user platformio
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Build unchanged Murphy production profile
+        working-directory: firmware
+        run: |
+          pio run -e murphy_m4
+          test -f .pio/build/murphy_m4/firmware.bin
+
+      - name: Build Murphy plugin-debug QEMU profile
+        working-directory: firmware
+        run: |
+          pio run -e murphy_m4_qemu_plugin
+          test -f .pio/build/murphy_m4_qemu_plugin/firmware.bin
+
+# P1D gate rules:
 # - prove detach/idempotent teardown/no-callback-after-detach invariants
-# - keep GREEN implementation separate
+# - compile both unchanged production and plugin-debug profiles
+# - keep navigation responsive by moving blocking teardown off the exit path
+# - do not expand into P2/P3 or real-device flashing
