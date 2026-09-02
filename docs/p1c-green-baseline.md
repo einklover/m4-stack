@@ -7,7 +7,7 @@
 - Base: runtime/p1b-file-transfer-service-ownership
 - Base SHA: a6dd2c3ce93d807dcf482e19c9aa5d38fbd4e61a
 - Head: runtime/p1c-esp-http-server-contracts
-- Head SHA: 960e947a1e3ce91dc39c27a615ab219457b46337
+- Head SHA: 84c14badd89eb4565f59a22b400a6712772541cd
 
 ## Scope
 
@@ -17,4 +17,7 @@ The P1C migration keeps M4FileTransferService as the owner of file-transfer HTTP
 
 - esp_http_server contract wiring is present.
 - Production/plugin-debug build verification was added in the latest CI commit.
-- Remaining closeout should attach exact Actions evidence from the PR head.
+- Exact GREEN Actions evidence:
+  - Actions run: 33594742670
+  - contracts: SUCCESS
+  - firmware-build: SUCCESS
