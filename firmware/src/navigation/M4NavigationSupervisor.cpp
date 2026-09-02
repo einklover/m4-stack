@@ -6,11 +6,6 @@ void M4NavigationSupervisor::attach() {
 }
 
 void M4NavigationSupervisor::detach() {
-    if (detached_) {
-        callbackAllowed_ = false;
-        return;
-    }
-
     callbackAllowed_ = false;
     detached_ = true;
 }
@@ -21,4 +16,8 @@ void M4NavigationSupervisor::teardown() {
 
 bool M4NavigationSupervisor::isDetached() const {
     return detached_;
+}
+
+bool M4NavigationSupervisor::canDispatchCallback() const {
+    return callbackAllowed_ && !detached_;
 }
