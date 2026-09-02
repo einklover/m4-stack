@@ -1,24 +1,27 @@
-// P2 RED contract: memory governance invariants.
-// This intentionally captures the required host/QEMU contract before implementation.
-// Expected RED until the P2 memory governance layer exists.
+// P2 memory governance host/QEMU contract.
+// GREEN migration: validate the deterministic governance implementation.
 
 #include <cassert>
 #include <cstddef>
 
-struct MemoryGovernanceContract {
-  bool reserve(std::size_t bytes);
-  std::size_t remaining() const;
-  bool fragmentationStable() const;
-};
+#include "M4MemoryGovernance.h"
 
 int main() {
-  MemoryGovernanceContract governance;
+  M4MemoryGovernance governance(64 * 1024);
 
-  // RED: bounded reservation API is not implemented yet.
-  assert(governance.reserve(64 * 1024));
-  assert(governance.remaining() > 0);
+  // Reserve within budget succeeds.
+  assert(governance.reserve(32 * 1024));
+  assert(governance.remaining() == 32 * 1024);
 
-  // RED: repeated allocation cycles must preserve bounded fragmentation.
+  // Over-budget reservation is rejected deterministically.
+  assert(!governance.reserve(40 * 1024));
+
+  // Release restores bounded capacity.
+  governance.release(32 * 1024);
+  assert(governance.remaining() == 64 * 1024);
+
+  // Fragmentation policy remains deterministic for host/QEMU checks.
   assert(governance.fragmentationStable());
+
   return 0;
 }
