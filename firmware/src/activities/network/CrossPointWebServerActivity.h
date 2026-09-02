@@ -8,6 +8,7 @@
 
 #include "NetworkModeSelectionActivity.h"
 #include "activities/ActivityWithSubactivity.h"
+#include "navigation/M4NavigationSupervisor.h"
 #include "network/M4FileTransferService.h"
 
 enum class WebServerActivityState {
@@ -32,6 +33,7 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   NetworkMode networkMode = NetworkMode::JOIN_NETWORK;
   bool isApMode = false;
   M4FileTransferService fileTransferService;
+  M4NavigationSupervisor navigationSupervisor;
   std::string connectedIP;
   std::string connectedSSID;
   std::string setupError;
