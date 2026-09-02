@@ -63,3 +63,8 @@ jobs:
         run: |
           pio run -e murphy_m4_qemu_plugin
           test -f .pio/build/murphy_m4_qemu_plugin/firmware.bin
+
+# P1C firmware-build gate rules:
+# - Keep production and plugin-debug profiles as independent verification targets.
+# - Do not expand this gate into P1D navigation/teardown work.
+# - Preserve P1B ownership boundaries while validating esp_http_server migration.
