@@ -22,6 +22,17 @@
 - Do not flash real hardware.
 - Track unrelated NetworkManager failure under #53.
 
+## Closeout evidence snapshot
+
+Exact head evaluated before this documentation update: `652851ee32e6f9145d75007627d7e8f2e837c599`.
+
+- P0, P1A, and P1B host contracts: **PASS** in `m4 fast firmware loop` run `33585631954`.
+- Plugin-debug build and fast boot/protocol smoke: **PASS** in the same run.
+- Network Manager regression: **FAIL**, matching the separately tracked #53 gate; Reader touch UI is skipped after that fail-fast point.
+- Production boot: **PASS** in run `33585631916` at the same exact head.
+- P1A → P1B comparison is 11 commits ahead with the ownership extraction plus focused plan/test/workflow/diagnostic changes; no P1C `esp_http_server`, async teardown, route/UI/protocol migration, or #53 fix is included.
+- PR #58 still requires GitHub-side stacked-base/body/issue evidence cleanup before it is ready to leave draft status.
+
 ---
 
 ### Task 1: Add RED ownership contract
@@ -34,7 +45,7 @@
 - Consumes: existing P1A branch source layout.
 - Produces: static contract requiring `M4FileTransferService` and forbidding direct Activity ownership of `CrossPointWebServer`, global `DNSServer*`, and direct mDNS teardown.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 The Python test reads `firmware/src/activities/network/CrossPointWebServerActivity.h/.cpp` and the expected service header/source. Assert:
 
@@ -52,13 +63,13 @@ assert 'fileTransferService.handleWebClients(' in activity_cpp
 
 Also assert the service owns the concrete server/DNS types.
 
-- [ ] **Step 2: Wire contract into `m4-fast.yml`**
+- [x] **Step 2: Wire contract into `m4-fast.yml`**
 
 Add the test beside P0/P1A host contracts so PR CI evaluates it before expensive QEMU stages.
 
-- [ ] **Step 3: Push RED and verify it fails**
+- [x] **Step 3: Push RED and verify it fails**
 
-Expected failure: missing `firmware/src/network/M4FileTransferService.h/.cpp` and/or Activity still owns the current resources. Record run id in #57.
+Expected failure: missing `firmware/src/network/M4FileTransferService.h/.cpp` and/or Activity still owns the current resources. The RED contract commit is `31fcb3e56d425ec4602e7254589863cdc9736280`; implementation followed in `14755da5f620191a818596ed5fcf65d984c1670d`.
 
 ### Task 2: Implement service ownership boundary
 
@@ -89,21 +100,21 @@ class M4FileTransferService final {
 };
 ```
 
-- [ ] **Step 1: Add the service implementation**
+- [x] **Step 1: Add the service implementation**
 
 Move concrete ownership of `CrossPointWebServer` and `DNSServer` into the service. Put mDNS begin/end and AP/STA shutdown behind service methods. Make `stop()` idempotent and destructor-safe.
 
-- [ ] **Step 2: Convert Activity to delegation**
+- [x] **Step 2: Convert Activity to delegation**
 
 Remove direct server/DNS ownership and lifecycle calls. Keep UI state, SSID/IP strings, child-activity flow, error messages, telemetry, HTTP iteration limits, and navigation decisions in the Activity. Delegate DNS processing, web-client polling, server state, start and stop operations.
 
-- [ ] **Step 3: Preserve failure behavior**
+- [x] **Step 3: Preserve failure behavior**
 
 If AP/server start fails, return `false` to Activity and reuse the existing `showSetupError(...)` strings. Cleanup partial service resources before returning failure.
 
-- [ ] **Step 4: Run host contracts**
+- [x] **Step 4: Run host contracts**
 
-Expected: P0, P1A, and P1B ownership contracts PASS.
+P0, P1A, and P1B ownership contracts PASS at `652851ee32e6f9145d75007627d7e8f2e837c599` in run `33585631954`.
 
 ### Task 3: Verify exact head and document evidence
 
@@ -115,19 +126,19 @@ Expected: P0, P1A, and P1B ownership contracts PASS.
 - Consumes: final P1B commit SHA.
 - Produces: reviewable GitHub evidence and explicit known-failure classification.
 
-- [ ] **Step 1: Run/inspect GitHub Actions**
+- [x] **Step 1: Run/inspect GitHub Actions**
 
-Require exact-head results for host contracts and Murphy M4 production build. Evaluate plugin-debug and production QEMU boot/smoke. If NetworkManager fails with the existing #53 signature, record it as known and do not alter P1B networking behavior without causal evidence.
+Exact-head evaluation at `652851ee32e6f9145d75007627d7e8f2e837c599`: host contracts, plugin-debug build, fast boot/protocol smoke, and production boot pass. Network Manager fails at the existing #53 gate and is classified as known/separate rather than evidence of a P1B ownership regression.
 
-- [ ] **Step 2: Compare P1A → P1B diff**
+- [x] **Step 2: Compare P1A → P1B diff**
 
-Confirm only design/plan/test/workflow plus service ownership files and Activity delegation changed. Confirm no route/UI/protocol rewrite.
+Compared `1590ec27a96dedae1e3d54d13d3b507b7f850a37...652851ee32e6f9145d75007627d7e8f2e837c599`: 11 commits ahead. The delta contains P1B design/plan/test/workflow, service ownership and Activity delegation, plus production-diagnostic fixes; it does not introduce P1C/P1D behavior changes.
 
 - [ ] **Step 3: Create/update stacked PR**
 
 Head: `runtime/p1b-file-transfer-service-ownership`  
 Base: `runtime/p1a-file-transfer-service-contracts`  
-Draft until exact-head verification is evaluated.
+Draft until exact-head verification is evaluated and GitHub-side evidence is synchronized.
 
 - [ ] **Step 4: Update #57**
 
