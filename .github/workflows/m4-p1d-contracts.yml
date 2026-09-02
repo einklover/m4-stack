@@ -1,0 +1,24 @@
+name: m4 P1D host contracts
+
+on:
+  push:
+    branches:
+      - runtime/p1d-navigation-supervisor
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: P1D navigation supervisor detach contract
+        run: python3 firmware/tests/test_m4_navigation_supervisor_contract.py
+
+# P1D RED phase only:
+# - prove detach/idempotent teardown/no-callback-after-detach invariants
+# - keep GREEN implementation separate
