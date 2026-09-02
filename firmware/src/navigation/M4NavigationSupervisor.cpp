@@ -6,6 +6,12 @@ void M4NavigationSupervisor::attach() {
 }
 
 void M4NavigationSupervisor::detach() {
+    // Idempotent detach: repeated teardown must converge on the same safe state.
+    if (detached_) {
+        callbackAllowed_ = false;
+        return;
+    }
+
     callbackAllowed_ = false;
     detached_ = true;
 }
