@@ -20,7 +20,6 @@ on:
       - 'firmware/src/apps/M4xProgressiveLoader.*'
       - 'firmware/src/apps/M4xProgressiveHttpState.h'
       - 'firmware/src/apps/M4xJsonStream.h'
-      - 'firmware/src/apps/M4xJsonStream.h'
       - 'firmware/src/apps/providers/M4ProgressiveCatalog.h'
       - 'firmware/tests/native_app/test_progressive_http_state.cpp'
       - 'firmware/tests/native_app/test_progressive_catalog.cpp'
