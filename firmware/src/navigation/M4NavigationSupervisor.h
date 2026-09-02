@@ -6,6 +6,7 @@ public:
     void detach();
     void teardown();
     bool isDetached() const;
+    bool canDispatchCallback() const;
 
 private:
     bool detached_{true};
