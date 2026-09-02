@@ -16,7 +16,7 @@ class M4FileTransferService final {
 
   using AbortCheck = bool (*)(void* context);
 
-  M4FileTransferService() = default;
+  M4FileTransferService();
   ~M4FileTransferService();
 
   M4FileTransferService(const M4FileTransferService&) = delete;
