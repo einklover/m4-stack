@@ -1,0 +1,43 @@
+name: m4 P1E file-transfer memory governance
+
+on:
+  push:
+    branches:
+      - runtime/p1e-file-transfer-memory-governance
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preserve P2 memory governance host baseline
+        run: |
+          g++ -std=c++17 \
+            -Ifirmware/src/memory \
+            tests/contracts/memory_governance_contracts_red.cpp \
+            firmware/src/memory/M4MemoryGovernance.cpp \
+            -o /tmp/m4_memory_governance_contract
+          /tmp/m4_memory_governance_contract
+
+      - name: P1E file-transfer governance wiring contract
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "firmware/tests")
+          import test_m4_file_transfer_governance_wiring as contract
+
+          contract.test_file_transfer_service_owns_governance_account()
+          contract.test_http_runtime_admission_and_release_are_governed()
+          contract.test_captive_dns_admission_and_release_are_governed()
+          PY
+
+# P1E RED/GREEN gate:
+# - prove the production file-transfer owner passes through governance admission/release
+# - preserve the existing P2 host accounting baseline
+# - firmware build gates are added after the RED contract is demonstrated
