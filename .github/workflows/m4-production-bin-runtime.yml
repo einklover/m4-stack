@@ -36,6 +36,7 @@ jobs:
         run: bash scripts/bootstrap_deps.sh
 
       - name: Build unchanged Murphy production profile
+        id: production_build
         working-directory: firmware
         run: |
           pio run -e murphy_m4
@@ -43,6 +44,7 @@ jobs:
           sha256sum .pio/build/murphy_m4/firmware.bin | tee "$RUNNER_TEMP/production-firmware.sha256"
 
       - name: Compose production-profile 16 MiB flash
+        id: compose_flash
         run: |
           python3 simulator/tools/murphy_flash_image.py \
             --build-dir firmware/.pio/build/murphy_m4 \
@@ -55,6 +57,7 @@ jobs:
           python3 simulator/qemu/make_sd_image.py "$RUNNER_TEMP/murphy-sd.img" --size-mb 64
 
       - name: Build Murphy-patched Espressif QEMU (unified build.py → v3)
+        id: qemu_build
         shell: bash
         run: |
           set -o pipefail
@@ -124,6 +127,15 @@ jobs:
             echo
             echo 'Run: `${{ github.run_id }}`'
             echo
+            echo '#### Step outcomes'
+            echo '| Step | Outcome |'
+            echo '| --- | --- |'
+            echo '| Production build | `${{ steps.production_build.outcome }}` |'
+            echo '| 16 MiB flash composition | `${{ steps.compose_flash.outcome }}` |'
+            echo '| QEMU build | `${{ steps.qemu_build.outcome }}` |'
+            echo '| Production boot | `${{ steps.boot.outcome }}` |'
+            echo '| Boot classification | `${{ steps.classify.outcome }}` |'
+            echo
             if [ -f "$RUNNER_TEMP/runtime-artifacts/production.probe.json" ]; then
               echo '#### Probe'
               echo '```json'
@@ -132,11 +144,23 @@ jobs:
             fi
             echo '#### Serial tail'
             echo '```text'
-            tail -n 100 "$RUNNER_TEMP/runtime-artifacts/production.serial.log" 2>/dev/null || true
+            if [ -s "$RUNNER_TEMP/runtime-artifacts/production.serial.log" ]; then
+              tail -n 100 "$RUNNER_TEMP/runtime-artifacts/production.serial.log"
+            else
+              echo '[not produced: production QEMU boot was skipped or exited before serial capture]'
+            fi
             echo '```'
-            echo '#### QEMU/build tail'
+            echo '#### QEMU/runtime tail'
             echo '```text'
-            tail -n 80 "$RUNNER_TEMP/runtime-artifacts/qemu-build.log" 2>/dev/null || true
+            if [ -s "$RUNNER_TEMP/runtime-artifacts/runner.log" ]; then
+              tail -n 80 "$RUNNER_TEMP/runtime-artifacts/runner.log"
+            elif [ -s "$RUNNER_TEMP/runtime-artifacts/qemu-process.log" ]; then
+              tail -n 80 "$RUNNER_TEMP/runtime-artifacts/qemu-process.log"
+            elif [ -s "$RUNNER_TEMP/runtime-artifacts/qemu-build.log" ]; then
+              tail -n 80 "$RUNNER_TEMP/runtime-artifacts/qemu-build.log"
+            else
+              echo '[not produced: QEMU build/runtime did not execute because an earlier workflow step failed]'
+            fi
             echo '```'
           } > "$RUNNER_TEMP/runtime-failure.md"
           gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/runtime-failure.md"

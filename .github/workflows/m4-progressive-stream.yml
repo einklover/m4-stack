@@ -77,4 +77,30 @@ jobs:
 
       - name: Compile Murphy M4 production profile
         working-directory: firmware
-        run: pio run -e murphy_m4
+        shell: bash
+        run: |
+          set +e
+          pio run -e murphy_m4 2>&1 | tee "$RUNNER_TEMP/murphy-m4-production-build.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "Murphy M4 production compile failed (exit=$status)."
+              echo "First compiler/linker diagnostics:"
+              grep -n -m 24 -E 'fatal error:|error:|undefined reference|will not fit in region|region .* overflowed|collect2: error' \
+                "$RUNNER_TEMP/murphy-m4-production-build.log" || true
+              echo
+              echo "Last 160 build-log lines:"
+              tail -n 160 "$RUNNER_TEMP/murphy-m4-production-build.log"
+            } > "$RUNNER_TEMP/murphy-m4-production-compile-failure.txt"
+          fi
+          exit "$status"
+
+      - name: Upload production compile failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: murphy-m4-production-compile-failure
+          path: ${{ runner.temp }}/murphy-m4-production-compile-failure.txt
+          if-no-files-found: ignore
+          retention-days: 7

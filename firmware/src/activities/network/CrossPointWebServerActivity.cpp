@@ -1,15 +1,10 @@
 #include "CrossPointWebServerActivity.h"
 
-#include <DNSServer.h>
-#include <ESPmDNS.h>
 #include <GfxRenderer.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
-#include <esp_task_wdt.h>
 
 #include <cstddef>
-#include <cstring>
-#include <new>
 
 #include "MappedInputManager.h"
 #include "I18n.h"
@@ -27,8 +22,6 @@
 using namespace NetworkConstants;
 
 namespace {
-DNSServer* dnsServer = nullptr;
-
 void logInternalHeap(const char* where) {
   Serial.printf("[%lu] [WEBACT] [MEM] %s internal_free=%u largest=%u total_heap=%u\n", millis(), where,
                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -45,6 +38,15 @@ void logNavigationRequest(const WebServerActivityState state, const bool isApMod
 
 void CrossPointWebServerActivity::taskTrampoline(void* param) {
   static_cast<CrossPointWebServerActivity*>(param)->displayTaskLoop();
+}
+
+bool CrossPointWebServerActivity::webPumpAbortCheck(void* context) {
+  return static_cast<CrossPointWebServerActivity*>(context)->pollWebPumpAbort();
+}
+
+bool CrossPointWebServerActivity::pollWebPumpAbort() {
+  mappedInput.update();
+  return mappedInput.wasPressed(MappedInputManager::Button::Back);
 }
 
 void CrossPointWebServerActivity::onEnter() {
@@ -75,9 +77,7 @@ void CrossPointWebServerActivity::onEnter() {
     connectedSSID = M4QemuNet::ssidStd();
     if (connectedIP.empty() && m4QemuNetWifiCompatConnected()) connectedIP = "10.0.2.15";
     if (connectedSSID.empty() && m4QemuNetWifiCompatConnected()) connectedSSID = "qemu-openeth";
-    if (MDNS.begin(AP_HOSTNAME)) {
-      Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
-    }
+    fileTransferService.beginStationMdns(AP_HOSTNAME);
     startWebServer();
     return;
   }
@@ -94,23 +94,7 @@ void CrossPointWebServerActivity::onExit() {
   ActivityWithSubactivity::onExit();
   pendingParentAction = PendingParentAction::None;
   state = WebServerActivityState::SHUTTING_DOWN;
-  stopWebServer();
-  MDNS.end();
-  if (dnsServer) {
-    dnsServer->stop();
-    delete dnsServer;
-    dnsServer = nullptr;
-  }
-  delay(200);
-#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
-  if (isApMode) WiFi.softAPdisconnect(true);
-#else
-  if (isApMode) WiFi.softAPdisconnect(true);
-  else WiFi.disconnect(false);
-  delay(300);
-  WiFi.mode(WIFI_OFF);
-  delay(300);
-#endif
+  fileTransferService.stop(isApMode);
   logInternalHeap("after network stop");
   m4LogRuntimeMemory("file-transfer-after-network-stop");
 
@@ -136,19 +120,7 @@ void CrossPointWebServerActivity::onExit() {
 }
 
 void CrossPointWebServerActivity::showSetupError(const char* message) {
-  stopWebServer();
-  MDNS.end();
-  if (dnsServer) {
-    dnsServer->stop();
-    delete dnsServer;
-    dnsServer = nullptr;
-  }
-#if !defined(M4_QEMU_PLUGIN_DEBUG) || !M4_QEMU_PLUGIN_DEBUG
-  if (isApMode) {
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_OFF);
-  }
-#endif
+  fileTransferService.stopForSetupError(isApMode);
   pendingParentAction = PendingParentAction::None;
   setupError = message ? message : "Network setup failed";
   state = WebServerActivityState::ERROR;
@@ -183,9 +155,7 @@ void CrossPointWebServerActivity::runPendingParentAction() {
           renderer, mappedInput, [this](const bool connected) { onWifiSelectionComplete(connected); }));
       return;
     case PendingParentAction::StartWebServer:
-      if (!isApMode && MDNS.begin(AP_HOSTNAME)) {
-        Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
-      }
+      fileTransferService.beginStationMdns(AP_HOSTNAME);
       startWebServer();
       return;
     case PendingParentAction::None:
@@ -266,32 +236,12 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
 
 void CrossPointWebServerActivity::startAccessPoint() {
   logInternalHeap("before AP start (selection child released)");
-  WiFi.mode(WIFI_AP);
-  delay(100);
-  const bool apStarted = (AP_PASSWORD && strlen(AP_PASSWORD) >= 8)
-                             ? WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, false, AP_MAX_CONNECTIONS)
-                             : WiFi.softAP(AP_SSID, nullptr, AP_CHANNEL, false, AP_MAX_CONNECTIONS);
-  if (!apStarted) {
+  if (!fileTransferService.beginAccessPoint(AP_SSID, AP_PASSWORD, AP_CHANNEL, AP_MAX_CONNECTIONS, AP_HOSTNAME,
+                                            connectedIP)) {
     showSetupError("Hotspot startup failed");
     return;
   }
-  delay(100);
-  const IPAddress apIP = WiFi.softAPIP();
-  char ipStr[16];
-  snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", apIP[0], apIP[1], apIP[2], apIP[3]);
-  connectedIP = ipStr;
   connectedSSID = AP_SSID;
-  if (MDNS.begin(AP_HOSTNAME)) {
-    Serial.printf("[%lu] [WEBACT] mDNS started: http://%s.local/\n", millis(), AP_HOSTNAME);
-  }
-
-  dnsServer = new (std::nothrow) DNSServer();
-  if (dnsServer) {
-    dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
-    dnsServer->start(NetworkConstants::DNS_PORT, "*", apIP);
-  } else {
-    Serial.printf("[%lu] [WEBACT] WARN: no memory for captive DNS; direct IP still works\n", millis());
-  }
   logInternalHeap("after AP start");
   startWebServer();
 }
@@ -299,14 +249,12 @@ void CrossPointWebServerActivity::startAccessPoint() {
 void CrossPointWebServerActivity::startWebServer() {
   m4LogRuntimeMemory("file-transfer-server-start-before");
   logInternalHeap("before web server start");
-  webServer.reset(new (std::nothrow) CrossPointWebServer());
-  if (!webServer) {
+  const auto result = fileTransferService.beginWebServer();
+  if (result == M4FileTransferService::WebServerStartResult::AllocationFailed) {
     showSetupError("Web server memory allocation failed");
     return;
   }
-  webServer->begin();
-  if (!webServer->isRunning()) {
-    webServer.reset();
+  if (result == M4FileTransferService::WebServerStartResult::StartupFailed) {
     showSetupError("Web server startup failed");
     return;
   }
@@ -319,17 +267,6 @@ void CrossPointWebServerActivity::startWebServer() {
   if (renderingMutex) xSemaphoreTake(renderingMutex, portMAX_DELAY);
   render();
   if (renderingMutex) xSemaphoreGive(renderingMutex);
-}
-
-void CrossPointWebServerActivity::stopWebServer() {
-  const unsigned long stopStarted = millis();
-  const bool hadServer = static_cast<bool>(webServer);
-  if (webServer) {
-    if (webServer->isRunning()) webServer->stop();
-    webServer.reset();
-  }
-  Serial.printf("[%lu] [WEBACT] server_stop_ms=%lu had_server=%d\n", millis(),
-                static_cast<unsigned long>(millis() - stopStarted), hadServer ? 1 : 0);
 }
 
 void CrossPointWebServerActivity::loop() {
@@ -366,9 +303,9 @@ void CrossPointWebServerActivity::loop() {
   }
   if (state != WebServerActivityState::SERVER_RUNNING) return;
 
-  if (isApMode && dnsServer) dnsServer->processNextRequest();
+  if (isApMode) fileTransferService.processDns();
 
-  if (!isApMode && webServer && webServer->isRunning() && !m4QemuNetWifiCompatConnected()) {
+  if (!isApMode && fileTransferService.webServerRunning() && !m4QemuNetWifiCompatConnected()) {
     static unsigned long lastWifiCheck = 0;
     if (millis() - lastWifiCheck > 2000) {
       lastWifiCheck = millis();
@@ -378,7 +315,7 @@ void CrossPointWebServerActivity::loop() {
       }
     }
   }
-  if (!webServer || !webServer->isRunning()) return;
+  if (!fileTransferService.webServerRunning()) return;
 
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
   constexpr int kMaxIters = 12;
@@ -387,21 +324,12 @@ void CrossPointWebServerActivity::loop() {
   constexpr int kMaxIters = 40;
   constexpr unsigned long kBudgetMs = 20;
 #endif
-  esp_task_wdt_reset();
-  const unsigned long t0 = millis();
-  for (int i = 0; i < kMaxIters && webServer->isRunning(); ++i) {
-    webServer->handleClient();
-    if (static_cast<unsigned long>(millis() - t0) >= kBudgetMs) break;
-    if ((i & 0x3) == 0x3) {
-      yield();
-      esp_task_wdt_reset();
-      mappedInput.update();
-      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-        logNavigationRequest(state, isApMode);
-        onGoBack();
-        return;
-      }
-    }
+  const bool abortRequested = fileTransferService.handleWebClients(
+      kMaxIters, kBudgetMs, &CrossPointWebServerActivity::webPumpAbortCheck, this);
+  if (abortRequested) {
+    logNavigationRequest(state, isApMode);
+    onGoBack();
+    return;
   }
   lastHandleClientTime = millis();
 }
