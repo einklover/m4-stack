@@ -1,28 +1,35 @@
 # P2 Stacked Integration Audit
 
-Status: **post-integration closeout evidence record**. Documentation/review only; this document adds no runtime or firmware logic.
+Status: **post-integration + exact-main revalidation + gap-review closeout evidence**. Documentation/review only; this document itself adds no runtime or firmware logic.
 
 Authoritative program source: #50 comment `5519324576`.
 
 Operational sequence:
 
-`P0 -> P1A -> P1B -> P1C -> P1D -> P2 -> integration audit -> gap review -> optional P1E only if a concrete gap remains -> future system-wide phase`
+`P0 -> P1A -> P1B -> P1C -> P1D -> P2 -> integration audit -> gap review -> optional P1E only if a concrete infrastructure gap remains -> future system-wide phase`
 
-The older #50 P0-P10 design numbering is not the execution sequence. In particular, the older-design "P3 Wi-Fi event facade" is not treated as the next task.
+The older #50 P0-P10 design numbering is not the execution sequence. In particular, old-design P3 is **not** started or defined by this closeout.
 
-## Final integration conclusion
+## Executive conclusion
 
-The authorized P0-P2 stacked integration is complete. The six PRs were processed strictly in parent-to-child order:
+The P0-P2 stacked runtime integration is complete, the documentation closeout PR #65 is merged, and the exact integrated runtime merge commit has now been revalidated in GitHub Actions.
 
-`#52 -> #56 -> #58 -> #60 -> #62 -> #64`
-
-For every layer, the live head/base, CI evidence, GitHub mergeability, and review threads were rechecked before the state transition. Each PR was marked Ready for review before merge. Each merge used GitHub's normal merge operation with the expected head SHA; no force update, required-check bypass, timeout inflation, or test masking was used.
-
-The final integrated `main` commit is:
+The exact runtime baseline is:
 
 `e5517805f55a0ebd09d31b1b0498b4d1e4054e11`
 
-This commit is the **recommended post-integration runtime baseline anchor**, subject to the exact-main verification note below.
+Exact-SHA revalidation run `33716310860` completed **SUCCESS** on that SHA for:
+
+- P2 host/Python memory-governance contract;
+- P2 host C++ memory-governance contract;
+- production `murphy_m4` firmware build;
+- `murphy_m4_qemu_plugin` firmware build.
+
+The later `main` commit `7fa8be25f8cfb48160140705e03bfd499baeafc5` is a documentation-only descendant created by merging PR #65. Direct comparison from `e5517805` to `7fa8be25` changes only `docs/P2_STACKED_INTEGRATION_AUDIT.md`; therefore `e5517805` remains the runtime/firmware baseline SHA while `main` continues on the same runtime tree lineage with documentation updates.
+
+Gap review found **one concrete infrastructure gap**: the P2 governance model exists and is tested, but the production file-transfer service owner still admits/owns its runtime allocations without passing through the governance reserve/release boundary. This is sufficiently concrete to justify a narrow P1E. Existing issue #63 has been repurposed to that scope. No P1E implementation code is added by this audit.
+
+P1D navigation behavior is **not reopened** by this gap review. The accepted exit path remains detach-first, uses a bounded rendering-mutex wait on Activity exit, and transfers service cleanup to a deferred worker. #53 remains an independent QEMU NetworkManager regression.
 
 ## Final merge ledger
 
@@ -34,115 +41,145 @@ This commit is the **recommended post-integration runtime baseline anchor**, sub
 | P1C | #60 | `67004e454e6549915be0d79c8679eaef78a90db9` | `5c9f39a428fb359c3c4705b98af44a9cd7a7df88` | `477ae9bd3916b3ff3ee5e0e28819635cafe5f610` |
 | P1D | #62 | `83471f4d0dbf22aa4a8dc8967319d4447297e070` | `477ae9bd3916b3ff3ee5e0e28819635cafe5f610` | `863d37e197ac11e6f37f628f79ec22e259295c04` |
 | P2 | #64 | `14b14af1fb95d756815826d22be207cd6c3fd5bc` | `863d37e197ac11e6f37f628f79ec22e259295c04` | `e5517805f55a0ebd09d31b1b0498b4d1e4054e11` |
+| Docs closeout | #65 | `6207fe8d0cc19ae7acb54fd7937ad2093db9ef23` | `e5517805f55a0ebd09d31b1b0498b4d1e4054e11` | `7fa8be25f8cfb48160140705e03bfd499baeafc5` |
 
-GitHub confirms `main` now points to `e5517805f55a0ebd09d31b1b0498b4d1e4054e11`, whose parents are the pre-P2 integrated `main` (`863d37e...`) and the final P2/audit head (`14b14af1...`).
+All six runtime PRs were marked Ready before merge and merged parent-to-child with GitHub's normal merge operation and expected head SHA. No force merge, required-check bypass, timeout inflation, or weakened test was used.
 
-## Integration behavior by layer
+## Exact-head evidence retained from the stack
 
-### P0 / #52
+### P1C
 
-- Verified head: `b63d97863ac28908c1d05d4f66c2c10b1d29571e`.
-- Successful phase evidence included Murphy production BIN runtime and progressive stream regressions.
-- Existing `m4 fast firmware loop` / clean-BIN failures remained associated with the independently tracked #53 NetworkManager QEMU path.
-- Before merge, GitHub reported `mergeable=true` with `mergeable_state=unstable`, not a merge conflict.
-- Ready transition and normal merge succeeded.
+- Verified implementation head: `84c14badd89eb4565f59a22b400a6712772541cd`.
+- Gate run `33594742670`: contracts SUCCESS; firmware-build SUCCESS, including production and plugin-debug QEMU profiles.
+- Integrated head `67004e454e6549915be0d79c8679eaef78a90db9` is a documentation-only descendant.
 
-### P1A / #56
+### P1D
 
-- The earlier topology defect was corrected first: #56 was retargeted from `main` to P0 for clean stacked review.
-- After #52 merged, #56 was retargeted again to the newly integrated `main` at `502b11fe...`.
-- Head remained `1590ec27a96dedae1e3d54d13d3b507b7f850a37`.
-- The P1A-only comparison remained 7 commits / 6 changed files.
-- Successful production, Stage 14, and progressive-stream evidence remained attached; the known #53/clean-BIN red context was not altered.
-- GitHub reported `mergeable=true`; Ready transition and normal merge succeeded.
+- Verified implementation head: `c2b6604e2a3b48a8656c8fc9c0a95b7dd62a9174`.
+- P1D gate run `33627504136`: contracts SUCCESS; production `murphy_m4` SUCCESS; plugin-debug QEMU build SUCCESS.
+- Stage 14 run `33627506636`: SUCCESS.
+- Integrated head `83471f4d0dbf22aa4a8dc8967319d4447297e070` differs from the GREEN implementation head only by `docs/p1d-green-baseline.md`.
 
-### P1B / #58
-
-- Integrated head: `a6dd2c3ce93d807dcf482e19c9aa5d38fbd4e61a`.
-- Retargeted to the newly integrated `main` after #56.
-- Production BIN, Stage 14, and progressive-stream runs were GREEN; existing #53-path failures remained separate.
-- GitHub reported `mergeable=true`; Ready transition and normal merge succeeded.
-
-### P1C / #60
-
-- Verified GREEN implementation head: `84c14badd89eb4565f59a22b400a6712772541cd`.
-- P1C gate run `33594742670`: `contracts` SUCCESS and `firmware-build` SUCCESS, including both `murphy_m4` and `murphy_m4_qemu_plugin` builds.
-- Integrated PR head: `67004e454e6549915be0d79c8679eaef78a90db9`.
-- `84c14bad -> 67004e45` is exactly one documentation-only commit modifying `docs/p1c-green-baseline.md`; no runtime/firmware source changed.
-- After retarget to the integrated P1B `main`, GitHub reported `mergeable_state=clean`.
-- Ready transition and normal merge succeeded.
-
-### P1D / #62
-
-- Verified GREEN implementation head: `c2b6604e2a3b48a8656c8fc9c0a95b7dd62a9174`.
-- P1D gate run `33627504136`: contracts SUCCESS, production `murphy_m4` build SUCCESS, and plugin-debug QEMU build SUCCESS.
-- Stage 14 regression run `33627506636`: SUCCESS.
-- Integrated PR head: `83471f4d0dbf22aa4a8dc8967319d4447297e070`.
-- `c2b6604e -> 83471f4d` is exactly one documentation-only commit adding `docs/p1d-green-baseline.md`; no runtime/firmware source changed.
-- After retarget to the integrated P1C `main`, GitHub reported `mergeable_state=clean`.
-- Ready transition and normal merge succeeded.
-
-### P2 / #64
+### P2 before integration
 
 - Provenance-verified runtime/hardware baseline: `dd6bdd7e67c3f3631d655bd5e3ed804ef9b58da4`.
-- Exact baseline workflow `33682171431`: contracts SUCCESS and firmware-build SUCCESS, including both production `murphy_m4` and `murphy_m4_qemu_plugin`.
-- Hardware acceptance comment `5519232010` records `PROVENANCE VERIFIED + HARDWARE PASS`, including clean canonical/re-entry lifecycle runs and no accepted-run panic/watchdog/reset or leak-like stepwise heap decline.
-- Final integrated PR head: `14b14af1fb95d756815826d22be207cd6c3fd5bc`.
-- `dd6bdd7e -> 14b14af1` is two commits ahead and changes only `docs/P2_STACKED_INTEGRATION_AUDIT.md`; no runtime/firmware source changed.
-- The current-tip P2 workflow `33713530554` was allowed to finish before Ready/merge. Its `contracts` job SUCCESS and `firmware-build` job SUCCESS, including both production and plugin-debug QEMU profiles.
-- No submitted reviews or unresolved review threads blocked #64.
-- Ready transition and normal merge succeeded.
+- Exact-tip run `33682171431`: contracts SUCCESS; production `murphy_m4` SUCCESS; `murphy_m4_qemu_plugin` SUCCESS.
+- Hardware acceptance comment `5519232010`: `PROVENANCE VERIFIED + HARDWARE PASS`; canonical and stale/re-entry lifecycle acceptance passed without accepted-run panic/watchdog/reset or leak-like stepwise heap decline.
+- Final integrated PR head `14b14af1fb95d756815826d22be207cd6c3fd5bc` is two audit-document commits ahead of `dd6bdd7e` with no runtime/firmware source change.
+- Current-tip P2 gate before #64 merge, run `33713530554`, completed SUCCESS for contracts + both firmware profiles.
 
-## Review and merge-gate interpretation
+## Exact integrated runtime revalidation
 
-At the pre-merge audits, no PR in the six-layer chain had unresolved inline review threads. No force merge was used.
+### Target
 
-The known #53 NetworkManager QEMU failures on older P0/P1A/P1B check sets were preserved as evidence and were not hidden by timeout inflation or weakened tests. GitHub's actual merge operation accepted those layers; they were therefore not treated as required merge blockers for this integration.
+`e5517805f55a0ebd09d31b1b0498b4d1e4054e11`
 
-P1C and P1D became `mergeable_state=clean` after retarget to the newly integrated parent. P2 was not merged while its current-tip firmware check was still running; the final current-tip P2 contract and both firmware builds completed successfully before the Ready/merge transition.
+This is the merge commit produced by #64 and is the first `main` commit that contains the entire P0-P2 runtime stack.
 
-## Post-integration baseline recommendation
+### Reproducible GitHub Actions method
 
-### Recommended anchor
+The existing `.github/workflows/m4-p2-contracts.yml` supports the required host contracts and both firmware profiles. Its push trigger is scoped to `runtime/p2-memory-governance-contracts`.
 
-Use `main@e5517805f55a0ebd09d31b1b0498b4d1e4054e11` as the **post-integration runtime baseline anchor** for subsequent planning.
+After #64 was merged, that already-merged branch still pointed at `14b14af1...`. The branch was advanced **without force** to its descendant merge commit `e5517805...`. Because `e5517805` has the P2 head as a parent, this is a fast-forward ref move, not a rewritten commit and not a new runtime change. The move triggered the existing workflow against the exact commit object.
 
-Future Home/UI/plugin/reader/runtime work should not branch from the old stacked feature branches. It should use this integrated `main` lineage.
+### Result
 
-### Exact-main verification note
+Actions run: `33716310860`
 
-The final #64 head was fully green before merge, but the resulting merge commit has a new SHA. At the time of this closeout refresh, the only check visible directly on `e5517805...` is a skipped dispatch check; a dedicated integrated P0-P2 contracts + production `murphy_m4` + `murphy_m4_qemu_plugin` + relevant QEMU regression gate has not yet been recorded on the exact final `main` SHA.
+- event: `push`;
+- exact `head_sha`: `e5517805f55a0ebd09d31b1b0498b4d1e4054e11`;
+- workflow conclusion: **SUCCESS**;
+- `contracts`: **SUCCESS**;
+  - Python governance contract: SUCCESS;
+  - host C++ governance contract: SUCCESS;
+- `firmware-build`: **SUCCESS**;
+  - `Build unchanged Murphy production profile`: SUCCESS;
+  - `Build Murphy plugin-debug QEMU profile`: SUCCESS.
 
-Therefore:
+**Verdict:** `e5517805` is now the **exact-SHA revalidated post-integration runtime baseline** for the host contracts and the two required firmware build profiles.
 
-- `e5517805...` is the correct **integration anchor** now;
-- before treating it as a fully revalidated exact-SHA runtime baseline for broad future runtime work, run/record the integrated gate on this exact `main` commit;
-- do not reopen P0-P2 merely because the merge SHA differs from the already validated feature heads unless exact-main verification exposes a real regression.
+This revalidation does not claim that the independent #53 real-Home NetworkManager QEMU regression is fixed; #53 remains a separate track.
 
-## Remaining gap review checklist
+## Gap review against #50
 
-Integration completion does not create P1E work automatically. Inspect the integrated tree only for concrete remaining violations:
+The integrated runtime was reviewed specifically against the concrete #50 checklist rather than creating work to fill phase numbers.
 
-- [ ] Synchronous blocking service teardown reachable from a navigation-critical path.
-- [ ] `portMAX_DELAY` or another unbounded wait reachable from Home/Back or Activity-exit UI flow.
-- [ ] Ambiguous service/resource ownership after the File Transfer migration.
-- [ ] Multi-owner cleanup holes or non-deterministic final cleanup order.
-- [ ] Raw/unbudgeted allocation paths bypassing memory governance where reserve/release is expected.
-- [ ] Budget reserve/release imbalance or missing owner lifecycle release coverage.
-- [ ] Service/task/server remnants after Activity exit.
-- [ ] Callback/event delivery targeting a detached/freed Activity.
-- [ ] Home/Back acceptance latency not bounded by the navigation supervisor contract.
-- [ ] Repeated enter/exit or stale re-entry producing reproducible stepwise heap/PSRAM decline on the integrated baseline.
-- [ ] #53 NetworkManager QEMU regression being conflated with this integration or hidden through timeout/test weakening.
+### Navigation-critical teardown: no new concrete P1D gap found
 
-If a concrete infrastructure gap is demonstrated, define the narrowest possible P1E scope using #63 only if it actually matches that gap. If no concrete gap remains, skip P1E.
+The integrated `CrossPointWebServerActivity` still follows the P1D design:
+
+- `requestNavigationExit()` detaches `M4NavigationSupervisor` before invoking `onGoBack()`;
+- `onExit()` detaches again idempotently;
+- rendering mutex acquisition on the exit path is bounded to `pdMS_TO_TICKS(25)`;
+- the display task and rendering mutex are released from the Activity;
+- the `M4FileTransferService` instance is transferred in `DeferredCleanupContext` to a cleanup task;
+- the cleanup task performs `service.stop(...)` only after Activity-side detach/exit has proceeded.
+
+There are still `portMAX_DELAY` uses in the deferred worker notification wait and display/render synchronization, but this review did **not** identify an unbounded `service.stop()` wait on the accepted Home/Back Activity-exit critical path. Those occurrences remain candidates for ordinary regression measurement if future latency evidence implicates them; they are not used here to reopen P1D.
+
+### Ownership / deferred cleanup: no concrete callback-after-detach gap found
+
+`M4NavigationSupervisor` gates callbacks after detach, and the deferred cleanup context owns its `M4FileTransferService` independently after Activity exit. The accepted hardware/QEMU lifecycle evidence from P2 also did not show reproducible post-exit accumulation or panic on the tested canonical/re-entry paths.
+
+### Concrete gap: production allocations bypass memory-governance admission
+
+This item is **confirmed**.
+
+P2 introduced `M4MemoryGovernance` and tests deterministic reserve/release, ownership-record accounting, leak detection, and a simulated service/activity multi-owner lifecycle. However, the production `M4FileTransferService` does not currently depend on or invoke that governance boundary.
+
+On the exact integrated runtime tree, `M4FileTransferService` directly owns/allocates service runtime resources including:
+
+- captive `DNSServer`;
+- `HttpRuntime`;
+- FreeRTOS storage mutex;
+- `M4FileTransferHttpRoutes`;
+- `M4FileTransferAuxiliaryServer`;
+- the ESP HTTP server lifecycle contained by `HttpRuntime`.
+
+The associated startup-failure and normal-stop code cleans the concrete objects, but there is no corresponding `M4MemoryGovernance::reserve/acquireOwnership` admission and `release/releaseOwnership` lifecycle accounting around this production owner.
+
+This is not a claim that every opaque ESP-IDF allocation must be byte-metered. The gap is narrower: the explicitly service-owned runtime admission boundary can currently succeed/fail outside the governance contract that P2 established.
+
+## P1E decision
+
+**P1E is required, narrowly, because a concrete infrastructure gap was demonstrated.**
+
+Existing issue #63 has been repurposed as:
+
+`P1E: wire memory governance into file-transfer service ownership`
+
+The old generic snapshot-observability wording was replaced. The stale `P1D` label was removed.
+
+P1E scope is limited to:
+
+1. establish a service-owned governance integration/dependency for file-transfer runtime admission;
+2. account the explicitly owned service runtime lifecycle without pretending to measure opaque ESP-IDF internals byte-for-byte;
+3. make partial-start failure rollback leave no governance ownership record or reserved budget;
+4. make normal stop and deferred cleanup return governance state to baseline;
+5. prove repeated lifecycle does not accumulate ownership records;
+6. retain `murphy_m4` and `murphy_m4_qemu_plugin` build gates.
+
+Explicit non-goals remain: no NetworkManager rewrite, no route/UI redesign, no global allocator replacement, no device flash requirement for the first gate, no P1D reopening absent a directly caused regression, and **no P3 definition/implementation**.
+
+No P1E production code is included in this audit commit.
+
+## #53 boundary
+
+Issue #53 remains OPEN and independently tracks `m4sim test network-manager (real Home UI)` failing its publish/ready transition. Its own acceptance explicitly requires measurement-first diagnosis and forbids simply hiding the failure through timeout inflation. This integration/gap review does not change that classification.
 
 ## Current program state
 
-- P0-P2 stacked integration: **COMPLETE**.
-- Final integrated `main`: `e5517805f55a0ebd09d31b1b0498b4d1e4054e11`.
-- #53 NetworkManager QEMU regression: **independent existing track**.
-- Exact-main integrated revalidation: **recommended next verification step**, not a reason to add new runtime scope.
-- Gap review: **next architectural review step**.
-- P1E: **optional only if a concrete gap is found**.
-- P3/new system-wide code: **not started by this closeout**.
+- P0-P2 runtime stack: **MERGED**.
+- Runtime merge commit: `e5517805f55a0ebd09d31b1b0498b4d1e4054e11`.
+- Exact runtime revalidation: **FULL GREEN for required host contracts + `murphy_m4` + `murphy_m4_qemu_plugin`**, run `33716310860`.
+- Runtime baseline: **`e5517805`**.
+- #65 documentation closeout: **MERGED** as `7fa8be25f8cfb48160140705e03bfd499baeafc5`; runtime/firmware tree unchanged relative to `e5517805`.
+- Gap review: **COMPLETE** for the #50 checklist at this stage.
+- Concrete infrastructure gap: **file-transfer production allocation admission bypasses P2 memory governance**.
+- P1E: **DEFINED narrowly in #63; implementation not started by this audit**.
+- #53: **independent OPEN QEMU NetworkManager regression**.
+- P3: **UNDEFINED / NOT STARTED**.
+
+## Next executable work
+
+The next runtime coding task is the narrowly defined #63 P1E only. It should begin from the current `main` lineage while preserving `e5517805` as the exact revalidated P0-P2 runtime baseline reference. P1E must use RED/GREEN contracts around production file-transfer governance wiring and must remain within #63's stated non-goals.
