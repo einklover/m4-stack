@@ -18,18 +18,20 @@ This audit covers the open Draft stacked PR chain:
 
 It records live base/head relationships, exact tips, phase-specific CI evidence, review blockers, integration gaps, recommended merge sequencing, and the required post-integration baseline.
 
-Audit snapshot: 2026-09-02 (GitHub live state at audit time).
+Audit snapshot: 2026-09-02 (GitHub live state at audit time). P1A topology refresh was performed after the initial snapshot by retargeting PR #56 to P0.
 
 ## Executive conclusion
 
-The implemented P0-P2 runtime stack is technically complete at the recorded phase gates, and P2 has exact-tip FULL GREEN CI plus QEMU and provenance-verified hardware acceptance. The chain is not yet integration-ready as a whole because P1A PR #56 is still based on `main` instead of the P0 branch. All six PRs remain Draft. No PR has submitted reviews or unresolved inline review threads at audit time.
+The implemented P0-P2 runtime stack is technically complete at the recorded phase gates, and P2 has exact-tip FULL GREEN CI plus QEMU and provenance-verified hardware acceptance. The previously identified stacked-topology defect has now been corrected: P1A PR #56 targets `runtime/p0-memory-manager-baseline` at exact P0 SHA `b63d97863ac28908c1d05d4f66c2c10b1d29571e`. All six PRs remain Draft. No PR has submitted reviews or unresolved inline review threads at audit time.
+
+After retarget, GitHub recomputation reports #56 `mergeable=true`, `rebaseable=true`, and `mergeable_state=unstable`: there is no merge conflict with P0. The unstable state reflects the existing check history, including the independently tracked #53/clean-BIN failures, rather than a new retarget-induced code conflict. The #56 head remains `1590ec27a96dedae1e3d54d13d3b507b7f850a37`; the stacked comparison is now 7 commits / 6 changed files.
 
 P1D's recorded GREEN runtime head `c2b6604e2a3b48a8656c8fc9c0a95b7dd62a9174` and live PR tip `83471f4d0dbf22aa4a8dc8967319d4447297e070` are not competing runtime implementations: live tip is exactly one commit ahead and only adds `docs/p1d-green-baseline.md`. P2 is correctly based on that live P1D tip.
 
 Therefore:
 
 1. Do not merge yet.
-2. Repair/confirm the stacked metadata beginning with P1A before merge execution.
+2. Treat the six-PR stacked topology as corrected, while preserving the existing CI/#53 evidence boundary.
 3. Preserve the recorded GREEN runtime heads as evidence while treating their documentation-only descendants as the live integration tips.
 4. Integrate in parent-to-child order, rechecking the resulting `main` baseline after each retarget/merge step.
 5. Run a final integrated gate on the eventual post-#64 `main` commit before future runtime work branches from it.
@@ -39,17 +41,26 @@ Therefore:
 | Phase | PR | State | Base | Base SHA | Head | Live head SHA | Topology verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | P0 | #52 | OPEN Draft | `main` | `b7dd293b761a96ea8be44486e82ed99173950bff` | `runtime/p0-memory-manager-baseline` | `b63d97863ac28908c1d05d4f66c2c10b1d29571e` | Correct root |
-| P1A | #56 | OPEN Draft | `main` | `b7dd293b761a96ea8be44486e82ed99173950bff` | `runtime/p1a-file-transfer-service-contracts` | `1590ec27a96dedae1e3d54d13d3b507b7f850a37` | **Stack defect: base still `main`; should be P0 branch for clean stacked review** |
+| P1A | #56 | OPEN Draft | `runtime/p0-memory-manager-baseline` | `b63d97863ac28908c1d05d4f66c2c10b1d29571e` | `runtime/p1a-file-transfer-service-contracts` | `1590ec27a96dedae1e3d54d13d3b507b7f850a37` | **Corrected: clean child of P0; no merge conflict** |
 | P1B | #58 | OPEN Draft | `runtime/p1a-file-transfer-service-contracts` | `1590ec27a96dedae1e3d54d13d3b507b7f850a37` | `runtime/p1b-file-transfer-service-ownership` | `a6dd2c3ce93d807dcf482e19c9aa5d38fbd4e61a` | Correct |
 | P1C | #60 | OPEN Draft | `runtime/p1b-file-transfer-service-ownership` | `a6dd2c3ce93d807dcf482e19c9aa5d38fbd4e61a` | `runtime/p1c-esp-http-server-contracts` | `67004e454e6549915be0d79c8679eaef78a90db9` | Correct |
 | P1D | #62 | OPEN Draft | `runtime/p1c-esp-http-server-contracts` | `67004e454e6549915be0d79c8679eaef78a90db9` | `runtime/p1d-navigation-supervisor` | `83471f4d0dbf22aa4a8dc8967319d4447297e070` | Correct |
-| P2 | #64 | OPEN Draft | `runtime/p1d-navigation-supervisor` | `83471f4d0dbf22aa4a8dc8967319d4447297e070` | `runtime/p2-memory-governance-contracts` | `dd6bdd7e67c3f3631d655bd5e3ed804ef9b58da4` | Correct; base equals P1D live tip exactly |
+| P2 | #64 | OPEN Draft | `runtime/p1d-navigation-supervisor` | `83471f4d0dbf22aa4a8dc8967319d4447297e070` | `runtime/p2-memory-governance-contracts` | validated runtime/hardware baseline `dd6bdd7e67c3f3631d655bd5e3ed804ef9b58da4`; later branch commits are audit docs only | Correct; base equals P1D live tip exactly |
 
-### Required topology correction
+### Topology correction completed
 
-PR #56 says in its own body that it was initially based on `main` to record the TDD RED/GREEN sequence and would then be retargeted to `runtime/p0-memory-manager-baseline`. That retarget has not happened. This is the only observed broken base/head link in the six-PR stack.
+PR #56 says in its own body that it was initially based on `main` to record the TDD RED/GREEN sequence and would then be retargeted to `runtime/p0-memory-manager-baseline`. That intended retarget is now complete.
 
-No base mutation is performed by this audit document. The recommended action is to retarget #56 to `runtime/p0-memory-manager-baseline`, then re-audit its diff/check context before merge operations begin.
+Post-retarget GitHub state:
+
+- base: `runtime/p0-memory-manager-baseline` @ `b63d97863ac28908c1d05d4f66c2c10b1d29571e`;
+- head unchanged: `runtime/p1a-file-transfer-service-contracts` @ `1590ec27a96dedae1e3d54d13d3b507b7f850a37`;
+- comparison reduced to 7 commits / 6 changed files;
+- `mergeable=true`, `rebaseable=true`, `mergeable_state=unstable`;
+- no merge conflict is reported;
+- no new head commit was created by the metadata-only retarget.
+
+The six-PR base/head topology is therefore now coherent. Remaining integration work is review/state transition plus authorized parent-to-child mainline integration, not another stacked-base repair.
 
 ## Exact-head and CI evidence
 
@@ -70,12 +81,13 @@ A repository-wide failure that is already isolated to #53 is not rewritten as a 
 
 ### P1A / PR #56
 
-- Live head: `1590ec27a96dedae1e3d54d13d3b507b7f850a37`.
+- Live head remains `1590ec27a96dedae1e3d54d13d3b507b7f850a37`.
+- Live base is now `runtime/p0-memory-manager-baseline` at `b63d97863ac28908c1d05d4f66c2c10b1d29571e`.
 - Phase intent is the pure host-testable File Transfer lifecycle/state contract before ownership migration.
-- Live Actions include successful `Murphy production BIN runtime`, `Murphy Stage 14 regression contracts`, and `Murphy progressive stream regressions` runs.
-- `m4 fast firmware loop` / `m4sim clean BIN smoke` still contain the independent #53 path.
-- Integration blocker: PR base remains `main`, so the review diff is not a clean child of P0.
-- Audit verdict: technical phase evidence is not the blocker; topology metadata is.
+- Existing Actions include successful `Murphy production BIN runtime`, `Murphy Stage 14 regression contracts`, and `Murphy progressive stream regressions` runs.
+- Existing `m4 fast firmware loop` / `m4sim clean BIN smoke` failures remain in the independently tracked #53 path; the base edit did not create a new head commit or a new code conflict.
+- GitHub's recomputed PR state is `mergeable=true`, `rebaseable=true`, `mergeable_state=unstable`. This records no merge conflict while preserving the existing non-green check context.
+- Audit verdict: the topology blocker is resolved. The remaining non-green status is existing CI/check context, not a P1A/P0 merge conflict.
 
 ### P1B / PR #58
 
@@ -105,7 +117,7 @@ A repository-wide failure that is already isolated to #53 is not rewritten as a 
 
 ### P2 / PR #64
 
-- Exact live tip: `dd6bdd7e67c3f3631d655bd5e3ed804ef9b58da4`.
+- Exact validated runtime/hardware baseline: `dd6bdd7e67c3f3631d655bd5e3ed804ef9b58da4`.
 - Base: `runtime/p1d-navigation-supervisor` at exact SHA `83471f4d0dbf22aa4a8dc8967319d4447297e070`.
 - Exact-tip workflow: `m4 P2 memory governance contracts`, Actions run `33682171431`, conclusion SUCCESS.
 - `contracts` job: SUCCESS.
@@ -113,6 +125,7 @@ A repository-wide failure that is already isolated to #53 is not rewritten as a 
   - `Build unchanged Murphy production profile` (`murphy_m4`)
   - `Build Murphy plugin-debug QEMU profile` (`murphy_m4_qemu_plugin`)
 - PR #64 hardware acceptance comment `5519232010` records the same exact tip, FULL GREEN CI, clean QEMU A/B, fresh production rebuild, APP1 write/readback provenance, canonical hardware 5/5 PASS, stale/re-entry 1+5 PASS, no panic/watchdog/reset in the accepted runs, and no leak-like stepwise heap decline.
+- Audit-only documentation commits after `dd6bdd7e` do not change runtime/firmware logic and do not replace `dd6bdd7e` as the provenance-verified hardware baseline.
 - Audit verdict: P2 implementation/CI/QEMU/hardware acceptance is complete. Remaining work is integration/review workflow, not new P2 runtime code.
 
 ## Review audit
@@ -132,20 +145,20 @@ This means there is no unresolved review-thread blocker, but it does **not** mea
 | PR | Technical evidence | Stack metadata | Review state | Current recommendation |
 | --- | --- | --- | --- | --- |
 | #52 P0 | Sufficient phase evidence; #53 separated | Correct | Draft; no reviews/threads | Candidate parent once integration starts |
-| #56 P1A | Phase evidence exists | **Incorrect base (`main`)** | Draft; no reviews/threads | **Retarget first; do not merge as-is** |
-| #58 P1B | Exact-head phase evidence exists | Correct child of P1A | Draft; no reviews/threads | Hold until #56 topology/integration is clean |
+| #56 P1A | Phase evidence exists; existing non-green checks remain | **Corrected child of P0** | Draft; no reviews/threads; `mergeable_state=unstable` | Hold for explicit review/merge authorization; no topology repair remains |
+| #58 P1B | Exact-head phase evidence exists | Correct child of P1A | Draft; no reviews/threads | Hold until parent layers integrate |
 | #60 P1C | GREEN runtime head + docs-only live descendant | Correct child of P1B | Draft; no reviews/threads | Hold until parent layers integrate |
 | #62 P1D | GREEN runtime head + docs-only live descendant | Correct child of P1C | Draft; no reviews/threads | Hold until parent layers integrate |
-| #64 P2 | Exact-tip FULL GREEN + QEMU/hardware acceptance | Correct child of P1D live tip | Draft; no reviews/threads | Technically eligible to become Ready only after stack metadata/integration closeout is recorded; this audit does not flip it |
+| #64 P2 | Exact-tip FULL GREEN + QEMU/hardware acceptance | Correct child of P1D live tip | Draft; no reviews/threads | Technically eligible for later Ready consideration, but this audit does not flip it |
 
 ## Recommended integration / merge sequence
 
 Do not merge child PRs into their feature-branch parents as a substitute for mainline integration. Preserve reviewable phase boundaries.
 
-Recommended sequence:
+Recommended sequence remains:
 
-1. Retarget #56 from `main` to `runtime/p0-memory-manager-baseline`; confirm the resulting P1A-only diff is sane.
-2. Reconfirm #52 and #56 base/head SHAs have not moved unexpectedly.
+1. **Completed:** retarget #56 from `main` to `runtime/p0-memory-manager-baseline`; the P1A-only stacked comparison is now 7 commits / 6 changed files and has no merge conflict.
+2. Reconfirm #52 and #56 base/head SHAs have not moved unexpectedly immediately before any authorized merge.
 3. Merge #52 (P0) into `main` only when explicitly authorized.
 4. Retarget #56 to the new `main`; verify the P1A-only diff/check context, then merge #56 when authorized.
 5. Retarget #58 to the new `main`; verify P1B-only diff/check context, then merge #58.
@@ -179,24 +192,26 @@ If this review finds a specific infrastructure gap, define the narrowest possibl
 
 P2's own technical closeout conditions are satisfied at `dd6bdd7e`: exact-tip CI is green for contracts + both firmware profiles, QEMU evidence is clean for the accepted lifecycle scenarios, and the separately authorized hardware acceptance is provenance-verified and PASS.
 
-However, this audit does **not** change #64 from Draft to Ready because the stacked chain still has a known P1A base defect and the user explicitly requested evidence/recommendation before state transitions.
+The P1A stacked-base defect is now corrected. This audit still does **not** change #64 from Draft to Ready because the user explicitly withheld Ready/merge authorization for this task and the stack remains in pre-integration review state.
 
-Recommended decision after the #56 topology correction and final audit refresh:
+Current recommendation:
 
-- if no new CI/review blocker appears, mark #64 Ready for review;
+- retain #64 as Draft until the user explicitly authorizes Ready;
 - do not merge #64 ahead of its parent chain;
+- preserve #56's existing `unstable` check context as evidence rather than treating it as a merge conflict;
 - do not start P1E/P3 code before the integration audit and gap review are complete.
 
 ## Current blockers and non-blockers
 
 ### Blocking integration workflow
 
-1. #56 base is still `main`, contrary to the intended clean stacked topology.
-2. All PRs are still Draft and have no submitted approvals; Ready/review policy has not yet been exercised.
+1. All PRs are still Draft and have no submitted approvals; Ready/review policy has not yet been exercised.
+2. #56 is topologically correct and conflict-free, but its existing check context remains `unstable` because non-green historical workflows are still attached; #53 remains independently tracked unless new causality appears.
 3. Final post-integration baseline does not exist until authorized merges occur and the integrated gates are rerun.
 
 ### Not a P1D/P2 runtime blocker
 
+- P1A base topology: corrected; #56 now targets exact P0 head `b63d97863ac28908c1d05d4f66c2c10b1d29571e`.
 - P1D `c2b6604e` vs `83471f4d`: documentation-only descendant; no runtime change.
 - P1C `84c14bad` vs `67004e45`: documentation-only descendant; no runtime change.
 - P2 earlier polluted/noncanonical QEMU panic observation: not reproduced in clean QEMU or provenance-verified hardware acceptance; retain as observation, not active P2 blocker.
@@ -204,7 +219,6 @@ Recommended decision after the #56 topology correction and final audit refresh:
 
 ## Next action after this document
 
-1. Refresh the PR metadata/CI snapshot after this audit-doc commit.
-2. Leave a concise evidence comment on #64 or #50 pointing to this document and the P1A base correction.
-3. Do not mark Ready or merge without the requested state-transition decision.
-4. After topology is clean, execute integration in the parent-to-child sequence above under explicit merge authorization.
+1. Leave a concise evidence comment on #64 or #50 recording the completed #56 retarget and this audit refresh.
+2. Do not mark Ready or merge without the requested state-transition decision.
+3. When merge authorization is given, execute integration in the parent-to-child order `#52 -> #56 -> #58 -> #60 -> #62 -> #64`, retargeting/rechecking each child against the newly integrated `main`.
