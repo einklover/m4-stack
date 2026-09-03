@@ -3,7 +3,6 @@
 #include <memory>
 #include <string>
 
-class CrossPointWebServer;
 class DNSServer;
 
 class M4FileTransferService final {
@@ -14,6 +13,8 @@ class M4FileTransferService final {
     StartupFailed,
   };
 
+  // Transitional P1B Activity compatibility. In P1C this callback pumps only
+  // WebSocket/UDP auxiliary work; browser HTTP requests are owned by httpd.
   using AbortCheck = bool (*)(void* context);
 
   M4FileTransferService();
@@ -28,6 +29,7 @@ class M4FileTransferService final {
   WebServerStartResult beginWebServer();
 
   void processDns();
+  void pollAuxiliary();
   bool handleWebClients(int maxIters, unsigned long budgetMs, AbortCheck abortCheck = nullptr,
                         void* abortContext = nullptr);
 
@@ -39,7 +41,9 @@ class M4FileTransferService final {
   void stop(bool isApMode);
 
  private:
-  std::unique_ptr<CrossPointWebServer> webServer;
+  class HttpRuntime;
+
+  std::unique_ptr<HttpRuntime> httpRuntime;
   std::unique_ptr<DNSServer> dnsServer;
   bool mdnsRunning = false;
 

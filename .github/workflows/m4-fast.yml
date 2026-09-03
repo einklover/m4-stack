@@ -80,6 +80,9 @@ jobs:
       - name: P1B host contracts
         run: python3 firmware/tests/test_m4_file_transfer_service_ownership_contract.py
 
+      - name: P1C host contracts
+        run: python3 firmware/tests/test_m4_esp_http_server_contract.py
+
       - name: Build patched QEMU only on cache miss
         if: steps.qemu-cache.outputs.cache-hit != 'true'
         run: |

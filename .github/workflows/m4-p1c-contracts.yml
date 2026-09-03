@@ -1,0 +1,70 @@
+name: m4 P1C host contracts
+
+on:
+  push:
+    branches:
+      - runtime/p1c-esp-http-server-contracts
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: P1A service state contract
+        run: |
+          g++ -std=c++20 firmware/tests/native_app/test_m4_file_transfer_service_contract.cpp \
+            -o "$RUNNER_TEMP/test_m4_file_transfer_service_contract"
+          "$RUNNER_TEMP/test_m4_file_transfer_service_contract"
+
+      - name: P1A lifecycle telemetry contract
+        run: python3 firmware/tests/test_m4_file_transfer_lifecycle_telemetry_contract.py
+
+      - name: P1B ownership contract
+        run: python3 firmware/tests/test_m4_file_transfer_service_ownership_contract.py
+
+      - name: P1C HTTP request parser contract
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror \
+            firmware/tests/native_app/test_m4_http_request_parser.cpp \
+            -o "$RUNNER_TEMP/test_m4_http_request_parser"
+          "$RUNNER_TEMP/test_m4_http_request_parser"
+
+      - name: P1C esp_http_server RED/GREEN contract
+        run: python3 firmware/tests/test_m4_esp_http_server_contract.py
+
+  firmware-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PlatformIO
+        run: |
+          python3 -m pip install --user platformio
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Build unchanged Murphy production profile
+        working-directory: firmware
+        run: |
+          pio run -e murphy_m4
+          test -f .pio/build/murphy_m4/firmware.bin
+
+      - name: Build Murphy plugin-debug QEMU profile
+        working-directory: firmware
+        run: |
+          pio run -e murphy_m4_qemu_plugin
+          test -f .pio/build/murphy_m4_qemu_plugin/firmware.bin
+
+# P1C firmware-build gate rules:
+# - Keep production and plugin-debug profiles as independent verification targets.
+# - Do not expand this gate into P1D navigation/teardown work.
+# - Preserve P1B ownership boundaries while validating esp_http_server migration.
