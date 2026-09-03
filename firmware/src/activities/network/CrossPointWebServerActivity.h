@@ -4,10 +4,12 @@
 #include <freertos/task.h>
 
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "NetworkModeSelectionActivity.h"
 #include "activities/ActivityWithSubactivity.h"
+#include "navigation/M4NavigationSupervisor.h"
 #include "network/M4FileTransferService.h"
 
 enum class WebServerActivityState {
@@ -23,7 +25,13 @@ enum class WebServerActivityState {
 class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   enum class PendingParentAction : uint8_t { None, StartAccessPoint, EnterWifiSelection, StartWebServer };
 
+  struct DeferredCleanupContext {
+    M4FileTransferService service;
+    bool isApMode = false;
+  };
+
   TaskHandle_t displayTaskHandle = nullptr;
+  TaskHandle_t deferredCleanupTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   bool updateRequired = false;
   WebServerActivityState state = WebServerActivityState::MODE_SELECTION;
@@ -31,7 +39,8 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
 
   NetworkMode networkMode = NetworkMode::JOIN_NETWORK;
   bool isApMode = false;
-  M4FileTransferService fileTransferService;
+  std::unique_ptr<DeferredCleanupContext> deferredCleanupContext;
+  M4NavigationSupervisor navigationSupervisor;
   std::string connectedIP;
   std::string connectedSSID;
   std::string setupError;
@@ -40,6 +49,7 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   PendingParentAction pendingParentAction = PendingParentAction::None;
 
   static void taskTrampoline(void* param);
+  static void deferredCleanupTaskTrampoline(void* param);
   static bool webPumpAbortCheck(void* context);
   bool pollWebPumpAbort();
   [[noreturn]] void displayTaskLoop();
@@ -48,6 +58,10 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   void showSetupError(const char* message);
   void reopenModeSelection();
   void runPendingParentAction();
+  void requestNavigationExit();
+  bool ensureDeferredCleanupWorker();
+  M4FileTransferService& fileTransferService() { return deferredCleanupContext->service; }
+  const M4FileTransferService& fileTransferService() const { return deferredCleanupContext->service; }
 
   void onNetworkModeSelected(NetworkMode mode);
   void onWifiSelectionComplete(bool connected);
@@ -58,7 +72,7 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                        const std::function<void()>& onGoBack, bool autoStart = false)
       : ActivityWithSubactivity("CrossPointWebServer", renderer, mappedInput), onGoBack(onGoBack),
-        autoStartSavedSta(autoStart) {}
+        deferredCleanupContext(new DeferredCleanupContext()), autoStartSavedSta(autoStart) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
@@ -72,8 +86,10 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
     return false;
 #else
-    return fileTransferService.webServerRunning();
+    return deferredCleanupContext && deferredCleanupContext->service.webServerRunning();
 #endif
   }
-  bool preventAutoSleep() override { return fileTransferService.webServerRunning(); }
+  bool preventAutoSleep() override {
+    return deferredCleanupContext && deferredCleanupContext->service.webServerRunning();
+  }
 };

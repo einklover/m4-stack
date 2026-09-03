@@ -40,13 +40,44 @@ void CrossPointWebServerActivity::taskTrampoline(void* param) {
   static_cast<CrossPointWebServerActivity*>(param)->displayTaskLoop();
 }
 
+void CrossPointWebServerActivity::deferredCleanupTaskTrampoline(void* param) {
+  auto* cleanup = static_cast<DeferredCleanupContext*>(param);
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  if (cleanup) {
+    const bool cleanupApMode = cleanup->isApMode;
+    const unsigned long cleanupStarted = millis();
+    cleanup->service.stop(cleanupApMode);
+    Serial.printf("[%lu] [WEBACT] deferred_cleanup_ms=%lu mode=%s\n", millis(),
+                  static_cast<unsigned long>(millis() - cleanupStarted), cleanupApMode ? "ap" : "sta");
+    delete cleanup;
+  }
+  vTaskDelete(nullptr);
+}
+
 bool CrossPointWebServerActivity::webPumpAbortCheck(void* context) {
   return static_cast<CrossPointWebServerActivity*>(context)->pollWebPumpAbort();
 }
 
 bool CrossPointWebServerActivity::pollWebPumpAbort() {
+  if (!navigationSupervisor.canDispatchCallback()) return false;
   mappedInput.update();
   return mappedInput.wasPressed(MappedInputManager::Button::Back);
+}
+
+bool CrossPointWebServerActivity::ensureDeferredCleanupWorker() {
+  if (deferredCleanupTaskHandle) return true;
+  if (!deferredCleanupContext) return false;
+  return xTaskCreate(&CrossPointWebServerActivity::deferredCleanupTaskTrampoline, "WebServerCleanup", 4096,
+                     deferredCleanupContext.get(), 1, &deferredCleanupTaskHandle) == pdPASS;
+}
+
+void CrossPointWebServerActivity::requestNavigationExit() {
+  if (state == WebServerActivityState::SHUTTING_DOWN) return;
+  navigationSupervisor.detach();
+  pendingParentAction = PendingParentAction::None;
+  state = WebServerActivityState::SHUTTING_DOWN;
+  updateRequired = false;
+  onGoBack();
 }
 
 void CrossPointWebServerActivity::onEnter() {
@@ -54,6 +85,9 @@ void CrossPointWebServerActivity::onEnter() {
   m4LogRuntimeMemory("file-transfer-enter");
   logInternalHeap("onEnter");
 
+  if (!deferredCleanupContext) deferredCleanupContext.reset(new DeferredCleanupContext());
+  deferredCleanupTaskHandle = nullptr;
+  navigationSupervisor.detach();
   renderingMutex = xSemaphoreCreateMutex();
   state = WebServerActivityState::MODE_SELECTION;
   networkMode = NetworkMode::JOIN_NETWORK;
@@ -77,7 +111,7 @@ void CrossPointWebServerActivity::onEnter() {
     connectedSSID = M4QemuNet::ssidStd();
     if (connectedIP.empty() && m4QemuNetWifiCompatConnected()) connectedIP = "10.0.2.15";
     if (connectedSSID.empty() && m4QemuNetWifiCompatConnected()) connectedSSID = "qemu-openeth";
-    fileTransferService.beginStationMdns(AP_HOSTNAME);
+    fileTransferService().beginStationMdns(AP_HOSTNAME);
     startWebServer();
     return;
   }
@@ -91,36 +125,53 @@ void CrossPointWebServerActivity::onExit() {
                 isApMode ? "ap" : "sta");
   m4LogRuntimeMemory("file-transfer-exit-begin");
 
+  navigationSupervisor.detach();
   ActivityWithSubactivity::onExit();
   pendingParentAction = PendingParentAction::None;
   state = WebServerActivityState::SHUTTING_DOWN;
-  fileTransferService.stop(isApMode);
-  logInternalHeap("after network stop");
-  m4LogRuntimeMemory("file-transfer-after-network-stop");
+  updateRequired = false;
 
+  bool renderMutexHeld = false;
   unsigned long renderMutexWaitMs = 0;
   if (renderingMutex) {
     const unsigned long mutexWaitStarted = millis();
-    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    renderMutexHeld = xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(25)) == pdTRUE;
     renderMutexWaitMs = static_cast<unsigned long>(millis() - mutexWaitStarted);
   }
-  Serial.printf("[%lu] [WEBACT] render_mutex_wait_ms=%lu\n", millis(), renderMutexWaitMs);
+  Serial.printf("[%lu] [WEBACT] render_mutex_wait_ms=%lu acquired=%d\n", millis(), renderMutexWaitMs,
+                renderMutexHeld ? 1 : 0);
 
   if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
   }
+  if (renderMutexHeld && renderingMutex) xSemaphoreGive(renderingMutex);
   if (renderingMutex) {
     vSemaphoreDelete(renderingMutex);
     renderingMutex = nullptr;
   }
+
+  bool cleanupDeferred = false;
+  if (deferredCleanupContext) {
+    if (!deferredCleanupTaskHandle) ensureDeferredCleanupWorker();
+    if (deferredCleanupTaskHandle) {
+      deferredCleanupContext->isApMode = isApMode;
+      deferredCleanupContext.release();
+      TaskHandle_t cleanupTask = deferredCleanupTaskHandle;
+      deferredCleanupTaskHandle = nullptr;
+      xTaskNotifyGive(cleanupTask);
+      cleanupDeferred = true;
+    }
+  }
+  Serial.printf("[%lu] [WEBACT] cleanup_deferred=%d\n", millis(), cleanupDeferred ? 1 : 0);
 
   m4LogRuntimeMemory("file-transfer-exit-end");
   Serial.printf("[%lu] [WEBACT] exit_ms=%lu\n", millis(), static_cast<unsigned long>(millis() - exitStarted));
 }
 
 void CrossPointWebServerActivity::showSetupError(const char* message) {
-  fileTransferService.stopForSetupError(isApMode);
+  navigationSupervisor.detach();
+  fileTransferService().stopForSetupError(isApMode);
   pendingParentAction = PendingParentAction::None;
   setupError = message ? message : "Network setup failed";
   state = WebServerActivityState::ERROR;
@@ -129,12 +180,13 @@ void CrossPointWebServerActivity::showSetupError(const char* message) {
 }
 
 void CrossPointWebServerActivity::reopenModeSelection() {
+  navigationSupervisor.detach();
   pendingParentAction = PendingParentAction::None;
   setupError.clear();
   state = WebServerActivityState::MODE_SELECTION;
   enterNewActivity(new NetworkModeSelectionActivity(
       renderer, mappedInput, [this](const NetworkMode mode) { onNetworkModeSelected(mode); },
-      [this]() { onGoBack(); }));
+      [this]() { requestNavigationExit(); }));
 }
 
 void CrossPointWebServerActivity::runPendingParentAction() {
@@ -155,7 +207,7 @@ void CrossPointWebServerActivity::runPendingParentAction() {
           renderer, mappedInput, [this](const bool connected) { onWifiSelectionComplete(connected); }));
       return;
     case PendingParentAction::StartWebServer:
-      fileTransferService.beginStationMdns(AP_HOSTNAME);
+      fileTransferService().beginStationMdns(AP_HOSTNAME);
       startWebServer();
       return;
     case PendingParentAction::None:
@@ -236,8 +288,8 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
 
 void CrossPointWebServerActivity::startAccessPoint() {
   logInternalHeap("before AP start (selection child released)");
-  if (!fileTransferService.beginAccessPoint(AP_SSID, AP_PASSWORD, AP_CHANNEL, AP_MAX_CONNECTIONS, AP_HOSTNAME,
-                                            connectedIP)) {
+  if (!fileTransferService().beginAccessPoint(AP_SSID, AP_PASSWORD, AP_CHANNEL, AP_MAX_CONNECTIONS, AP_HOSTNAME,
+                                              connectedIP)) {
     showSetupError("Hotspot startup failed");
     return;
   }
@@ -249,7 +301,11 @@ void CrossPointWebServerActivity::startAccessPoint() {
 void CrossPointWebServerActivity::startWebServer() {
   m4LogRuntimeMemory("file-transfer-server-start-before");
   logInternalHeap("before web server start");
-  const auto result = fileTransferService.beginWebServer();
+  if (!ensureDeferredCleanupWorker()) {
+    showSetupError("Cleanup worker memory allocation failed");
+    return;
+  }
+  const auto result = fileTransferService().beginWebServer();
   if (result == M4FileTransferService::WebServerStartResult::AllocationFailed) {
     showSetupError("Web server memory allocation failed");
     return;
@@ -259,6 +315,7 @@ void CrossPointWebServerActivity::startWebServer() {
     return;
   }
   setupError.clear();
+  navigationSupervisor.attach();
   state = WebServerActivityState::SERVER_RUNNING;
   updateRequired = true;
   logInternalHeap("after web server start");
@@ -279,10 +336,7 @@ void CrossPointWebServerActivity::loop() {
   runPendingParentAction();
   if (subActivity) return;
 
-  if (state == WebServerActivityState::SHUTTING_DOWN) {
-    onGoBack();
-    return;
-  }
+  if (state == WebServerActivityState::SHUTTING_DOWN) return;
 
   auto wantsExit = [this]() -> bool {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) return true;
@@ -297,15 +351,15 @@ void CrossPointWebServerActivity::loop() {
       reopenModeSelection();
     } else {
       logNavigationRequest(state, isApMode);
-      onGoBack();
+      requestNavigationExit();
     }
     return;
   }
   if (state != WebServerActivityState::SERVER_RUNNING) return;
 
-  if (isApMode) fileTransferService.processDns();
+  if (isApMode) fileTransferService().processDns();
 
-  if (!isApMode && fileTransferService.webServerRunning() && !m4QemuNetWifiCompatConnected()) {
+  if (!isApMode && fileTransferService().webServerRunning() && !m4QemuNetWifiCompatConnected()) {
     static unsigned long lastWifiCheck = 0;
     if (millis() - lastWifiCheck > 2000) {
       lastWifiCheck = millis();
@@ -315,7 +369,7 @@ void CrossPointWebServerActivity::loop() {
       }
     }
   }
-  if (!fileTransferService.webServerRunning()) return;
+  if (!fileTransferService().webServerRunning()) return;
 
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
   constexpr int kMaxIters = 12;
@@ -324,11 +378,11 @@ void CrossPointWebServerActivity::loop() {
   constexpr int kMaxIters = 40;
   constexpr unsigned long kBudgetMs = 20;
 #endif
-  const bool abortRequested = fileTransferService.handleWebClients(
+  const bool abortRequested = fileTransferService().handleWebClients(
       kMaxIters, kBudgetMs, &CrossPointWebServerActivity::webPumpAbortCheck, this);
   if (abortRequested) {
     logNavigationRequest(state, isApMode);
-    onGoBack();
+    requestNavigationExit();
     return;
   }
   lastHandleClientTime = millis();
