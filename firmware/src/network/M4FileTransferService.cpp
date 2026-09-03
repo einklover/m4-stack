@@ -86,12 +86,18 @@ bool M4FileTransferService::beginAccessPoint(const char* ssid, const char* passw
 
   beginMdns(hostname);
 
-  dnsServer.reset(new (std::nothrow) DNSServer());
-  if (dnsServer) {
-    dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
-    dnsServer->start(NetworkConstants::DNS_PORT, "*", apIP);
+  if (memoryAccount.acquireDns()) {
+    dnsServer.reset(new (std::nothrow) DNSServer());
+    if (dnsServer) {
+      dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
+      dnsServer->start(NetworkConstants::DNS_PORT, "*", apIP);
+    } else {
+      memoryAccount.releaseDns();
+      Serial.printf("[%lu] [WEBACT] WARN: no memory for captive DNS; direct IP still works\n", millis());
+    }
   } else {
-    Serial.printf("[%lu] [WEBACT] WARN: no memory for captive DNS; direct IP still works\n", millis());
+    Serial.printf("[%lu] [WEBACT] WARN: captive DNS governance admission denied; direct IP still works\n",
+                  millis());
   }
   return true;
 }
@@ -108,8 +114,16 @@ M4FileTransferService::WebServerStartResult M4FileTransferService::beginWebServe
     return WebServerStartResult::StartupFailed;
   }
 
+  if (!memoryAccount.acquireHttpRuntime()) {
+    Serial.printf("[%lu] [HTTPD] refusing start: memory governance admission denied\n", millis());
+    return WebServerStartResult::AllocationFailed;
+  }
+
   httpRuntime.reset(new (std::nothrow) HttpRuntime());
-  if (!httpRuntime) return WebServerStartResult::AllocationFailed;
+  if (!httpRuntime) {
+    memoryAccount.releaseHttpRuntime();
+    return WebServerStartResult::AllocationFailed;
+  }
   auto& runtime = *httpRuntime;
 
   runtime.storageMutex = xSemaphoreCreateMutex();
@@ -199,6 +213,7 @@ void M4FileTransferService::stopWebServer() {
   const bool hadServer = webServerRunning();
 
   if (!httpRuntime) {
+    memoryAccount.releaseHttpRuntime();
     Serial.printf("[%lu] [WEBACT] server_stop_ms=%lu had_server=0\n", millis(),
                   static_cast<unsigned long>(millis() - stopStarted));
     return;
@@ -222,6 +237,7 @@ void M4FileTransferService::stopWebServer() {
     runtime.storageMutex = nullptr;
   }
   httpRuntime.reset();
+  memoryAccount.releaseHttpRuntime();
 
   Serial.printf("[%lu] [WEBACT] server_stop_ms=%lu had_server=%d\n", millis(),
                 static_cast<unsigned long>(millis() - stopStarted), hadServer ? 1 : 0);
@@ -234,6 +250,7 @@ void M4FileTransferService::stopDiscovery() {
     dnsServer->stop();
     dnsServer.reset();
   }
+  memoryAccount.releaseDns();
 }
 
 void M4FileTransferService::stopForSetupError(const bool isApMode) {

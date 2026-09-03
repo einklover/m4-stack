@@ -16,9 +16,10 @@ required_activity = [
     'm4LogRuntimeMemory("file-transfer-server-start-after")',
     'm4LogRuntimeMemory("file-transfer-nav-request")',
     'm4LogRuntimeMemory("file-transfer-exit-begin")',
-    'm4LogRuntimeMemory("file-transfer-after-network-stop")',
     'm4LogRuntimeMemory("file-transfer-exit-end")',
     'render_mutex_wait_ms=',
+    'cleanup_deferred=',
+    'deferred_cleanup_ms=',
     'exit_ms=',
 ]
 
@@ -32,17 +33,24 @@ if missing:
 if "server_stop_ms=" not in combined:
     raise SystemExit("m4 file-transfer lifecycle telemetry contract missing: server_stop_ms=")
 
-# P1B deliberately moves concrete network teardown into M4FileTransferService,
-# while preserving the characterized synchronous teardown and render wait.
+# P1D moved concrete network teardown off the navigation-critical Activity exit
+# path. Preserve telemetry around that deferred cleanup while requiring the
+# bounded render-mutex wait and task notification introduced by P1D.
 behavior_guards = [
-    "fileTransferService.stop(isApMode)",
-    "xSemaphoreTake(renderingMutex, portMAX_DELAY)",
+    "cleanup->service.stop(cleanupApMode)",
+    "xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(25))",
+    "xTaskNotifyGive(cleanupTask)",
 ]
 missing_activity_guards = [needle for needle in behavior_guards if needle not in activity]
 if missing_activity_guards:
     raise SystemExit(
-        "P1B unexpectedly changed characterized Activity teardown behavior:\n  "
+        "P1D file-transfer lifecycle telemetry contract missing deferred teardown behavior:\n  "
         + "\n  ".join(missing_activity_guards)
+    )
+
+if "fileTransferService.stop(isApMode)" in activity:
+    raise SystemExit(
+        "P1D file-transfer lifecycle telemetry contract: Activity exit must not synchronously stop networking"
     )
 
 service_guards = [
@@ -54,7 +62,7 @@ service_guards = [
 missing_service_guards = [needle for needle in service_guards if needle not in service]
 if missing_service_guards:
     raise SystemExit(
-        "P1B service did not preserve characterized synchronous network teardown:\n  "
+        "P1D service did not preserve concrete deferred network teardown:\n  "
         + "\n  ".join(missing_service_guards)
     )
 

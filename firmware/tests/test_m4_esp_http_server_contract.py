@@ -165,16 +165,31 @@ if missing_aux:
 if "CrossPointWebServerActivity" in service:
     raise SystemExit("P1C HTTP service must not target CrossPointWebServerActivity state directly")
 
+# P1D moved concrete service shutdown into a deferred cleanup worker. Keep the
+# P1C memory breadcrumbs around server admission and Activity exit, then prove
+# the deferred cleanup still exposes bounded completion telemetry.
 required_memory_breadcrumbs = [
     'm4LogRuntimeMemory("file-transfer-server-start-before")',
     'm4LogRuntimeMemory("file-transfer-server-start-after")',
-    'm4LogRuntimeMemory("file-transfer-after-network-stop")',
+    'm4LogRuntimeMemory("file-transfer-exit-begin")',
+    'm4LogRuntimeMemory("file-transfer-exit-end")',
 ]
 combined = activity + "\n" + service
 missing_memory = [needle for needle in required_memory_breadcrumbs if needle not in combined]
 if missing_memory:
     raise SystemExit(
         "P1C lost required file-transfer memory breadcrumbs:\n  " + "\n  ".join(missing_memory)
+    )
+
+required_cleanup_telemetry = [
+    "deferred_cleanup_ms=",
+    "server_stop_ms=",
+]
+missing_cleanup_telemetry = [needle for needle in required_cleanup_telemetry if needle not in combined]
+if missing_cleanup_telemetry:
+    raise SystemExit(
+        "P1C lost deferred file-transfer cleanup telemetry:\n  "
+        + "\n  ".join(missing_cleanup_telemetry)
     )
 
 print("m4 esp_http_server contract: PASS")
