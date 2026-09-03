@@ -5,8 +5,10 @@ on:
     branches: [main]
     paths:
       - 'firmware/src/**'
+      - 'firmware/tests/**'
       - 'firmware/platformio.ini'
       - 'firmware/scripts/**'
+      - 'scripts/bootstrap_deps.sh'
       - 'simulator/tests/**'
       - 'simulator/m4sim.py'
       - 'simulator/qemu/**'
@@ -56,6 +58,17 @@ jobs:
 
       - name: Bootstrap firmware deps
         run: bash scripts/bootstrap_deps.sh
+
+      - name: P0 host contracts
+        run: |
+          python3 firmware/tests/test_m4_dependency_bootstrap_contract.py
+          python3 firmware/tests/test_m4_runtime_memory_integration_contract.py
+          g++ -std=c++20 firmware/tests/native_app/test_m4_runtime_memory_snapshot.cpp \
+            -o "$RUNNER_TEMP/test_m4_runtime_memory_snapshot"
+          "$RUNNER_TEMP/test_m4_runtime_memory_snapshot"
+          g++ -std=c++20 firmware/tests/native_app/test_m4_runtime_memory_facade_contract.cpp \
+            -o "$RUNNER_TEMP/test_m4_runtime_memory_facade_contract"
+          "$RUNNER_TEMP/test_m4_runtime_memory_facade_contract"
 
       - name: Build patched QEMU only on cache miss
         if: steps.qemu-cache.outputs.cache-hit != 'true'

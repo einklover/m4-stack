@@ -7,9 +7,16 @@ License: MIT (see LICENSE, NOTICE).
 
 This tree is a **real copy** of only the libraries required to build the
 Murphy M4 target (BoardConfig, FreeInkDisplay, BatteryMonitor, InputManager,
-SDCardManager, FrontlightManager, PowerManager). It is not a symlink and is
-not referenced via absolute local PlatformIO paths.
+SDCardManager, FrontlightManager, PowerManager, MemoryManager). It is not a
+symlink and is not referenced via absolute local PlatformIO paths.
 
 Device profile of record for Phase 1: `FREEINK_DEVICE_MURPHY_M4` —
 ESP32-S3, SSD1677 800×480 panel (logical portrait UI 480×800), FT6x36 touch,
 4-bit SDMMC, dual-channel frontlight.
+
+### MemoryManager refresh
+
+- Upstream: `Free-Ink/freeink-sdk`
+- Commit: `68425f8eec1246a0be0c0f311540f60ad733fa76`
+- Imported path: `libs/hardware/MemoryManager`
+- Integration policy: isolated import only; no same-name hardware/display directories were overwritten.
