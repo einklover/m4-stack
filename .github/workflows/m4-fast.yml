@@ -72,8 +72,13 @@ jobs:
 
       - name: Compile touch Wi-Fi keyboard host contract
         run: |
+          set +e
           g++ -std=c++20 firmware/tests/native_app/test_m4_touch_wifi_keyboard_contract.cpp \
-            -o "$RUNNER_TEMP/test_m4_touch_wifi_keyboard_contract"
+            -o "$RUNNER_TEMP/test_m4_touch_wifi_keyboard_contract" \
+            >"$RUNNER_TEMP/touch-contract-build.log" 2>&1
+          rc=$?
+          cat "$RUNNER_TEMP/touch-contract-build.log"
+          exit $rc
 
       - name: Run touch Wi-Fi keyboard host contract
         run: "$RUNNER_TEMP/test_m4_touch_wifi_keyboard_contract"
@@ -92,7 +97,7 @@ jobs:
         run: python3 firmware/tests/test_m4_esp_http_server_contract.py
 
       - name: Build patched QEMU only on cache miss
-        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        if: steps.qemu-cache.outputs/cache-hit != 'true'
         run: |
           python3 simulator/qemu/build.py \
             --source-dir "$RUNNER_TEMP/espressif-qemu-v3" \
@@ -135,6 +140,7 @@ jobs:
         with:
           name: m4-fast-diagnostics
           path: |
+            ${{ runner.temp }}/touch-contract-build.log
             ${{ runner.temp }}/m4sim-fast-smoke/**
             ${{ runner.temp }}/m4sim-fast-network/**
             ${{ runner.temp }}/m4sim-fast-reader/**
