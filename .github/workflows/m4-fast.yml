@@ -97,7 +97,7 @@ jobs:
         run: python3 firmware/tests/test_m4_esp_http_server_contract.py
 
       - name: Build patched QEMU only on cache miss
-        if: steps.qemu-cache.outputs/cache-hit != 'true'
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
         run: |
           python3 simulator/qemu/build.py \
             --source-dir "$RUNNER_TEMP/espressif-qemu-v3" \
