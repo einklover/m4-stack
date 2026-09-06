@@ -70,6 +70,12 @@ jobs:
             -o "$RUNNER_TEMP/test_m4_runtime_memory_facade_contract"
           "$RUNNER_TEMP/test_m4_runtime_memory_facade_contract"
 
+      - name: Touch Wi-Fi keyboard host contract
+        run: |
+          g++ -std=c++20 firmware/tests/native_app/test_m4_touch_wifi_keyboard_contract.cpp \
+            -o "$RUNNER_TEMP/test_m4_touch_wifi_keyboard_contract"
+          "$RUNNER_TEMP/test_m4_touch_wifi_keyboard_contract"
+
       - name: P1A host contracts
         run: |
           python3 firmware/tests/test_m4_file_transfer_lifecycle_telemetry_contract.py
