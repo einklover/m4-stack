@@ -88,9 +88,9 @@ inline TouchKeyboardLayout makeTouchKeyboardLayout(int pageWidth, int keyboardSt
   L.maxCharactersPerRow = maxCount;
 
   const int usableWidth = pageWidth - sideMargin * 2;
-  if (usableWidth <= 0 || maxCount <= 0) return {};
+  if (usableWidth <= 0 || maxCount <= 0) return L;
   const int keyWidth = (usableWidth - (maxCount - 1) * keySpacing) / maxCount;
-  if (keyWidth <= 0) return {};
+  if (keyWidth <= 0) return L;
 
   for (int row = 0; row < rowCount; ++row) {
     const int count = L.characterCounts[row];
