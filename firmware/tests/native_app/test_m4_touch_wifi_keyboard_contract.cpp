@@ -1,6 +1,6 @@
 #include <cassert>
 
-#include "../../src/util/TouchHitGeometry.h"
+#include "../../src/util/TouchUiGeometry.h"
 
 int main() {
   using namespace TouchHitGeometry;
