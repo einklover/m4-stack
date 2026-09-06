@@ -55,6 +55,21 @@ int main() {
   assert(symbols.containsCharacter('/'));
   assert(symbols.containsCharacter('\\'));
 
+  // Keyboard interaction state is touch-oriented: one-shot shift and direct mode toggle.
+  TouchKeyboardState state;
+  assert(state.mode == TouchKeyboardMode::Letters);
+  assert(!state.shifted);
+  state.toggleShift();
+  assert(state.shifted);
+  assert(state.resolveCharacter('q') == 'Q');
+  assert(!state.shifted);  // one-shot shift clears after a letter
+  state.toggleMode();
+  assert(state.mode == TouchKeyboardMode::Symbols);
+  assert(!state.shifted);
+  assert(state.resolveCharacter('@') == '@');
+  state.toggleMode();
+  assert(state.mode == TouchKeyboardMode::Letters);
+
   // Wi-Fi list rows must be large, full-width touch targets with a dedicated refresh target.
   const auto wifi = makeWifiNetworkListLayout(480, 800, 7);
   assert(wifi.valid());
