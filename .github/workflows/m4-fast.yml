@@ -83,6 +83,9 @@ jobs:
       - name: Run touch Wi-Fi keyboard host contract
         run: "$RUNNER_TEMP/test_m4_touch_wifi_keyboard_contract"
 
+      - name: Touch-only Wi-Fi UI source contract
+        run: python3 firmware/tests/test_m4_touch_wifi_ui_contract.py
+
       - name: P1A host contracts
         run: |
           python3 firmware/tests/test_m4_file_transfer_lifecycle_telemetry_contract.py
