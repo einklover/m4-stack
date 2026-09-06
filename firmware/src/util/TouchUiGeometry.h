@@ -10,6 +10,29 @@ namespace TouchHitGeometry {
 enum class TouchKeyboardMode { Letters, Symbols };
 enum class TouchKeyboardKeyKind { Character, Mode, Shift, Space, Backspace, Confirm };
 
+struct TouchKeyboardState {
+  TouchKeyboardMode mode = TouchKeyboardMode::Letters;
+  bool shifted = false;
+
+  void toggleShift() {
+    if (mode == TouchKeyboardMode::Letters) shifted = !shifted;
+  }
+
+  void toggleMode() {
+    mode = mode == TouchKeyboardMode::Letters ? TouchKeyboardMode::Symbols : TouchKeyboardMode::Letters;
+    shifted = false;
+  }
+
+  char resolveCharacter(char c) {
+    if (mode == TouchKeyboardMode::Letters && shifted && c >= 'a' && c <= 'z') {
+      shifted = false;
+      return static_cast<char>(c - 'a' + 'A');
+    }
+    if (mode == TouchKeyboardMode::Letters) shifted = false;
+    return c;
+  }
+};
+
 struct TouchKeyboardKey {
   TouchKeyboardKeyKind kind = TouchKeyboardKeyKind::Character;
   char character = '\0';
