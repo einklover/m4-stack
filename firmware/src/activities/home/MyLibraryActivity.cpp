@@ -322,6 +322,14 @@ void MyLibraryActivity::loadFiles() {
   auto root = SdMan.open(realBasePath.c_str()); // 用修复后的路径打开
   if (!root || !root.isDirectory()) {
     if (root) root.close();
+    // Publish the cleared state so the snapshot never lags a generation
+    // behind the members on SD failure.
+    if (!renderingMutex || xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      publishFileSnapshotLocked();
+      if (renderingMutex) xSemaphoreGive(renderingMutex);
+    } else {
+      updateRequired = true;
+    }
     return;
   }
 
@@ -414,6 +422,8 @@ void MyLibraryActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
 
   renderingMutex = xSemaphoreCreateMutex();
+  exitDisplayTask_.store(false, std::memory_order_release);
+  displayTaskExited_.store(false, std::memory_order_release);
 
   // 如果有设置Home目录，进入时直接跳转到该目录
   if (basepath == "/" && SETTINGS.libraryHomePath[0] != '\0') {
@@ -438,6 +448,14 @@ void MyLibraryActivity::onEnter() {
   isPreviewingImage = false;
   //新增结束
 
+  // Refresh the snapshot after the state reset: loadFiles() above published
+  // with the previous enter's search vectors, so re-publish the cleared
+  // state before the display task starts.
+  if (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    publishFileSnapshotLocked();
+    xSemaphoreGive(renderingMutex);
+  }
+
   updateRequired = true;
 
   xTaskCreate(&MyLibraryActivity::taskTrampoline, "MyLibraryActivityTask",
@@ -451,14 +469,29 @@ void MyLibraryActivity::onEnter() {
 void MyLibraryActivity::onExit() {
   ActivityWithSubactivity::onExit();
 
-  // Wait until not rendering to delete task to avoid killing mid-instruction to EPD
-  xSemaphoreTake(renderingMutex, portMAX_DELAY);
-  if (displayTaskHandle) {
+  // Cooperative display-task shutdown: the task may own the process-wide
+  // submit guard mid-render; deleting it then would stick the mutex for all
+  // activities. Ask it to self-terminate (it exits holding no locks) and
+  // join boundedly; force-delete only past the deadline.
+  exitDisplayTask_.store(true, std::memory_order_release);
+  for (int i = 0; i < 300; ++i) {
+    if (displayTaskExited_.load(std::memory_order_acquire)) break;
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (renderingMutex) {
+    const bool exitLocked = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
+    if (displayTaskHandle) {
+      // Deadline overrun: last resort (may strand an in-flight submit).
+      vTaskDelete(displayTaskHandle);
+      displayTaskHandle = nullptr;
+    }
+    if (exitLocked) xSemaphoreGive(renderingMutex);
+    vSemaphoreDelete(renderingMutex);
+    renderingMutex = nullptr;
+  } else if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
   }
-  vSemaphoreDelete(renderingMutex);
-  renderingMutex = nullptr;
   firstPaintComplete_.store(false, std::memory_order_release);
 
   files.clear();
@@ -536,11 +569,14 @@ void MyLibraryActivity::loop() {
         }
         {
           M4RenderGuard renderGuard(gM4RenderMutex);
-          xSemaphoreTake(renderingMutex, portMAX_DELAY);
-          renderer.clearScreen();
-          GUI.drawPopup(renderer, "正在建立书籍索引...");
-          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-          xSemaphoreGive(renderingMutex);
+          if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            renderer.clearScreen();
+            GUI.drawPopup(renderer, "正在建立书籍索引...");
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            xSemaphoreGive(renderingMutex);
+          } else {
+            updateRequired = true;
+          }
         }
         onSelectBook(fullPath, originalSourcePath);
       }
@@ -591,15 +627,18 @@ void MyLibraryActivity::loop() {
         }
         if (grayPreviewActive) {
           M4RenderGuard renderGuard(gM4RenderMutex);
-          xSemaphoreTake(renderingMutex, portMAX_DELAY);
-          renderer.clearScreen();
-          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-          grayPreviewActive = false;
-          xSemaphoreGive(renderingMutex);
+          if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            renderer.clearScreen();
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            grayPreviewActive = false;
+            xSemaphoreGive(renderingMutex);
+          }
         }
+        const bool exitLockedTouchBack = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
         isPreviewingImage = false;
         isPreviewImageMenuShowing = false;
         updateRequired = true;
+        if (exitLockedTouchBack) xSemaphoreGive(renderingMutex);
         return;
       }
 
@@ -643,15 +682,18 @@ void MyLibraryActivity::loop() {
         } else {
           if (grayPreviewActive) {
             M4RenderGuard renderGuard(gM4RenderMutex);
-            xSemaphoreTake(renderingMutex, portMAX_DELAY);
-            renderer.clearScreen();
-            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-            grayPreviewActive = false;
-            xSemaphoreGive(renderingMutex);
+            if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+              renderer.clearScreen();
+              renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+              grayPreviewActive = false;
+              xSemaphoreGive(renderingMutex);
+            }
           }
+          const bool exitLockedTouchTap = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
           isPreviewingImage = false;
           isPreviewImageMenuShowing = false;
           updateRequired = true;
+          if (exitLockedTouchTap) xSemaphoreGive(renderingMutex);
         }
         return;
       }
@@ -746,25 +788,31 @@ void MyLibraryActivity::loop() {
       // 与 previewImage 的 BW-pass → displayGrayBuffer 两步节奏一致
       if (grayPreviewActive) {
         M4RenderGuard renderGuard(gM4RenderMutex);
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        renderer.clearScreen();
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        grayPreviewActive = false;
-        xSemaphoreGive(renderingMutex);
+        if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+          renderer.clearScreen();
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          grayPreviewActive = false;
+          xSemaphoreGive(renderingMutex);
+        }
       }
+      const bool exitLockedBtn = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
       isPreviewingImage = false;
       updateRequired = true;
+      if (exitLockedBtn) xSemaphoreGive(renderingMutex);
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      const bool menuOpenLocked = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
       previewImageMenuIndex = 0;
       isPreviewImageMenuShowing = true;
+      if (menuOpenLocked) xSemaphoreGive(renderingMutex);
       // 灰阶状态：先做白色归一化 pass（FAST_REFRESH 驱灰→白），再由 drawPreviewImageMenu 做第二次 FAST_REFRESH
       if (grayPreviewActive) {
         M4RenderGuard renderGuard(gM4RenderMutex);
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        renderer.clearScreen();
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        grayPreviewActive = false;
-        xSemaphoreGive(renderingMutex);
+        if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+          renderer.clearScreen();
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          grayPreviewActive = false;
+          xSemaphoreGive(renderingMutex);
+        }
       }
       drawPreviewImageMenu();
     }
@@ -921,11 +969,14 @@ void MyLibraryActivity::loop() {
         // 关闭菜单并显示加载提示，防止卡在菜单页面
         {
           M4RenderGuard renderGuard(gM4RenderMutex);
-          xSemaphoreTake(renderingMutex, portMAX_DELAY);
-          renderer.clearScreen();
-          GUI.drawPopup(renderer, "正在建立书籍索引...");
-          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-          xSemaphoreGive(renderingMutex);
+          if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            renderer.clearScreen();
+            GUI.drawPopup(renderer, "正在建立书籍索引...");
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            xSemaphoreGive(renderingMutex);
+          } else {
+            updateRequired = true;
+          }
         }
         onSelectBook(fullPath, originalSourcePath);
       }
@@ -1007,6 +1058,13 @@ if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
 
 void MyLibraryActivity::displayTaskLoop() {
   while (true) {
+    if (exitDisplayTask_.load(std::memory_order_acquire)) {
+      // Cooperative shutdown: exit only while holding no locks, so the
+      // process-wide guard is never left owned by a deleted task.
+      displayTaskHandle = nullptr;
+      displayTaskExited_.store(true, std::memory_order_release);
+      vTaskDelete(nullptr);
+    }
     MyLibraryFrameSnapshot frame;
     bool shouldSubmit = false;
     // Phase 1: pin the file-list pointer + copy scalars under the local
@@ -1191,11 +1249,14 @@ void MyLibraryActivity::executeActionMenu(int index) {
         }
         {
           M4RenderGuard renderGuard(gM4RenderMutex);
-          xSemaphoreTake(renderingMutex, portMAX_DELAY);
-          renderer.clearScreen();
-          GUI.drawPopup(renderer, "正在建立书籍索引...");
-          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-          xSemaphoreGive(renderingMutex);
+          if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            renderer.clearScreen();
+            GUI.drawPopup(renderer, "正在建立书籍索引...");
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            xSemaphoreGive(renderingMutex);
+          } else {
+            updateRequired = true;
+          }
         }
         onSelectBook(fullPath, originalSourcePath);
       }
@@ -1289,8 +1350,10 @@ void MyLibraryActivity::executeActionMenu(int index) {
 
 // 预览图像功能（非阻塞：仅渲染一次，通过 isPreviewingImage 标志让 loop() 拦截按键）
 void MyLibraryActivity::previewImage(const std::string& imagePath) {
-  // 先暂停 displayTaskLoop 刷新，防止并发渲染
+  // 先暂停 displayTaskLoop 刷新，防止并发渲染（与 display 快照原子可见）
+  const bool previewEnterLocked = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
   updateRequired = false;
+  if (previewEnterLocked) xSemaphoreGive(renderingMutex);
 
   bool success = false;
   const auto pageWidth = renderer.getScreenWidth();
@@ -1336,12 +1399,15 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
         }
         {
           M4RenderGuard renderGuard(gM4RenderMutex);
-          xSemaphoreTake(renderingMutex, portMAX_DELAY);
-          renderer.clearScreen();
-          renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
-          renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
-          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-          xSemaphoreGive(renderingMutex);
+          if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            renderer.clearScreen();
+            renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+            renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
+            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            xSemaphoreGive(renderingMutex);
+          } else {
+            updateRequired = true;
+          }
         }
         success = true;
       }
@@ -1358,47 +1424,51 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
       bool hdHit = preCheckHdHit;  // 复用顶部预检
 
       M4RenderGuard renderGuard(gM4RenderMutex);
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      renderer.clearScreen();
-
       bool hdSuccess = false;
-      if (hdHit) {
-        hdSuccess = ImageCache::renderFromHdCache(imagePath, renderer);
-        Serial.printf("[%lu] [PRV] HD cache hit: %s\n", millis(), imagePath.c_str());
-      } else {
-        ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
-        if (decoder) {
-          RenderConfig rc;
-          rc.x = 0; rc.y = 0;
-          rc.maxWidth = pageWidth; rc.maxHeight = pageHeight;
-          rc.useDithering = false;
-          rc.cachePath = ImageCache::getHdDecodeCachePath(imagePath);
-          hdSuccess = decoder->decodeToFramebuffer(imagePath, renderer, rc);
-          Serial.printf("[%lu] [PRV] HD decoded: %s\n", millis(), imagePath.c_str());
-        }
-      }
+      if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        renderer.clearScreen();
 
-      if (hdSuccess) {
-        // BW 预览 pass（含提示文字）
-        renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        if (useHalf) delay(200);
-        // GRAYSCALE_LSB pass
-        renderer.clearScreen(0x00);
-        renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-        ImageCache::renderFromHdCache(imagePath, renderer);
-        renderer.copyGrayscaleLsbBuffers();
-        // GRAYSCALE_MSB pass
-        renderer.clearScreen(0x00);
-        renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-        ImageCache::renderFromHdCache(imagePath, renderer);
-        renderer.copyGrayscaleMsbBuffers();
-        renderer.displayGrayBuffer();
-        renderer.setRenderMode(GfxRenderer::BW);
-        success = true;
-        grayPreviewActive = true;  // 屏幕进入灰阶物理状态
+        if (hdHit) {
+          hdSuccess = ImageCache::renderFromHdCache(imagePath, renderer);
+          Serial.printf("[%lu] [PRV] HD cache hit: %s\n", millis(), imagePath.c_str());
+        } else {
+          ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
+          if (decoder) {
+            RenderConfig rc;
+            rc.x = 0; rc.y = 0;
+            rc.maxWidth = pageWidth; rc.maxHeight = pageHeight;
+            rc.useDithering = false;
+            rc.cachePath = ImageCache::getHdDecodeCachePath(imagePath);
+            hdSuccess = decoder->decodeToFramebuffer(imagePath, renderer, rc);
+            Serial.printf("[%lu] [PRV] HD decoded: %s\n", millis(), imagePath.c_str());
+          }
+        }
+
+        if (hdSuccess) {
+          // BW 预览 pass（含提示文字）
+          renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          if (useHalf) delay(200);
+          // GRAYSCALE_LSB pass
+          renderer.clearScreen(0x00);
+          renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+          ImageCache::renderFromHdCache(imagePath, renderer);
+          renderer.copyGrayscaleLsbBuffers();
+          // GRAYSCALE_MSB pass
+          renderer.clearScreen(0x00);
+          renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+          ImageCache::renderFromHdCache(imagePath, renderer);
+          renderer.copyGrayscaleMsbBuffers();
+          renderer.displayGrayBuffer();
+          renderer.setRenderMode(GfxRenderer::BW);
+          success = true;
+          grayPreviewActive = true;  // 屏幕进入灰阶物理状态
+        }
+        xSemaphoreGive(renderingMutex);
+      } else {
+        // Contended: skip the HD submit path; the BW fallback below re-arms.
+        updateRequired = true;
       }
-      xSemaphoreGive(renderingMutex);
 
       // 提交 HD 索引（mutex 外，避免持锁时 IO）
       if (hdSuccess && !hdHit && srcSize > 0) ImageCache::commitHd(imagePath, srcSize);
@@ -1412,43 +1482,47 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
       std::string decodeCachePath = cacheHit ? "" : ImageCache::getDecodeCachePath(imagePath);
 
       M4RenderGuard renderGuardBw(gM4RenderMutex);
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      renderer.clearScreen();
+      if (renderGuardBw.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        renderer.clearScreen();
 
-      if (cacheHit) {
-        // 2a. 缓存命中：直接从 .pxc 渲染，跳过解码
-        Serial.printf("[%lu] [PRV] Cache hit: %s\n", millis(), imagePath.c_str());
-        if (ImageCache::renderFromCache(imagePath, renderer)) {
-          renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
-          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-          success = true;
-        } else {
-          cacheHit = false;  // 缓存损坏，回退到解码
-        }
-      }
-
-      if (!cacheHit) {
-        // 2b. 缓存未命中：正常解码，同时写入 .pxc 缓存
-        ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
-        if (decoder) {
-          RenderConfig renderConfig;
-          renderConfig.x = 0;
-          renderConfig.y = 0;
-          renderConfig.maxWidth = pageWidth;
-          renderConfig.maxHeight = pageHeight;
-          renderConfig.useDithering = true;
-          renderConfig.cachePath = decodeCachePath;  // 解码时同步写 .pxc
-
-          if (decoder->decodeToFramebuffer(imagePath, renderer, renderConfig)) {
+        if (cacheHit) {
+          // 2a. 缓存命中：直接从 .pxc 渲染，跳过解码
+          Serial.printf("[%lu] [PRV] Cache hit: %s\n", millis(), imagePath.c_str());
+          if (ImageCache::renderFromCache(imagePath, renderer)) {
             renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
             renderer.displayBuffer(HalDisplay::FAST_REFRESH);
             success = true;
-            grayPreviewActive = false;  // BW 预览，屏幕不在灰阶状态
+          } else {
+            cacheHit = false;  // 缓存损坏，回退到解码
           }
         }
-      }
 
-      xSemaphoreGive(renderingMutex);
+        if (!cacheHit) {
+          // 2b. 缓存未命中：正常解码，同时写入 .pxc 缓存
+          ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
+          if (decoder) {
+            RenderConfig renderConfig;
+            renderConfig.x = 0;
+            renderConfig.y = 0;
+            renderConfig.maxWidth = pageWidth;
+            renderConfig.maxHeight = pageHeight;
+            renderConfig.useDithering = true;
+            renderConfig.cachePath = decodeCachePath;  // 解码时同步写 .pxc
+
+            if (decoder->decodeToFramebuffer(imagePath, renderer, renderConfig)) {
+              renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
+              renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+              success = true;
+              grayPreviewActive = false;  // BW 预览，屏幕不在灰阶状态
+            }
+          }
+        }
+
+        xSemaphoreGive(renderingMutex);
+      } else {
+        // Contended: skip the BW submit path and re-arm the list frame.
+        updateRequired = true;
+      }
 
       // 3. 解码成功后（mutex 已释放）提交索引
       if (success && !cacheHit && srcSize > 0) {
@@ -1458,9 +1532,11 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
   }
 
   if (success) {
+    const bool previewExitLocked = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
     currentPreviewPath = imagePath;
     isPreviewingImage = true;
     isPreviewImageMenuShowing = false;
+    if (previewExitLocked) xSemaphoreGive(renderingMutex);
   } else {
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     // 检查是否为非JPEG格式伪装成.jpg的情况
@@ -1712,28 +1788,33 @@ void MyLibraryActivity::drawPreviewImageMenu() {
   const int popupH = MENU_COUNT * itemH + padding * 2;
 
   M4RenderGuard renderGuard(gM4RenderMutex);
-  xSemaphoreTake(renderingMutex, portMAX_DELAY);
-  const auto pageWidth  = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-  const int popupX = (pageWidth  - popupW) / 2;
-  const int popupY = (pageHeight - popupH) / 2;
+  if (renderGuard.owns() && xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    const auto pageWidth  = renderer.getScreenWidth();
+    const auto pageHeight = renderer.getScreenHeight();
+    const int popupX = (pageWidth  - popupW) / 2;
+    const int popupY = (pageHeight - popupH) / 2;
 
-  renderer.fillRect(popupX - 4, popupY - 4, popupW + 8, popupH + 8, false);
-  renderer.drawRect(popupX, popupY, popupW, popupH, true);
-  for (int i = 0; i < MENU_COUNT; i++) {
-    const int itemY   = popupY + padding + i * itemH;
-    const bool sel    = (i == previewImageMenuIndex);
-    if (sel) renderer.fillRect(popupX + 2, itemY, popupW - 4, itemH, true);
-    const int textX = popupX + (popupW - M4UiText::textWidth(renderer, UI_12_FONT_ID, items[i])) / 2;
-    M4UiText::draw(renderer, UI_12_FONT_ID, textX, itemY + 6, items[i], !sel);
+    renderer.fillRect(popupX - 4, popupY - 4, popupW + 8, popupH + 8, false);
+    renderer.drawRect(popupX, popupY, popupW, popupH, true);
+    for (int i = 0; i < MENU_COUNT; i++) {
+      const int itemY   = popupY + padding + i * itemH;
+      const bool sel    = (i == previewImageMenuIndex);
+      if (sel) renderer.fillRect(popupX + 2, itemY, popupW - 4, itemH, true);
+      const int textX = popupX + (popupW - M4UiText::textWidth(renderer, UI_12_FONT_ID, items[i])) / 2;
+      M4UiText::draw(renderer, UI_12_FONT_ID, textX, itemY + 6, items[i], !sel);
+    }
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    xSemaphoreGive(renderingMutex);
+  } else {
+    updateRequired = true;
   }
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-  xSemaphoreGive(renderingMutex);
 }
 
 // 处理预览菜单选项
 void MyLibraryActivity::handlePreviewImageMenuAction() {
+  const bool menuActionLocked = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
   isPreviewImageMenuShowing = false;
+  if (menuActionLocked) xSemaphoreGive(renderingMutex);
   // 0=设为关机壁纸, 1=删除图片
   if (previewImageMenuIndex == 0) {  // 设为关机壁纸
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
@@ -1744,7 +1825,10 @@ void MyLibraryActivity::handlePreviewImageMenuAction() {
     GUI.drawPopup(renderer, ok ? "已设为关机壁纸" : "设置失败");
     xSemaphoreGive(renderingMutex);
     delay(1000);
+    const bool wallpaperDoneLocked = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
     isPreviewingImage = false;
+    updateRequired = true;
+    if (wallpaperDoneLocked) xSemaphoreGive(renderingMutex);
     if (isSearchMode) { doSearch(SEARCH_KEYWORD); } else { loadFiles(); }
     updateRequired = true;
   } else {  // 删除图片（index 1）
@@ -1756,7 +1840,10 @@ void MyLibraryActivity::handlePreviewImageMenuAction() {
     GUI.drawPopup(renderer, ok ? "已删除" : "删除失败");
     xSemaphoreGive(renderingMutex);
     delay(1000);
+    const bool deleteDoneLocked = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
     isPreviewingImage = false;
+    updateRequired = true;
+    if (deleteDoneLocked) xSemaphoreGive(renderingMutex);
     if (isSearchMode) { doSearch(SEARCH_KEYWORD); } else { loadFiles(); }
     updateRequired = true;
   }

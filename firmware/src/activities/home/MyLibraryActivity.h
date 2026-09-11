@@ -16,6 +16,12 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
 
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
+  // Phase 1 (INV-R1) fix: cooperative display-task shutdown. onExit asks the
+  // task to self-terminate (it exits only while holding no locks) and joins
+  // boundedly, so a mid-submit task is never deleted while owning the
+  // process-wide guard.
+  std::atomic<bool> exitDisplayTask_{false};
+  std::atomic<bool> displayTaskExited_{false};
   // Phase 1 (INV-I1): set-once after the first guarded submit in
   // displayTaskLoop; cleared on onExit. Boot polls it via
   // firstPaintComplete() (covers boot-via-goToLibrary).
