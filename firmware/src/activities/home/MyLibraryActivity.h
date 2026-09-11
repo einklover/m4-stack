@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,12 +24,44 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
   size_t selectorIndex = 0;
   bool updateRequired = false;
 
+  // Phase 1 (INV-R1): wholesale file/search vector snapshot. loadFiles() /
+  // doSearch() / cancelSearch() replace files / fileSizes / searchResults /
+  // searchResultSizes wholesale (torn-generation hazard, same as AppList),
+  // so indices alone are insufficient. Loaders swap a cheap shared_ptr under
+  // the local mutex (no per-frame deep copy); displayTaskLoop pins the
+  // pointer + copies scalars under local, releases local, then renders from
+  // the snapshot under the global guard.
+  struct FileListSnapshot {
+    std::vector<std::string> files;
+    std::vector<uint32_t> fileSizes;
+    std::vector<std::string> searchResults;
+    std::vector<uint32_t> searchResultSizes;
+  };
+  // Staged submit input: written by the display task under the local mutex,
+  // read by render() under the global guard. Single writer/reader (the
+  // display task), so the handoff itself needs no further locking.
+  struct MyLibraryFrameSnapshot {
+    std::shared_ptr<const FileListSnapshot> lists;
+    size_t selectorIndex = 0;
+    std::string basepath = "/";
+    bool showAllFiles = false;
+    bool isSearchMode = false;
+    bool showingActionMenu = false;
+    int actionMenuIndex = 0;
+    bool hasCopyData = false;
+    std::string copySourcePath;
+    bool isCutMode = false;
+    std::string searchKeyword;
+  };
+
   // Files state
   std::string basepath = "/";
   std::vector<std::string> files;
   std::vector<uint32_t> fileSizes;          // parallel to files: byte size (0 = directory)
   std::vector<uint32_t> searchResultSizes;  // parallel to searchResults
   bool showAllFiles = false;                // false = book-only, true = show all files
+  std::shared_ptr<const FileListSnapshot> fileSnapshot_;
+  MyLibraryFrameSnapshot snapshot_;
 
   // Callbacks
   const std::function<void(const std::string& path, const std::string& originalSourcePath)> onSelectBook;
@@ -40,6 +73,7 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
 
   // Data loading
   void loadFiles();
+  void publishFileSnapshotLocked();  // caller holds renderingMutex; swaps fileSnapshot_
   size_t findEntry(const std::string& name) const;
 
   //文件管理

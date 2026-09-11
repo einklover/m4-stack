@@ -13,6 +13,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/ButtonNavigator.h"
+#include "util/M4RenderGuard.h"
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
 //加入搜索
@@ -27,6 +28,9 @@
 // PNG 编码（用于透明壁纸叠加合成）
 #include "../../../lib/miniz/miniz.h"
 
+
+// Phase 1 (INV-R1): process-wide render-submit mutex owned by main.cpp.
+extern SemaphoreHandle_t gM4RenderMutex;
 
 namespace {
 constexpr int SKIP_PAGE_MS = 700;
@@ -223,7 +227,14 @@ void MyLibraryActivity::doSearch(const char* keyword) {
   }
   selectorIndex = 0;
   updateRequired = true;
-  
+  if (renderingMutex) {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    publishFileSnapshotLocked();
+    xSemaphoreGive(renderingMutex);
+  } else {
+    publishFileSnapshotLocked();
+  }
+
   if (searchResults.empty()) {
     // 提示文字适配char数组
     char emptyHint[128];
@@ -286,6 +297,15 @@ void MyLibraryActivity::cancelSearch() {
 void MyLibraryActivity::taskTrampoline(void* param) {
   auto* self = static_cast<MyLibraryActivity*>(param);
   self->displayTaskLoop();
+}
+
+void MyLibraryActivity::publishFileSnapshotLocked() {
+  auto snap = std::make_shared<FileListSnapshot>();
+  snap->files = files;
+  snap->fileSizes = fileSizes;
+  snap->searchResults = searchResults;
+  snap->searchResultSizes = searchResultSizes;
+  fileSnapshot_ = std::move(snap);
 }
 
 void MyLibraryActivity::loadFiles() {
@@ -378,6 +398,13 @@ void MyLibraryActivity::loadFiles() {
   // 在WiFi AP模式下，内存非常紧张，必须及时释放临时缓冲区
   entries.clear();
   entries.shrink_to_fit();  // 真正释放 vector 内部缓冲区
+  if (renderingMutex) {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    publishFileSnapshotLocked();
+    xSemaphoreGive(renderingMutex);
+  } else {
+    publishFileSnapshotLocked();
+  }
 }
 
 //enter也需要改
@@ -485,13 +512,15 @@ void MyLibraryActivity::loop() {
                  StringUtils::checkFileExtension(fullPath, ".jpeg")) {
         previewImage(fullPath);
       } else if (StringUtils::checkFileExtension(fullPath, ".m4x")) {
+        std::string installPath;
         xSemaphoreTake(renderingMutex, portMAX_DELAY);
+        installPath = fullPath;
+        xSemaphoreGive(renderingMutex);
         exitActivity();
-        enterNewActivity(new AppInstallActivity(renderer, mappedInput, fullPath, [this]() {
+        enterNewActivity(new AppInstallActivity(renderer, mappedInput, installPath, [this]() {
           exitActivity();
           updateRequired = true;
         }));
-        xSemaphoreGive(renderingMutex);
       } else {
         std::string originalSourcePath;
         if (StringUtils::checkFileExtension(fullPath, ".epub")) {
@@ -503,11 +532,14 @@ void MyLibraryActivity::loop() {
             }
           }
         }
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        renderer.clearScreen();
-        GUI.drawPopup(renderer, "正在建立书籍索引...");
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        xSemaphoreGive(renderingMutex);
+        {
+          M4RenderGuard renderGuard(gM4RenderMutex);
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          renderer.clearScreen();
+          GUI.drawPopup(renderer, "正在建立书籍索引...");
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          xSemaphoreGive(renderingMutex);
+        }
         onSelectBook(fullPath, originalSourcePath);
       }
     };
@@ -556,11 +588,12 @@ void MyLibraryActivity::loop() {
           return;
         }
         if (grayPreviewActive) {
+          M4RenderGuard renderGuard(gM4RenderMutex);
           xSemaphoreTake(renderingMutex, portMAX_DELAY);
           renderer.clearScreen();
           renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-          xSemaphoreGive(renderingMutex);
           grayPreviewActive = false;
+          xSemaphoreGive(renderingMutex);
         }
         isPreviewingImage = false;
         isPreviewImageMenuShowing = false;
@@ -607,11 +640,12 @@ void MyLibraryActivity::loop() {
           drawPreviewImageMenu();
         } else {
           if (grayPreviewActive) {
+            M4RenderGuard renderGuard(gM4RenderMutex);
             xSemaphoreTake(renderingMutex, portMAX_DELAY);
             renderer.clearScreen();
             renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-            xSemaphoreGive(renderingMutex);
             grayPreviewActive = false;
+            xSemaphoreGive(renderingMutex);
           }
           isPreviewingImage = false;
           isPreviewImageMenuShowing = false;
@@ -709,11 +743,12 @@ void MyLibraryActivity::loop() {
       // 灰阶状态：先做白色归一化 pass（FAST_REFRESH 驱灰→白），再由 render() 做第二次 FAST_REFRESH
       // 与 previewImage 的 BW-pass → displayGrayBuffer 两步节奏一致
       if (grayPreviewActive) {
+        M4RenderGuard renderGuard(gM4RenderMutex);
         xSemaphoreTake(renderingMutex, portMAX_DELAY);
         renderer.clearScreen();
         renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        xSemaphoreGive(renderingMutex);
         grayPreviewActive = false;
+        xSemaphoreGive(renderingMutex);
       }
       isPreviewingImage = false;
       updateRequired = true;
@@ -722,11 +757,12 @@ void MyLibraryActivity::loop() {
       isPreviewImageMenuShowing = true;
       // 灰阶状态：先做白色归一化 pass（FAST_REFRESH 驱灰→白），再由 drawPreviewImageMenu 做第二次 FAST_REFRESH
       if (grayPreviewActive) {
+        M4RenderGuard renderGuard(gM4RenderMutex);
         xSemaphoreTake(renderingMutex, portMAX_DELAY);
         renderer.clearScreen();
         renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        xSemaphoreGive(renderingMutex);
         grayPreviewActive = false;
+        xSemaphoreGive(renderingMutex);
       }
       drawPreviewImageMenu();
     }
@@ -858,13 +894,15 @@ void MyLibraryActivity::loop() {
         previewImage(fullPath);
         return;  // 预览后直接 return，避免外层再次设置 updateRequired
       } else if (StringUtils::checkFileExtension(fullPath, ".m4x")) {
+        std::string installPath;
         xSemaphoreTake(renderingMutex, portMAX_DELAY);
+        installPath = fullPath;
+        xSemaphoreGive(renderingMutex);
         exitActivity();
-        enterNewActivity(new AppInstallActivity(renderer, mappedInput, fullPath, [this]() {
+        enterNewActivity(new AppInstallActivity(renderer, mappedInput, installPath, [this]() {
           exitActivity();
           updateRequired = true;
         }));
-        xSemaphoreGive(renderingMutex);
         return;
       } else {
         // 打开文件
@@ -879,11 +917,14 @@ void MyLibraryActivity::loop() {
           }
         }
         // 关闭菜单并显示加载提示，防止卡在菜单页面
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        renderer.clearScreen();
-        GUI.drawPopup(renderer, "正在建立书籍索引...");
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        xSemaphoreGive(renderingMutex);
+        {
+          M4RenderGuard renderGuard(gM4RenderMutex);
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          renderer.clearScreen();
+          GUI.drawPopup(renderer, "正在建立书籍索引...");
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          xSemaphoreGive(renderingMutex);
+        }
         onSelectBook(fullPath, originalSourcePath);
       }
       updateRequired = true;
@@ -964,11 +1005,35 @@ if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
 
 void MyLibraryActivity::displayTaskLoop() {
   while (true) {
-    if (updateRequired && !isPreviewingImage) {
-      updateRequired = false;
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      render();
+    MyLibraryFrameSnapshot frame;
+    bool shouldSubmit = false;
+    // Phase 1: pin the file-list pointer + copy scalars under the local
+    // mutex, then release it before taking the global guard, so global is
+    // never acquired while holding local. Temporal exclusion
+    // (!isPreviewingImage) is evaluated under local so exactly one context
+    // submits at a time.
+    if (xSemaphoreTake(renderingMutex, portMAX_DELAY) == pdTRUE) {
+      if (updateRequired && !isPreviewingImage) {
+        frame.lists = fileSnapshot_;
+        frame.selectorIndex = selectorIndex;
+        frame.basepath = basepath;
+        frame.showAllFiles = showAllFiles;
+        frame.isSearchMode = isSearchMode;
+        frame.showingActionMenu = showingActionMenu;
+        frame.actionMenuIndex = actionMenuIndex;
+        frame.hasCopyData = hasCopyData;
+        frame.copySourcePath = copySourcePath;
+        frame.isCutMode = isCutMode;
+        frame.searchKeyword = std::string(SEARCH_KEYWORD);
+        snapshot_ = frame;
+        updateRequired = false;
+        shouldSubmit = true;
+      }
       xSemaphoreGive(renderingMutex);
+    }
+    if (shouldSubmit) {
+      M4RenderGuard renderGuard(gM4RenderMutex);
+      render();
       firstPaintComplete_.store(true, std::memory_order_release);
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -978,22 +1043,32 @@ void MyLibraryActivity::displayTaskLoop() {
   //添加四个按鈕：删除、复制、剪切、粘贴
   //添加搜索和取消搜索
 void MyLibraryActivity::render() const {
+  // Submit-path input staged by displayTaskLoop(): it pins the file-list
+  // pointer + copies scalars under the local mutex, releases it, then calls
+  // render() under the global guard. Reading through this frame keeps the
+  // submitter on one generation even though loadFiles()/doSearch() replace
+  // the vectors wholesale; members stay the backing store for loop()
+  // hit-testing on the main thread.
+  const MyLibraryFrameSnapshot& frame = snapshot_;
+  static const FileListSnapshot kEmptyLists;
+  const FileListSnapshot& lists = frame.lists ? *frame.lists : kEmptyLists;
   renderer.clearScreen();
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   auto metrics = UITheme::getInstance().getMetrics();
-  auto folderName = basepath == "/" ? "SD卡" : basepath.substr(basepath.rfind('/') + 1).c_str();
+  const std::string frameBase = frame.basepath;
+  auto folderName = frameBase == "/" ? "SD卡" : frameBase.substr(frameBase.rfind('/') + 1).c_str();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName);
 
 
 
   int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   // 有复制/剪切标记时显示状态栏
-  if (hasCopyData && !copySourcePath.empty()) {
-    const size_t lastSlash = copySourcePath.find_last_of('/');
-    const std::string srcName = copySourcePath.substr(lastSlash + 1);
-    const std::string statusText = std::string(isCutMode ? "[剪切] " : "[复制] ") + srcName;
+  if (frame.hasCopyData && !frame.copySourcePath.empty()) {
+    const size_t lastSlash = frame.copySourcePath.find_last_of('/');
+    const std::string srcName = frame.copySourcePath.substr(lastSlash + 1);
+    const std::string statusText = std::string(frame.isCutMode ? "[剪切] " : "[复制] ") + srcName;
     constexpr int statusBarH = 40;
     // 用淡灰背景区分状态栏
     renderer.fillRectDither(0, contentTop, pageWidth, statusBarH, Color::LightGray);
@@ -1003,30 +1078,30 @@ void MyLibraryActivity::render() const {
   const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
 
   // 核心：根据是否搜索模式，选择要显示的列表（files 或 searchResults）
-  const auto& displayList = isSearchMode ? searchResults : files;
+  const std::vector<std::string>& displayList = frame.isSearchMode ? lists.searchResults : lists.files;
 
   // 显示空列表提示（区分普通模式和搜索模式）
   if (displayList.empty()) {
       // 先定义提示文本的基础部分
       char emptyHint[128];
       // 拼接 "未找到含'关键词'的文件"
-      snprintf(emptyHint, sizeof(emptyHint), "未找到含'%s'的文件", SEARCH_KEYWORD);
+      snprintf(emptyHint, sizeof(emptyHint), "未找到含'%s'的文件", frame.searchKeyword.c_str());
       // 赋值给emptyText
-      std::string emptyText = isSearchMode ? emptyHint : "No books found";
+      std::string emptyText = frame.isSearchMode ? emptyHint : "No books found";
       M4UiText::draw(renderer, UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, emptyText.c_str());
   } else {
       // 绘制列表时，用 displayList 替代原来的 files
-      const auto& displaySizes = isSearchMode ? searchResultSizes : fileSizes;
+      const std::vector<uint32_t>& displaySizes = frame.isSearchMode ? lists.searchResultSizes : lists.fileSizes;
       GUI.drawList(
-          renderer, Rect{0, contentTop, pageWidth, contentHeight}, displayList.size(), selectorIndex,
-          [this](int index) { 
+          renderer, Rect{0, contentTop, pageWidth, contentHeight}, displayList.size(), frame.selectorIndex,
+          [this, &frame, &lists](int index) {
               // 这里返回当前模式下的列表项
-              return isSearchMode ? searchResults[index] : files[index];
+              return frame.isSearchMode ? lists.searchResults[index] : lists.files[index];
           },
-          nullptr, 
-          [this](int index) -> UIIcon {
+          nullptr,
+          [this, &frame, &lists](int index) -> UIIcon {
               // 返回文件/目录的图标
-              const std::string& item = isSearchMode ? searchResults[index] : files[index];
+              const std::string& item = frame.isSearchMode ? lists.searchResults[index] : lists.files[index];
               return UITheme::getFileIcon(item);
           },
           [&displaySizes](int index) -> std::string {
@@ -1037,7 +1112,7 @@ void MyLibraryActivity::render() const {
   }
 
   // Help text
-  if (showingActionMenu) {
+  if (frame.showingActionMenu) {
     const auto labels = mappedInput.mapLabels("« 取消", "确认", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else {
@@ -1047,10 +1122,10 @@ void MyLibraryActivity::render() const {
   }
 
   // 展示操作菜单弹窗
-  if (showingActionMenu) {
+  if (frame.showingActionMenu) {
     // 最后一项根据当前显示模式动态更新
     char toggleLabel[20];
-    snprintf(toggleLabel, sizeof(toggleLabel), "7) %s", showAllFiles ? "显示书籍" : "显示全部");
+    snprintf(toggleLabel, sizeof(toggleLabel), "7) %s", frame.showAllFiles ? "显示书籍" : "显示全部");
     const char* menuItems[] = {"1) 打开文件", "2) 删除文件", "3) 复制文件",
                                "4) 剪切文件", "5) 粘贴文件", "6) 设为主页",
                                toggleLabel};
@@ -1065,7 +1140,7 @@ void MyLibraryActivity::render() const {
     renderer.drawRect(popupX, popupY, popupW, popupH, true);
     for (int i = 0; i < menuItemCount; i++) {
       const int itemY = popupY + padding + i * itemH;
-      const bool selected = (i == actionMenuIndex);
+      const bool selected = (i == frame.actionMenuIndex);
       if (selected) {
         renderer.fillRect(popupX + 2, itemY, popupW - 4, itemH, true);
       }
@@ -1105,11 +1180,14 @@ void MyLibraryActivity::executeActionMenu(int index) {
             }
           }
         }
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        renderer.clearScreen();
-        GUI.drawPopup(renderer, "正在建立书籍索引...");
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        xSemaphoreGive(renderingMutex);
+        {
+          M4RenderGuard renderGuard(gM4RenderMutex);
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          renderer.clearScreen();
+          GUI.drawPopup(renderer, "正在建立书籍索引...");
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          xSemaphoreGive(renderingMutex);
+        }
         onSelectBook(fullPath, originalSourcePath);
       }
       break;
@@ -1247,12 +1325,15 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
           x = (pageWidth - bitmap.getWidth()) / 2;
           y = (pageHeight - bitmap.getHeight()) / 2;
         }
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        renderer.clearScreen();
-        renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
-        renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
-        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-        xSemaphoreGive(renderingMutex);
+        {
+          M4RenderGuard renderGuard(gM4RenderMutex);
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          renderer.clearScreen();
+          renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+          renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 28, "← 返回  确认 菜单");
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          xSemaphoreGive(renderingMutex);
+        }
         success = true;
       }
       file.close();
@@ -1267,6 +1348,7 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
       bool useHalf = (SETTINGS.imageQuality == CrossPointSettings::QUALITY_HD);
       bool hdHit = preCheckHdHit;  // 复用顶部预检
 
+      M4RenderGuard renderGuard(gM4RenderMutex);
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       renderer.clearScreen();
 
@@ -1320,6 +1402,7 @@ void MyLibraryActivity::previewImage(const std::string& imagePath) {
       // 若没有缓存，获取解码输出路径（会确保 /.crosspoint/lock_screen/ 目录存在）
       std::string decodeCachePath = cacheHit ? "" : ImageCache::getDecodeCachePath(imagePath);
 
+      M4RenderGuard renderGuardBw(gM4RenderMutex);
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       renderer.clearScreen();
 
@@ -1619,6 +1702,7 @@ void MyLibraryActivity::drawPreviewImageMenu() {
   static constexpr int padding = 4;
   const int popupH = MENU_COUNT * itemH + padding * 2;
 
+  M4RenderGuard renderGuard(gM4RenderMutex);
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
   const auto pageWidth  = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
