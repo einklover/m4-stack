@@ -1566,18 +1566,18 @@ void loop() {
     return;
   }
 
-  // Long press Back button (1.5s) → go home from any non-home page
-  static bool longPressBackHomeFired = false;
-  if (currentActivity && !currentActivity->isHomeActivity() &&
-      mappedInputManager.isPressed(MappedInputManager::Button::Back) &&
-      mappedInputManager.getHeldTime() >= 1500) {
-    if (!longPressBackHomeFired) {
-      longPressBackHomeFired = true;
-      onGoHome();
-      return;
-    }
-  } else if (!mappedInputManager.isPressed(MappedInputManager::Button::Back)) {
-    longPressBackHomeFired = false;
+  // Long press Back button (1.5s) → go home from any non-home page.
+  // One-shot firing via the shared consume-once helper (firing arms release
+  // suppression); the helper also clears its latch on release, so call it
+  // every frame and gate only the onGoHome() destination on non-home.
+  const bool backHeld = mappedInputManager.isPressed(MappedInputManager::Button::Back);
+  const bool backLongPressFired = m4LongPressFired(mappedInputManager.physicalSuppressState_,
+                                                  static_cast<uint8_t>(static_cast<int>(
+                                                      MappedInputManager::Button::Back)),
+                                                  backHeld, mappedInputManager.getHeldTime(), 1500);
+  if (currentActivity && !currentActivity->isHomeActivity() && backLongPressFired) {
+    onGoHome();
+    return;
   }
 
   // Global full-screen navigation gestures (all activities):
@@ -1628,8 +1628,17 @@ void loop() {
   }
 #endif
 
+  // Phase 1 (INV-S1): consume-once suppressed physical release. Runs after
+  // gesture routing (already-executed gesture branches stand) and skips only
+  // the activity dispatch below. The feed is physical-only, so injected
+  // input stays inert, and held levels stay observable next frame via
+  // isPressed().
+  const bool suppressConsumed = m4ConsumeSuppressedRelease(mappedInputManager.physicalSuppressState_,
+                                                           mappedInputManager.physicalReleasedMask());
+  // When consumed, the frame-tail bookkeeping below (frontlight re-apply,
+  // deferred-delete drain, stats, delay(10)/yield()) still runs.
   const unsigned long activityStartTime = millis();
-  if (currentActivity) {
+  if (!suppressConsumed && currentActivity) {
     currentActivity->loop();
   }
   const unsigned long activityDuration = millis() - activityStartTime;

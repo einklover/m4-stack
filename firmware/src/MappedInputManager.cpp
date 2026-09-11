@@ -564,3 +564,37 @@ bool MappedInputManager::wasMenuGesture() const {
 }
 
 bool MappedInputManager::wasTouchActivity() const { return gpio.wasTouchActivity(); }
+
+// Phase 1 (INV-S1): physical-only suppression feed. Uses gpio release edges
+// directly so synthetic-Key, footer-tap, and syntheticBack paths never set,
+// clear, nor observe suppression. beginFrame() is untouched.
+uint16_t MappedInputManager::physicalReleasedMask() const {
+  uint16_t mask = 0;
+  const Button physicalButtons[] = {Button::Back, Button::Confirm, Button::Left,    Button::Right,
+                                    Button::Up,   Button::Down,    Button::Power,   Button::PageBack,
+                                    Button::PageForward};
+  for (const Button b : physicalButtons) {
+    if (mapButton(b, &HalGPIO::wasReleased)) {
+      const uint8_t index = static_cast<uint8_t>(static_cast<int>(b));
+      if (m4SuppressButtonIndex(index)) mask |= static_cast<uint16_t>(static_cast<uint16_t>(1u) << index);
+    }
+  }
+  if (mapButton(Button::Down, &HalGPIO::wasReleased) || mapButton(Button::Right, &HalGPIO::wasReleased)) {
+    const uint8_t index = static_cast<uint8_t>(static_cast<int>(Button::NavNext));
+    if (m4SuppressButtonIndex(index)) mask |= static_cast<uint16_t>(static_cast<uint16_t>(1u) << index);
+  }
+  if (mapButton(Button::Up, &HalGPIO::wasReleased) || mapButton(Button::Left, &HalGPIO::wasReleased)) {
+    const uint8_t index = static_cast<uint8_t>(static_cast<int>(Button::NavPrevious));
+    if (m4SuppressButtonIndex(index)) mask |= static_cast<uint16_t>(static_cast<uint16_t>(1u) << index);
+  }
+  return mask;
+}
+
+bool MappedInputManager::consumeSuppressedPhysicalRelease() const {
+  return m4ConsumeSuppressedRelease(physicalSuppressState_, physicalReleasedMask());
+}
+
+void MappedInputManager::suppressNextPhysicalRelease(Button button) {
+  m4SuppressNextRelease(physicalSuppressState_,
+                        static_cast<uint8_t>(static_cast<int>(button)));
+}

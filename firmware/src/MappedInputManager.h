@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "util/M4NavMapping.h"
+#include "util/M4SuppressState.h"
 
 class GfxRenderer;
 
@@ -24,6 +25,15 @@ class MappedInputManager {
 
   // Backward-compatible single-arg form used by older call sites that only need buttons.
   explicit MappedInputManager(HalGPIO& gpio);
+
+  // Phase 1 (INV-S1): physical-only consume-once suppression state.
+  // Fed only from physical long-press/release paths; injected-key,
+  // footer-tap, and edge-pulse paths never touch this state.
+  // Survives beginFrame() untouched.
+  mutable M4SuppressState physicalSuppressState_;
+  uint16_t physicalReleasedMask() const;
+  bool consumeSuppressedPhysicalRelease() const;
+  void suppressNextPhysicalRelease(Button button);
 
   void update() const { gpio.update(); }
   // Call once per main-loop frame after gpio.update() so touch/swipe events are
