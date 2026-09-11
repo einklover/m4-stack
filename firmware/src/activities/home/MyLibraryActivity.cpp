@@ -12,6 +12,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ButtonNavigator.h"
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
 //加入搜索
@@ -899,11 +900,12 @@ void MyLibraryActivity::loop() {
 
 
   //新增结束
-  // 第3/4按钮（Left/Right）同样触发上下移动
-  const bool upReleased = mappedInput.wasReleased(MappedInputManager::Button::Up) ||
-                          mappedInput.wasReleased(MappedInputManager::Button::Left);
-  const bool downReleased = mappedInput.wasReleased(MappedInputManager::Button::Down) ||
-                            mappedInput.wasReleased(MappedInputManager::Button::Right);
+  // 第3/4按钮（Left/Right）同样触发上下移动（逻辑导航：NavPrevious/NavNext，release 边沿不变）
+  ButtonNavigator navigator;
+  bool upReleased = false;
+  bool downReleased = false;
+  navigator.onPreviousRelease([&] { upReleased = true; });
+  navigator.onNextRelease([&] { downReleased = true; });
 
   const bool skipPage = mappedInput.getHeldTime() > SKIP_PAGE_MS;
   const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, false);
