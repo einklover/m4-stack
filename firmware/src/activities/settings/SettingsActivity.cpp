@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 #include <HardwareSerial.h>
 
+#include "util/ButtonNavigator.h"
 #include "ButtonRemapActivity.h"
 #include "util/M4ListTouchPolicy.h"
 #include "util/TouchHitGeometry.h"
@@ -300,33 +301,34 @@ void SettingsActivity::loop() {
     }
   }
 
-  const bool up = mappedInput.wasReleased(MappedInputManager::Button::Up);
-  const bool down = mappedInput.wasReleased(MappedInputManager::Button::Down);
-  const bool left = mappedInput.wasReleased(MappedInputManager::Button::Left);
-  const bool right = mappedInput.wasReleased(MappedInputManager::Button::Right);
-
   if (navState_.pane == SettingsPane::Hub) {
-    if (up || left) {
+    ButtonNavigator navigator;
+    navigator.onPreviousRelease([this] {
       navState_ = settingsNavMoveHub(navState_, -1);
       rebuildModel();
       updateRequired = true;
-    } else if (down || right) {
+    });
+    navigator.onNextRelease([this] {
       navState_ = settingsNavMoveHub(navState_, 1);
       rebuildModel();
       updateRequired = true;
-    }
+    });
   } else {
     int count = currentHubSettingCount();
-    if (count>0 && (up || left)) {
-      navState_ = settingsNavMoveRow(navState_, -1, count);
-      navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
-      rebuildModel();
-      updateRequired = true;
-    } else if (count>0 && (down || right)) {
-      navState_ = settingsNavMoveRow(navState_, 1, count);
-      navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
-      rebuildModel();
-      updateRequired = true;
+    if (count > 0) {
+      ButtonNavigator navigator;
+      navigator.onPreviousRelease([this, count] {
+        navState_ = settingsNavMoveRow(navState_, -1, count);
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel();
+        updateRequired = true;
+      });
+      navigator.onNextRelease([this, count] {
+        navState_ = settingsNavMoveRow(navState_, 1, count);
+        navState_ = settingsNavSyncWindow(navState_, navState_.hub, true);
+        rebuildModel();
+        updateRequired = true;
+      });
     }
   }
 }
