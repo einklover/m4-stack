@@ -3,11 +3,13 @@
 #include <HalGPIO.h>
 #include <cstdint>
 
+#include "util/M4NavMapping.h"
+
 class GfxRenderer;
 
 class MappedInputManager {
  public:
-  enum class Button { Back, Confirm, Left, Right, Up, Down, Power, PageBack, PageForward };
+  enum class Button { Back, Confirm, Left, Right, Up, Down, Power, PageBack, PageForward, NavNext, NavPrevious };
   enum class SwipeDir { None, Left, Right, Up, Down };
   enum class RowTouch : uint8_t { None, Down, Tap };
 
@@ -124,3 +126,9 @@ class MappedInputManager {
   bool listItemFromPoint(int x, int y, int& index, int itemCount, int selectedIndex, int listTop, int listHeight,
                          bool hasSubtitle) const;
 };
+
+// Phase 1 (INV-N1): NavNext/NavPrevious appended after PageForward;
+// ordinals 0-8 unchanged, pinned against the dependency-free helper.
+static_assert(static_cast<int>(MappedInputManager::Button::NavNext) == static_cast<int>(M4NavButton::NavNext));
+static_assert(static_cast<int>(MappedInputManager::Button::NavPrevious) ==
+              static_cast<int>(M4NavButton::NavPrevious));

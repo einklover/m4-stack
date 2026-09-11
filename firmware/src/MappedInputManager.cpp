@@ -9,6 +9,7 @@
 #include "CrossPointSettings.h"
 #include "components/UITheme.h"
 #include "util/M4FooterTouchPolicy.h"
+#include "util/M4NavMapping.h"
 #include "util/M4ReaderFrontlightGesture.h"
 #include "util/M4TouchNavigation.h"
 #include "util/TouchHitGeometry.h"
@@ -175,18 +176,28 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
 }
 
 bool MappedInputManager::wasPressed(const Button button) const {
+  if (button == Button::NavNext) return wasPressed(Button::Down) || wasPressed(Button::Right);
+  if (button == Button::NavPrevious) return wasPressed(Button::Up) || wasPressed(Button::Left);
   if (button == Button::Back && syntheticBack) return true;
 #if defined(CROSSPOINT_MURPHY_M4)
-  if (synthKind_ == SynthKind::Key && synthKey_ == button) return true;
+  if (synthKind_ == SynthKind::Key &&
+      m4SynthSatisfiesKey(static_cast<M4NavButton>(static_cast<int>(synthKey_)),
+                          static_cast<M4NavButton>(static_cast<int>(button))))
+    return true;
 #endif
   return mapButton(button, &HalGPIO::wasPressed);
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
+  if (button == Button::NavNext) return wasReleased(Button::Down) || wasReleased(Button::Right);
+  if (button == Button::NavPrevious) return wasReleased(Button::Up) || wasReleased(Button::Left);
   // Pulse both pressed+released so activities using either edge work in one frame.
   if (button == Button::Back && syntheticBack) return true;
 #if defined(CROSSPOINT_MURPHY_M4)
-  if (synthKind_ == SynthKind::Key && synthKey_ == button) return true;
+  if (synthKind_ == SynthKind::Key &&
+      m4SynthSatisfiesKey(static_cast<M4NavButton>(static_cast<int>(synthKey_)),
+                          static_cast<M4NavButton>(static_cast<int>(button))))
+    return true;
 
   // Fullscreen provider/login pages draw an activity-owned four-slot footer.
   // When that activity opts in, convert a tap on the painted physical slot back
@@ -235,7 +246,11 @@ bool MappedInputManager::wasReleased(const Button button) const {
   return mapButton(button, &HalGPIO::wasReleased);
 }
 
-bool MappedInputManager::isPressed(const Button button) const { return mapButton(button, &HalGPIO::isPressed); }
+bool MappedInputManager::isPressed(const Button button) const {
+  if (button == Button::NavNext) return isPressed(Button::Down) || isPressed(Button::Right);
+  if (button == Button::NavPrevious) return isPressed(Button::Up) || isPressed(Button::Left);
+  return mapButton(button, &HalGPIO::isPressed);
+}
 
 bool MappedInputManager::wasAnyPressed() const {
   return gpio.wasAnyPressed() || gpio.wasTouchActivity();

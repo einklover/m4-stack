@@ -22,6 +22,7 @@
 #include "components/icons/wifi.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ButtonNavigator.h"
 #include "util/M4ListTouchPolicy.h"
 // Angle form: the Phase 1 guard contract scans comment/string-masked source,
 // so the header anchor must stay visible outside a quoted literal.
@@ -542,11 +543,9 @@ void AppListActivity::loop() {
   }
 
   if (count > 0) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-      moveSelection(-kDrawerColumns);
-    } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-      moveSelection(kDrawerColumns);
-    }
+    ButtonNavigator navigator;
+    navigator.onRelease({MappedInputManager::Button::Up}, [this] { moveSelection(-kDrawerColumns); });
+    navigator.onRelease({MappedInputManager::Button::Down}, [this] { moveSelection(kDrawerColumns); });
   }
 }
 
