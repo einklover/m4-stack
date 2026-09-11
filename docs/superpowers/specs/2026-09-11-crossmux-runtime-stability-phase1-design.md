@@ -139,13 +139,15 @@ Back key held to force home.
 
 The settle itself is two `gpio.update()` samples spaced 10 ms apart. Any
 physical key held across the paint boundary thereby commits to level state
-through the 5 ms debounce (`DEBOUNCE_DELAY` in
-`firmware/open-m4-sdk/libs/hardware/InputManager/include/InputManager.h:298`)
-without producing press or release edges, so the first dispatched frames
-observe `isPressed` with silent edges. Synthetic one-shot events are
-unaffected by construction (they bypass the debounced sampler), and no
-journey timing changes: settle runs once at boot, costs 20 ms wall time, and
-never runs on the input hot path.
+(`currentState` / `isPressed`) through the 5 ms debounce (`DEBOUNCE_DELAY` in
+`firmware/open-m4-sdk/libs/hardware/InputManager/include/InputManager.h:298`).
+After those two samples the level is committed; edge masks (`pressedEvents`
+and `releasedEvents`) are not required to be clear yet. The first subsequent
+normal loop-owned `gpio.update()` clears the latched edge unread, so the
+first dispatched frames observe `isPressed` with silent edges. Synthetic
+one-shot events are unaffected by construction (they bypass the debounced
+sampler), and no journey timing changes: settle runs once at boot, costs
+20 ms wall time, and never runs on the input hot path.
 
 CrossMux's absorb exists for the silent-resume path; m4-stack intentionally
 applies this first-paint settle to every boot destination more broadly in
@@ -283,14 +285,19 @@ serial lines and no changed line formats relative to the pinned baselines
 section may appear as additions).
 
 INV-I1 — Silent settle. After the blocking first paint completes, a physical
-key held across the paint boundary is observable as level (`isPressed`) with
-no press or release edge on the first dispatched frames.
-Acceptance: (1) host sampler test — a level held across two updates spaced
-past the debounce commits to `currentState` with `pressedEvents` and
-`releasedEvents` both clear; (2) boot-order assertion — setup performs paint,
-then settle, then power-release wait, verified against the serial boot log on
-a QEMU boot; (3) synthetic events remain one-shot through settle (existing
-synthetic journey assertions unchanged and green).
+key held across the paint boundary commits to level (`currentState` /
+`isPressed`) through the two-sample settle; edge masks stay latched unread
+until the first subsequent normal loop-owned `gpio.update()` clears them, so
+the first dispatched frames observe `isPressed` with no press or release
+edge.
+Acceptance: (1) host sampler test — a level held across two settle samples
+spaced past the debounce commits to `currentState` / level; do not require
+`pressedEvents` or `releasedEvents` clear after those two samples; require
+both masks clear only after the first subsequent normal loop-owned
+`gpio.update()` clears the latched edge unread; (2) boot-order assertion —
+setup performs paint, then settle, then power-release wait, verified against
+the serial boot log on a QEMU boot; (3) synthetic events remain one-shot
+through settle (existing synthetic journey assertions unchanged and green).
 
 INV-N1 — Logical navigation equivalence. Under the Phase 1 portrait policy,
 `NavNext` fires exactly when Down-or-Right would have fired and `NavPrevious`
