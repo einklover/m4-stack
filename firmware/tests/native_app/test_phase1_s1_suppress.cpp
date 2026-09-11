@@ -91,6 +91,7 @@ int main() {
     const uint16_t physicalReleasedMask =
         static_cast<uint16_t>(kBackBit | kOtherBit);
     const bool gesturePulse = true;
+    (void)gesturePulse;
     const bool frameConsumed =
         m4ConsumeSuppressedRelease(mixed, physicalReleasedMask);
     assert(frameConsumed);
