@@ -494,11 +494,17 @@ void waitForPowerRelease() {
 // task (started synchronously in onEnter) remains the single submitter.
 // Misuse (CrossMux-identical intent, adapted to per-activity tasks):
 // never from any display task and never while holding the global guard —
-// debug assert via M4RenderGuard::peek + setup-only call-site restriction;
-// release builds emit the serial diagnostic and return false immediately.
+// debug assert on the calling task itself holding the guard (via
+// xSemaphoreGetMutexHolder) + setup-only call-site restriction; release
+// builds emit the serial diagnostic and return false immediately. A peek
+// failure owned by another task (the owning display task mid-submit) is
+// legitimate transient contention, not misuse: boot waits it out below.
 bool waitForFirstPaint(TickType_t timeout = pdMS_TO_TICKS(2000)) {
-  assert(M4RenderGuard::peek(gM4RenderMutex));
-  if (currentActivity == nullptr || !M4RenderGuard::peek(gM4RenderMutex)) {
+  assert(gM4RenderMutex == nullptr ||
+         xSemaphoreGetMutexHolder(gM4RenderMutex) != xTaskGetCurrentTaskHandle());
+  if (currentActivity == nullptr ||
+      (!M4RenderGuard::peek(gM4RenderMutex) && gM4RenderMutex != nullptr &&
+       xSemaphoreGetMutexHolder(gM4RenderMutex) == xTaskGetCurrentTaskHandle())) {
     Serial.printf("[%lu] [MAIN] First paint wait misuse, skip wait\n", millis());
     return false;
   }
