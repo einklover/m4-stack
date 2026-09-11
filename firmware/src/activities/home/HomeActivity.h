@@ -42,6 +42,28 @@ class HomeActivity final : public Activity {
   SemaphoreHandle_t renderingMutex = nullptr;
   int selectorIndex = 0;
   std::atomic<bool> updateRequired{false};
+  // Phase 1 (INV-R1): two-phase submit snapshot. render() reads scene state
+  // (focus/selector indices, cover/buffer flags, mem-warning flags, menu
+  // config flags) that loop()/backend completion mutate; the publication
+  // itself stays pinned via acquirePublication() in renderSnapshotScene().
+  // displayTaskLoop copies these scalars under the local mutex, releases it,
+  // then renders from the snapshot under the global guard.
+  struct HomeFrameSnapshot {
+    uint8_t sceneFocusIndex = 0;
+    int selectorIndex = 0;
+    bool showMemWarning = false;
+    bool memWarningSelected = false;
+    bool coverRendered = false;
+    bool coverBufferStored = false;
+    bool hasOpdsUrl = false;
+    bool hasjianguoUrl = false;
+    bool hasDataCapsuleUrl = false;
+    bool hasBookmarkNotes = false;
+  };
+  // Staged submit input: written by the display task under the local mutex,
+  // read by render() under the global guard. Single writer/reader (the
+  // display task), so the handoff itself needs no further locking.
+  HomeFrameSnapshot snapshot_;
   bool recentsLoading = false;
   bool recentsLoaded = false;
   // Phase 1 (INV-I1): promoted to atomic — written by the owning display

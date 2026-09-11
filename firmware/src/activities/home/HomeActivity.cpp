@@ -29,9 +29,13 @@
 #include "components/themes/BaseTheme.h"
 #include "fontIds.h"
 #include "util/ButtonNavigator.h"
+#include "util/M4RenderGuard.h"
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
 #include "util/HomeRef.h"
+
+// Phase 1 (INV-R1): process-wide render-submit mutex owned by main.cpp.
+extern SemaphoreHandle_t gM4RenderMutex;
 #include "util/TouchHitGeometry.h"
 #include "util/HomeMofeiTemplateOverlay.h"
 #include "ui/scene/GfxSceneRenderer.h"
@@ -871,6 +875,7 @@ void HomeActivity::handleSnapshotInput() {
 }
 
 void HomeActivity::renderSnapshotScene() {
+  const HomeFrameSnapshot& frame = snapshot_;
   if (!backendCtx) {
     renderer.clearScreen();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -891,7 +896,7 @@ void HomeActivity::renderSnapshotScene() {
   UiScene::UiSceneAssets assets;
   HomeScene::homePublicationToAssets(pub, assets);
   HomeScene::HomeSceneSnapshot snapshot = pub.snapshot;
-  snapshot.selectedIndex = sceneFocusIndex;
+  snapshot.selectedIndex = frame.sceneFocusIndex;
   const auto source = HomeScene::HomeSceneModel::bindingSource(snapshot);
   UiScene::GfxSceneRenderer sceneRenderer;
   // Pure render: only reads snapshot + assets arena + package + framebuffer. No SD/Bitmap/JSON.
@@ -1644,19 +1649,78 @@ void HomeActivity::loop() {
 void HomeActivity::displayTaskLoop() {
   while (true) {
 #ifdef CROSSPOINT_MURPHY_M4
-    bool need = false;
-    if (backendCtx && backendCtx->updateRequired.exchange(false, std::memory_order_acq_rel)) need = true;
-    if (updateRequired.exchange(false, std::memory_order_acq_rel)) need = true;
-    if (need) {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      render();
-      xSemaphoreGive(renderingMutex);
+    bool backendNeed = backendCtx && backendCtx->updateRequired.exchange(false, std::memory_order_acq_rel);
+    bool localNeed = updateRequired.exchange(false, std::memory_order_acq_rel);
+    if (backendNeed || localNeed) {
+      HomeFrameSnapshot frame;
+      bool haveSnapshot = false;
+      // Phase 1: copy scalar scene state under the local mutex (bounded
+      // wait, no portMAX_DELAY), then release it before taking the global
+      // guard, so global is never acquired while holding local.
+      if (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        frame.sceneFocusIndex = sceneFocusIndex;
+        frame.selectorIndex = selectorIndex;
+        frame.showMemWarning = showMemWarning;
+        frame.memWarningSelected = memWarningSelected;
+        frame.coverRendered = coverRendered;
+        frame.coverBufferStored = coverBufferStored;
+        frame.hasOpdsUrl = hasOpdsUrl;
+        frame.hasjianguoUrl = hasjianguoUrl;
+        frame.hasDataCapsuleUrl = hasDataCapsuleUrl;
+        frame.hasBookmarkNotes = hasBookmarkNotes;
+        snapshot_ = frame;
+        haveSnapshot = true;
+        xSemaphoreGive(renderingMutex);
+      } else {
+        // Local unavailable: re-arm the wake flags so the frame is not lost.
+        if (backendNeed && backendCtx) backendCtx->updateRequired.store(true, std::memory_order_release);
+        if (localNeed) updateRequired.store(true, std::memory_order_release);
+        else if (backendNeed && !backendCtx) updateRequired.store(true, std::memory_order_release);
+      }
+      if (haveSnapshot) {
+        M4RenderGuard renderGuard(gM4RenderMutex);
+        if (renderGuard.owns()) {
+          render();
+        } else {
+          // Global contended: never submit without the guard; re-arm instead.
+          if (backendNeed && backendCtx) backendCtx->updateRequired.store(true, std::memory_order_release);
+          updateRequired.store(true, std::memory_order_release);
+        }
+      }
     }
 #else
     if (updateRequired.exchange(false, std::memory_order_acq_rel)) {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      render();
-      xSemaphoreGive(renderingMutex);
+      HomeFrameSnapshot frame;
+      bool haveSnapshot = false;
+      // Phase 1: copy scalar scene state under the local mutex (bounded
+      // wait, no portMAX_DELAY), then release it before taking the global
+      // guard, so global is never acquired while holding local.
+      if (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        frame.selectorIndex = selectorIndex;
+        frame.showMemWarning = showMemWarning;
+        frame.memWarningSelected = memWarningSelected;
+        frame.coverRendered = coverRendered;
+        frame.coverBufferStored = coverBufferStored;
+        frame.hasOpdsUrl = hasOpdsUrl;
+        frame.hasjianguoUrl = hasjianguoUrl;
+        frame.hasDataCapsuleUrl = hasDataCapsuleUrl;
+        frame.hasBookmarkNotes = hasBookmarkNotes;
+        snapshot_ = frame;
+        haveSnapshot = true;
+        xSemaphoreGive(renderingMutex);
+      } else {
+        // Local unavailable: re-arm so the frame is not lost.
+        updateRequired.store(true, std::memory_order_release);
+      }
+      if (haveSnapshot) {
+        M4RenderGuard renderGuard(gM4RenderMutex);
+        if (renderGuard.owns()) {
+          render();
+        } else {
+          // Global contended: never submit without the guard; re-arm instead.
+          updateRequired.store(true, std::memory_order_release);
+        }
+      }
     }
 #endif
     vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -1664,6 +1728,7 @@ void HomeActivity::displayTaskLoop() {
 }
 
 void HomeActivity::renderMemWarning() {
+  const HomeFrameSnapshot& frame = snapshot_;
   renderer.clearScreen();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
@@ -1704,7 +1769,7 @@ void HomeActivity::renderMemWarning() {
   const int cancelX = (pageWidth - btnRowWidth) / 2;
   const int restartX = cancelX + cancelWidth + btnSpacing;
 
-  if (!memWarningSelected) {
+  if (!frame.memWarningSelected) {
     // "取消" selected
     renderer.fillRect(cancelX - 4, btnY - 2, cancelWidth + 8, lineHeight + 4, true);
     M4UiText::draw(renderer, UI_12_FONT_ID, cancelX, btnY, cancelText, false);
@@ -1720,8 +1785,12 @@ void HomeActivity::renderMemWarning() {
 }
 
 void HomeActivity::render() {
+  // Submit-path input staged by displayTaskLoop(): scalars copied under the
+  // local mutex, read here under the global guard. The publication itself
+  // stays pinned via acquirePublication() in renderSnapshotScene().
+  const HomeFrameSnapshot& frame = snapshot_;
   // Show memory warning dialog if triggered
-  if (showMemWarning) {
+  if (frame.showMemWarning) {
     renderMemWarning();
     return;
   }
@@ -1750,7 +1819,7 @@ void HomeActivity::render() {
     if (fengyan) {
       fengyan->drawRecentBookCoverFocus(renderer,
                                         Rect{0, homeLayout.coverTop, pageWidth, homeLayout.coverHeight},
-                                        recentBooks, selectorIndex);
+                                        recentBooks, frame.selectorIndex);
     }
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     (void)renderer.storeLastShown();
@@ -1768,7 +1837,7 @@ void HomeActivity::render() {
   // from a previous render before the thumbnail was generated). Restoring it would pollute the
   // cleared white background, and since drawBitmap1Bit only draws black pixels (white pixels are
   // transparent), the old black fill would bleed through the light areas of the new thumbnail.
-  const bool shouldRestoreBuffer = coverRendered && coverBufferStored;
+  const bool shouldRestoreBuffer = frame.coverRendered && frame.coverBufferStored;
   bool bufferRestored = shouldRestoreBuffer && restoreCoverBuffer();
 
   // Keep the home status bar clean; the legacy quote/custom-status-bar
@@ -1776,7 +1845,8 @@ void HomeActivity::render() {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "主页");
 
   GUI.drawRecentBookCover(renderer, Rect{0, homeLayout.coverTop, pageWidth, homeLayout.coverHeight},
-                          recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+                          recentBooks, frame.selectorIndex, frame.coverRendered, frame.coverBufferStored,
+                          bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this));
   drawHomeSectionRule(renderer, metrics, homeLayout, pageWidth);
 
@@ -1788,19 +1858,19 @@ void HomeActivity::render() {
   } else {
     menuItems = {L(Str::kFileManager), L(Str::kReadingHistory)};
     menuIcons = {UIIcon::Library, UIIcon::Recent};
-    if (hasOpdsUrl) {
+    if (frame.hasOpdsUrl) {
       menuItems.push_back(L(Str::kOPDSBrowser));
       menuIcons.push_back(UIIcon::Hotspot);
     }
-    if (hasjianguoUrl) {
+    if (frame.hasjianguoUrl) {
       menuItems.push_back(L(Str::kJianGuoDisk));
       menuIcons.push_back(UIIcon::Transfer);
     }
-    if (hasDataCapsuleUrl) {
+    if (frame.hasDataCapsuleUrl) {
       menuItems.push_back(L(Str::kDataCapsule));
       menuIcons.push_back(UIIcon::Cog);
     }
-    if (hasBookmarkNotes) {
+    if (frame.hasBookmarkNotes) {
       menuItems.push_back(L(Str::kBookmarkNotes));
       menuIcons.push_back(UIIcon::Book);
     }
@@ -1821,7 +1891,7 @@ void HomeActivity::render() {
       renderer,
       menuRect,
       static_cast<int>(menuItems.size()),
-      selectorIndex - recentBooks.size(),
+      frame.selectorIndex - recentBooks.size(),
       [&menuItems](int index) { return std::string(menuItems[index]); },
       [&menuIcons](int index) -> UIIcon { return menuIcons[index]; });
 
