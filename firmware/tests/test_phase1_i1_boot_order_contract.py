@@ -154,7 +154,7 @@ check("b-two-sample-settle", SETTLE_PAT.search(settle_span) is not None,
 # --- (c) settle site forces no edge-mask clear; loop owns the first update ---
 if wait_pos >= 0 and SETTLE_PAT.search(settle_span) is not None:
     m = SETTLE_PAT.search(settle_span)
-    settle_site = settle_span[wait_pos : wait_pos + m.end()]
+    settle_site = settle_span[: m.end()]
     check("c-no-edge-clear-at-settle",
           "pressedEvents" not in settle_site and "releasedEvents" not in settle_site,
           "settle site must not assert/force pressedEvents/releasedEvents clear")
