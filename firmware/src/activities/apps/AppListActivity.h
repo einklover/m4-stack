@@ -5,6 +5,7 @@
 #include "components/themes/BaseTheme.h"
 #include "util/TouchHitGeometry.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -89,6 +90,12 @@ class AppListActivity final : public ActivityWithSubactivity {
 
   TaskHandle_t displayTaskHandle_ = nullptr;
   SemaphoreHandle_t renderingMutex_ = nullptr;
+  // Phase 1 (INV-R1) fix: cooperative display-task shutdown (same pattern as
+  // MyLibrary). onExit asks the task to self-terminate (it exits only while
+  // holding no locks) and joins boundedly, so a mid-submit task is never
+  // deleted while owning the process-wide guard.
+  std::atomic<bool> exitDisplayTask_{false};
+  std::atomic<bool> displayTaskExited_{false};
   // Staged submit input: written by the display task under the local mutex,
   // read by render() under the global guard. Single writer/reader (the display
   // task), so the handoff itself needs no further locking.

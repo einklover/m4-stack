@@ -166,6 +166,13 @@ void AppListActivity::taskTrampoline(void* param) {
 
 void AppListActivity::displayTaskLoop() {
   while (true) {
+    if (exitDisplayTask_.load(std::memory_order_acquire)) {
+      // Cooperative shutdown: exit only while holding no locks, so the
+      // process-wide guard is never left owned by a deleted task.
+      displayTaskHandle_ = nullptr;
+      displayTaskExited_.store(true, std::memory_order_release);
+      vTaskDelete(nullptr);
+    }
     if (updateRequired_) {
       AppListFrameSnapshot snapshot;
       bool shouldSubmit = false;
@@ -274,6 +281,8 @@ void AppListActivity::reload() {
 void AppListActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex_ = xSemaphoreCreateMutex();
+  exitDisplayTask_.store(false, std::memory_order_release);
+  displayTaskExited_.store(false, std::memory_order_release);
   reload();
   updateRequired_ = true;
   xTaskCreate(&AppListActivity::taskTrampoline, "AppList", 4096, this, 1, &displayTaskHandle_);
@@ -281,15 +290,28 @@ void AppListActivity::onEnter() {
 
 void AppListActivity::onExit() {
   ActivityWithSubactivity::onExit();
-  if (renderingMutex_) xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-  if (displayTaskHandle_) {
-    vTaskDelete(displayTaskHandle_);
-    displayTaskHandle_ = nullptr;
+  // Cooperative display-task shutdown (same pattern as MyLibrary): the task
+  // may own the process-wide submit guard mid-render; deleting it then would
+  // stick the mutex for all activities. Ask it to self-terminate (it exits
+  // holding no locks) and join boundedly; force-delete only past the deadline.
+  exitDisplayTask_.store(true, std::memory_order_release);
+  for (int i = 0; i < 300; ++i) {
+    if (displayTaskExited_.load(std::memory_order_acquire)) break;
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
   if (renderingMutex_) {
-    xSemaphoreGive(renderingMutex_);
+    const bool exitLocked = (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE);
+    if (displayTaskHandle_) {
+      // Deadline overrun: last resort (may strand an in-flight submit).
+      vTaskDelete(displayTaskHandle_);
+      displayTaskHandle_ = nullptr;
+    }
+    if (exitLocked) xSemaphoreGive(renderingMutex_);
     vSemaphoreDelete(renderingMutex_);
     renderingMutex_ = nullptr;
+  } else if (displayTaskHandle_) {
+    vTaskDelete(displayTaskHandle_);
+    displayTaskHandle_ = nullptr;
   }
 }
 

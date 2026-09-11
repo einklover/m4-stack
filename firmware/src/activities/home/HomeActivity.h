@@ -40,6 +40,12 @@ class HomeActivity final : public Activity {
   uint8_t sceneFocusIndex = 0;
 #endif
   SemaphoreHandle_t renderingMutex = nullptr;
+  // Phase 1 (INV-R1) fix: cooperative display-task shutdown (same pattern as
+  // MyLibrary). onExit asks the task to self-terminate (it exits only while
+  // holding no locks) and joins boundedly, so a mid-submit task is never
+  // deleted while owning the process-wide guard.
+  std::atomic<bool> exitDisplayTask_{false};
+  std::atomic<bool> displayTaskExited_{false};
   int selectorIndex = 0;
   std::atomic<bool> updateRequired{false};
   // Phase 1 (INV-R1): two-phase submit snapshot. render() reads scene state

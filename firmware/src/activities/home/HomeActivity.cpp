@@ -1186,6 +1186,8 @@ void HomeActivity::onEnter() {
   }
 
   renderingMutex = xSemaphoreCreateMutex();
+  exitDisplayTask_.store(false, std::memory_order_release);
+  displayTaskExited_.store(false, std::memory_order_release);
 
   // Check if OPDS browser URL is configured
   hasOpdsUrl = strlen(SETTINGS.opdsServerUrl) > 0;
@@ -1278,14 +1280,29 @@ void HomeActivity::onExit() {
   }
 #endif
 
-  // Wait until not rendering to delete task to avoid killing mid-instruction to EPD
-  xSemaphoreTake(renderingMutex, portMAX_DELAY);
-  if (displayTaskHandle) {
+  // Cooperative display-task shutdown (same pattern as MyLibrary): the task may
+  // own the process-wide submit guard mid-render; deleting it then would stick
+  // the mutex for all activities. Ask it to self-terminate (it exits holding
+  // no locks) and join boundedly; force-delete only past the deadline.
+  exitDisplayTask_.store(true, std::memory_order_release);
+  for (int i = 0; i < 300; ++i) {
+    if (displayTaskExited_.load(std::memory_order_acquire)) break;
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (renderingMutex) {
+    const bool exitLocked = (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE);
+    if (displayTaskHandle) {
+      // Deadline overrun: last resort (may strand an in-flight submit).
+      vTaskDelete(displayTaskHandle);
+      displayTaskHandle = nullptr;
+    }
+    if (exitLocked) xSemaphoreGive(renderingMutex);
+    vSemaphoreDelete(renderingMutex);
+    renderingMutex = nullptr;
+  } else if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
   }
-  vSemaphoreDelete(renderingMutex);
-  renderingMutex = nullptr;
   firstRenderDone.store(false, std::memory_order_release);
 
   // Free the stored cover buffer if any
@@ -1648,6 +1665,13 @@ void HomeActivity::loop() {
 
 void HomeActivity::displayTaskLoop() {
   while (true) {
+    if (exitDisplayTask_.load(std::memory_order_acquire)) {
+      // Cooperative shutdown: exit only while holding no locks, so the
+      // process-wide guard is never left owned by a deleted task.
+      displayTaskHandle = nullptr;
+      displayTaskExited_.store(true, std::memory_order_release);
+      vTaskDelete(nullptr);
+    }
 #ifdef CROSSPOINT_MURPHY_M4
     bool backendNeed = backendCtx && backendCtx->updateRequired.exchange(false, std::memory_order_acq_rel);
     bool localNeed = updateRequired.exchange(false, std::memory_order_acq_rel);
