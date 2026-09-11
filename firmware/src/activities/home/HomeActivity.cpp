@@ -28,6 +28,7 @@
 #include "components/UITheme.h"
 #include "components/themes/BaseTheme.h"
 #include "fontIds.h"
+#include "util/ButtonNavigator.h"
 #include "util/M4UiText.h"
 #include "util/StringUtils.h"
 #include "util/HomeRef.h"
@@ -817,15 +818,18 @@ void HomeActivity::handleSnapshotInput() {
   // backend. Global Home gestures are handled by main.cpp before this loop.
   const int focusCount = snapshot.recentCount + snapshot.appCount;
   if (focusCount > 0) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+    ButtonNavigator navigator;
+    bool previousPressed = false;
+    bool nextPressed = false;
+    navigator.onPreviousPress([&] { previousPressed = true; });
+    navigator.onNextPress([&] { nextPressed = true; });
+    if (previousPressed) {
       sceneFocusIndex = static_cast<uint8_t>((sceneFocusIndex + focusCount - 1) % focusCount);
       if (backendCtx) backendCtx->updateRequired.store(true, std::memory_order_release);
       else updateRequired.store(true, std::memory_order_release);
       return;
     }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+    if (nextPressed) {
       sceneFocusIndex = static_cast<uint8_t>((sceneFocusIndex + 1) % focusCount);
       if (backendCtx) backendCtx->updateRequired.store(true, std::memory_order_release);
       else updateRequired.store(true, std::memory_order_release);
