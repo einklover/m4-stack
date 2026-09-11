@@ -86,21 +86,31 @@ in place; the design constrains how they touch shared state, not when they run.
 | `src/activities/RenderLock.h` — RAII over one mutex, `unlock`, `peek` | Port nearly verbatim as a new `M4RenderGuard` over one process-wide mutex owned alongside `currentActivity` in `main.cpp`. Only the name and owner change. |
 | `ActivityManager::requestUpdateAndWait` (`ActivityManager.h:169`, never called from render task or under lock) | Adapt as a boot-only blocking primitive with identical misuse rules. The notify-a-task half is implemented directly (run the foreground render synchronously under guard) because there is no central render task yet. |
 | Boot first-paint plus absorb (`src/main.cpp:778-787`: blocking paint, then two `gpio.update()` calls spaced past the 5 ms debounce) | Port nearly verbatim into the m4-stack boot path after the initial activity enter and before `waitForPowerRelease` (`firmware/src/main.cpp:1279` region). Spacing uses the existing 10 ms delay idiom. |
-| `MappedInputManager::wasLongPressed` / `suppressNextRelease` / `consumeSuppressedRelease` (`MappedInputManager.cpp:488-511`) and frame-top consumption (`ActivityManager.cpp:115`) | Adapt minus BLE edge arrays and minus the 16-button mask (9-button scope). Frame-top check is placed in the m4-stack main loop between gesture handling and `currentActivity->loop()`. |
+| `MappedInputManager::wasLongPressed` / `suppressNextRelease` / `consumeSuppressedRelease` (`MappedInputManager.cpp:488-511`) and frame-top consumption (`ActivityManager.cpp:115`) | Adapt minus BLE edge arrays; eleven enumerators total fit a `uint16_t` suppression mask. Physical-only state — synthetic edges neither set nor clear suppression. Frame-top check is placed in the m4-stack main loop between gesture handling and `currentActivity->loop()`, with frame-skip (not dispatch-rest) semantics on consume. |
 | `ButtonNavigator` press/release/continuous structure plus `NavNext`/`NavPrevious` logical buttons (`util/ButtonNavigator.h:49-50`, `MappedInputManager.h:27-28`) | Adapt: port the two logical enumerators and the navigator structure; resolve them to Down/Right and Up/Left under the Phase 1 portrait policy with no orientation swap. |
 | `ActivityManager` stack, pending actions, render task, `replaceActivityWith`, `goTo…` methods | Not copied. Explicitly excluded above. |
-| `UiSceneActionQueue` fixed-capacity ring | Not copied in Phase 1 (no buffer is built). Recorded here only as the template for a later phase, so a future buffer matches house style. |
+| Deferred buffering concepts | Not in Phase 1 and not referenced further by this spec. Any future buffer is a later phase's design, not this one. |
 
 ## Item 1 — Render guard plus boot-only blocking primitive
 
 A single process-wide rendering mutex is created alongside `currentActivity`
 in `main.cpp` and wrapped in a new RAII guard type following `RenderLock`
 (move-forbidden, explicit `unlock`, static `peek` for early-abort checks).
-Every framebuffer mutation and every display-submission call for an activity
-instance happens while holding that instance's guard acquisition. Pure state
-writes that a render pass consumes (selection index, dirty flags, menu
-indices) take the guard for the write; this closes the AppList defect where
-`selectIndex` writes outside the mutex the display task reads under.
+Strict lock order holds everywhere: the global guard is acquired before any
+per-activity local rendering mutex (for example AppList's `renderingMutex_`),
+and never the reverse. Scope is narrowed by kind: pure state writes that a
+render pass consumes (selection index, dirty flags, menu indices) take only
+the activity's local mutex — this closes the AppList defect where
+`selectIndex` writes outside the mutex the display task reads under. The
+global guard covers framebuffer mutation plus display submission only.
+
+Display tasks use a two-phase pattern so input writers never stall behind an
+EPD submit: acquire the local mutex, snapshot the needed state, release the
+local mutex, then acquire the global guard and render plus submit. The local
+mutex is therefore never held across a blocking submit. Synchronous render
+paths (main task, including the boot first paint) acquire global then local,
+in order, and release in reverse. No path acquires local then global, so the
+order is deadlock-free by construction.
 
 `requestUpdateAndWait` is introduced with CrossMux-identical misuse rules: it
 must never be called from a render task or while holding the guard (assert in
@@ -115,8 +125,19 @@ flag is created, since per-activity tasks keep their own wake conditions.
 
 ## Item 2 — First-paint input settle
 
-Immediately after the blocking first paint and before `waitForPowerRelease`,
-the boot path performs two `gpio.update()` samples spaced 10 ms apart. Any
+Duplicate boot submission is prevented by ordering: the synchronous guarded
+first paint runs before the destination activity's display task starts, or
+the task's submit path is explicitly gated on a first-paint-complete signal —
+one of the two holds for the boot destination, never neither, so exactly one
+context submits the first frame. Settle placement is pinned as intentional:
+the two-sample settle runs after the boot destination and Back-held decision
+(the home-or-reader branch at `firmware/src/main.cpp:1250-1269`, already
+marked by the `[MAIN] home1` / `[MAIN] reader` serial lines) and before
+`waitForPowerRelease`. Placing settle after the decision guarantees the
+absorb covers whichever activity actually starts dispatching, including a
+Back key held to force home.
+
+The settle itself is two `gpio.update()` samples spaced 10 ms apart. Any
 physical key held across the paint boundary thereby commits to level state
 through the 5 ms debounce (`DEBOUNCE_DELAY` in
 `firmware/open-m4-sdk/libs/hardware/InputManager/include/InputManager.h:298`)
@@ -126,38 +147,68 @@ unaffected by construction (they bypass the debounced sampler), and no
 journey timing changes: settle runs once at boot, costs 20 ms wall time, and
 never runs on the input hot path.
 
+CrossMux's absorb exists for the silent-resume path; m4-stack intentionally
+applies this first-paint settle to every boot destination more broadly in
+Phase 1. That broader application is an adapted behavior for the observed
+first-paint phantom-edge defect, not verbatim parity with CrossMux.
+
 ## Item 3 — Unify navigation into the existing ButtonNavigator
 
 `MappedInputManager::Button` gains `NavNext` and `NavPrevious`, appended after
-`PageForward` so all nine existing enumerator ordinals are unchanged. The
-existing `mapButton` resolves `NavNext` to Down-or-Right and `NavPrevious` to
-Up-or-Left under the Phase 1 portrait policy; orientation-dependent axis
-swapping is deferred (see Non-goals). `ButtonNavigator::getNextButtons` and
+`PageForward` so all nine existing enumerator ordinals are unchanged, giving
+eleven enumerators total whose edge state fits a `uint16_t` mask with room to
+spare. Equivalence is defined at edge level, not GPIO level:
+`wasPressed(NavNext)` equals Down-or-Right pressed including synthetic keys
+(a synthetic Key for Down reads as a `NavNext` press and release in the same
+frame, exactly as it reads as Down), `wasReleased(NavNext)` equals
+Down-or-Right released including synthetic keys, and symmetrically
+`NavPrevious` equals Up-or-Left on both edges. Continuous navigation
+preserves level-OR semantics through `isPressed` over the same member sets.
+Orientation-dependent axis swapping is deferred (see Non-goals); Phase 1 keeps
+current portrait semantics. `ButtonNavigator::getNextButtons` and
 `getPreviousButtons` return the single logical button each; the
-press/release/continuous helpers and all index/page math are untouched.
+press/release/continuous helpers and all index/page math are untouched. Any
+inert logical enumerator left unused by a rollback may be removed in a later
+cleanup; while present it changes no dispatch.
 
-Adoption respects axis semantics so behavior cannot change silently. Linear
-lists (MyLibrary file rows, settings rows) move to `onNextRelease` /
-`onPreviousRelease` with the logical buttons. Grid surfaces keep explicit
-axes: AppList vertical moves stay on the Down/Up edge sets via the existing
-explicit-button overloads (`onRelease` over a button list), because AppList
-assigns Left to the uninstall dialog and Right to install — folding those
-into `NavPrevious`/`NavNext` would remap working keys. No second navigator
-subsystem is created; every navigation call site ends on `ButtonNavigator`.
+Adoption respects axis semantics so behavior cannot change silently — see the
+per-site table below. No second navigator subsystem is created; every
+navigation call site ends on `ButtonNavigator`.
 
 ## Item 4 — Suppressed-release / consume-once semantics
 
 `MappedInputManager` gains per-button long-press state: a one-shot threshold
 event while held, a suppression record for the consumed press, and a
 frame-top `consumeSuppressedRelease` check placed in the main loop between
-gesture handling and `currentActivity->loop()`. When the check reports a
-consumed release, the frame dispatches no activity input (render tasks run
-independently). A fired long-press therefore produces exactly one action and
-its release edge never dispatches a second one; edges on unrelated buttons in
-the same frame still dispatch normally. Thresholds at existing long-press
-sites (long-press Back to home/root with their current millisecond constants)
-are preserved bit-for-bit; only the firing and release-consumption mechanism
-changes, and only where new contracts cover it.
+gesture handling and `currentActivity->loop()`. Suppression is
+physical-button and long-press state only for Phase 1: synthetic edges
+neither set nor clear suppression, so the QEMU/m4adb one-shot contract is
+untouched. The single initial converted site is the verified existing
+long-press Back-to-home handler in the main loop
+(`firmware/src/main.cpp:1517-1529`, 1.5 s threshold with its
+already-fired latch); its threshold and destination are preserved
+bit-for-bit and only the firing plus release-consumption mechanism changes,
+covered by new contracts.
+
+Consumed frames follow CrossMux frame-skip semantics: when the check reports
+a consumed release, the frame returns before activity and sub-activity
+dispatch, and coincident unrelated edges or gesture pulses in that same frame
+are dropped with it — they are not deferred and not replayed. Held levels may
+still be observed on the next frame through the normal level reads. Render
+tasks run independently of the skip. A fired long-press therefore produces
+exactly one action and its release edge never dispatches a second one.
+
+## Per-site adoption table
+
+Edge kinds are preserved at every site: press-edge sites stay press-edge,
+release-edge sites stay release-edge. Only the dispatch helper changes.
+
+| Site | Before | After | Notes |
+|---|---|---|---|
+| AppList grid (`AppListActivity`, release edges) | Up/Down release hand-rolled, step one row (±3); Left release opens uninstall dialog when a plugin is selected; Right release opens install; Confirm release opens; Back release goes back | Vertical moves via explicit-axis navigator overloads over the Down/Up edge sets; Left/Right/Confirm/Back keep their exact bindings through navigator helpers | Left/Right stay out of `NavPrevious`/`NavNext` because they carry install/uninstall semantics — folding them in would remap working keys. This still satisfies INV-N1: N1 is a mapping contract on the logical buttons (verified at the `MappedInputManager` level over every button-by-edge combination including synthetic keys), not a forced call-site conversion. |
+| MyLibrary rows (`MyLibraryActivity.cpp:687-756`, release edges) | Up-or-Left release previous; Down-or-Right release next | `onPreviousRelease` / `onNextRelease` with logical buttons | Direct mapping; identical behavior under the portrait policy. Preview-menu rows keep their existing menu-index behavior. |
+| Home lists (`HomeActivity.cpp:810-834`, press edges) | Up-or-Left pressed previous; Down-or-Right pressed next; Confirm released; Back pressed early-return | `onPreviousPress` / `onNextPress` with logical buttons; Confirm and Back unchanged | Press-edge kind deliberately preserved — the navigator press family, not release, is used. No edge-kind migration. |
+| Settings lists (representative `SettingsActivity.cpp:194,291,303-306`, mixed) | Back pressed; Confirm released; Up/Down/Left/Right each released with distinct per-direction handling | Up/Down pairs to logical release overloads; Left/Right keep explicit bindings wherever they carry distinct actions; Back/Confirm unchanged | Template for remaining settings rows: convert only the pairs that are pure previous/next. |
 
 ## Render ownership rule
 
@@ -165,7 +216,11 @@ Exactly one execution context emits frames per activity instance. For an
 activity with a display task, that task is the sole submitter; for an
 activity with a synchronous render path, the main-task render call is the
 sole submitter. All framebuffer mutation and all display submission occur
-under a guard acquisition held by the submitting context. Child activities
+under the global guard held by the submitting context, combined with the
+activity's local mutex per the lock order (global before local, never
+reverse): display tasks snapshot shared state under the local mutex, release
+it, then render plus submit under the global guard, so input writers taking
+only the local mutex never stall behind an EPD submit. Child activities
 render under the same rule: `ActivityWithSubactivity` display paths skip or
 defer exactly as today (`displayTaskLoop` already skips when a sub-activity
 is present), with guard acquisitions added around the existing submit calls
@@ -174,17 +229,23 @@ a submit call; it only serializes them.
 
 ## Error and timeout behavior
 
-`requestUpdateAndWait` takes a bounded wait of 2 seconds, chosen to exceed
-the slowest FAST submit path with margin while keeping a wedged boot
-diagnosable rather than silent. On timeout it emits the existing activity
-enter/exit style serial diagnostic, records a boot-render-miss flag readable
-through the established debug/status surface, and proceeds to settle anyway;
-boot never halts on a missed first paint. Misuse (invocation from a render
-task or under a held guard) asserts in debug builds and degrades to a
-diagnostic plus immediate return in release builds. Guard acquisition on new
-paths uses bounded waits with a missed-render counter; no new unbounded
-`portMAX_DELAY` wait is introduced. Governance refusal does not exist in this
-phase, so no transition can fail for memory reasons.
+`requestUpdateAndWait` takes a bounded wait of exactly 2 seconds, chosen to
+exceed the slowest FAST submit path with margin while keeping a wedged boot
+diagnosable rather than silent. Diagnostics are serial-only in Phase 1:
+success emits `[MAIN] First paint wait ok`, timeout emits
+`[MAIN] First paint wait timeout, proceed to settle`, and settle completion
+emits `[MAIN] Input settle done`, all in the existing `[<millis>] [MAIN]`
+format. On timeout the primitive logs its diagnostic and returns failure to
+the caller; the boot caller records that failure in its own serial line and
+proceeds to settle without creating a second render owner — the timed-out
+submit is abandoned, never retried alongside a new one, so single ownership
+survives the failure path. Boot never halts on a missed first paint. Misuse
+(invocation from a render task or under a held guard) asserts in debug builds
+and degrades to a serial diagnostic plus immediate return in release builds.
+Guard acquisition on new paths uses bounded waits; no new unbounded
+`portMAX_DELAY` wait is introduced. No global render-dispatch flag exists, so
+there is no cross-activity wait state to drain or reset. Governance refusal
+does not exist in this phase, so no transition can fail for memory reasons.
 
 ## Data and control flow
 
@@ -208,12 +269,18 @@ suites run unchanged as regression gates throughout.
 INV-R1 — Guarded emission. For every activity instance, all framebuffer
 mutation and all display submission occur under a guard acquisition held by
 the single submitting context for that instance.
-Acceptance: (1) host contract with a recording renderer and an instrumented
-guard — N signaling threads plus guarded state writes produce a monotonic
-submission generation with no interleaved or torn submissions; (2) AppList
+Acceptance: (1) host contract on one activity instance with a recording
+renderer and an instrumented guard — K writer threads mutating selection
+under the local mutex while the submitter runs the two-phase
+snapshot-then-submit pattern: the painted highlight always equals the
+protected selectedIndex, the render generation increments exactly once per
+successful submit, and no interleaved or torn submission occurs; (2) AppList
 contract — a selection write concurrent with a render pass leaves index, flag,
 and painted highlight mutually consistent; (3) full QEMU journey suite green
-with no new serial render anomalies.
+with no serial anomalies, where anomaly-free is defined strictly as no new
+serial lines and no changed line formats relative to the pinned baselines
+(the no-format-change rule — only the three named boot markers in the error
+section may appear as additions).
 
 INV-I1 — Silent settle. After the blocking first paint completes, a physical
 key held across the paint boundary is observable as level (`isPressed`) with
@@ -231,19 +298,30 @@ exactly when Up-or-Left would have fired; all existing index and page math is
 unchanged.
 Acceptance: (1) host contract enumerating every button-by-edge combination
 through both the legacy getters and the logical mapping, asserting identical
-outcomes; (2) AppList grid contract — vertical moves still step one row and
-Left/Right keep their uninstall/install bindings after adoption; (3) MyLibrary
-journey navigation (down/confirm/back) green without timing adjustments.
+outcomes; (2) synthetic-through-navigator contract — injected synthetic Keys
+for Down, Right, Up, and Left each read through `wasPressed`/`wasReleased`
+of `NavNext`/`NavPrevious` exactly as through the member buttons, and
+synthetic injection never touches suppression state; (3) AppList grid contract
+— vertical moves still step one row and Left/Right keep their
+uninstall/install bindings after adoption; (4) MyLibrary journey navigation
+(down/confirm/back) green without timing adjustments.
 
-INV-S1 — Consume-once release. A fired long-press produces exactly one action
-and its release edge never dispatches again; edges on unrelated buttons in
-the same frame still dispatch; the next fresh press on the same button works
-normally.
+INV-S1 — Consume-once release with frame skip. A fired long-press produces
+exactly one action and its release edge never dispatches again; when the
+frame-top check consumes a suppressed release, the frame returns before
+activity and sub-activity dispatch, so coincident unrelated edges or gesture
+pulses in that same frame are dropped rather than dispatched; held levels
+remain observable on the next frame through the normal level reads; the next
+fresh press on the same button works normally.
 Acceptance: (1) host contract driving press → hold past threshold → release,
 asserting one callback, a consumed release, and a subsequent fresh press
-firing again; (2) mixed-frame contract asserting an unrelated button edge in
-the release frame still dispatches; (3) long-press Back journeys (home/root)
-green with thresholds unchanged.
+firing again; (2) mixed-frame contract asserting an unrelated button edge and
+a gesture pulse coincident with the consumed release frame are both dropped
+while the held level reads correctly on the following frame; (3) synthetic
+edges proven inert to suppression — a synthetic Key sequence around a
+suppressed release neither sets, clears, nor observes suppression;
+(4) long-press Back journey (home, 1.5 s site) green with threshold
+unchanged.
 
 ## Migration order
 
@@ -262,7 +340,9 @@ because every new mechanism defaults off.
 Follow the established P0–P2 rhythm: RED host contracts first, implementation
 second, QEMU/m4adb suites as unchanged regression gates. No behavior flips
 without a covering contract from the invariant list above. Serial-log
-assertions may gain new lines (settle marker, boot-render-miss diagnostic)
+assertions may gain exactly the three named boot markers from the error
+section (`[MAIN] First paint wait ok`, `[MAIN] First paint wait timeout,
+proceed to settle`, `[MAIN] Input settle done`)
 but no existing line may change format; any journey timing stays exactly as
 pinned. Memory-governance contracts are untouched — attribution wiring is a
 later phase, so nothing here may alter allocation behavior or heap baselines.
