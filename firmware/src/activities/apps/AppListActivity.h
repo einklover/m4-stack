@@ -64,6 +64,19 @@ class AppListActivity final : public ActivityWithSubactivity {
     std::vector<uint8_t> pluginIcon;
   };
 
+  // Phase 1 (INV-R1): dirty-frame snapshot. Indices alone are insufficient
+  // because reload() replaces items_/apps_ wholesale (torn-drawer hazard);
+  // the display task deep-copies the dirty frame under the local mutex and
+  // render() consumes it under the global guard. The drawer is small, so a
+  // dirty-only deep copy beats a shared-pointer refactor here.
+  struct AppListFrameSnapshot {
+    int selectedIndex = 0;
+    int mode = 0;
+    bool uninstallClearData = true;
+    std::vector<DrawerItem> items;
+    std::vector<M4xInstalledApp> apps;
+  };
+
   std::function<void()> onGoBack;
   Callbacks callbacks_;
   std::vector<M4xInstalledApp> apps_;
@@ -76,6 +89,10 @@ class AppListActivity final : public ActivityWithSubactivity {
 
   TaskHandle_t displayTaskHandle_ = nullptr;
   SemaphoreHandle_t renderingMutex_ = nullptr;
+  // Staged submit input: written by the display task under the local mutex,
+  // read by render() under the global guard. Single writer/reader (the display
+  // task), so the handoff itself needs no further locking.
+  AppListFrameSnapshot snapshot_;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();

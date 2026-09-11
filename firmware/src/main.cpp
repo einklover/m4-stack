@@ -120,6 +120,9 @@ HalGPIO gpio;
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
 Activity* currentActivity;
+// Phase 1 (INV-R1): process-wide render-submit mutex. Display tasks serialize
+// submit through it via M4RenderGuard; no waiter, dispatch flag, or central task.
+SemaphoreHandle_t gM4RenderMutex = nullptr;
 
 #ifdef CROSSPOINT_MURPHY_M4
 static M4SerialDebug::Bridge gM4DebugBridge;
@@ -727,6 +730,12 @@ void setup() {
 #endif
     delay(500);
     Serial.printf("[%lu] [M4-RC1] setup() start ver=" CROSSPOINT_VERSION "\n", millis());
+
+    // Phase 1 (INV-R1): create the process-wide render-submit mutex once, ahead
+    // of any activity (AppList display task guards submit through it).
+    if (gM4RenderMutex == nullptr) {
+      gM4RenderMutex = xSemaphoreCreateMutex();
+    }
 
     // ========== 设置时区（东八区）==========
     // 必须在 RTC 读取和 NTP 同步之前设置，否则 mktime/localtime_r 会按 UTC 处理时间
