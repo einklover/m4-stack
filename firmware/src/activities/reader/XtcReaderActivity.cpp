@@ -99,6 +99,7 @@ void XtcReaderActivity::onExit() {
   }
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
+  firstPaintComplete_.store(false, std::memory_order_release);
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
   xtc.reset();
@@ -299,6 +300,7 @@ void XtcReaderActivity::displayTaskLoop() {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       renderScreen();
       xSemaphoreGive(renderingMutex);
+      firstPaintComplete_.store(true, std::memory_order_release);
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }

@@ -44,7 +44,11 @@ class HomeActivity final : public Activity {
   std::atomic<bool> updateRequired{false};
   bool recentsLoading = false;
   bool recentsLoaded = false;
-  bool firstRenderDone = false;
+  // Phase 1 (INV-I1): promoted to atomic — written by the owning display
+  // task after the first guarded submit, polled by the boot wait on the
+  // main task. Set-once per enter (reset in onEnter/onExit); doubles as
+  // the legacy first-render latch below.
+  std::atomic<bool> firstRenderDone{false};
   bool animateEntry = false;
   int entryAnimationDirection = 0;
   bool hasOpdsUrl = false;
@@ -144,6 +148,9 @@ class HomeActivity final : public Activity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  // Phase 1 (INV-I1): boot wait polls this; true once the owning display
+  // task has submitted its first guarded frame.
+  bool firstPaintComplete() const override { return firstRenderDone.load(std::memory_order_acquire); }
   bool isHomeActivity() const override { return true; }
   bool showTouchNavigation() const override { return false; }
   uint8_t touchFooterButtonsMask() const override {

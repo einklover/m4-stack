@@ -4,6 +4,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <atomic>
 #include <string>
 
 #include "EpubReaderMenuActivity.h"
@@ -27,6 +28,10 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   std::unique_ptr<Section> section = nullptr;
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
+  // Phase 1 (INV-I1): set-once after the first guarded submit in
+  // displayTaskLoop (alongside the APP_STATE.isRenderComplete pattern);
+  // cleared on onExit. Boot polls it via firstPaintComplete().
+  std::atomic<bool> firstPaintComplete_{false};
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
   int pagesUntilFullRefresh = 0;
@@ -106,6 +111,7 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   void loop() override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
+  bool firstPaintComplete() const override { return firstPaintComplete_.load(std::memory_order_acquire); }
   void onReaderMenuStyleChanged() override {
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     section.reset();

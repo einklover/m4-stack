@@ -529,6 +529,7 @@ void TxtReaderActivity::onExit() {
   // Chapter switch: Lua paints loading next — short wait so UI feels responsive.
   suppressDisplay_ = true;
   updateRequired = false;
+  firstPaintComplete_.store(false, std::memory_order_release);
   cancelPendingPageTurnForChild();
   const uint32_t epdWaitMs =
       (pluginSession_.active && pluginSwitchChapterIndex_ >= 0) ? 400u : 2500u;
@@ -2142,6 +2143,7 @@ void TxtReaderActivity::displayTaskLoop() {
         renderer.displayBuffer(HalDisplay::FAST_REFRESH);
         (void)renderer.storeBwBuffer();
         (void)renderer.storeLastShown();  // animation baseline = this clean frame
+        firstPaintComplete_.store(true, std::memory_order_release);
         entryWhiteSeedPending_ = false;
         const bool showedPlaceholder = entryPlaceholderKind_ != EntryPlaceholderKind::None;
         entryPlaceholderKind_ = EntryPlaceholderKind::None;
@@ -2299,6 +2301,7 @@ void TxtReaderActivity::displayTaskLoop() {
         persistOpenHistory();
       }
       APP_STATE.isRenderComplete = true;
+      firstPaintComplete_.store(true, std::memory_order_release);
       // Do NOT rewrite global state JSON every page — thrashing SD (was every frame).
       // openEpubPath is saved once in onEnter.
       // Only mark first physical done after we actually flushed content (not empty retry).

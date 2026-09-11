@@ -288,6 +288,11 @@ std::unique_ptr<Txt> ReaderActivity::loadTxtWithConversion(const std::string& pa
   return txt;
 }
 
+bool ReaderActivity::firstPaintComplete() const {
+  if (subActivity) return subActivity->firstPaintComplete();
+  return false;
+}
+
 void ReaderActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
 

@@ -3,6 +3,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <functional>
 #include <string>
 #include <vector>
@@ -14,6 +15,10 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
 
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
+  // Phase 1 (INV-I1): set-once after the first guarded submit in
+  // displayTaskLoop; cleared on onExit. Boot polls it via
+  // firstPaintComplete() (covers boot-via-goToLibrary).
+  std::atomic<bool> firstPaintComplete_{false};
 
   size_t selectorIndex = 0;
   bool updateRequired = false;
@@ -88,6 +93,7 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool firstPaintComplete() const override { return firstPaintComplete_.load(std::memory_order_acquire); }
 
   // Read-only state for simulator journeys. File names are sanitized so this
   // remains valid JSON even when a user book contains quotes/control bytes.

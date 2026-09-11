@@ -17,6 +17,7 @@
 #endif
 
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -50,6 +51,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include "I18n.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
+#include "util/M4RenderGuard.h"
 #include "ReadingStatsStore.h"
 #include "RecentBooksStore.h"
 #include "activities/boot_sleep/SleepActivity.h"
@@ -484,6 +486,29 @@ void waitForPowerRelease() {
     delay(50);
     gpio.update();
   }
+}
+
+// Phase 1 (INV-I1): boot-only blocking primitive fulfilling the
+// requestUpdateAndWait role. Polls firstPaintComplete() on the boot
+// destination's owning task; boot submits nothing — the owning display
+// task (started synchronously in onEnter) remains the single submitter.
+// Misuse (CrossMux-identical intent, adapted to per-activity tasks):
+// never from any display task and never while holding the global guard —
+// debug assert via M4RenderGuard::peek + setup-only call-site restriction;
+// release builds emit the serial diagnostic and return false immediately.
+bool waitForFirstPaint(TickType_t timeout = pdMS_TO_TICKS(2000)) {
+  assert(M4RenderGuard::peek(gM4RenderMutex));
+  if (currentActivity == nullptr || !M4RenderGuard::peek(gM4RenderMutex)) {
+    Serial.printf("[%lu] [MAIN] First paint wait misuse, skip wait\n", millis());
+    return false;
+  }
+  const uint32_t start = millis();
+  const uint32_t timeoutMs = static_cast<uint32_t>(timeout) * portTICK_PERIOD_MS;
+  while (!currentActivity->firstPaintComplete()) {
+    if (millis() - start >= timeoutMs) return false;
+    delay(10);
+  }
+  return true;
 }
 
 // Enter deep sleep mode
@@ -1277,6 +1302,24 @@ void setup() {
         Serial.printf("[%lu] [MAIN] reader\n", millis());
         onGoToReader(path, originalSourcePath);
     }
+
+    // Phase 1 (INV-I1): task-gated first paint — boot waits on the owning
+    // display task's first successful paint; boot submits nothing, so the
+    // owning task keeps sole ownership. A timed-out wait is abandoned,
+    // never retried alongside a new submitter.
+    if (waitForFirstPaint()) {
+      Serial.printf("[%lu] [MAIN] First paint wait ok\n", millis());
+    } else {
+      Serial.printf("[%lu] [MAIN] First paint wait timeout, proceed to settle\n", millis());
+    }
+    // Phase 1 (INV-I1): two-sample settle. A held key commits to level
+    // through the 5 ms debounce; edge masks stay latched unread until the
+    // first loop-owned gpio.update() clears them. Synthetic path untouched
+    // by construction.
+    gpio.update();
+    delay(10);
+    gpio.update();
+    Serial.printf("[%lu] [MAIN] Input settle done\n", millis());
 
 #ifndef CROSSPOINT_X3
     // ========== X4: NTP时间同步已移至进入阅读器时执行 ==========

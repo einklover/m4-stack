@@ -12,6 +12,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
+
 #include "activities/ActivityWithSubactivity.h"
 #include "XtcReaderMenuActivity.h"
 #include "EpubReaderPercentSelectionActivity.h"
@@ -20,6 +22,9 @@ class XtcReaderActivity final : public ActivityWithSubactivity {
   std::shared_ptr<Xtc> xtc;
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
+  // Phase 1 (INV-I1): set-once after the first submit in displayTaskLoop
+  // (via renderScreen); cleared on onExit. Boot polls it via firstPaintComplete().
+  std::atomic<bool> firstPaintComplete_{false};
   uint32_t currentPage = 0;
   int pagesUntilFullRefresh = 0;
   bool updateRequired = false;
@@ -68,5 +73,6 @@ class XtcReaderActivity final : public ActivityWithSubactivity {
   void loop() override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
+  bool firstPaintComplete() const override { return firstPaintComplete_.load(std::memory_order_acquire); }
   void gotoPage(uint32_t targetPage);
 };

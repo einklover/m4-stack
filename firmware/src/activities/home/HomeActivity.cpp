@@ -870,6 +870,7 @@ void HomeActivity::renderSnapshotScene() {
   if (!backendCtx) {
     renderer.clearScreen();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    firstRenderDone.store(true, std::memory_order_release);
     return;
   }
   // Pin a stable publication generation for the entire render + displayBuffer submission.
@@ -878,6 +879,7 @@ void HomeActivity::renderSnapshotScene() {
   if (!pinned.valid()) {
     renderer.clearScreen();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    firstRenderDone.store(true, std::memory_order_release);
     return;
   }
   const HomeScene::HomeScenePublication& pub = pinned.value();
@@ -892,6 +894,7 @@ void HomeActivity::renderSnapshotScene() {
   sceneRenderer.render(murphy_default_m4theme, murphy_default_m4theme_len, source, assets, renderer);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   (void)renderer.storeLastShown();
+  firstRenderDone.store(true, std::memory_order_release);
   // pinned is released after displayBuffer, keeping generation stable throughout.
 }
 
@@ -1274,6 +1277,7 @@ void HomeActivity::onExit() {
   }
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
+  firstRenderDone.store(false, std::memory_order_release);
 
   // Free the stored cover buffer if any
   freeCoverBuffer();
@@ -1746,6 +1750,7 @@ void HomeActivity::render() {
     }
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     (void)renderer.storeLastShown();
+    firstRenderDone.store(true, std::memory_order_release);
     return;
   }
 

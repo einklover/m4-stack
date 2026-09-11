@@ -83,6 +83,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   void loop() override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
+  bool firstPaintComplete() const override { return firstPaintComplete_.load(std::memory_order_acquire); }
   bool readerMenuSyncSupported() const override { return false; }
   void onReaderMenuStyleChanged() override { onSettingsChanged(); }
 
@@ -98,6 +99,10 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   std::shared_ptr<Txt> txt;
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
+  // Phase 1 (INV-I1): set-once after the first submit in displayTaskLoop
+  // (entry seed or first content frame, alongside APP_STATE.isRenderComplete);
+  // cleared on onExit. Boot polls it via firstPaintComplete().
+  std::atomic<bool> firstPaintComplete_{false};
   int currentPage = 0;
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;

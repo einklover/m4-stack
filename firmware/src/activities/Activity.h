@@ -49,6 +49,12 @@ class Activity {
   virtual void loop() {}
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
+  // Phase 1 (INV-I1): first-paint completion signal for the boot-only
+  // task-gated wait. Default true (RTTI-free, null-safe): destinations
+  // without an owning display task never block boot. Activities with an
+  // owning display task override with a set-once flag raised after the
+  // first guarded submit.
+  virtual bool firstPaintComplete() const { return true; }
   virtual bool isReaderActivity() const { return false; }
   // True only for the actual paged/text body surface. ReaderActivity itself is
   // a router/owner and overrides this false; nested menus/settings remain false.

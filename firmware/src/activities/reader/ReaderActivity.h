@@ -46,4 +46,9 @@ class ReaderActivity final : public ActivityWithSubactivity {
   bool isReaderBodyActivity() const override { return false; }
   // Delegate preventAutoSleep to the inner reader (EpubReaderActivity / XtcReaderActivity)
   bool preventAutoSleep() override { return subActivity && subActivity->preventAutoSleep(); }
+  // Phase 1 (INV-I1): forwarding accessor only — returns the current
+  // child's flag when a child is present, false otherwise (boot keeps
+  // waiting until the child enters and paints). No render changes, no
+  // new submit; RTTI-free (no casts).
+  bool firstPaintComplete() const override;
 };

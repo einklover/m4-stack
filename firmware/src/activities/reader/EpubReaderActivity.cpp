@@ -296,6 +296,7 @@ void EpubReaderActivity::onExit() {
   }
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
+  firstPaintComplete_.store(false, std::memory_order_release);
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
   section.reset();
@@ -1741,6 +1742,7 @@ void EpubReaderActivity::displayTaskLoop() {
       renderScreen(); // 执行核心渲染逻辑
       APP_STATE.isRenderComplete = true;  // 标记渲染完成（包括 saveProgress）
       xSemaphoreGive(renderingMutex);     // 释放锁
+      firstPaintComplete_.store(true, std::memory_order_release);
     }
     vTaskDelay(10 / portTICK_PERIOD_MS); // 降低轮询频率，节省资源
   }
