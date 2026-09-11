@@ -189,7 +189,15 @@ void AppListActivity::displayTaskLoop() {
       }
       if (shouldSubmit) {
         M4RenderGuard renderGuard(gM4RenderMutex);
-        render();
+        if (renderGuard.owns()) {
+          render();
+        } else {
+          // Global contended: never submit without the guard; re-arm instead.
+          if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            updateRequired_ = true;
+            xSemaphoreGive(renderingMutex_);
+          }
+        }
       }
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);

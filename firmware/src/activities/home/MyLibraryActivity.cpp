@@ -227,12 +227,13 @@ void MyLibraryActivity::doSearch(const char* keyword) {
   }
   selectorIndex = 0;
   updateRequired = true;
-  if (renderingMutex) {
-    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  if (!renderingMutex || xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
     publishFileSnapshotLocked();
-    xSemaphoreGive(renderingMutex);
+    if (renderingMutex) xSemaphoreGive(renderingMutex);
   } else {
-    publishFileSnapshotLocked();
+    // Publish deferred under contention: updateRequired stays armed so a
+    // frame still goes out, and the next loader publish refreshes it.
+    updateRequired = true;
   }
 
   if (searchResults.empty()) {
@@ -398,12 +399,13 @@ void MyLibraryActivity::loadFiles() {
   // 在WiFi AP模式下，内存非常紧张，必须及时释放临时缓冲区
   entries.clear();
   entries.shrink_to_fit();  // 真正释放 vector 内部缓冲区
-  if (renderingMutex) {
-    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  if (!renderingMutex || xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
     publishFileSnapshotLocked();
-    xSemaphoreGive(renderingMutex);
+    if (renderingMutex) xSemaphoreGive(renderingMutex);
   } else {
-    publishFileSnapshotLocked();
+    // Publish deferred under contention: callers arm updateRequired, and the
+    // next loader publish refreshes the generation.
+    updateRequired = true;
   }
 }
 
@@ -1012,7 +1014,7 @@ void MyLibraryActivity::displayTaskLoop() {
     // never acquired while holding local. Temporal exclusion
     // (!isPreviewingImage) is evaluated under local so exactly one context
     // submits at a time.
-    if (xSemaphoreTake(renderingMutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
       if (updateRequired && !isPreviewingImage) {
         frame.lists = fileSnapshot_;
         frame.selectorIndex = selectorIndex;
@@ -1031,10 +1033,17 @@ void MyLibraryActivity::displayTaskLoop() {
       }
       xSemaphoreGive(renderingMutex);
     }
+    // NOTE: a failed local take leaves updateRequired set, so the pending
+    // frame stays armed for the next tick with no explicit re-arm needed.
     if (shouldSubmit) {
       M4RenderGuard renderGuard(gM4RenderMutex);
-      render();
-      firstPaintComplete_.store(true, std::memory_order_release);
+      if (renderGuard.owns()) {
+        render();
+        firstPaintComplete_.store(true, std::memory_order_release);
+      } else {
+        // Global contended: never submit without the guard; re-arm instead.
+        updateRequired = true;
+      }
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
