@@ -1,0 +1,34 @@
+{
+  "format": 1,
+  "id": "murphy-settings-frontlight",
+  "screen": [480, 800],
+  "bindings": {
+    "$page.title": 70,
+    "$page.rows": 72,
+    "$item.value": 74,
+    "$item.selected": 75,
+    "$item.is_section": 76,
+    "$item.is_row": 77
+  },
+  "actions": {
+    "open_hub_card": 40,
+    "activate_setting": 41
+  },
+  "nodes": [
+    {"type": "clear", "color": "white"},
+    {"type": "text", "rect": [24, 22, 180, 14], "text": "Murphy M4", "font": "ui_12_regular", "align": "left"},
+    {"type": "battery", "rect": [432, 24, 24, 12], "binding": "$system.battery"},
+    {"type": "text", "rect": [24, 40, 300, 32], "text": "$page.title", "font": "ui_24_bold", "align": "left", "ellipsis": true},
+    {"type": "line", "x": 23, "y": 100, "x2": 456, "y2": 100, "width": 1, "color": "black"},
+    {"type": "text", "rect": [24, 108, 300, 20], "text": "亮度与色温", "font": "ui_16_bold", "align": "left"},
+    {"type": "round_rect", "rect": [22, 132, 436, 160], "r": 8, "stroke": 1},
+    {"type": "repeat", "source": "$page.rows", "limit": 2, "x": 24, "y": 138, "item_width": 432, "item_height": 72, "gap": 4, "direction": "vertical", "action": "activate_setting", "action_arg": "$item.id", "children": [
+      {"type": "round_rect", "rect": [2, 5, 428, 62], "r": 8, "stroke": 1, "fill": true, "visible_if": "$item.selected"},
+      {"type": "text", "rect": [20, 13, 232, 22], "text": "$item.title", "font": "ui_16_bold", "align": "left", "ellipsis": true, "visible_if": "$item.is_row"},
+      {"type": "text", "rect": [260, 17, 148, 18], "text": "$item.value", "font": "ui_14_regular", "align": "right", "ellipsis": true, "visible_if": "$item.is_row"},
+      {"type": "line", "x": 20, "y": 71, "x2": 426, "y2": 71, "width": 1, "color": "black", "visible_if": "$item.is_row"},
+      {"type": "line", "x": 416, "y": 27, "x2": 426, "y2": 36, "width": 2, "color": "black", "visible_if": "$item.is_row"},
+      {"type": "line", "x": 426, "y": 36, "x2": 416, "y2": 45, "width": 2, "color": "black", "visible_if": "$item.is_row"}
+    ]}
+  ]
+}

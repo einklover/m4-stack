@@ -58,6 +58,7 @@ class AppRuntimeActivity final : public ActivityWithSubactivity {
 
   static void taskTrampoline(void* param);
   void runtimeTaskMain();
+  void renderStartupPage();
   bool postEvent(const M4xRuntime::Event& e);
   void handleEventOnOwner(const M4xRuntime::Event& e);
   void setFailed(const std::string& err);

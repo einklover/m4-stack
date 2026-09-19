@@ -51,12 +51,6 @@ bool decodeAppIconForPublication(HomeScene::HomeScenePublication& pub,
                                  const UiScene::AssetKey& key,
                                  std::function<bool()> isCancelled = nullptr);
 
-// Builtin files icon (no SD path). Decodes the compiled 1-bit 62x64 icon
-// for builtin.files slot. Works on device and host without filesystem.
-bool decodeBuiltinFilesIconForPublication(HomeScene::HomeScenePublication& pub,
-                                          const UiScene::AssetKey& key,
-                                          std::function<bool()> isCancelled = nullptr);
-
 // Return a sheet-derived 62x64 1-bit icon for a matched builtin app id.
 // Bytes are row-major, MSB-first, with 1 meaning black ink; nullptr means no sheet match.
 const uint8_t* builtinSheetIcon(const char* id);

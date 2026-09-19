@@ -1,20 +1,27 @@
 #include "WifiSelectionActivity.h"
 
-#include "util/M4ListTouchPolicy.h"
 #include <GfxRenderer.h>
+#include <HalPowerManager.h>
 #include <WiFi.h>
 
+#include <algorithm>
 #include <map>
 
-#include "MappedInputManager.h"
+#include "BluetoothHIDManager.h"
+#include "CrossPointSettings.h"
 #include "I18n.h"
+#include "MappedInputManager.h"
 #include "WifiCredentialStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/M4UiText.h"
-#include "BluetoothHIDManager.h"
+#include "network/M4WifiTransferPolicy.h"
 #include "qemu/M4QemuNet.h"
+#include "util/M4UiText.h"
+#include "util/M4WifiSavePrompt.h"
+#include "util/TouchUiGeometry.h"
+
+#define SETTINGS CrossPointSettings::getInstance()
 
 void WifiSelectionActivity::taskTrampoline(void* param) {
   auto* self = static_cast<WifiSelectionActivity*>(param);
@@ -23,103 +30,110 @@ void WifiSelectionActivity::taskTrampoline(void* param) {
 
 void WifiSelectionActivity::onEnter() {
   Activity::onEnter();
-
   renderingMutex = xSemaphoreCreateMutex();
 
-  // Load saved WiFi credentials - SD card operations need lock as we use SPI for both
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
   WIFI_STORE.loadFromFile();
   xSemaphoreGive(renderingMutex);
 
-  // Reset state
   selectedNetworkIndex = 0;
+  // Publish the empty model only while holding the render mutex; the display
+  // task may still be painting the previous scan result.
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
   networks.clear();
+  xSemaphoreGive(renderingMutex);
   state = WifiSelectionState::SCANNING;
   selectedSSID.clear();
   connectedIP.clear();
   connectionError.clear();
   enteredPassword.clear();
   usedSavedPassword = false;
+  saveRejectedAtCap = false;
+  occupancyDenied = false;
   failureTracker.reset();
 
-  // Cache MAC address for display
+  if (purpose == M4WifiSelectionPurpose::SystemNetworking) {
+    occupancyDenied =
+        m4WifiSettingsExclusiveWhileTransfer() == M4NetworkAcquireResult::DeniedHeldByOther;
+  } else {
+    m4WifiNeedNetwork(M4NetworkOwner::WifiSettings);
+  }
+
   uint8_t mac[6];
   WiFi.macAddress(mac);
   char macStr[32];
-  snprintf(macStr, sizeof(macStr), "MAC address: %02x-%02x-%02x-%02x-%02x-%02x", mac[0], mac[1], mac[2], mac[3], mac[4],
-           mac[5]);
+  snprintf(macStr, sizeof(macStr), "MAC: %02x-%02x-%02x-%02x-%02x-%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   cachedMacAddress = std::string(macStr);
 
-  // Trigger first update to show scanning message
   updateRequired = true;
-
-  xTaskCreate(&WifiSelectionActivity::taskTrampoline, "WifiSelectionTask",
-              4096,               // Stack size (larger for WiFi operations)
-              this,               // Parameters
-              1,                  // Priority
-              &displayTaskHandle  // Task handle
-  );
-
-  // Start WiFi scan
+  xTaskCreate(&WifiSelectionActivity::taskTrampoline, "WifiSelectionTask", 4096, this, 1, &displayTaskHandle);
+  if (occupancyDenied) {
+    connectionError = m4WifiTransferHoldsCopy();
+    state = WifiSelectionState::CONNECTION_FAILED;
+    updateRequired = true;
+    return;
+  }
   startWifiScan();
 }
 
 void WifiSelectionActivity::onExit() {
   Activity::onExit();
-
-  Serial.printf("[%lu] [WIFI] [MEM] Free heap at onExit start: %d bytes\n", millis(), ESP.getFreeHeap());
-
-  // Stop any ongoing WiFi scan
-  Serial.printf("[%lu] [WIFI] Deleting WiFi scan...\n", millis());
+  m4WifiReleaseNetwork(M4NetworkOwner::WifiSettings);
+  m4WifiReleaseNetwork(M4NetworkOwner::Ntp);
   WiFi.scanDelete();
-  Serial.printf("[%lu] [WIFI] [MEM] Free heap after scanDelete: %d bytes\n", millis(), ESP.getFreeHeap());
 
-  // Note: We do NOT disconnect WiFi here - the parent activity (CrossPointWebServerActivity)
-  // manages WiFi connection state. We just clean up the scan and task.
-
-  // Acquire mutex before deleting task to ensure task isn't using it
-  // This prevents hangs/crashes if the task holds the mutex when deleted
-  Serial.printf("[%lu] [WIFI] Acquiring rendering mutex before task deletion...\n", millis());
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
-
-  // Delete the display task (we now hold the mutex, so task is blocked if it needs it)
-  Serial.printf("[%lu] [WIFI] Deleting display task...\n", millis());
   if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
-    Serial.printf("[%lu] [WIFI] Display task deleted\n", millis());
   }
-
-  // Now safe to delete the mutex since we own it
-  Serial.printf("[%lu] [WIFI] Deleting mutex...\n", millis());
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
-  Serial.printf("[%lu] [WIFI] Mutex deleted\n", millis());
-
-  Serial.printf("[%lu] [WIFI] [MEM] Free heap at onExit end: %d bytes\n", millis(), ESP.getFreeHeap());
 }
 
 void WifiSelectionActivity::startWifiScan() {
+  if (purpose == M4WifiSelectionPurpose::SystemNetworking) {
+    if (m4WifiSettingsExclusiveWhileTransfer() == M4NetworkAcquireResult::DeniedHeldByOther) {
+      occupancyDenied = true;
+      connectionError = m4WifiTransferHoldsCopy();
+      state = WifiSelectionState::CONNECTION_FAILED;
+      updateRequired = true;
+      return;
+    }
+    occupancyDenied = false;
+  }
+
   state = WifiSelectionState::SCANNING;
+  // The display task may still be painting the previous list: clear the
+  // shared model only while holding the render mutex.
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
   networks.clear();
+  selectedNetworkIndex = 0;
+  xSemaphoreGive(renderingMutex);
   updateRequired = true;
 
-  // Set WiFi mode to station
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  // QEMU has no radio: with the compat link up, any radio touch (mode /
+  // disconnect / scan) wedges the guest bridge. Land in the same empty-list
+  // state as a failed scan; the list loop stays alive and pixels are unchanged.
+  if (m4QemuNetWifiCompatConnected()) {
+    state = WifiSelectionState::NETWORK_LIST;
+    updateRequired = true;
+    return;
+  }
+#endif
 
-  // Start async scan
-  WiFi.scanNetworks(true);  // true = async scan
+  WiFi.mode(WIFI_STA);
+  if (m4WifiScanShouldDisconnectExistingSta(M4QemuNet::staConnected())) {
+    WiFi.disconnect();
+    delay(100);
+  }
+  WiFi.scanNetworks(true);
 }
 
 void WifiSelectionActivity::processWifiScanResults() {
   const int16_t scanResult = WiFi.scanComplete();
-
-  if (scanResult == WIFI_SCAN_RUNNING) {
-    // Scan still in progress
-    return;
-  }
+  if (scanResult == WIFI_SCAN_RUNNING) return;
 
   if (scanResult == WIFI_SCAN_FAILED) {
     state = WifiSelectionState::NETWORK_LIST;
@@ -127,88 +141,125 @@ void WifiSelectionActivity::processWifiScanResults() {
     return;
   }
 
-  // Scan complete, process results
-  // Use a map to deduplicate networks by SSID, keeping the strongest signal
   std::map<std::string, WifiNetworkInfo> uniqueNetworks;
-
-  for (int i = 0; i < scanResult; i++) {
-    std::string ssid = WiFi.SSID(i).c_str();
+  for (int i = 0; i < scanResult; ++i) {
+    const std::string ssid = WiFi.SSID(i).c_str();
     const int32_t rssi = WiFi.RSSI(i);
+    if (ssid.empty()) continue;
 
-    // Skip hidden networks (empty SSID)
-    if (ssid.empty()) {
-      continue;
-    }
-
-    // Check if we've already seen this SSID
     auto it = uniqueNetworks.find(ssid);
     if (it == uniqueNetworks.end() || rssi > it->second.rssi) {
-      // New network or stronger signal than existing entry
       WifiNetworkInfo network;
       network.ssid = ssid;
       network.rssi = rssi;
-      network.isEncrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+      network.isEncrypted = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
       network.hasSavedPassword = WIFI_STORE.hasSavedCredential(network.ssid);
       uniqueNetworks[ssid] = network;
     }
   }
 
-  // Convert map to vector
-  networks.clear();
-  for (const auto& pair : uniqueNetworks) {
-    // cppcheck-suppress useStlAlgorithm
-    networks.push_back(pair.second);
-  }
-
-  // Sort by signal strength (strongest first)
-  std::sort(networks.begin(), networks.end(),
+  // Stage off-lock: the display task may be painting the previous list.
+  std::vector<WifiNetworkInfo> staged;
+  staged.reserve(uniqueNetworks.size());
+  for (const auto& pair : uniqueNetworks) staged.push_back(pair.second);
+  std::sort(staged.begin(), staged.end(),
             [](const WifiNetworkInfo& a, const WifiNetworkInfo& b) { return a.rssi > b.rssi; });
-
-  // Show networks with PW first
-  std::sort(networks.begin(), networks.end(), [](const WifiNetworkInfo& a, const WifiNetworkInfo& b) {
+  std::stable_sort(staged.begin(), staged.end(), [](const WifiNetworkInfo& a, const WifiNetworkInfo& b) {
     return a.hasSavedPassword && !b.hasSavedPassword;
   });
 
   WiFi.scanDelete();
+  const std::string connected = currentConnectedSsid();
+  int connectedIndex = 0;
+  for (int i = 0; i < static_cast<int>(staged.size()); ++i) {
+    if (staged[static_cast<size_t>(i)].ssid == connected) {
+      connectedIndex = i;
+      break;
+    }
+  }
+  // Atomic publish: readers only ever see the old or the new vector,
+  // never a half-rebuilt one. Nothing else runs under this lock.
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  networks.swap(staged);
+  selectedNetworkIndex = connectedIndex;
+  xSemaphoreGive(renderingMutex);
   state = WifiSelectionState::NETWORK_LIST;
-  selectedNetworkIndex = 0;
   updateRequired = true;
+  maybeAutoConnectKnown();
+}
+
+void WifiSelectionActivity::maybeAutoConnectKnown() {
+  const std::string connected = currentConnectedSsid();
+  if (!connected.empty()) return;
+  if (!m4WifiShouldAutoConnectKnown(SETTINGS.wifiAlwaysReselect)) return;
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  int autoIndex = -1;
+  for (int i = 0; i < static_cast<int>(networks.size()); ++i) {
+    if (networks[static_cast<size_t>(i)].hasSavedPassword) {
+      autoIndex = i;
+      break;
+    }
+  }
+  xSemaphoreGive(renderingMutex);
+  if (autoIndex >= 0) selectNetwork(autoIndex);
 }
 
 void WifiSelectionActivity::selectNetwork(const int index) {
-  if (index < 0 || index >= static_cast<int>(networks.size())) {
+  // Copy the row under the render mutex: the display task may be painting
+  // this same vector. Never hold a reference across the unlock.
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  const int scanned = static_cast<int>(networks.size());
+  const bool hidden = m4WifiListRowIsHidden(index, scanned);
+  const bool inRange = index >= 0 && index < scanned;
+  WifiNetworkInfo network;
+  if (inRange && !hidden) network = networks[static_cast<size_t>(index)];
+  xSemaphoreGive(renderingMutex);
+  if (hidden) {
+    openHiddenNetworkSsidEntry();
+    return;
+  }
+  if (!inRange) return;
+
+  const std::string connected = currentConnectedSsid();
+  if (m4WifiSelectActionForSsid(network.ssid.c_str(), connected.c_str(), purpose) ==
+      M4WifiSelectAction::StayOnListCheckmark) {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    selectedNetworkIndex = index;
+    xSemaphoreGive(renderingMutex);
+    updateRequired = true;
+    return;
+  }
+  if (purpose == M4WifiSelectionPurpose::SessionJoin && !connected.empty() &&
+      connected == network.ssid) {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    selectedNetworkIndex = index;
+    xSemaphoreGive(renderingMutex);
+    onComplete(true);
     return;
   }
 
-  const auto& network = networks[index];
   selectedSSID = network.ssid;
   selectedRequiresPassword = network.isEncrypted;
   usedSavedPassword = false;
   enteredPassword.clear();
 
-  // Check if we have saved credentials for this network
   const auto* savedCred = WIFI_STORE.findCredential(selectedSSID);
   if (savedCred && !savedCred->password.empty()) {
-    // Use saved password - connect directly
     enteredPassword = savedCred->password;
     usedSavedPassword = true;
-    Serial.printf("[%lu] [WiFi] Using saved password for %s, length: %zu\n", millis(), selectedSSID.c_str(),
-                  enteredPassword.size());
     attemptConnection();
     return;
   }
 
   if (selectedRequiresPassword) {
-    // Show password entry
     state = WifiSelectionState::PASSWORD_ENTRY;
-    // Don't allow screen updates while changing activity
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     enterNewActivity(new KeyboardEntryActivity(
-        renderer, mappedInput, "Enter WiFi Password",
-        "",     // No initial text
-        50,     // Y position
-        64,     // Max password length
-        false,  // Show password by default (hard keyboard to use)
+        renderer, mappedInput, std::string("Wi-Fi 密码: ") + selectedSSID,
+        "",
+        18,
+        64,
+        true,
         [this](const std::string& text) {
           enteredPassword = text;
           exitActivity();
@@ -221,32 +272,71 @@ void WifiSelectionActivity::selectNetwork(const int index) {
     updateRequired = true;
     xSemaphoreGive(renderingMutex);
   } else {
-    // Connect directly for open networks
     attemptConnection();
   }
 }
 
+void WifiSelectionActivity::openHiddenNetworkSsidEntry() {
+  selectedSSID.clear();
+  enteredPassword.clear();
+  usedSavedPassword = false;
+  selectedRequiresPassword = true;
+  state = WifiSelectionState::HIDDEN_SSID_ENTRY;
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  enterNewActivity(new KeyboardEntryActivity(
+      renderer, mappedInput, "隐藏网络名称", "", 18, 32, false,
+      [this](const std::string& text) {
+        selectedSSID = text;
+        exitActivity();
+      },
+      [this] {
+        selectedSSID.clear();
+        state = WifiSelectionState::NETWORK_LIST;
+        updateRequired = true;
+        exitActivity();
+      }));
+  updateRequired = true;
+  xSemaphoreGive(renderingMutex);
+}
+
+void WifiSelectionActivity::beginConnectionAfterBtCheck() {
+  bool btOn = false;
+  try {
+    btOn = BluetoothHIDManager::getInstance().isEnabled();
+  } catch (...) {
+    Serial.printf("[%lu] [WIFI] Could not access Bluetooth manager\n", millis());
+  }
+  if (btOn) {
+    state = WifiSelectionState::CONFIRM_BT_DISCONNECT;
+    updateRequired = true;
+    return;
+  }
+  attemptConnection();
+}
+
 void WifiSelectionActivity::attemptConnection() {
+  if (state != WifiSelectionState::CONFIRM_BT_DISCONNECT) {
+    bool btOn = false;
+    try {
+      btOn = BluetoothHIDManager::getInstance().isEnabled();
+    } catch (...) {
+      Serial.printf("[%lu] [WIFI] Could not access Bluetooth manager\n", millis());
+    }
+    if (btOn) {
+      state = WifiSelectionState::CONFIRM_BT_DISCONNECT;
+      updateRequired = true;
+      return;
+    }
+  }
+
   state = WifiSelectionState::CONNECTING;
   connectionStartTime = millis();
   connectedIP.clear();
   connectionError.clear();
   failureTracker.reset();
   updateRequired = true;
-    // CRITICAL: Disable Bluetooth when enabling WiFi
-  // ESP32-C3 cannot have both WiFi and BLE enabled simultaneously
-  try {
-    auto& btMgr = BluetoothHIDManager::getInstance();
-    if (btMgr.isEnabled()) {
-      Serial.printf("[%lu] [WIFI] Disabling Bluetooth to enable WiFi (mutual exclusion)\n", millis());
-      btMgr.disable();
-    }
-  } catch (...) {
-    Serial.printf("[%lu] [WIFI] Could not access Bluetooth manager\n", millis());
-  }
 
   WiFi.mode(WIFI_STA);
-
   if (selectedRequiresPassword && !enteredPassword.empty()) {
     WiFi.begin(selectedSSID.c_str(), enteredPassword.c_str());
   } else {
@@ -255,35 +345,25 @@ void WifiSelectionActivity::attemptConnection() {
 }
 
 void WifiSelectionActivity::checkConnectionStatus() {
-  if (state != WifiSelectionState::CONNECTING) {
-    return;
-  }
+  if (state != WifiSelectionState::CONNECTING) return;
 
   const wl_status_t status = WiFi.status();
-
   if (M4QemuNet::staConnected()) {
-    // Successfully connected
-    IPAddress ip = WiFi.localIP();
+    const IPAddress ip = WiFi.localIP();
     char ipStr[16];
     snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
     connectedIP = ipStr;
 
-    // Sync time via NTP – configTime() handles re-init automatically
+    m4WifiNeedNetwork(M4NetworkOwner::Ntp);
     configTime(8 * 3600, 0, "pool.ntp.org", "time.cloudflare.com");
-    Serial.printf("[%lu] [WIFI] NTP sync started (UTC+8)\n", millis());
 
-    if (!usedSavedPassword && !enteredPassword.empty()) {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      const bool saved = WIFI_STORE.addCredential(selectedSSID, enteredPassword);
-      xSemaphoreGive(renderingMutex);
-      if (!saved) {
-        // Radio is up; do not present this as a connection failure. Persist
-        // miss is logged so the next boot can still hit no_saved_wifi.
-        Serial.printf("[%lu] [WIFI] Connected, but could not save Wi-Fi for %s\n", millis(),
-                      selectedSSID.c_str());
-      }
+    // New credentials never auto-save: an explicit Yes/No prompt below owns
+    // persistence. Saved/open successes complete directly (no prompt).
+    if (m4WifiSavePromptDecision(usedSavedPassword, enteredPassword) == M4WifiSavePrompt::Needed) {
+      state = WifiSelectionState::CONNECTED;
+      updateRequired = true;
+      return;
     }
-    Serial.printf("[%lu] [WIFI] Connected with durable credentials, completing immediately\n", millis());
     onComplete(true);
     return;
   }
@@ -292,14 +372,13 @@ void WifiSelectionActivity::checkConnectionStatus() {
     if (usedSavedPassword) {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       const bool removed = WIFI_STORE.removeCredential(selectedSSID);
-      xSemaphoreGive(renderingMutex);
-      const auto network = find_if(networks.begin(), networks.end(),
-                                   [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
+      const auto network = std::find_if(networks.begin(), networks.end(),
+                                        [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
       if (removed && network != networks.end()) network->hasSavedPassword = false;
-      connectionError = removed ? "Password rejected. Enter it again."
-                                : "Password rejected. Re-enter it in Settings.";
+      xSemaphoreGive(renderingMutex);
+      connectionError = removed ? "密码错误，请重新输入" : "密码错误，请在设置中重新输入";
     } else {
-      connectionError = "Password rejected. Enter it again.";
+      connectionError = "密码错误，请重新输入";
     }
     state = WifiSelectionState::CONNECTION_FAILED;
     updateRequired = true;
@@ -307,58 +386,31 @@ void WifiSelectionActivity::checkConnectionStatus() {
   }
 
   if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL || status == WL_CONNECTION_LOST) {
-    if (status == WL_NO_SSID_AVAIL) {
-      connectionError = "Error: Network not found";
-    } else {
-      connectionError = "Error: Wi-Fi connection failed";
-    }
+    connectionError = status == WL_NO_SSID_AVAIL ? "未找到这个 Wi-Fi" : "Wi-Fi 连接失败";
     state = WifiSelectionState::CONNECTION_FAILED;
     updateRequired = true;
     return;
   }
 
-  // Check for timeout
   if (millis() - connectionStartTime > CONNECTION_TIMEOUT_MS) {
     WiFi.disconnect(false);
-    connectionError = "Error: Connection timeout";
+    connectionError = "连接超时，请重试";
     state = WifiSelectionState::CONNECTION_FAILED;
     updateRequired = true;
-    return;
   }
 }
 
 void WifiSelectionActivity::loop() {
   if (subActivity) {
-    pumpSubActivityFrame();
+    // Child exit/replace consumes this frame: the pumped child owned the
+    // frame's input, so any parent frame/input use below would run on the
+    // stale pre-transition frame. Repaint from the settled state next frame.
+    if (pumpSubActivityFrame()) updateRequired = true;
     return;
   }
 
-  // Shared touch helpers (geometry matches render* methods). Physical buttons unchanged below.
-  auto fillTouchEvent = [this](M4ListTouchPolicy::Event& e) {
-    e = {};
-    if (!mappedInput.hasTouch()) return;
-    // Sample each edge independently (no else-if): same-frame down+tap possible
-    // if hardware reports both; resolveList prefers swipe → tap → down once.
-    e.backGesture = mappedInput.wasBackGesture();
-    const auto sw = mappedInput.wasSwipe();
-    if (sw == MappedInputManager::SwipeDir::Up)
-      e.swipe = M4ListTouchPolicy::Swipe::Up;
-    else if (sw == MappedInputManager::SwipeDir::Down)
-      e.swipe = M4ListTouchPolicy::Swipe::Down;
-    else if (sw == MappedInputManager::SwipeDir::Left)
-      e.swipe = M4ListTouchPolicy::Swipe::Left;
-    else if (sw == MappedInputManager::SwipeDir::Right)
-      e.swipe = M4ListTouchPolicy::Swipe::Right;
-    int dx = 0, dy = 0, tx = 0, ty = 0;
-    const bool down = mappedInput.wasScreenTouchDown(dx, dy);
-    const bool tap = mappedInput.wasScreenTapped(tx, ty);
-    e = M4ListTouchPolicy::mergeFrame(e.backGesture, e.swipe, down, dx, dy, tap, tx, ty);
-  };
-
-  // Check scan progress — allow cancel via back / edge gesture
   if (state == WifiSelectionState::SCANNING) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
-        (mappedInput.hasTouch() && mappedInput.wasBackGesture())) {
+    if (mappedInput.wasBackGesture()) {
       onComplete(false);
       return;
     }
@@ -366,10 +418,8 @@ void WifiSelectionActivity::loop() {
     return;
   }
 
-  // Check connection progress — allow cancel back to list
   if (state == WifiSelectionState::CONNECTING) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
-        (mappedInput.hasTouch() && mappedInput.wasBackGesture())) {
+    if (mappedInput.wasBackGesture()) {
       WiFi.disconnect(false);
       state = WifiSelectionState::NETWORK_LIST;
       updateRequired = true;
@@ -379,103 +429,176 @@ void WifiSelectionActivity::loop() {
     return;
   }
 
-  if (state == WifiSelectionState::PASSWORD_ENTRY) {
-    // Reach here once password entry finished in subactivity
-    attemptConnection();
-    return;
-  }
-
-  // Handle connected state (should not normally be reached - connection completes immediately)
-  if (state == WifiSelectionState::CONNECTED) {
-    onComplete(true);
-    return;
-  }
-
-  // Handle connection failed state
-  if (state == WifiSelectionState::CONNECTION_FAILED) {
-    int tx = 0, ty = 0;
-    const bool touchDismiss =
-        mappedInput.hasTouch() && (mappedInput.wasBackGesture() || mappedInput.wasScreenTapped(tx, ty));
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Confirm) || touchDismiss) {
+  if (state == WifiSelectionState::HIDDEN_SSID_ENTRY) {
+    if (selectedSSID.empty()) {
       state = WifiSelectionState::NETWORK_LIST;
       updateRequired = true;
       return;
     }
+    state = WifiSelectionState::PASSWORD_ENTRY;
+    selectedRequiresPassword = true;
+    usedSavedPassword = false;
+    enteredPassword.clear();
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    enterNewActivity(new KeyboardEntryActivity(
+        renderer, mappedInput, std::string("Wi-Fi 密码: ") + selectedSSID, "", 18, 64, true,
+        [this](const std::string& text) {
+          enteredPassword = text;
+          exitActivity();
+        },
+        [this] {
+          state = WifiSelectionState::NETWORK_LIST;
+          updateRequired = true;
+          exitActivity();
+        }));
+    updateRequired = true;
+    xSemaphoreGive(renderingMutex);
+    return;
   }
 
-  // Handle network list state
-  if (state == WifiSelectionState::NETWORK_LIST) {
-    // Touch path first (swipe before activate) — layout matches renderNetworkList()
-    if (mappedInput.hasTouch()) {
-      constexpr int startY = 60;
-      constexpr int lineHeight = 25;
-      const int pageHeight = renderer.getScreenHeight();
-      const int maxVisible = (pageHeight - startY - 40) / lineHeight;
-      const int itemCount = static_cast<int>(networks.size());
+  if (state == WifiSelectionState::CONFIRM_BT_DISCONNECT) {
+    if (mappedInput.wasBackGesture() || mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      state = WifiSelectionState::NETWORK_LIST;
+      updateRequired = true;
+      return;
+    }
+    M4ConfirmButton button = M4ConfirmButton::None;
+    bool footerPrimaryOrRow = false;
+    if (mappedInput.wasPressed(MappedInputManager::Button::Power)) {
+      button = M4ConfirmButton::Power;
+    }
+    int tx = 0;
+    int ty = 0;
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) ||
+        mappedInput.wasScreenTapped(tx, ty)) {
+      button = M4ConfirmButton::Confirm;
+      footerPrimaryOrRow = true;
+    }
+    if (m4WifiBtConfirmAccepts(button, footerPrimaryOrRow)) {
+      try {
+        auto& btMgr = BluetoothHIDManager::getInstance();
+        if (btMgr.isEnabled()) btMgr.disable();
+      } catch (...) {
+        Serial.printf("[%lu] [WIFI] Could not access Bluetooth manager\n", millis());
+      }
+      attemptConnection();
+    }
+    return;
+  }
 
-      M4ListTouchPolicy::Event te;
-      fillTouchEvent(te);
-      M4ListTouchPolicy::ListLayout layout;
-      layout.listTop = startY;
-      layout.listHeight = maxVisible * lineHeight;
-      layout.rowStep = lineHeight;
-      layout.itemCount = itemCount;
-      layout.selectedIndex = selectedNetworkIndex;
-      layout.maxVisible = maxVisible > 0 ? maxVisible : 1;
+  if (state == WifiSelectionState::PASSWORD_ENTRY) {
+    beginConnectionAfterBtCheck();
+    return;
+  }
 
-      int hit = -1;
-      const auto act = M4ListTouchPolicy::resolveList(te, layout, hit);
-      if (act == M4ListTouchPolicy::Action::Back) {
+  if (state == WifiSelectionState::CONNECTED) {
+    // Save prompt for the newly connected credential. Yes persists and
+    // completes; No completes with the live session and persists nothing.
+    const M4WifiSavePrompt prompt = m4WifiSavePromptDecision(usedSavedPassword, enteredPassword);
+    int tx = 0;
+    int ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      if (saveRejectedAtCap) {
+        onComplete(true);
+        return;
+      }
+      if (m4WifiSaveConfirmed(prompt, true)) {
+        xSemaphoreTake(renderingMutex, portMAX_DELAY);
+        const bool saved = WIFI_STORE.addCredential(selectedSSID, enteredPassword);
+        xSemaphoreGive(renderingMutex);
+        if (!saved) {
+          connectionError = m4WifiKnownNetworkFullCopy();
+          saveRejectedAtCap = true;
+          updateRequired = true;
+          return;
+        }
+      }
+      onComplete(true);
+      return;
+    }
+    if (mappedInput.wasBackGesture()) {
+      onComplete(true);
+      return;
+    }
+    return;
+  }
+
+  if (state == WifiSelectionState::CONNECTION_FAILED) {
+    int tx = 0;
+    int ty = 0;
+    if (mappedInput.wasBackGesture() || mappedInput.wasScreenTapped(tx, ty)) {
+      if (occupancyDenied) {
         onComplete(false);
         return;
       }
-      if (act == M4ListTouchPolicy::Action::PageDown || act == M4ListTouchPolicy::Action::PageUp) {
-        if (itemCount > 0) {
-          selectedNetworkIndex = M4ListTouchPolicy::applyPage(selectedNetworkIndex, itemCount, maxVisible,
-                                                              act == M4ListTouchPolicy::Action::PageDown);
-          updateRequired = true;
-        }
-        return;
-      }
-      if (act == M4ListTouchPolicy::Action::Select && hit >= 0) {
-        if (selectedNetworkIndex != hit) {
-          selectedNetworkIndex = hit;
-          updateRequired = true;
-        }
-        return;
-      }
-      if (act == M4ListTouchPolicy::Action::Activate && hit >= 0) {
+      state = WifiSelectionState::NETWORK_LIST;
+      updateRequired = true;
+    }
+    return;
+  }
+
+  if (state != WifiSelectionState::NETWORK_LIST) return;
+
+  if (mappedInput.wasBackGesture()) {
+    onComplete(false);
+    return;
+  }
+
+  // Snapshot the shared list model under the render mutex: the display task
+  // paints this same vector/index concurrently.
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  const int snapScanned = static_cast<int>(networks.size());
+  const int snapSelected = selectedNetworkIndex;
+  xSemaphoreGive(renderingMutex);
+  const int itemCount = m4WifiListRowCount(snapScanned);
+  const auto layout = TouchHitGeometry::makeWifiNetworkListLayout(renderer.getScreenWidth(), renderer.getScreenHeight(),
+                                                                  itemCount);
+  const int visible = std::max(1, layout.visibleRows);
+  const int pageStart = itemCount == 0 ? 0 : (snapSelected / visible) * visible;
+  const int visibleCount = std::max(0, std::min(visible, itemCount - pageStart));
+
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up && pageStart + visible < itemCount) {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    selectedNetworkIndex = std::min(itemCount - 1, pageStart + visible);
+    xSemaphoreGive(renderingMutex);
+    updateRequired = true;
+    return;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Down && pageStart > 0) {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+    selectedNetworkIndex = std::max(0, pageStart - visible);
+    xSemaphoreGive(renderingMutex);
+    updateRequired = true;
+    return;
+  }
+
+  int tx = 0;
+  int ty = 0;
+  if (mappedInput.wasScreenTapped(tx, ty)) {
+    if (layout.refresh.contains(tx, ty)) {
+      startWifiScan();
+      return;
+    }
+    int localIndex = -1;
+    if (layout.hitRow(tx, ty, visibleCount, localIndex)) {
+      const int tapped = pageStart + localIndex;
+      xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      selectedNetworkIndex = tapped;
+      xSemaphoreGive(renderingMutex);
+      selectNetwork(tapped);
+    }
+    return;
+  }
+
+  if (mappedInput.wasScreenTouchDown(tx, ty)) {
+    int localIndex = -1;
+    if (layout.hitRow(tx, ty, visibleCount, localIndex)) {
+      const int hit = pageStart + localIndex;
+      if (snapSelected != hit) {
+        xSemaphoreTake(renderingMutex, portMAX_DELAY);
         selectedNetworkIndex = hit;
-        selectNetwork(selectedNetworkIndex);
-        return;
-      }
-    }
-
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      onComplete(false);
-      return;
-    }
-
-    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (!networks.empty()) {
-        selectNetwork(selectedNetworkIndex);
-      } else {
-        startWifiScan();
-      }
-      return;
-    }
-
-    if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
-        mappedInput.wasPressed(MappedInputManager::Button::Left)) {
-      if (selectedNetworkIndex > 0) {
-        selectedNetworkIndex--;
-        updateRequired = true;
-      }
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Down) ||
-               mappedInput.wasPressed(MappedInputManager::Button::Right)) {
-      if (!networks.empty() && selectedNetworkIndex < static_cast<int>(networks.size()) - 1) {
-        selectedNetworkIndex++;
+        xSemaphoreGive(renderingMutex);
         updateRequired = true;
       }
     }
@@ -483,33 +606,24 @@ void WifiSelectionActivity::loop() {
 }
 
 std::string WifiSelectionActivity::getSignalStrengthIndicator(const int32_t rssi) const {
-  // Convert RSSI to signal bars representation
-  if (rssi >= -50) {
-    return "||||";  // Excellent
-  }
-  if (rssi >= -60) {
-    return "||| ";  // Good
-  }
-  if (rssi >= -70) {
-    return "||  ";  // Fair
-  }
-  if (rssi >= -80) {
-    return "|   ";  // Weak
-  }
-  return "    ";  // Very weak
+  if (rssi >= -50) return "||||";
+  if (rssi >= -60) return "|||";
+  if (rssi >= -70) return "||";
+  if (rssi >= -80) return "|";
+  return ".";
+}
+
+std::string WifiSelectionActivity::currentConnectedSsid() const {
+  if (!M4QemuNet::staConnected()) return {};
+  std::string ssid = WiFi.SSID().c_str();
+  if (ssid.empty()) ssid = M4QemuNet::ssidStd();
+  return ssid;
 }
 
 void WifiSelectionActivity::displayTaskLoop() {
   while (true) {
-    // If a subactivity is active, yield CPU time but don't render
-    if (subActivity) {
-      vTaskDelay(10 / portTICK_PERIOD_MS);
-      continue;
-    }
-
-    // Don't render if we're in PASSWORD_ENTRY state - we're just transitioning
-    // from the keyboard subactivity back to the main activity
-    if (state == WifiSelectionState::PASSWORD_ENTRY) {
+    if (subActivity || state == WifiSelectionState::PASSWORD_ENTRY ||
+        state == WifiSelectionState::HIDDEN_SSID_ENTRY) {
       vTaskDelay(10 / portTICK_PERIOD_MS);
       continue;
     }
@@ -526,10 +640,9 @@ void WifiSelectionActivity::displayTaskLoop() {
 
 void WifiSelectionActivity::render() const {
   renderer.clearScreen();
-
   switch (state) {
     case WifiSelectionState::SCANNING:
-      renderConnecting();  // Reuse connecting screen with different message
+      renderConnecting();
       break;
     case WifiSelectionState::NETWORK_LIST:
       renderNetworkList();
@@ -543,140 +656,150 @@ void WifiSelectionActivity::render() const {
     case WifiSelectionState::CONNECTION_FAILED:
       renderConnectionFailed();
       break;
+    case WifiSelectionState::CONFIRM_BT_DISCONNECT:
+      renderBtDisconnectConfirm();
+      break;
+    case WifiSelectionState::PASSWORD_ENTRY:
+    case WifiSelectionState::HIDDEN_SSID_ENTRY:
+      break;
   }
-
   renderer.displayBuffer();
 }
 
 void WifiSelectionActivity::renderNetworkList() const {
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int scannedCount = static_cast<int>(networks.size());
+  const int itemCount = m4WifiListRowCount(scannedCount);
+  const auto layout = TouchHitGeometry::makeWifiNetworkListLayout(pageWidth, pageHeight, itemCount);
+  const std::string connected = currentConnectedSsid();
+  const int savedCount = static_cast<int>(WIFI_STORE.getCredentials().size());
 
-  // Draw header
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 15, "WiFi Networks", true, EpdFontFamily::BOLD);
+  // Settings header semantics, paint-only: brand + battery + title + hairline.
+  // Refresh button and row rects below are untouched, so touch still matches.
+  M4UiText::draw(renderer, SMALL_FONT_ID, 14, 6, "Murphy M4", true);
+  const int battPct = powerManager.getBatteryPercentage() > 100
+                          ? 100
+                          : static_cast<int>(powerManager.getBatteryPercentage());
+  renderer.drawRect(431, 6, 24, 12, true);
+  renderer.fillRect(433, 8, (20 * battPct) / 100, 8, true);
+  renderer.fillRect(455, 9, 2, 6, true);
+  M4UiText::draw(renderer, UI_12_FONT_ID, 14, 30, "Wi-Fi", true, EpdFontFamily::BOLD);
+  renderer.drawLine(12, 88, pageWidth - 12, 88, true);
+  renderer.drawRoundedRect(layout.refresh.x, layout.refresh.y, layout.refresh.width,
+                           layout.refresh.height, 1, 6, true);
+  const int refreshTextW = M4UiText::textWidth(renderer, UI_10_FONT_ID, "重新扫描");
+  M4UiText::draw(renderer, UI_10_FONT_ID, layout.refresh.x + (layout.refresh.width - refreshTextW) / 2,
+                 layout.refresh.y + (layout.refresh.height - renderer.getLineHeight(UI_10_FONT_ID)) / 2,
+                 "重新扫描");
+
+  char countText[32];
+  snprintf(countText, sizeof(countText), "%d 个网络", scannedCount);
+  renderer.drawText(SMALL_FONT_ID, 14, 72, countText);
+  char knownBuf[16];
+  m4WifiFormatKnownCount(knownBuf, sizeof(knownBuf), savedCount, kM4KnownNetworkCap);
+  // Paint-only: end left of the refresh button (was overlapping it).
+  const int knownW = M4UiText::textWidth(renderer, SMALL_FONT_ID, knownBuf);
+  renderer.drawText(SMALL_FONT_ID, layout.refresh.x - 8 - knownW, 72, knownBuf);
 
   if (networks.empty()) {
-    // No networks found or scan failed
-    const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-    const auto top = (pageHeight - height) / 2;
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, top, "No networks found");
-    renderer.drawCenteredText(SMALL_FONT_ID, top + height + 10, "Press Connect to scan again");
-  } else {
-    // Calculate how many networks we can display
-    constexpr int startY = 60;
-    constexpr int lineHeight = 25;
-    const int maxVisibleNetworks = (pageHeight - startY - 40) / lineHeight;
-
-    // Calculate scroll offset to keep selected item visible
-    int scrollOffset = 0;
-    if (selectedNetworkIndex >= maxVisibleNetworks) {
-      scrollOffset = selectedNetworkIndex - maxVisibleNetworks + 1;
-    }
-
-    // Draw networks
-    int displayIndex = 0;
-    for (size_t i = scrollOffset; i < networks.size() && displayIndex < maxVisibleNetworks; i++, displayIndex++) {
-      const int networkY = startY + displayIndex * lineHeight;
-      const auto& network = networks[i];
-
-      // Draw selection indicator
-      if (static_cast<int>(i) == selectedNetworkIndex) {
-        M4UiText::draw(renderer, UI_10_FONT_ID, 5, networkY, ">");
-      }
-
-      // Draw network name (truncate if too long)
-      std::string displayName = network.ssid;
-      if (displayName.length() > 33) {
-        displayName.replace(30, displayName.length() - 30, "...");
-      }
-      M4UiText::draw(renderer, UI_10_FONT_ID, 20, networkY, displayName.c_str());
-
-      // Draw signal strength indicator
-      std::string signalStr = getSignalStrengthIndicator(network.rssi);
-      M4UiText::draw(renderer, UI_10_FONT_ID, pageWidth - 90, networkY, signalStr.c_str());
-
-      // Draw saved indicator (checkmark) for networks with saved passwords
-      if (network.hasSavedPassword) {
-        M4UiText::draw(renderer, UI_10_FONT_ID, pageWidth - 50, networkY, "+");
-      }
-
-      // Draw lock icon for encrypted networks
-      if (network.isEncrypted) {
-        M4UiText::draw(renderer, UI_10_FONT_ID, pageWidth - 30, networkY, "*");
-      }
-    }
-
-    // Draw scroll indicators if needed
-    if (scrollOffset > 0) {
-      renderer.drawText(SMALL_FONT_ID, pageWidth - 15, startY - 10, "^");
-    }
-    if (scrollOffset + maxVisibleNetworks < static_cast<int>(networks.size())) {
-      renderer.drawText(SMALL_FONT_ID, pageWidth - 15, startY + maxVisibleNetworks * lineHeight, "v");
-    }
-
-    // Show network count
-    char countStr[32];
-    snprintf(countStr, sizeof(countStr), "%zu networks found", networks.size());
-    renderer.drawText(SMALL_FONT_ID, 20, pageHeight - 90, countStr);
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 25, "未找到 Wi-Fi", true, EpdFontFamily::BOLD);
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 20, "点按右上角重新扫描");
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 18, "左缘滑动返回");
   }
 
-  // Show MAC address above the network count and legend
-  renderer.drawText(SMALL_FONT_ID, 20, pageHeight - 105, cachedMacAddress.c_str());
+  const int visible = std::max(1, layout.visibleRows);
+  const int pageStart = itemCount == 0 ? 0 : (selectedNetworkIndex / visible) * visible;
+  const int visibleCount = std::max(0, std::min(visible, itemCount - pageStart));
 
-  // Draw help text
-  renderer.drawText(SMALL_FONT_ID, 20, pageHeight - 75, "* = Encrypted | + = Saved");
-  const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kConnect), "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  for (int local = 0; local < visibleCount; ++local) {
+    const int index = pageStart + local;
+    const auto row = layout.rowRect(local);
+
+    // Settings grammar: dividers for all rows, thin rounded outline for the
+    // selected row (same rowRect geometry, so touch is unchanged).
+    if (index == selectedNetworkIndex) {
+      renderer.drawRoundedRect(row.x + 1, row.y + 1, row.width - 2, row.height - 2, 1, 6, true);
+      renderer.fillRectStipple(row.x + 5, row.y + 5, row.width - 10, row.height - 10);
+    }
+    renderer.drawLine(row.x + 8, row.y + row.height - 1, row.x + row.width - 8,
+                      row.y + row.height - 1, true);
+    const int chevX = row.x + row.width - 26;
+    const int chevCy = row.y + row.height / 2;
+    renderer.drawLine(chevX, chevCy - 8, chevX + 10, chevCy, 2, true);
+    renderer.drawLine(chevX + 10, chevCy, chevX, chevCy + 8, 2, true);
+
+    if (m4WifiListRowIsHidden(index, scannedCount)) {
+      M4UiText::draw(renderer, UI_10_FONT_ID, row.x + 12, row.y + 10, "加入隐藏网络", true,
+                     EpdFontFamily::BOLD);
+      renderer.drawText(SMALL_FONT_ID, row.x + 12, row.y + 42, "输入名称与密码");
+      continue;
+    }
+
+    const auto& network = networks[static_cast<size_t>(index)];
+    const bool isCurrent = !connected.empty() && network.ssid == connected;
+    M4UiText::draw(renderer, UI_10_FONT_ID, row.x + 12, row.y + 10, network.ssid.c_str(),
+                   network.hasSavedPassword || isCurrent, EpdFontFamily::BOLD);
+    if (isCurrent) {
+      renderer.drawText(SMALL_FONT_ID, row.x + row.width - 52, row.y + 12, "✓");
+    }
+
+    std::string meta = "信号 " + getSignalStrengthIndicator(network.rssi);
+    if (network.hasSavedPassword) meta += "  已保存";
+    if (network.isEncrypted) meta += "  加密";
+    if (isCurrent) meta += "  已连接";
+    renderer.drawText(SMALL_FONT_ID, row.x + 12, row.y + 42, meta.c_str());
+  }
+
+  if (pageStart > 0) renderer.drawText(SMALL_FONT_ID, pageWidth - 22, layout.rowTop - 12, "^");
+  if (pageStart + visibleCount < itemCount) renderer.drawText(SMALL_FONT_ID, pageWidth - 22, pageHeight - 16, "v");
 }
 
 void WifiSelectionActivity::renderConnecting() const {
-  const auto pageHeight = renderer.getScreenHeight();
-  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto top = (pageHeight - height) / 2;
+  const int pageHeight = renderer.getScreenHeight();
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 30, "Wi-Fi", true, EpdFontFamily::BOLD);
 
   if (state == WifiSelectionState::SCANNING) {
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, top, "Scanning...");
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 20, "正在扫描网络…", true,
+                           EpdFontFamily::BOLD);
   } else {
-    M4UiText::drawCentered(renderer, UI_12_FONT_ID, top - 40, "Connecting...", true, EpdFontFamily::BOLD);
-
-    std::string ssidInfo = "to " + selectedSSID;
-    if (ssidInfo.length() > 25) {
-      ssidInfo.replace(22, ssidInfo.length() - 22, "...");
-    }
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, top, ssidInfo.c_str());
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 50, "正在连接…", true,
+                           EpdFontFamily::BOLD);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2, selectedSSID.c_str());
   }
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 18, "左缘滑动取消");
 }
 
 void WifiSelectionActivity::renderConnected() const {
-  const auto pageHeight = renderer.getScreenHeight();
-  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto top = (pageHeight - height * 4) / 2;
-
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, top - 30, "Connected!", true, EpdFontFamily::BOLD);
-
-  std::string ssidInfo = "Network: " + selectedSSID;
-  if (ssidInfo.length() > 28) {
-    ssidInfo.replace(25, ssidInfo.length() - 25, "...");
+  const int pageHeight = renderer.getScreenHeight();
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 45, "Wi-Fi 已连接", true,
+                         EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2, selectedSSID.c_str());
+  const std::string ipInfo = "IP: " + connectedIP;
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 38, ipInfo.c_str());
+  if (saveRejectedAtCap) {
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 76, "已保存网络已满 8/8，本次未保存");
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 110, "点按屏幕继续");
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 18, "左缘滑动返回");
+    return;
   }
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, top + 10, ssidInfo.c_str());
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 76, "是否保存此 Wi-Fi 密码?");
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 110, "点按屏幕保存");
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 18, "左缘滑动跳过（本次仍可使用）");
+}
 
-  const std::string ipInfo = "IP Address: " + connectedIP;
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, top + 40, ipInfo.c_str());
-
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels("", "Continue", "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+void WifiSelectionActivity::renderBtDisconnectConfirm() const {
+  const int pageHeight = renderer.getScreenHeight();
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 40, "确认", true, EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2, "连接 Wi-Fi 会断开蓝牙翻页");
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 48, "点按屏幕确认");
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 18, "左缘滑动取消");
 }
 
 void WifiSelectionActivity::renderConnectionFailed() const {
-  const auto pageHeight = renderer.getScreenHeight();
-  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto top = (pageHeight - height * 2) / 2;
-
-  M4UiText::drawCentered(renderer, UI_12_FONT_ID, top - 20, L(Str::kConnectFailed), true, EpdFontFamily::BOLD);
-  M4UiText::drawCentered(renderer, UI_10_FONT_ID, top + 20, connectionError.c_str());
-
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kContinue), "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  const int pageHeight = renderer.getScreenHeight();
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 55, "连接失败", true, EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 - 5, connectionError.c_str());
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 48, "点按屏幕返回 Wi-Fi 列表");
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 18, "左缘滑动返回");
 }

@@ -25,8 +25,9 @@ enum class SettingsPane : uint8_t { Hub, Category };
 struct SettingsNavState {
   SettingsPane pane = SettingsPane::Hub;
   SettingsHubCard hub = SettingsHubCard::DisplayReading;
-  int selectedRow = 0;   // setting-row index inside current card (0-based, skips sections)
+  int selectedRow = 0;   // flatten-order setting index (0-based, skips sections)
   int windowStart = 0;   // flattened window origin (0..flatCount-8)
+  char selectedKey[32] = {};  // stable identity; never a getSettingsList() vector index
 };
 
 constexpr int kSettingsHubCardCount = 4;

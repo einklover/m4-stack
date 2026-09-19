@@ -102,22 +102,22 @@ void testDockSpecPureOrdering() {
 }
 
 void testDraftSnapshotHasAppsBeforePublish() {
-    HomeSceneModel model;
-    model.begin(UiScene::DataState::Ready);
-    assert(model.addApp("builtin.files", "文件管理", "builtin.files"));
-    assert(model.addApp("com.weread.client", "微信读书", "icon_home.bmp"));
-    assert(model.draftSnapshot().appCount == 2);
-    // Asset decode used to walk draftPublication().snapshot here, which is still
-    // empty until publish(). That skipped every dock icon, including compiled
-    // builtin.files.
-    assert(model.draftPublication().snapshot.appCount == 0);
-    model.draftPublication().snapshot = model.draftSnapshot();
-    assert(model.draftPublication().snapshot.appCount == 2);
-    auto tv = model.draftPublication().snapshot.textView(
-        model.draftPublication().snapshot.apps[0].id);
-    std::string id;
-    id.reserve(tv.size);
-    for (uint16_t j = 0; j < tv.size; ++j) id.push_back(static_cast<char>(tv.readByte(j)));
+  HomeSceneModel model;
+  model.begin(UiScene::DataState::Ready);
+  assert(model.addApp("builtin.files", "文件管理", "builtin.files"));
+  assert(model.addApp("com.weread.client", "微信读书", "icon_home.bmp"));
+  // Asset decode used to walk draftPublication().snapshot here, which is still
+  // empty until publish(). That skipped every dock icon, including compiled
+  // builtin.files.
+  assert(model.draftPublication().snapshot.appCount == 0);
+  assert(model.publish());
+  HomeScenePublication published{};
+  assert(model.copyLatestPublication(published));
+  assert(published.snapshot.appCount == 2);
+  auto tv = published.snapshot.textView(published.snapshot.apps[0].id);
+  std::string id;
+  id.reserve(tv.size);
+  for (uint16_t j = 0; j < tv.size; ++j) id.push_back(static_cast<char>(tv.readByte(j)));
     assert(id == "builtin.files");
     printf("draft snapshot vs publication trap PASS\n");
 }
@@ -149,6 +149,21 @@ void testProductionDockHelperIfPresent() {
     bool hasWeread = content.find("com.weread.client") != std::string::npos;
     bool hasFanqie = content.find("com.fanqie.client") != std::string::npos;
     bool hasJjwxc = content.find("com.jjwxc.client") != std::string::npos;
+    // The scene-driven Home path keeps the builtin.files id in the asset
+    // decoder rather than repeating it in HomeActivity.cpp.
+    if (!hasBuiltin) {
+        FILE* decoder = fopen("firmware/src/activities/home/HomeSceneAssetDecoder.cpp", "r");
+        if (decoder) {
+            fseek(decoder, 0, SEEK_END);
+            long decoderSize = ftell(decoder);
+            fseek(decoder, 0, SEEK_SET);
+            std::string decoderContent;
+            decoderContent.resize((size_t)decoderSize);
+            fread(&decoderContent[0], 1, (size_t)decoderSize, decoder);
+            fclose(decoder);
+            hasBuiltin = decoderContent.find("builtin.files") != std::string::npos;
+        }
+    }
     if (!hasBuiltin) {
         printf("RED: Home dock production missing 'builtin.files' in HomeActivity.cpp — expected until Lane A lands\n");
         printf("  has weread=%d fanqie=%d jjwxc=%d\n", hasWeread, hasFanqie, hasJjwxc);

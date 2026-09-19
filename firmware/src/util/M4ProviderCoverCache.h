@@ -110,8 +110,6 @@ inline bool isProviderCoverCacheDir(const std::string& dir) {
 
 inline std::string sourcePathInDir(const std::string& dir) { return dir + "/source.img"; }
 
-inline std::string fallbackBmpPathInDir(const std::string& dir) { return dir + "/cover_" "171x254.bmp"; }
-
 inline std::string sizedBmpPathInDir(const std::string& dir, int width, int height) {
   return dir + "/cover_" + std::to_string(width) + "x" + std::to_string(height) + ".bmp";
 }
@@ -122,77 +120,8 @@ struct EnsureSizedResult {
   bool generated = false;
 };
 
-inline constexpr int kHomeHeroW = 110;
-inline constexpr int kHomeHeroH = 180;
-inline constexpr int kHomeMiniW = 74;
-inline constexpr int kHomeMiniH = 106;
-
-inline bool isHomeSceneSize(int width, int height) {
-  return (width == kHomeHeroW && height == kHomeHeroH) ||
-         (width == kHomeMiniW && height == kHomeMiniH);
-}
-
-inline bool homeSceneOtherSize(int width, int height, int& outW, int& outH) {
-  if (width == kHomeHeroW && height == kHomeHeroH) {
-    outW = kHomeMiniW;
-    outH = kHomeMiniH;
-    return true;
-  }
-  if (width == kHomeMiniW && height == kHomeMiniH) {
-    outW = kHomeHeroW;
-    outH = kHomeHeroH;
-    return true;
-  }
-  return false;
-}
-
-// Ensure both Home scene sizes (110x180 and 74x106) exist from the same source.
-// Used after any successful source land so Home re-entry without Wi-Fi is a hit.
-// Never fetches. Uses the same 1-bit converter path as ensureSizedCoverFromSource.
-// Returns true if at least one size was generated or already existed.
-inline bool ensureHomeSceneSizesFromSource(const std::string& dir, const Backend& backend,
-                                           const std::function<bool()>& cancelled = {}) {
-  if (dir.empty() || !isProviderCoverCacheDir(dir) || !backend.exists || !backend.convert) return false;
-  const std::string source = sourcePathInDir(dir);
-  const std::string fallback = fallbackBmpPathInDir(dir);
-  const bool sourceExists = backend.exists(source);
-  const bool fallbackExists = !sourceExists && backend.exists(fallback);
-  const std::string baseSource = sourceExists ? source : (fallbackExists ? fallback : std::string{});
-  if (baseSource.empty()) return false;
-  const int sizes[2][2] = {{kHomeHeroW, kHomeHeroH}, {kHomeMiniW, kHomeMiniH}};
-  bool anyPresent = false;
-  for (auto& wh : sizes) {
-    int w = wh[0];
-    int h = wh[1];
-    std::string target = sizedBmpPathInDir(dir, w, h);
-    if (backend.exists(target)) {
-      anyPresent = true;
-      continue;
-    }
-    if (cancelled && cancelled()) continue;
-    // Use source if it exists, otherwise fallback (already decided).
-    const std::string& srcForThis = baseSource;
-    if (cancelled && cancelled()) continue;
-    if (!backend.convert(srcForThis, target, w, h) || !backend.exists(target)) {
-      if (backend.remove) backend.remove(target);
-      continue;
-    }
-    // Cancel-after-success keeps the file, same as ensureSized.
-    anyPresent = true;
-  }
-  return anyPresent;
-}
-
 // Home Scene sizes (110x180 / 74x106) are not the Fengyan download size (171x254).
 // Generate on miss from the already-downloaded source.img. Never fetches.
-// Last resort: if source.img is missing, generate the exact scene-size 1-bit
-// cover_{W}x{H}.bmp from the same directory's cover_171 x254.bmp (2-bit Fengyan).
-// If source.img exists, never use the 171x254 fallback. Never HTTP.
-// On convert failure the partial target is deleted. Cancel-after-success keeps the file.
-// When the requested size is a Home scene size (110x180 or 74x106), also
-// generate the complementary Home size from the same source in the same pass
-// (110->74 and 74->110) as 1-bit exact-size BMPs. This matches the product
-// rule: hero production also writes mini.
 inline EnsureSizedResult ensureSizedCoverFromSource(const std::string& coverBmpPath, int width, int height,
                                                     const Backend& backend,
                                                     const std::function<bool()>& cancelled = {}) {
@@ -211,87 +140,21 @@ inline EnsureSizedResult ensureSizedCoverFromSource(const std::string& coverBmpP
     return out;
   }
   const std::string source = sourcePathInDir(dir);
-  if (backend.exists(source)) {
-    // Source exists: use only JPEG/PNG source, never fallback 171x254.
-    if (cancelled && cancelled()) {
-      out.thumbPath.clear();
-      return out;
-    }
-    if (!backend.convert(source, target, width, height) || !backend.exists(target)) {
-      if (backend.remove) backend.remove(target);
-      out.thumbPath.clear();
-      return out;
-    }
-    if (cancelled && cancelled()) {
-      // Conversion finished; keep the file so the next Home paint is a hit.
-      out.generated = true;
-      return out;
-    }
-    out.generated = true;
-    // Dual-size: when a Home scene size is produced from source, also produce
-    // the complementary size from the same source in the same pass.
-    if (isHomeSceneSize(width, height) && !(cancelled && cancelled())) {
-      int otherW = 0, otherH = 0;
-      if (homeSceneOtherSize(width, height, otherW, otherH)) {
-        std::string otherTarget = sizedBmpPathInDir(dir, otherW, otherH);
-        if (!backend.exists(otherTarget) && !(cancelled && cancelled())) {
-          if (!backend.convert(source, otherTarget, otherW, otherH) || !backend.exists(otherTarget)) {
-            if (backend.remove) backend.remove(otherTarget);
-          }
-        }
-      }
-    }
-    return out;
-  }
-  // Last resort: source missing -> try 2-bit Fengyan cover_171x254.bmp.
-  // Only for Home Scene sizes (110x180 current, 74x106 recent); other sizes
-  // are not Home Scene and keep the pre-round-1 empty-on-miss contract so the
-  // snapshot host test's 64x64 no-source expectation stays green while Scene
-  // covers are correctly recovered from 171x254.
-  const bool isSceneSize = (width == 110 && height == 180) || (width == 74 && height == 106);
-  // For generic future Scene sizes, allow any size except the snapshot test's
-  // non-Scene probes (64x64, 50x80) to keep the contract green; real Home only
-  // requests the two sizes above. If a new Scene size appears, remove the probe
-  // exclusion and rely on the generic path.
-  const bool isSnapshotProbe = (width == 64 && height == 64) || (width == 50 && height == 80);
-  if (!isSceneSize && isSnapshotProbe) {
+  if (!backend.exists(source)) {
     out.thumbPath.clear();
     return out;
   }
-  if (cancelled && cancelled()) {
-    out.thumbPath.clear();
-    return out;
-  }
-  const std::string fallback = fallbackBmpPathInDir(dir);
-  if (!backend.exists(fallback)) {
-    out.thumbPath.clear();
-    return out;
-  }
-  if (cancelled && cancelled()) {
-    out.thumbPath.clear();
-    return out;
-  }
-  if (!backend.convert(fallback, target, width, height) || !backend.exists(target)) {
+  if (!backend.convert(source, target, width, height) || !backend.exists(target)) {
     if (backend.remove) backend.remove(target);
     out.thumbPath.clear();
     return out;
   }
   if (cancelled && cancelled()) {
+    // Conversion finished; keep the file so the next Home paint is a hit.
     out.generated = true;
     return out;
   }
   out.generated = true;
-  if (isHomeSceneSize(width, height) && !(cancelled && cancelled())) {
-    int otherW = 0, otherH = 0;
-    if (homeSceneOtherSize(width, height, otherW, otherH)) {
-      std::string otherTarget = sizedBmpPathInDir(dir, otherW, otherH);
-      if (!backend.exists(otherTarget) && !(cancelled && cancelled())) {
-        if (!backend.convert(fallback, otherTarget, otherW, otherH) || !backend.exists(otherTarget)) {
-          if (backend.remove) backend.remove(otherTarget);
-        }
-      }
-    }
-  }
   return out;
 }
 
@@ -326,47 +189,12 @@ inline Result acquire(const Request& request, const Backend& backend) {
       return out;
     }
   }
-  // At this point source is complete (pre-existing or fetched ok). Never delete it on later
-  // cancel/convert failure; only the failed target is cleaned.
-  if (request.cancelled && request.cancelled()) {
-    out.coverBmpPath.clear();
-    return out;
-  }
-  // Home scene: use ensureSized path (1-bit exact, dual-write, keep source) rather than
-  // direct 1-bit convert which may fail where 8-bit+ensure succeeded. Keep source even
-  // if 1-bit dither fails; caller can retry ensure on next Home entry. This restores
-  // R16's 8-bit acquire + ensureSized reliability while keeping R17 dual-write invariant.
-  if (isHomeSceneSize(request.width, request.height)) {
-    const std::string dir = cacheDir(request.providerId, request.bookId);
-    // ensureHomeSceneSizesFromSource generates both 110x180 and 74x106 from the same
-    // source (or fallback 171x254) as 1-bit exact BMPs, never fetches, keeps source.
-    // Use it so hero production also writes mini and source is preserved.
-    bool any = ensureHomeSceneSizesFromSource(dir, backend, request.cancelled);
-    (void)any;
-    if (!backend.exists(target)) {
-      // Primary still missing after ensure attempt — keep source but signal failure.
-      if (request.cancelled && request.cancelled()) {
-        // Cancel keeps source, but still no thumb.
-      } else {
-        // ensure already cleaned partial target; just return empty.
-      }
-      out.coverBmpPath.clear();
-      return out;
-    }
-    if (request.cancelled && request.cancelled()) {
-      // Cancel-after-success keeps the file (same as ensureSized).
-      return out;
-    }
-    return out;
-  }
-  const bool primaryOk = backend.convert(source, target, request.width, request.height) && backend.exists(target);
-  if (!primaryOk) {
+  if ((request.cancelled && request.cancelled()) ||
+      !backend.convert(source, target, request.width, request.height) ||
+      (request.cancelled && request.cancelled()) || !backend.exists(target)) {
+    if (backend.remove) backend.remove(source);
     if (backend.remove) backend.remove(target);
     out.coverBmpPath.clear();
-    return out;
-  }
-  if (request.cancelled && request.cancelled()) {
-    // Cancel-after-success keeps the file (same as ensureSized). Primary is already valid.
     return out;
   }
   return out;

@@ -326,7 +326,7 @@ void CrossPointSettings::resetToDefaults() {
   autoRotateEnabled = 0;
   landscapeDualPageEnabled = 0;
   buttonHintsEnabled = 0;
-  wifiAlwaysReselect = 1;
+  wifiAlwaysReselect = 0;
   sleepPngInvert = 1;
   sleepBeforeFullRefresh = 1;
   systemAnimationEnabled = 0;
@@ -879,7 +879,7 @@ bool CrossPointSettings::loadFromFile() {
           libraryLongPressMenu     = doc["libraryLongPressMenu"]     | (uint8_t)0;
           // Global feature switches
           globalNextPageModeEnabled = doc["globalNextPageModeEnabled"] | (uint8_t)0;
-          wifiAlwaysReselect       = doc["wifiAlwaysReselect"]       | (uint8_t)1;
+          wifiAlwaysReselect       = doc["wifiAlwaysReselect"]       | (uint8_t)0;
           directTxtRead            = doc["directTxtRead"]            | (uint8_t)1;
           systemLanguage           = doc["systemLanguage"]           | (uint8_t)0;
           if (systemLanguage > 1) systemLanguage = 0;

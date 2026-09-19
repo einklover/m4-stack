@@ -654,22 +654,6 @@ bool decodeAppIconForPublication(HomeScene::HomeScenePublication& pub, const std
   return HomeScene::homeAddAssetToPublication(pub, key, out, w, h, stride);
 }
 
-bool decodeBuiltinFilesIconForPublication(HomeScene::HomeScenePublication& pub, const UiScene::AssetKey& key,
-                                          std::function<bool()> isCancelled) {
-  if (isCancelled && isCancelled()) return false;
-  size_t offset = 0;
-  uint16_t w = 0, h = 0, stride = 0;
-  size_t bytes = 0;
-  if (!HomeScene::homePublicationSlotForKey(key, &offset, &w, &h, &stride, &bytes)) return false;
-  if (w != HomeScene::kHomeAppIconW || h != HomeScene::kHomeAppIconH || stride != HomeScene::kHomeAppIconStride ||
-      bytes != HomeScene::kHomeAppIconBytes)
-    return false;
-  if (offset + bytes > HomeScene::kHomeAssetArenaBytes) return false;
-  const uint8_t* icon = builtinSheetIcon("builtin.files");
-  if (!icon) return false;
-  return HomeScene::homeAddAssetToPublication(pub, key, icon, w, h, stride);
-}
-
 bool fillFallbackAppIcon(uint8_t* out, uint16_t w, uint16_t h, uint16_t stride, uint8_t pattern) {
   if (!out || w != HomeScene::kHomeAppIconW || h != HomeScene::kHomeAppIconH || stride != HomeScene::kHomeAppIconStride) return false;
   std::memset(out, 0, static_cast<size_t>(stride) * h);

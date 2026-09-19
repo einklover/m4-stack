@@ -19,12 +19,16 @@
 #include "util/M4ContentProviderContract.h"
 #include "util/M4ErrorScreen.h"
 #include "util/M4ListTouchPolicy.h"
+#include "util/M4RenderGuard.h"
 #include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
 
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_heap_caps.h>
 #endif
+
+// Process-wide render-submit mutex owned by main.cpp.
+extern SemaphoreHandle_t gM4RenderMutex;
 
 #include <algorithm>
 #include <cstdio>
@@ -106,6 +110,7 @@ void NativeAppActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   error_.clear();
   authLoginPrompted_ = false;
+  renderStartupPage();
   if (!loadDocument()) {
     updateRequired_ = true;
     return;
@@ -535,6 +540,11 @@ void NativeAppActivity::loop() {
 }
 
 void NativeAppActivity::render() {
+  M4RenderGuard renderGuard(gM4RenderMutex, pdMS_TO_TICKS(2000));
+  if (!renderGuard.owns()) {
+    updateRequired_ = true;
+    return;
+  }
   renderer.clearScreen();
   const auto metrics = UITheme::getInstance().getMetrics();
   const int w = renderer.getScreenWidth();
@@ -807,6 +817,19 @@ void NativeAppActivity::render() {
                                 mappedLabels[slot], true, EpdFontFamily::BOLD, 8);
   }
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void NativeAppActivity::renderStartupPage() {
+  M4RenderGuard renderGuard(gM4RenderMutex, pdMS_TO_TICKS(2000));
+  if (!renderGuard.owns()) {
+    Serial.printf("[NativeApp] startup render lock unavailable\n");
+    return;
+  }
+  renderer.clearScreen();
+  const std::string bootTitle = app_.name.empty() ? app_.id : app_.name;
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 300, bootTitle.c_str(), true, EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 352, "正在启动…");
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 }
 
 std::string NativeAppActivity::debugUiJson() {

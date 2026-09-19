@@ -8,13 +8,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WifiStateContractTests(unittest.TestCase):
-    def test_successful_manual_connection_saves_without_a_dialog(self) -> None:
+    def test_successful_manual_connection_prompts_before_saving(self) -> None:
+        # Phase 2A Task 2 (approved behavior change): new credentials must not
+        # auto-save. Success enters an explicit Yes/No prompt; only Yes
+        # reaches WifiCredentialStore, No keeps the live session.
         activity = (ROOT / "firmware/src/activities/network/WifiSelectionActivity.cpp").read_text()
-        self.assertNotIn("SAVE_PROMPT", activity)
-        self.assertNotIn("Save password for next time?", activity)
+        check = activity[activity.index("void WifiSelectionActivity::checkConnectionStatus"):]
+        check = check[:check.index("void WifiSelectionActivity::loop")]
+        self.assertNotIn("WIFI_STORE.addCredential", check)
+        self.assertIn("state = WifiSelectionState::CONNECTED", check)
+        self.assertIn("m4WifiSaveConfirmed", activity)
         self.assertIn("WIFI_STORE.addCredential(selectedSSID, enteredPassword)", activity)
-        self.assertLess(activity.index("WIFI_STORE.addCredential(selectedSSID, enteredPassword)"),
-                        activity.index("onComplete(true)"))
+        self.assertIn("是否保存", activity)
         self.assertNotIn('connectionError = "Connected, but could not save Wi-Fi"', activity)
 
     def test_existing_crosspoint_dir_does_not_fail_wifi_save(self) -> None:

@@ -22,13 +22,20 @@
 #include "components/icons/wifi.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ButtonNavigator.h"
 #include "util/M4ListTouchPolicy.h"
+// Angle form: the Phase 1 guard contract scans comment/string-masked source,
+// so the header anchor must stay visible outside a quoted literal.
+#include <util/M4RenderGuard.h>
 #include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
 #include <Utf8.h>
 
 #include <algorithm>
 #include <cstring>
+
+// Phase 1 (INV-R1): process-wide render-submit mutex owned by main.cpp.
+extern SemaphoreHandle_t gM4RenderMutex;
 
 namespace {
 constexpr unsigned long kAppLongPressMs = 700;
@@ -159,16 +166,53 @@ void AppListActivity::taskTrampoline(void* param) {
 
 void AppListActivity::displayTaskLoop() {
   while (true) {
+    if (exitDisplayTask_.load(std::memory_order_acquire)) {
+      // Cooperative shutdown: exit only while holding no locks, so the
+      // process-wide guard is never left owned by a deleted task.
+      displayTaskHandle_ = nullptr;
+      displayTaskExited_.store(true, std::memory_order_release);
+      vTaskDelete(nullptr);
+    }
+    if (childScreenOwned_.load(std::memory_order_acquire)) {
+      vTaskDelay(10 / portTICK_PERIOD_MS);
+      continue;
+    }
     if (updateRequired_) {
-      xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-      // openSelected() installs the child while holding this mutex. Recheck
-      // after taking it so a stale pre-lock observation cannot paint the drawer
-      // over the child's first frame.
-      if (updateRequired_ && !subActivity) {
-        updateRequired_ = false;
-        render();
+      AppListFrameSnapshot snapshot;
+      bool shouldSubmit = false;
+      // Phase 1: snapshot under the local mutex, then release it before taking
+      // the global guard, so global is never acquired while holding local.
+      if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+        // Child installation happens after releasing this mutex. Recheck
+        // after taking it so a stale pre-lock observation cannot paint the drawer
+        // over the child's first frame.
+        if (updateRequired_ && !childScreenOwned_.load(std::memory_order_acquire)) {
+          snapshot.selectedIndex = selectedIndex_;
+          snapshot.mode = mode_;
+          snapshot.uninstallClearData = uninstallClearData_;
+          snapshot.items = items_;
+          snapshot.apps = apps_;
+          snapshot_ = snapshot;
+          updateRequired_ = false;
+          shouldSubmit = true;
+        }
+        xSemaphoreGive(renderingMutex_);
       }
-      xSemaphoreGive(renderingMutex_);
+      // A child installed after the snapshot owns the screen now: drop the
+      // stale parent frame instead of painting over the plugin. (Child close
+      // re-arms updateRequired_ via reload, so nothing is lost.)
+      if (shouldSubmit) {
+        M4RenderGuard renderGuard(gM4RenderMutex);
+        if (renderGuard.owns() && !childScreenOwned_.load(std::memory_order_acquire)) {
+          render();
+        } else {
+          // Global contended: never submit without the guard; re-arm instead.
+          if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            updateRequired_ = true;
+            xSemaphoreGive(renderingMutex_);
+          }
+        }
+      }
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
@@ -244,22 +288,39 @@ void AppListActivity::reload() {
 void AppListActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex_ = xSemaphoreCreateMutex();
+  exitDisplayTask_.store(false, std::memory_order_release);
+  displayTaskExited_.store(false, std::memory_order_release);
+  childScreenOwned_.store(false, std::memory_order_release);
   reload();
   updateRequired_ = true;
   xTaskCreate(&AppListActivity::taskTrampoline, "AppList", 4096, this, 1, &displayTaskHandle_);
 }
 
 void AppListActivity::onExit() {
+  childScreenOwned_.store(true, std::memory_order_release);
   ActivityWithSubactivity::onExit();
-  if (renderingMutex_) xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-  if (displayTaskHandle_) {
-    vTaskDelete(displayTaskHandle_);
-    displayTaskHandle_ = nullptr;
+  // Cooperative display-task shutdown (same pattern as MyLibrary): the task
+  // may own the process-wide submit guard mid-render; deleting it then would
+  // stick the mutex for all activities. Ask it to self-terminate (it exits
+  // holding no locks) and join boundedly; force-delete only past the deadline.
+  exitDisplayTask_.store(true, std::memory_order_release);
+  for (int i = 0; i < 300; ++i) {
+    if (displayTaskExited_.load(std::memory_order_acquire)) break;
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
   if (renderingMutex_) {
-    xSemaphoreGive(renderingMutex_);
+    const bool exitLocked = (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE);
+    if (displayTaskHandle_) {
+      // Deadline overrun: last resort (may strand an in-flight submit).
+      vTaskDelete(displayTaskHandle_);
+      displayTaskHandle_ = nullptr;
+    }
+    if (exitLocked) xSemaphoreGive(renderingMutex_);
     vSemaphoreDelete(renderingMutex_);
     renderingMutex_ = nullptr;
+  } else if (displayTaskHandle_) {
+    vTaskDelete(displayTaskHandle_);
+    displayTaskHandle_ = nullptr;
   }
 }
 
@@ -270,9 +331,14 @@ bool AppListActivity::selectedIsPlugin() const {
 
 void AppListActivity::selectIndex(const int index) {
   if (items_.empty()) return;
-  selectedIndex_ = std::min(std::max(index, 0), static_cast<int>(items_.size()) - 1);
-  M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-  updateRequired_ = true;
+  // Short lock scope over the render-consumed writes. moveSelection() delegates
+  // here, so it takes no lock itself (the mutex is non-recursive: no double-take).
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    selectedIndex_ = std::min(std::max(index, 0), static_cast<int>(items_.size()) - 1);
+    M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+    updateRequired_ = true;
+    xSemaphoreGive(renderingMutex_);
+  }
 }
 
 void AppListActivity::moveSelection(const int delta) {
@@ -314,31 +380,55 @@ void AppListActivity::activateBuiltin(const BuiltinAction action) {
 }
 
 void AppListActivity::openSelected() {
-  if (selectedIndex_ < 0 || selectedIndex_ >= static_cast<int>(items_.size())) return;
-  const auto& item = items_[static_cast<size_t>(selectedIndex_)];
-  if (!item.plugin) {
-    activateBuiltin(item.builtin);
+  // Copy the needed item/app data to locals under the local mutex, release it,
+  // then install the child: never hold local across enterNewActivity, so no
+  // local->global nesting is possible on this path.
+  DrawerItem selectedItem;
+  M4xInstalledApp selectedApp;
+  bool haveSelection = false;
+  bool haveApp = false;
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (selectedIndex_ >= 0 && selectedIndex_ < static_cast<int>(items_.size())) {
+      selectedItem = items_[static_cast<size_t>(selectedIndex_)];
+      haveSelection = true;
+      if (selectedItem.plugin && selectedItem.appIndex >= 0 &&
+          selectedItem.appIndex < static_cast<int>(apps_.size())) {
+        selectedApp = apps_[static_cast<size_t>(selectedItem.appIndex)];
+        haveApp = true;
+      }
+    }
+    xSemaphoreGive(renderingMutex_);
+  }
+  if (!haveSelection) return;
+  if (!selectedItem.plugin) {
+    activateBuiltin(selectedItem.builtin);
     return;
   }
-
-  if (item.appIndex < 0 || item.appIndex >= static_cast<int>(apps_.size())) return;
-  const auto app = apps_[static_cast<size_t>(item.appIndex)];
-  if (renderingMutex_) xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-  auto onClosed = [this]() { requestExitSubActivity(); };
-  if (app.runtime == M4xRuntimeKind::Native) {
-    enterNewActivity(new NativeAppActivity(renderer, mappedInput, app, onClosed));
-  } else {
-    enterNewActivity(new AppRuntimeActivity(renderer, mappedInput, app, onClosed));
+  if (!haveApp) return;
+  childScreenOwned_.store(true, std::memory_order_release);
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    updateRequired_ = false;
+    xSemaphoreGive(renderingMutex_);
   }
-  if (renderingMutex_) xSemaphoreGive(renderingMutex_);
+  auto onClosed = [this]() { requestExitSubActivity(); };
+  if (selectedApp.runtime == M4xRuntimeKind::Native) {
+    enterNewActivity(new NativeAppActivity(renderer, mappedInput, selectedApp, onClosed));
+  } else {
+    enterNewActivity(new AppRuntimeActivity(renderer, mappedInput, selectedApp, onClosed));
+  }
 }
 
 void AppListActivity::openInstall() {
-  if (renderingMutex_) xSemaphoreTake(renderingMutex_, portMAX_DELAY);
+  // Handoff barrier: order child installation after any in-flight frame
+  // snapshot, then release before enter so local is never held across it.
+  childScreenOwned_.store(true, std::memory_order_release);
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    updateRequired_ = false;
+    xSemaphoreGive(renderingMutex_);
+  }
   enterNewActivity(new AppInstallActivity(renderer, mappedInput, "", [this]() {
     requestExitSubActivity();
   }));
-  if (renderingMutex_) xSemaphoreGive(renderingMutex_);
 }
 
 void AppListActivity::uninstallSelected() {
@@ -350,23 +440,33 @@ void AppListActivity::uninstallSelected() {
     Serial.printf("[M4x] uninstall failed: %s\n", err.c_str());
   }
   reload();
-  updateRequired_ = true;
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    updateRequired_ = true;
+    xSemaphoreGive(renderingMutex_);
+  }
 }
 
 void AppListActivity::loop() {
   if (subActivity) {
     if (pumpSubActivityFrame()) {
       reload();
-      updateRequired_ = true;
+      childScreenOwned_.store(false, std::memory_order_release);
+      if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+        updateRequired_ = true;
+        xSemaphoreGive(renderingMutex_);
+      }
     }
     return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
     if (mode_ == 1) {
-      mode_ = 0;
-      M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-      updateRequired_ = true;
+      if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+        mode_ = 0;
+        M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+        updateRequired_ = true;
+        xSemaphoreGive(renderingMutex_);
+      }
     } else {
       onGoBack();
     }
@@ -385,15 +485,21 @@ void AppListActivity::loop() {
       int hit = -1;
       if (M4ListTouchPolicy::dialogButtonFromPoint(dialog, tx, ty, hit)) {
         if (hit == 0) {
-          mode_ = 0;
-          M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-          updateRequired_ = true;
+          if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            mode_ = 0;
+            M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+            updateRequired_ = true;
+            xSemaphoreGive(renderingMutex_);
+          }
         } else {
           uninstallSelected();
         }
       } else if (uninstallDataToggleRect(renderer).contains(tx, ty)) {
-        uninstallClearData_ = !uninstallClearData_;
-        updateRequired_ = true;
+        if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+          uninstallClearData_ = !uninstallClearData_;
+          updateRequired_ = true;
+          xSemaphoreGive(renderingMutex_);
+        }
       }
       return;
     }
@@ -403,8 +509,11 @@ void AppListActivity::loop() {
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Left) ||
         mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-      uninstallClearData_ = !uninstallClearData_;
-      updateRequired_ = true;
+      if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+        uninstallClearData_ = !uninstallClearData_;
+        updateRequired_ = true;
+        xSemaphoreGive(renderingMutex_);
+      }
     }
     return;
   }
@@ -422,9 +531,12 @@ void AppListActivity::loop() {
         } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
           openInstall();
         } else if (mappedInput.wasReleased(MappedInputManager::Button::Left) && selectedIsPlugin()) {
-          mode_ = 1;
-          M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-          updateRequired_ = true;
+          if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            mode_ = 1;
+            M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+            updateRequired_ = true;
+            xSemaphoreGive(renderingMutex_);
+          }
         }
         return;
       }
@@ -433,9 +545,12 @@ void AppListActivity::loop() {
       if (hit >= 0) {
         selectIndex(hit);
         if (selectedIsPlugin() && mappedInput.lastScreenTouchHeldMs() >= kAppLongPressMs) {
-          mode_ = 1;
-          M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-          updateRequired_ = true;
+          if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            mode_ = 1;
+            M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+            updateRequired_ = true;
+            xSemaphoreGive(renderingMutex_);
+          }
         } else {
           openSelected();
         }
@@ -461,9 +576,12 @@ void AppListActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Left) && selectedIsPlugin()) {
-    mode_ = 1;
-    M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-    updateRequired_ = true;
+    if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+      mode_ = 1;
+      M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+      updateRequired_ = true;
+      xSemaphoreGive(renderingMutex_);
+    }
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
@@ -472,24 +590,31 @@ void AppListActivity::loop() {
   }
 
   if (count > 0) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-      moveSelection(-kDrawerColumns);
-    } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-      moveSelection(kDrawerColumns);
-    }
+    ButtonNavigator navigator;
+    navigator.onRelease({MappedInputManager::Button::Up}, [this] { moveSelection(-kDrawerColumns); });
+    navigator.onRelease({MappedInputManager::Button::Down}, [this] { moveSelection(kDrawerColumns); });
   }
 }
 
 void AppListActivity::render() const {
+  // Submit-path input staged by displayTaskLoop(): it deep-copies the dirty
+  // frame under the local mutex, releases it, then calls render() under the
+  // global guard. Reading through this const reference keeps the submitter on
+  // one generation even though reload() replaces items_/apps_ wholesale;
+  // members stay the backing store for loop() hit-testing on the main thread.
+  const AppListFrameSnapshot& frame = snapshot_;
+  const bool framePluginSelected =
+      frame.selectedIndex >= 0 && frame.selectedIndex < static_cast<int>(frame.items.size()) &&
+      frame.items[static_cast<size_t>(frame.selectedIndex)].plugin;
   renderer.clearScreen();
   const auto metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, L(Str::kApps));
 
-  if (mode_ == 1 && selectedIsPlugin()) {
-    const auto& item = items_[static_cast<size_t>(selectedIndex_)];
-    const auto& app = apps_[static_cast<size_t>(item.appIndex)];
+  if (frame.mode == 1 && framePluginSelected) {
+    const auto& item = frame.items[static_cast<size_t>(frame.selectedIndex)];
+    const auto& app = frame.apps[static_cast<size_t>(item.appIndex)];
     const auto dialog = uninstallDialogLayout(renderer);
     const auto toggle = uninstallDataToggleRect(renderer);
     M4UiText::drawCentered(renderer, UI_12_FONT_ID, 100, L(Str::kUninstallApp), true, EpdFontFamily::BOLD);
@@ -497,7 +622,7 @@ void AppListActivity::render() const {
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, 195, "确认移除这个扩展应用？");
     renderer.fillRoundedRect(toggle.x, toggle.y, toggle.width, toggle.height, 10, Color::LightGray);
     M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, toggle.x, toggle.y, toggle.width, toggle.height,
-                                uninstallClearData_ ? "同时清除数据：是" : "同时清除数据：否", true,
+                                frame.uninstallClearData ? "同时清除数据：是" : "同时清除数据：否", true,
                                 EpdFontFamily::REGULAR, 8);
     const auto drawDialogButton = [&](const int index, const char* label) {
       const auto r = dialog.buttonRect(index);
@@ -508,12 +633,13 @@ void AppListActivity::render() const {
     drawDialogButton(0, L(Str::kCancel));
     drawDialogButton(1, L(Str::kUninstallApp));
   } else {
-    const auto layout = makeDrawerGridLayout(renderer, selectedIndex_, static_cast<int>(items_.size()));
+    const auto layout =
+        makeDrawerGridLayout(renderer, frame.selectedIndex, static_cast<int>(frame.items.size()));
     for (int i = layout.pageStart; i < std::min(layout.itemCount, layout.pageStart + layout.pageItems); ++i) {
       const auto tile = layout.tileRect(i);
-      const bool selected = i == selectedIndex_;
+      const bool selected = i == frame.selectedIndex;
       if (selected) renderer.fillRoundedRect(tile.x, tile.y, tile.width, tile.height, 12, Color::LightGray);
-      const auto& item = items_[static_cast<size_t>(i)];
+      const auto& item = frame.items[static_cast<size_t>(i)];
       drawItemIcon(item, tile);
 
       // Character-count ellipsis, not pixel-width: four CJK glyphs must stay
@@ -526,8 +652,8 @@ void AppListActivity::render() const {
     }
   }
 
-  const bool pluginSelected = selectedIsPlugin();
-  const auto labels = mode_ == 1 ? mappedInput.mapLabels(L(Str::kBackShort), L(Str::kConfirm), "", "")
+  const bool pluginSelected = framePluginSelected;
+  const auto labels = frame.mode == 1 ? mappedInput.mapLabels(L(Str::kBackShort), L(Str::kConfirm), "", "")
                                  : mappedInput.mapLabels(L(Str::kBackShort), L(Str::kOpen),
                                                          pluginSelected ? L(Str::kUninstallApp) : "",
                                                          L(Str::kInstallApp));

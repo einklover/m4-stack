@@ -1,4 +1,5 @@
 #include "GfxRenderer.h"
+#include "GfxDisplayWindow.h"
 
 #include <Utf8.h>
 #include <SDCardManager.h>
@@ -384,6 +385,16 @@ void GfxRenderer::fillRectDither(const int x, const int y, const int width, cons
       for (int fillX = x; fillX < x + width; fillX++) {
         drawPixelDither<Color::DarkGray>(fillX, fillY);
       }
+    }
+  }
+}
+
+void GfxRenderer::fillRectStipple(const int x, const int y, const int width, const int height) const {
+  if (width <= 0 || height <= 0) return;
+  int row = 0;
+  for (int dotY = y; dotY < y + height; dotY += 8, ++row) {
+    for (int dotX = x + (row % 2) * 4; dotX < x + width; dotX += 8) {
+      drawPixel(dotX, dotY, true);
     }
   }
 }
@@ -800,6 +811,14 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode,
 #endif
 
   display.displayBuffer(effectiveMode, fadingFix, context);
+}
+
+void GfxRenderer::displayWindow(const int x, const int y, const int width, const int height) const {
+  const GfxPanelRect r = gfxLogicalWindowToPanel(static_cast<int>(orientation), x, y, width, height,
+                                                 HalDisplay::DISPLAY_WIDTH, HalDisplay::DISPLAY_HEIGHT);
+  if (!r.valid) return;
+  display.displayWindow(static_cast<uint16_t>(r.x), static_cast<uint16_t>(r.y),
+                        static_cast<uint16_t>(r.w), static_cast<uint16_t>(r.h), fadingFix);
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,

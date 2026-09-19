@@ -12,6 +12,7 @@
 
 enum class BtPageState {
   MAIN_MENU,
+  CONFIRM_WIFI_DISCONNECT,
   DEVICE_LIST,
   CONNECTING,
   CONNECTED,
@@ -71,7 +72,9 @@ class SimpleBluetoothActivity : public Activity {
   
   // 按键映射辅助函数
   void handleMainMenuInput();
+  void handleWifiDisconnectConfirm();
   void handleDeviceListInput();
+  void renderWifiDisconnectConfirm();
   void handleConnectedInput();
   void handleConnectionFailedInput();
   void handleKeyMappingInput();

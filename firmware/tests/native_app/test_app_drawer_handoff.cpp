@@ -34,27 +34,31 @@ std::string functionBody(const std::string& source, const std::string& signature
 
 void testDisplayTaskRechecksChildUnderMutex(const std::string& source) {
   const std::string body = functionBody(source, "void AppListActivity::displayTaskLoop()", "void AppListActivity::reload()");
-  const size_t take = body.find("xSemaphoreTake(renderingMutex_, portMAX_DELAY);");
-  const size_t childGate = body.find("!subActivity");
+  const size_t localSnapshot = body.find("snapshot.items = items_");
+  const size_t childGate = body.find("childScreenOwned_.load");
+  const size_t guard = body.find("M4RenderGuard");
   const size_t clearUpdate = body.find("updateRequired_ = false;");
   const size_t paint = body.find("render();");
 
-  // The child gate and the one-shot flag must be evaluated only after the
-  // mutex handoff. Otherwise a task that observed no child can paint the old
-  // drawer after openSelected() has installed NativeAppActivity.
-  assert(take != std::string::npos);
-  assert(childGate != std::string::npos && take < childGate);
-  assert(clearUpdate != std::string::npos && take < clearUpdate);
-  assert(paint != std::string::npos && clearUpdate < paint);
+  // The current handoff takes a local snapshot, releases the local mutex,
+  // then acquires the process-wide submit guard and rechecks ownership. This
+  // avoids both stale parent paint and local->global lock nesting.
+  assert(localSnapshot != std::string::npos);
+  assert(childGate != std::string::npos);
+  assert(guard != std::string::npos && localSnapshot < guard);
+  assert(clearUpdate != std::string::npos && localSnapshot < clearUpdate);
+  assert(paint != std::string::npos && guard < paint);
+  assert(body.find("subActivity") == std::string::npos);
 }
 
 void testPluginEnterIsSerialized(const std::string& source) {
   const std::string body = functionBody(source, "void AppListActivity::openSelected()", "void AppListActivity::openInstall()");
-  const size_t take = body.find("xSemaphoreTake(renderingMutex_, portMAX_DELAY);");
+  const size_t take = body.find("xSemaphoreTake(renderingMutex_");
   const size_t enter = body.find("enterNewActivity(");
-  const size_t give = body.find("xSemaphoreGive(renderingMutex_);");
+  const size_t give = body.find("xSemaphoreGive(renderingMutex_)");
   assert(take != std::string::npos && enter != std::string::npos && give != std::string::npos);
-  assert(take < enter && enter < give);
+  assert(take < give && give < enter);
+  assert(body.find("childScreenOwned_.store(true") != std::string::npos);
   assert(body.find("M4xRuntimeKind::Native") != std::string::npos);
   assert(body.find("new NativeAppActivity") != std::string::npos);
 }

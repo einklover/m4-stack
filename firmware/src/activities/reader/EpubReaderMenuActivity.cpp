@@ -106,7 +106,7 @@ void EpubReaderMenuActivity::onEnter() {
   menuLayer_ = initialLayer_;
   moreSection_ = MoreSection::ROOT;
   selectedIndex = 0;
-  readerStyleDirty_ = false;
+  layoutPreview_ = {};
   readerFontDirty_ = false;
   firstPaint_ = true;
   // Tab switches stay on FAST_REFRESH. HALF is only for returning from a
@@ -195,7 +195,7 @@ void EpubReaderMenuActivity::applyQuickFontChoice(int slot) {
   if (!changed) return;
 
   SETTINGS.saveToFile();
-  readerStyleDirty_ = true;
+  m4ReaderLayoutSampleChanged(layoutPreview_);
   readerFontDirty_ = true;
   updateRequired = true;
 }
@@ -220,14 +220,12 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
     return;
   }
 
-  if (action == InternalAction::OPEN_MORE_TYPOGRAPHY ||
-      action == InternalAction::OPEN_MORE_TURNING ||
+  if (action == InternalAction::OPEN_MORE_TURNING ||
       action == InternalAction::OPEN_MORE_DISPLAY ||
       action == InternalAction::OPEN_MORE_CONTROL ||
       action == InternalAction::OPEN_MORE_DATA) {
     menuLayer_ = MenuLayer::MORE;
-    if (action == InternalAction::OPEN_MORE_TYPOGRAPHY) moreSection_ = MoreSection::TYPOGRAPHY;
-    else if (action == InternalAction::OPEN_MORE_TURNING) moreSection_ = MoreSection::TURNING;
+    if (action == InternalAction::OPEN_MORE_TURNING) moreSection_ = MoreSection::TURNING;
     else if (action == InternalAction::OPEN_MORE_DISPLAY) moreSection_ = MoreSection::APPEARANCE;
     else if (action == InternalAction::OPEN_MORE_CONTROL) moreSection_ = MoreSection::CONTROL;
     else moreSection_ = MoreSection::DATA;
@@ -245,7 +243,7 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
     if (changed) SETTINGS.setReaderPixelSize(target);
 
     if (changed) {
-      readerStyleDirty_ = true;
+      m4ReaderLayoutSampleChanged(layoutPreview_);
       readerFontDirty_ = true;
       SETTINGS.saveToFile();
     }
@@ -266,7 +264,7 @@ void EpubReaderMenuActivity::applyInternalAction(InternalAction action) {
       SETTINGS.screenMargin_Right = preset->right;
       SETTINGS.customLineSpacing = preset->lineSpacing;
       SETTINGS.saveToFile();
-      readerStyleDirty_ = true;
+      m4ReaderLayoutSampleChanged(layoutPreview_);
     }
     updateRequired = true;
   }
@@ -287,8 +285,6 @@ std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
       return matchesLayout(kStandardLayout) ? "当前" : "1.0倍";
     case InternalAction::LAYOUT_RELAXED:
       return matchesLayout(kRelaxedLayout) ? "当前" : "1.2倍";
-    case InternalAction::OPEN_MORE_TYPOGRAPHY:
-      return "字体 · 段落 · 页面";
     case InternalAction::OPEN_MORE_TURNING:
       return SETTINGS.autoPageTurnEnabled ? "自动开启" : "方向 · 自动";
     case InternalAction::OPEN_MORE_DISPLAY:
@@ -311,11 +307,12 @@ std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
 }
 
 void EpubReaderMenuActivity::notifyParentStyleChanged() {
-  const bool styleDirty = readerStyleDirty_;
+  m4ReaderLayoutPanelClosed(layoutPreview_);
+  const bool styleDirty = layoutPreview_.bookReflowPending;
   const bool fontDirty = readerFontDirty_;
-  readerStyleDirty_ = false;
   readerFontDirty_ = false;
   if (!styleDirty) return;
+  m4ReaderLayoutConsumeReflow(layoutPreview_);
 
   if (fontDirty) {
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
@@ -334,7 +331,6 @@ void EpubReaderMenuActivity::showMoreRoot() {
 
 const char* EpubReaderMenuActivity::moreSectionKey() const {
   switch (moreSection_) {
-    case MoreSection::TYPOGRAPHY: return "typography";
     case MoreSection::TURNING: return "turning";
     case MoreSection::APPEARANCE: return "display";
     case MoreSection::CONTROL: return "control";
@@ -346,13 +342,12 @@ const char* EpubReaderMenuActivity::moreSectionKey() const {
 
 const char* EpubReaderMenuActivity::moreSectionTitle() const {
   switch (moreSection_) {
-    case MoreSection::TYPOGRAPHY: return "排版与字体";
     case MoreSection::TURNING: return "翻页与自动";
     case MoreSection::APPEARANCE: return "显示";
     case MoreSection::CONTROL: return "操作控制";
     case MoreSection::DATA: return "数据与缓存";
     case MoreSection::ROOT:
-    default: return "更多";
+    default: return "工具";
   }
 }
 
@@ -433,6 +428,11 @@ void EpubReaderMenuActivity::loop() {
           auto actionCallback = onAction;
           actionCallback(action);
           notifyParentStyleChanged();
+          return;
+        }
+        if (ty >= panelTop && ty < panelTop + kStyleSheetHeaderH &&
+            tx >= pageWidth - kTopBookmarkHitW) {
+          closeToReader();
           return;
         }
         if (ty < panelTop) {
@@ -580,7 +580,7 @@ void EpubReaderMenuActivity::loop() {
                                 ? CrossPointSettings::FONT_CUSTOM
                                 : CrossPointSettings::SYSTEM_FONT;
       SETTINGS.saveToFile();
-      readerStyleDirty_ = true;
+      m4ReaderLayoutSampleChanged(layoutPreview_);
       readerFontDirty_ = true;
       updateRequired = true;
       return;
@@ -591,7 +591,7 @@ void EpubReaderMenuActivity::loop() {
       enterNewActivity(new FontSelectionActivity(renderer, mappedInput, [this](bool loaded) {
         exitActivity();
         if (loaded) {
-          readerStyleDirty_ = true;
+          m4ReaderLayoutSampleChanged(layoutPreview_);
           readerFontDirty_ = true;
         } else {
           xSemaphoreTake(renderingMutex, portMAX_DELAY);
@@ -783,7 +783,7 @@ void EpubReaderMenuActivity::renderScreen() {
     renderer.fillRect(0, panelTop, pageWidth, panelH, false);
     renderer.drawLine(0, panelTop, pageWidth - 1, panelTop, true);
     renderer.fillRect(pageWidth / 2 - 18, panelTop + 8, 36, 2, true);
-    M4UiText::draw(renderer, UI_10_FONT_ID, 20, panelTop + 27, "字体", true, EpdFontFamily::BOLD);
+    M4UiText::draw(renderer, UI_10_FONT_ID, 20, panelTop + 27, "排版", true, EpdFontFamily::BOLD);
     M4UiText::draw(renderer, UI_10_FONT_ID, pageWidth - 34, panelTop + 27, "×", true, EpdFontFamily::REGULAR);
 
     const auto L = M4ReaderMenuLayout::makeStylePanelLayout(0, pageWidth, panelTop + kStyleSheetHeaderH);
@@ -879,7 +879,7 @@ void EpubReaderMenuActivity::renderScreen() {
   const int hintGutterHeight = isPortraitInverted ? 50 : 0;
 
   const std::string headerTitle = moreSection_ == MoreSection::ROOT
-                                      ? title + " · 更多"
+                                      ? title + " · 工具"
                                       : std::string(moreSectionTitle());
   const std::string truncTitle =
       M4UiText::truncated(renderer, UI_12_FONT_ID, headerTitle.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
@@ -931,7 +931,7 @@ void EpubReaderMenuActivity::renderScreen() {
       });
 
   const auto labels = mappedInput.mapLabels(
-      menuLayer_ == MenuLayer::MORE && moreSection_ != MoreSection::ROOT ? "« 更多" : "« 阅读",
+      menuLayer_ == MenuLayer::MORE && moreSection_ != MoreSection::ROOT ? "« 工具" : "« 阅读",
       "选择", "向上", "向下");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 

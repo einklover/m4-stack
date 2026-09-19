@@ -11,6 +11,7 @@
 
 #include "activities/ActivityWithSubactivity.h"
 #include "apps/M4WifiFailureTracker.h"
+#include "network/M4WifiTransferPolicy.h"
 
 // Structure to hold WiFi network information
 struct WifiNetworkInfo {
@@ -22,12 +23,14 @@ struct WifiNetworkInfo {
 
 // WiFi selection states
 enum class WifiSelectionState {
-  SCANNING,           // Scanning for networks
-  NETWORK_LIST,       // Displaying available networks
-  PASSWORD_ENTRY,     // Entering password for selected network
-  CONNECTING,         // Attempting to connect
-  CONNECTED,          // Successfully connected
-  CONNECTION_FAILED   // Connection failed
+  SCANNING,                 // Scanning for networks
+  NETWORK_LIST,             // Displaying available networks
+  HIDDEN_SSID_ENTRY,        // Hidden-network SSID editor
+  PASSWORD_ENTRY,           // Entering password for selected network
+  CONFIRM_BT_DISCONNECT,    // Wi-Fi would drop Bluetooth paging
+  CONNECTING,               // Attempting to connect
+  CONNECTED,                // Successfully connected
+  CONNECTION_FAILED         // Connection failed
 };
 
 /**
@@ -36,7 +39,8 @@ enum class WifiSelectionState {
  * - Enter scanning mode on entry
  * - List available WiFi networks
  * - Allow selection and launch KeyboardEntryActivity for password if needed
- * - Persist newly entered credentials after a successful connection
+ * - Prompt to persist newly entered credentials after a successful
+ *   connection (Yes saves, No keeps the session without persisting)
  * - Call onComplete callback when connected or cancelled
  *
  * The onComplete callback receives true if connected successfully, false if cancelled.
@@ -68,6 +72,10 @@ class WifiSelectionActivity final : public ActivityWithSubactivity {
   bool usedSavedPassword = false;
 
   M4WifiFailureTracker failureTracker;
+  // SessionJoin (default, 传书/OTA) vs SystemNetworking (settings Wi-Fi list).
+  M4WifiSelectionPurpose purpose = M4WifiSelectionPurpose::SessionJoin;
+  bool saveRejectedAtCap = false;
+  bool occupancyDenied = false;
 
   // Connection timeout
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;
@@ -84,15 +92,22 @@ class WifiSelectionActivity final : public ActivityWithSubactivity {
 
   void startWifiScan();
   void processWifiScanResults();
+  void maybeAutoConnectKnown();
   void selectNetwork(int index);
+  void openHiddenNetworkSsidEntry();
+  void beginConnectionAfterBtCheck();
   void attemptConnection();
   void checkConnectionStatus();
+  std::string currentConnectedSsid() const;
   std::string getSignalStrengthIndicator(int32_t rssi) const;
+  void renderBtDisconnectConfirm() const;
 
  public:
   explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                 const std::function<void(bool connected)>& onComplete)
-      : ActivityWithSubactivity("WifiSelection", renderer, mappedInput), onComplete(onComplete) {}
+                                 const std::function<void(bool connected)>& onComplete,
+                                 M4WifiSelectionPurpose purpose = M4WifiSelectionPurpose::SessionJoin)
+      : ActivityWithSubactivity("WifiSelection", renderer, mappedInput), onComplete(onComplete),
+        purpose(purpose) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

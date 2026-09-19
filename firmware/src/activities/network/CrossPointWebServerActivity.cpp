@@ -14,6 +14,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/M4UiText.h"
+#include "network/M4WifiTransferPolicy.h"
 #include "network/NetworkConstants.h"
 #include "qemu/M4QemuNet.h"
 #include "util/M4RuntimeMemory.h"
@@ -105,7 +106,14 @@ void CrossPointWebServerActivity::onEnter() {
   xTaskCreate(&CrossPointWebServerActivity::taskTrampoline, "WebServerActivityTask", 4096, this, 1,
               &displayTaskHandle);
 
-  if (autoStartSavedSta && M4QemuNet::staConnected()) {
+  m4WifiNeedNetwork(M4NetworkOwner::Transfer);
+
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  const bool qemuPluginDebug = true;
+#else
+  const bool qemuPluginDebug = false;
+#endif
+  if (m4TransferStartsWithExistingSta(M4QemuNet::staConnected(), autoStartSavedSta, qemuPluginDebug)) {
     isApMode = false;
     connectedIP = M4QemuNet::localIpStd();
     connectedSSID = M4QemuNet::ssidStd();
@@ -124,6 +132,7 @@ void CrossPointWebServerActivity::onExit() {
   Serial.printf("[%lu] [WEBACT] exit_begin state=%u mode=%s\n", millis(), static_cast<unsigned>(state),
                 isApMode ? "ap" : "sta");
   m4LogRuntimeMemory("file-transfer-exit-begin");
+  m4WifiReleaseNetwork(M4NetworkOwner::Transfer);
 
   navigationSupervisor.detach();
   ActivityWithSubactivity::onExit();
@@ -173,7 +182,7 @@ void CrossPointWebServerActivity::showSetupError(const char* message) {
   navigationSupervisor.detach();
   fileTransferService().stopForSetupError(isApMode);
   pendingParentAction = PendingParentAction::None;
-  setupError = message ? message : "Network setup failed";
+  setupError = message ? message : "网络设置失败";
   state = WebServerActivityState::ERROR;
   updateRequired = true;
   logInternalHeap(setupError.c_str());
@@ -201,7 +210,14 @@ void CrossPointWebServerActivity::runPendingParentAction() {
       startAccessPoint();
       return;
     case PendingParentAction::EnterWifiSelection:
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+      // QEMU plugin-debug rides on open_eth: forcing the radio STA mode here
+      // starts the WiFi driver on unmodelled hardware and starves the guest
+      // bridge. The compat link already provides STA identity; leave it alone.
+      if (!m4QemuNetWifiCompatConnected()) WiFi.mode(WIFI_STA);
+#else
       WiFi.mode(WIFI_STA);
+#endif
       state = WebServerActivityState::WIFI_SELECTION;
       enterNewActivity(new WifiSelectionActivity(
           renderer, mappedInput, [this](const bool connected) { onWifiSelectionComplete(connected); }));
@@ -237,17 +253,8 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   exitActivity();
 
   if (mode == NetworkMode::JOIN_NETWORK) {
-#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
-    if (m4QemuNetWifiCompatConnected()) {
-      isApMode = false;
-      connectedIP = M4QemuNet::localIpStd();
-      connectedSSID = M4QemuNet::ssidStd();
-      if (connectedIP.empty()) connectedIP = "10.0.2.15";
-      if (connectedSSID.empty()) connectedSSID = "qemu-openeth";
-      pendingParentAction = PendingParentAction::StartWebServer;
-      return;
-    }
-#endif
+    // Join Network always enters WifiSelection, even when already connected.
+    // The current link may surface as status there, never as an entry hijack.
     pendingParentAction = PendingParentAction::EnterWifiSelection;
     return;
   }
@@ -290,7 +297,7 @@ void CrossPointWebServerActivity::startAccessPoint() {
   logInternalHeap("before AP start (selection child released)");
   if (!fileTransferService().beginAccessPoint(AP_SSID, AP_PASSWORD, AP_CHANNEL, AP_MAX_CONNECTIONS, AP_HOSTNAME,
                                               connectedIP)) {
-    showSetupError("Hotspot startup failed");
+    showSetupError("热点启动失败");
     return;
   }
   connectedSSID = AP_SSID;
@@ -302,16 +309,16 @@ void CrossPointWebServerActivity::startWebServer() {
   m4LogRuntimeMemory("file-transfer-server-start-before");
   logInternalHeap("before web server start");
   if (!ensureDeferredCleanupWorker()) {
-    showSetupError("Cleanup worker memory allocation failed");
+    showSetupError("内存不足，无法启动传书");
     return;
   }
   const auto result = fileTransferService().beginWebServer();
   if (result == M4FileTransferService::WebServerStartResult::AllocationFailed) {
-    showSetupError("Web server memory allocation failed");
+    showSetupError("内存不足，无法启动传书服务");
     return;
   }
   if (result == M4FileTransferService::WebServerStartResult::StartupFailed) {
-    showSetupError("Web server startup failed");
+    showSetupError("传书服务启动失败");
     return;
   }
   setupError.clear();
@@ -364,7 +371,7 @@ void CrossPointWebServerActivity::loop() {
     if (millis() - lastWifiCheck > 2000) {
       lastWifiCheck = millis();
       if (!M4QemuNet::staConnected()) {
-        showSetupError("WiFi connection lost");
+        showSetupError("Wi-Fi 已断开");
         return;
       }
     }
@@ -406,13 +413,13 @@ void CrossPointWebServerActivity::render() const {
   if (state == WebServerActivityState::SERVER_RUNNING) {
     renderServerRunning();
   } else if (state == WebServerActivityState::AP_STARTING) {
-    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 20, "Starting Hotspot...", true,
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 20, "正在启动热点…", true,
                            EpdFontFamily::BOLD);
   } else if (state == WebServerActivityState::ERROR) {
-    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 55, "Network setup failed", true,
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 55, "网络设置失败", true,
                            EpdFontFamily::BOLD);
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 - 15, setupError.c_str());
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 25, "Back: choose another mode");
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 25, "左缘滑动返回，另选传书方式");
   } else {
     return;
   }

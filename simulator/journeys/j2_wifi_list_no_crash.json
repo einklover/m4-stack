@@ -1,0 +1,30 @@
+{
+  "name": "j2_wifi_list_no_crash",
+  "description": "S1 J2 RESCOPED (C2 boundary, truthful empty-list/no-crash path). QEMU radio is unmodelled (Espressif QEMU S3) so the scan path yields the empty list and the 8830453 Yes/No prompt stays unreachable without forbidden firmware/test hooks; the prompt state is NOT QEMU-certified in S1 (see j2_prompt_hostonly.json, host gate only). Entry is Home 传书 (onGoToFileTransfer, autoStart=false) — not onGoToNetwork (that opens system WifiSelection) and not USB wifi_transfer (autoStartSavedSta). Classic Lyra Home with no recents: 文件传输 is menu index 2, tile {20,431,216,64}, center (128,463) → nx=0.2667 ny=0.57875. Murphy M4 Home scene has no 传书 hit target; this JSON is the host/classic contract (QEMU not run in this slice). After CrossPointWebServer mode picker, tap option 2 JOIN_NETWORK (nx=0.53125, ny=0.4979). With the QEMU compat link up (guest holds DHCP 10.0.2.15 even with --no-net, so s_up never drops), connected Join Network enters nested WifiSelection (ui body.subactivity, observed via the J3-blessed wait_ui pattern — status.activity stays CrossPointWebServer by ActivityWithSubactivity nesting) and lands in the empty NETWORK_LIST state without touching the unmodelled radio; the list frame's production bbox is [15,18,467,797] (byte-deterministic across sessions). The journey proves the QEMU-reachable determinism: settle, screenshot the list frame with header/list landmarks, perform ONE bounded list-row tap at logical (239,128) (row-0 band y92..160 x12..468, clear of the refresh rect x364..468/y18..74), and assert the tap is a no-op (selectNetwork is bounds-checked, empty list admits no selection): subactivity stays WifiSelection, the save-prompt needle never appears, and the fatal net stays quiet. Exit is a left-edge back-gesture swipe to logical (10,400)->(121,400) (WifiSelection handles wasBackGesture only; no Button:: handling exists there, so the back action would be a no-op), then wait for the picker.",
+  "budget_ms": 120000,
+  "steps": [
+    {"action": "wait_activity", "value": "Home", "mode": "equals", "timeout_ms": 30000, "poll_ms": 250},
+    {"action": "wait", "ms": 800},
+    {"action": "screenshot", "name": "home_pre"},
+    {"action": "tap", "nx": 0.2667, "ny": 0.57875},
+    {"action": "wait_activity", "value": "CrossPointWebServer", "mode": "equals", "timeout_ms": 15000, "poll_ms": 250},
+    {"action": "screenshot", "name": "picker_pre"},
+    {"action": "tap", "nx": 0.53125, "ny": 0.4979},
+    {"action": "wait_ui", "path": "body.subactivity", "value": "WifiSelection", "timeout_ms": 15000, "poll_ms": 250},
+    {"action": "wait", "ms": 1000},
+    {"action": "screenshot", "name": "wifilist"},
+    {"action": "assert", "type": "screenshot_bbox", "name": "wifilist", "box": [15, 18, 467, 797]},
+    {"action": "tap", "nx": 0.16, "ny": 0.5},
+    {"action": "wait", "ms": 500},
+    {"action": "wait_ui", "path": "body.subactivity", "value": "WifiSelection", "timeout_ms": 15000, "poll_ms": 250},
+    {"action": "assert", "type": "log_not_contains", "value": "是否保存此 Wi-Fi 密码?"},
+    {"action": "assert", "type": "log_not_contains", "value": "Guru Meditation"},
+    {"action": "assert", "type": "log_not_contains", "value": "LoadProhibited"},
+    {"action": "assert", "type": "log_not_contains", "value": "StoreProhibited"},
+    {"action": "assert", "type": "log_not_contains", "value": "abort()"},
+    {"action": "assert", "type": "log_not_contains", "value": "Brownout"},
+    {"action": "assert", "type": "command_success"},
+    {"action": "swipe", "snx": 0.5, "sny": 0.9771, "enx": 0.5, "eny": 0.7479},
+    {"action": "wait_activity", "value": "CrossPointWebServer", "mode": "equals", "timeout_ms": 15000, "poll_ms": 250}
+  ]
+}

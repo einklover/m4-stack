@@ -168,7 +168,6 @@ SCENE_NODE_TYPE_MAP = {
 BINDING_SCENE_MAP = {
     "$system.battery": 1,
     "$system.wifi.connected": 2,
-    "$home.brand_text": 3,
     "$current.exists": 10,
     "$current.title": 11,
     "$current.author": 12,

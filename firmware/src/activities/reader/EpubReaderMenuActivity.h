@@ -15,6 +15,7 @@
 #include "../ActivityWithSubactivity.h"
 #include "CrossPointSettings.h"
 #include "LanguageMapper.h"
+#include "activities/reader/M4ReaderSettingsCatalog.h"
 
 class EpubReaderMenuActivity final : public ActivityWithSubactivity {
  public:
@@ -106,13 +107,12 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
 
  private:
   // APPEARANCE, not DISPLAY: Arduino.h #defines DISPLAY as 0x1.
-  enum class MoreSection : uint8_t { ROOT = 0, TYPOGRAPHY, TURNING, APPEARANCE, CONTROL, DATA };
+  enum class MoreSection : uint8_t { ROOT = 0, TURNING, APPEARANCE, CONTROL, DATA };
 
   enum class InternalAction : uint8_t {
     NONE = 0,
     OPEN_STYLE,
     OPEN_MORE,
-    OPEN_MORE_TYPOGRAPHY,
     OPEN_MORE_TURNING,
     OPEN_MORE_DISPLAY,
     OPEN_MORE_CONTROL,
@@ -133,8 +133,8 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   const std::vector<MenuItem> quickMenuItems = {
       {MenuAction::SELECT_CHAPTER, "目录"},
       {MenuAction::GO_TO_PERCENT, "进度"},
-      {MenuAction::READER_SETTINGS, "字体", InternalAction::OPEN_STYLE},
-      {MenuAction::GO_HOME, "更多", InternalAction::OPEN_MORE},
+      {MenuAction::READER_SETTINGS, "排版", InternalAction::OPEN_STYLE},
+      {MenuAction::GO_HOME, "工具", InternalAction::OPEN_MORE},
   };
 
   const std::vector<MenuItem> styleMenuItems = {
@@ -146,18 +146,13 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   };
 
   const std::vector<MenuItem> moreRootItems = {
-      {MenuAction::READER_SETTINGS, "排版与字体", InternalAction::OPEN_MORE_TYPOGRAPHY},
+      {MenuAction::READER_SETTINGS, "阅读设置"},
       {MenuAction::AUTO_PAGE_TURN, "翻页与自动", InternalAction::OPEN_MORE_TURNING},
       // Keep bookmark management one tap away; it is content, not a device setting.
       {MenuAction::BOOKMARK_MANAGER, "书签管理"},
       {MenuAction::TOGGLE_ANTI_ALIAS, "显示", InternalAction::OPEN_MORE_DISPLAY},
       {MenuAction::TOGGLE_GLOBAL_NEXT_PAGE, "操作控制", InternalAction::OPEN_MORE_CONTROL},
       {MenuAction::DELETE_CACHE, "数据与缓存", InternalAction::OPEN_MORE_DATA},
-  };
-
-  const std::vector<MenuItem> typographyMenuItems = {
-      {MenuAction::SELECT_EXTERNAL_FONT, "全部字体"},
-      {MenuAction::READER_SETTINGS, "排版与页面"},
   };
 
   const std::vector<MenuItem> turningMenuItems = {
@@ -191,7 +186,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   MoreSection moreSection_ = MoreSection::ROOT;
   int selectedIndex = 0;
   bool updateRequired = false;
-  bool readerStyleDirty_ = false;
+  M4ReaderLayoutPreviewState layoutPreview_{};
   bool readerFontDirty_ = false;
   bool forceHalfRefresh_ = false;
   std::vector<std::string> quickFontFamilies_;
@@ -227,7 +222,6 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
     if (menuLayer_ == MenuLayer::STYLE) return styleMenuItems;
     if (menuLayer_ == MenuLayer::QUICK) return quickMenuItems;
     switch (moreSection_) {
-      case MoreSection::TYPOGRAPHY: return typographyMenuItems;
       case MoreSection::TURNING: return turningMenuItems;
       case MoreSection::APPEARANCE: return displayMenuItems;
       case MoreSection::CONTROL: return controlMenuItems;

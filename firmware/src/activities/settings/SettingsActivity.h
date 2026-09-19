@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "activities/ActivityWithSubactivity.h"
+#include "activities/settings/M4SettingsPaint.h"
+#include "activities/settings/M4SettingsRootUi.h"
 #include "activities/settings/SettingsHubPolicy.h"
 #include "activities/settings/SettingsSceneModel.h"
 
@@ -150,14 +152,13 @@ class SettingsActivity final : public ActivityWithSubactivity {
   SemaphoreHandle_t renderingMutex = nullptr;
   bool updateRequired = false;
   SettingsNavState navState_;
+  M4SettingsUiState ui_;
+  mutable M4SettingsPaintSession paint_;
   SettingsScene::SettingsSceneModel sceneModel_;
-  std::vector<SettingInfo> displayReadingSettings_;
-  std::vector<SettingInfo> keysSettings_;
-  std::vector<SettingInfo> networkSettings_;
-  std::vector<SettingInfo> systemSettings_;
+  std::vector<SettingInfo> allSettings_;
+  std::vector<std::string> choiceLabels_;
+  char savedKey_[32]{};
 
-  // AppList can enter the existing Network & Sync L2 directly. Keep the
-  // default constructor behavior for the system-settings tile.
   const SettingsPane initialPane_;
   const SettingsHubCard initialHub_;
 
@@ -167,16 +168,20 @@ class SettingsActivity final : public ActivityWithSubactivity {
   [[noreturn]] void displayTaskLoop();
   void render() const;
   void rebuildModel();
-  const std::vector<SettingInfo>& currentHubSettings() const;
-  std::vector<SettingInfo>& currentHubSettings();
-  int currentHubSettingCount() const;
   const SettingInfo* findSettingByKey(const char* key) const;
   std::string valueTextForSetting(const SettingInfo& info) const;
+  std::string liveValueForKey(const char* key) const;
   void toggleCurrentSetting();
-  void openHubCard(SettingsHubCard card);
-  void handleHubConfirm();
-  void handleL2Confirm();
-  void handleL2TapIndex(int windowIndex);
+  void activateCurrent();
+  void handleBack();
+  void handleRowHit(int windowIndex, bool activate);
+  void openNumberPicker(const SettingInfo& setting);
+  void launchAction(const SettingInfo& setting);
+  void applyChoiceIndex(const char* key, int index);
+  void restoreSavedKey(bool committed);
+  void performSwitchBootSlot();
+  void submitDisplay(const M4SettingsRefreshRequest& req) const;
+  M4SettingsControl controlForKey(const char* key) const;
 
  public:
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,

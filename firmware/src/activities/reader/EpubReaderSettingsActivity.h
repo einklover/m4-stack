@@ -9,7 +9,9 @@
 #include "../ActivityWithSubactivity.h"
 #include "../settings/SettingsActivity.h"
 
-// In-reader settings page: shows only the "Reader" category from SettingsLists.
+// Unique full 阅读设置 page (全部书籍). Reader-category catalog minus
+// LUT waveform knobs, system chrome size, and decode quality. Font row
+// opens FontSelectionActivity; page-turn on/dir stay as user controls.
 class EpubReaderSettingsActivity final : public ActivityWithSubactivity {
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;

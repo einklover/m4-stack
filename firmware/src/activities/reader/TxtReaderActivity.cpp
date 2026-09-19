@@ -9,6 +9,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "activities/reader/M4ReaderUnderline.h"
 #include "I18n.h"
 #include "BookmarkStore.h"
 #include "GbkToUtf8.h"
@@ -3836,11 +3837,12 @@ void TxtReaderActivity::renderPage(bool skipDisplay, int xOffset, bool skipInver
           }
         }
 
-        // 绘制行下划线（与 EPUB PageLine::render 一致）
+        // Draw only when the underline fits in the whitespace before the next
+        // row. Clamping into the next row makes dense CJK text look crossed out.
         if (showExtraLine) {
-          const int nextLineY = y + std::max(0, static_cast<int>(std::ceil(lineHeight)) - 1);
-          int lineY = std::min(y + underlineBase + underlineOffset, nextLineY);
-          drawDashedLine(lineXStart, lineY, lineXEnd, dashLength, gapLength);
+          const int lineStep = std::max(0, static_cast<int>(std::ceil(lineHeight)));
+          const int lineY = m4ReaderUnderlineLineY(y, underlineBase, underlineOffset, lineStep);
+          if (lineY >= 0) drawDashedLine(lineXStart, lineY, lineXEnd, dashLength, gapLength);
         }
       }
       y += lineHeight;

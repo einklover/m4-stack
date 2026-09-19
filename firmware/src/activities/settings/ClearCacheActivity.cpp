@@ -6,6 +6,7 @@
 
 #include "I18n.h"
 #include "MappedInputManager.h"
+#include "activities/settings/M4SettingsConfirm.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/M4UiText.h"
@@ -154,7 +155,12 @@ void ClearCacheActivity::clearCache() {
 
 void ClearCacheActivity::loop() {
   if (state == WARNING) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
+        m4SettingsDangerAccepts(M4ConfirmButton::Power, true)) {
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) &&
+        m4SettingsDangerAccepts(M4ConfirmButton::Confirm, true)) {
       Serial.printf("[%lu] [CLEAR_CACHE] User confirmed, starting cache clear\n", millis());
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       state = CLEARING;

@@ -3,12 +3,8 @@
 #include <EpdFontLoader.h>
 #include <EpdFontFamily.h>
 #include <GfxRenderer.h>
-#include <CenterKernelEpdFont.h>
 
 #include "../fontIds.h"
-
-extern const uint8_t m4_center_kernel_16x16_bin_start[] asm("_binary_src_fontdata_m4_center_kernel_16x16_bin_start");
-extern const uint8_t m4_center_kernel_16x16_bin_end[] asm("_binary_src_fontdata_m4_center_kernel_16x16_bin_end");
 
 // System chrome fonts are permanently bound to the builtin 15x16 1-bit
 // native-grid face registered at boot (SMALL / UI_10 / UI_12).
@@ -31,8 +27,9 @@ namespace M4FixedRuntimeUiFonts {
 inline constexpr int kSystemSmallFontId = 0x4D345301;
 inline constexpr int kSystemUi10FontId = 0x4D345302;
 inline constexpr int kSystemUi12FontId = 0x4D345303;
-inline constexpr int kHubTitleFontId = 0x4D345310;
-inline constexpr int kHubCategoryFontId = 0x4D345311;
+// Scene ui_24/ui_25 roles share the fixed system UI face; keep this alias
+// local to the renderer contract rather than introducing another font family.
+inline constexpr int kHubCategoryFontId = kSystemUi12FontId;
 struct Originals {
   bool captured = false;
   const EpdFont* smallRegular = nullptr;
@@ -73,26 +70,6 @@ inline void mapSystemFaces(GfxRenderer& renderer) {
 inline void ensureSystemFaces(GfxRenderer& renderer) {
   captureOriginals(renderer);
   mapSystemFaces(renderer);
-}
-
-inline void ensureHubFaces(GfxRenderer& renderer) {
-  static bool done = false;
-  if (done) return;
-  static bool inited = false;
-  static CenterKernelEpdFont hubTitleFont(m4_center_kernel_16x16_bin_start,
-      static_cast<size_t>(m4_center_kernel_16x16_bin_end - m4_center_kernel_16x16_bin_start), 20);
-  static CenterKernelEpdFont hubCategoryFont(m4_center_kernel_16x16_bin_start,
-      static_cast<size_t>(m4_center_kernel_16x16_bin_end - m4_center_kernel_16x16_bin_start), 24);
-  if (!inited) {
-    // Ensure the fonts are constructed with correct pixel size; setPixelSize is redundant as ctor already sets it,
-    // but keep for clarity if policy changes.
-    hubTitleFont.setPixelSize(20);
-    hubCategoryFont.setPixelSize(24);
-    inited = true;
-  }
-  renderer.replaceFont(kHubTitleFontId, EpdFontFamily(&hubTitleFont));
-  renderer.replaceFont(kHubCategoryFontId, EpdFontFamily(&hubCategoryFont));
-  done = true;
 }
 inline void restore(GfxRenderer& renderer) {
   Originals& o = originals();

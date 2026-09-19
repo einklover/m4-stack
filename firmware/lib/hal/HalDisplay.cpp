@@ -161,6 +161,23 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen,
 #endif
 }
 
+void HalDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
+  Serial.printf("[%lu] [M4-DISP] displayWindow panel-native %u,%u %ux%u\n", millis(),
+                static_cast<unsigned>(x), static_cast<unsigned>(y),
+                static_cast<unsigned>(w), static_cast<unsigned>(h));
+#if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
+  // Simulator fallback: QEMU plugin EPD has no windowed refresh; dump full frame.
+  (void)x; (void)y; (void)w; (void)h;
+  displayBuffer(FAST_REFRESH, turnOffScreen, UI_CONTEXT);
+#elif defined(M4_QEMU_BUILD)
+  // Simulator fallback: QEMU serial dump is full-frame only.
+  (void)x; (void)y; (void)w; (void)h; (void)turnOffScreen;
+  dumpQemuFrame(qemuFrameBuffer);
+#else
+  einkDisplay.displayWindow(x, y, w, h, turnOffScreen);
+#endif
+}
+
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen,
                                 HalDisplay::RefreshContext context) {
   const HalDisplay::RefreshMode effectiveMode = normalizeRefreshMode(mode, context);

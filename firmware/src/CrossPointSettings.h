@@ -330,8 +330,8 @@ class CrossPointSettings {
   uint8_t frontlightBrightness = 20;
   uint8_t frontlightWarmth = 50;
 
-  // WiFi每次都重新选择 (1=每次都重新选择, 0=自动重连上次WiFi)
-  uint8_t wifiAlwaysReselect = 1;
+  // WiFi每次都重新选择 (0=自动加入已知网络，默认; 1=每次都重新选择)
+  uint8_t wifiAlwaysReselect = 0;
 
   // PNG/JPG 关机壁纸渲染模式：1=普通壁纸(invertScreen→深色背景), 0=透明壁纸(浅色背景)
   uint8_t sleepPngInvert = 1;

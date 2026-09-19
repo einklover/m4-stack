@@ -30,6 +30,7 @@ class NativeAppActivity final : public ActivityWithSubactivity {
  private:
   bool loadDocument();
   const M4NativeUi::Screen* currentScreen() const;
+  void renderStartupPage();
   void render();
   void handleAction(const std::string& action, const M4NativeUi::Node* node = nullptr, int index0 = -1);
   bool rowAt(int index0, M4NativeUi::Row& out) const;

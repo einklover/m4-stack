@@ -1,0 +1,410 @@
+{
+  "format": 1,
+  "id": "murphy-settings-root",
+  "screen": [480, 800],
+  "bindings": {
+   "$page.title": 70,
+   "$page.rows0": 80,
+   "$page.rows1": 81,
+   "$page.rows2": 82,
+   "$page.rows3": 83,
+   "$item.value": 74,
+   "$item.selected": 75,
+   "$item.is_row": 77
+ },
+  "actions": {
+   "activate_setting": 41
+ },
+  "nodes": [
+  {
+    "type": "text",
+    "rect": [24, 15, 200, 16],
+    "text": "Murphy M4",
+    "font": "ui_12_regular",
+    "align": "left",
+    "ellipsis": true
+  },
+  {
+    "type": "text",
+    "rect": [24, 48, 300, 32],
+    "text": "$page.title",
+    "font": "ui_24_bold",
+    "align": "left",
+    "ellipsis": true
+  },
+  {
+    "type": "battery",
+    "rect": [431, 18, 22, 10],
+    "binding": "$system.battery"
+  },
+  {
+    "type": "line",
+    "x": 22,
+    "y": 91,
+    "x2": 458,
+    "y2": 91,
+    "width": 1,
+    "color": "black"
+  },
+  {
+    "type": "text",
+    "rect": [24, 105, 300, 20],
+    "text": "连接与设备",
+    "font": "ui_14_bold",
+    "align": "left",
+    "ellipsis": true
+  },
+  {
+    "type": "round_rect",
+    "rect": [22, 130, 436, 58],
+    "r": 11,
+    "stroke": 1
+  },
+  {
+    "type": "text",
+    "rect": [24, 205, 300, 20],
+    "text": "阅读与显示",
+    "font": "ui_14_bold",
+    "align": "left",
+    "ellipsis": true
+  },
+  {
+    "type": "round_rect",
+    "rect": [22, 230, 436, 116],
+    "r": 11,
+    "stroke": 1
+  },
+  {
+    "type": "text",
+    "rect": [24, 363, 300, 20],
+    "text": "设备与操作",
+    "font": "ui_14_bold",
+    "align": "left",
+    "ellipsis": true
+  },
+  {
+    "type": "round_rect",
+    "rect": [22, 388, 436, 174],
+    "r": 11,
+    "stroke": 1
+  },
+  {
+    "type": "text",
+    "rect": [24, 579, 300, 20],
+    "text": "系统与其他",
+    "font": "ui_14_bold",
+    "align": "left",
+    "ellipsis": true
+  },
+  {
+    "type": "round_rect",
+    "rect": [22, 604, 436, 116],
+    "r": 11,
+    "stroke": 1
+  },
+  {
+    "type": "line",
+    "x": 58,
+    "y": 288,
+    "x2": 446,
+    "y2": 288,
+    "width": 1,
+    "color": "black"
+  },
+  {
+    "type": "line",
+    "x": 58,
+    "y": 446,
+    "x2": 446,
+    "y2": 446,
+    "width": 1,
+    "color": "black"
+  },
+  {
+    "type": "line",
+    "x": 58,
+    "y": 504,
+    "x2": 446,
+    "y2": 504,
+    "width": 1,
+    "color": "black"
+  },
+  {
+    "type": "line",
+    "x": 58,
+    "y": 662,
+    "x2": 446,
+    "y2": 662,
+    "width": 1,
+    "color": "black"
+  },
+  {
+    "type": "repeat",
+    "source": "$page.rows0",
+    "limit": 1,
+    "x": 24,
+    "y": 130,
+    "item_width": 432,
+    "item_height": 58,
+    "gap": 0,
+    "direction": "vertical",
+    "action": "activate_setting",
+    "action_arg": "$item.id",
+    "children": [
+    {
+      "type": "round_rect",
+      "rect": [2, 4, 428, 50],
+      "r": 0,
+      "stroke": 1,
+      "fill": true,
+      "visible_if": "$item.selected"
+    },
+    {
+      "type": "icon",
+      "rect": [15, 18, 18, 18],
+      "binding": "$item.icon",
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "text",
+      "rect": [46, 18, 170, 20],
+      "text": "$item.title",
+      "font": "ui_18_regular",
+      "align": "left",
+      "ellipsis": true,
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "text",
+      "rect": [220, 22, 174, 18],
+      "text": "$item.value",
+      "font": "ui_14_regular",
+      "align": "right",
+      "ellipsis": true,
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "line",
+      "x": 415,
+      "y": 24,
+      "x2": 421,
+      "y2": 30,
+      "width": 2,
+      "color": "black",
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "line",
+      "x": 421,
+      "y": 30,
+      "x2": 415,
+      "y2": 36,
+      "width": 2,
+      "color": "black",
+      "visible_if": "$item.is_row"
+    }
+   ]
+  },
+  {
+    "type": "repeat",
+    "source": "$page.rows1",
+    "limit": 2,
+    "x": 24,
+    "y": 230,
+    "item_width": 432,
+    "item_height": 58,
+    "gap": 0,
+    "direction": "vertical",
+    "action": "activate_setting",
+    "action_arg": "$item.id",
+    "children": [
+    {
+      "type": "round_rect",
+      "rect": [2, 4, 428, 50],
+      "r": 0,
+      "stroke": 1,
+      "fill": true,
+      "visible_if": "$item.selected"
+    },
+    {
+      "type": "icon",
+      "rect": [15, 15, 18, 18],
+      "binding": "$item.icon",
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "text",
+      "rect": [46, 18, 170, 20],
+      "text": "$item.title",
+      "font": "ui_18_regular",
+      "align": "left",
+      "ellipsis": true,
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "text",
+      "rect": [220, 22, 174, 18],
+      "text": "$item.value",
+      "font": "ui_14_regular",
+      "align": "right",
+      "ellipsis": true,
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "line",
+      "x": 415,
+      "y": 24,
+      "x2": 421,
+      "y2": 30,
+      "width": 2,
+      "color": "black",
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "line",
+      "x": 421,
+      "y": 30,
+      "x2": 415,
+      "y2": 36,
+      "width": 2,
+      "color": "black",
+      "visible_if": "$item.is_row"
+    }
+   ]
+  },
+  {
+    "type": "repeat",
+    "source": "$page.rows2",
+    "limit": 3,
+    "x": 24,
+    "y": 388,
+    "item_width": 432,
+    "item_height": 58,
+    "gap": 0,
+    "direction": "vertical",
+    "action": "activate_setting",
+    "action_arg": "$item.id",
+    "children": [
+    {
+      "type": "round_rect",
+      "rect": [2, 4, 428, 50],
+      "r": 0,
+      "stroke": 1,
+      "fill": true,
+      "visible_if": "$item.selected"
+    },
+    {
+      "type": "icon",
+      "rect": [15, 15, 18, 18],
+      "binding": "$item.icon",
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "text",
+      "rect": [46, 18, 170, 20],
+      "text": "$item.title",
+      "font": "ui_18_regular",
+      "align": "left",
+      "ellipsis": true,
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "text",
+      "rect": [220, 22, 174, 18],
+      "text": "$item.value",
+      "font": "ui_14_regular",
+      "align": "right",
+      "ellipsis": true,
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "line",
+      "x": 415,
+      "y": 24,
+      "x2": 421,
+      "y2": 30,
+      "width": 2,
+      "color": "black",
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "line",
+      "x": 421,
+      "y": 30,
+      "x2": 415,
+      "y2": 36,
+      "width": 2,
+      "color": "black",
+      "visible_if": "$item.is_row"
+    }
+   ]
+  },
+  {
+    "type": "repeat",
+    "source": "$page.rows3",
+    "limit": 2,
+    "x": 24,
+    "y": 604,
+    "item_width": 432,
+    "item_height": 58,
+    "gap": 0,
+    "direction": "vertical",
+    "action": "activate_setting",
+    "action_arg": "$item.id",
+    "children": [
+    {
+      "type": "round_rect",
+      "rect": [2, 4, 428, 50],
+      "r": 0,
+      "stroke": 1,
+      "fill": true,
+      "visible_if": "$item.selected"
+    },
+    {
+      "type": "icon",
+      "rect": [15, 15, 18, 18],
+      "binding": "$item.icon",
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "text",
+      "rect": [46, 18, 170, 20],
+      "text": "$item.title",
+      "font": "ui_18_regular",
+      "align": "left",
+      "ellipsis": true,
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "text",
+      "rect": [220, 22, 174, 18],
+      "text": "$item.value",
+      "font": "ui_14_regular",
+      "align": "right",
+      "ellipsis": true,
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "line",
+      "x": 415,
+      "y": 24,
+      "x2": 421,
+      "y2": 30,
+      "width": 2,
+      "color": "black",
+      "visible_if": "$item.is_row"
+    },
+    {
+      "type": "line",
+      "x": 421,
+      "y": 30,
+      "x2": 415,
+      "y2": 36,
+      "width": 2,
+      "color": "black",
+      "visible_if": "$item.is_row"
+    }
+   ]
+  }
+ ]
+}

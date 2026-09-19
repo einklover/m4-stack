@@ -14,6 +14,7 @@
 
 #include "network/M4FileTransferAuxiliaryServer.h"
 #include "network/M4FileTransferHttpRoutes.h"
+#include "network/M4WifiTransferPolicy.h"
 #include "network/NetworkConstants.h"
 #include "qemu/M4QemuNet.h"
 
@@ -240,9 +241,13 @@ void M4FileTransferService::stopForSetupError(const bool isApMode) {
   stopWebServer();
   stopDiscovery();
 #if !defined(M4_QEMU_PLUGIN_DEBUG) || !M4_QEMU_PLUGIN_DEBUG
-  if (isApMode) {
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_OFF);
+  if (m4WifiMayTeardownLink(M4NetworkOwner::Transfer)) {
+    if (isApMode) {
+      WiFi.softAPdisconnect(true);
+      if (m4WifiTryRadioOff(M4NetworkOwner::Transfer) == M4NetworkAcquireResult::Ok) {
+        WiFi.mode(WIFI_OFF);
+      }
+    }
   }
 #endif
 }
@@ -254,13 +259,17 @@ void M4FileTransferService::stop(const bool isApMode) {
 #if defined(M4_QEMU_PLUGIN_DEBUG) && M4_QEMU_PLUGIN_DEBUG
   if (isApMode) WiFi.softAPdisconnect(true);
 #else
-  if (isApMode) {
-    WiFi.softAPdisconnect(true);
-  } else {
-    WiFi.disconnect(false);
+  if (m4WifiMayTeardownLink(M4NetworkOwner::Transfer)) {
+    if (isApMode) {
+      WiFi.softAPdisconnect(true);
+    } else {
+      WiFi.disconnect(false);
+    }
+    delay(300);
+    if (m4WifiTryRadioOff(M4NetworkOwner::Transfer) == M4NetworkAcquireResult::Ok) {
+      WiFi.mode(WIFI_OFF);
+    }
+    delay(300);
   }
-  delay(300);
-  WiFi.mode(WIFI_OFF);
-  delay(300);
 #endif
 }

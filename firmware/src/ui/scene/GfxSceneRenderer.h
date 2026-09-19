@@ -8,6 +8,7 @@
 #include "ui/scene/UiSceneRuntime.h"
 #include "ui/scene/UiScenePackage.h"
 #include "fontIds.h"
+#include <EpdFontFamily.h>
 #include "util/M4FixedRuntimeUiFonts.h"
 
 namespace UiScene {
@@ -34,17 +35,23 @@ class GfxSceneRenderer {
       case 14:
       case 15: return NOTOSANS_14_FONT_ID;
       case 16:
-      case 17: return SMALL_FONT_ID; // Scene 16px roles must not inherit reader-body size.
+      case 17: return SMALL_FONT_ID;
       case 18:
       case 19: return NOTOSANS_18_FONT_ID;
       case 20:
-      case 21: return SMALL_FONT_ID; // Home section roles use the fixed 16px system face.
+      case 21: return SMALL_FONT_ID;
       case 22:
-      case 23: return SMALL_FONT_ID; // Home header role stays compact beside the battery.
+      case 23: return SMALL_FONT_ID;
       case 24:
-      case 25: return M4FixedRuntimeUiFonts::kHubCategoryFontId; // ui_24 also 24px free
+      case 25: return M4FixedRuntimeUiFonts::kHubCategoryFontId;
       default: return sceneFontId;
     }
+  }
+
+  // Scene font_style: 0=regular, 1=bold. Keep this mapping shared by
+  // alignment measurement and the actual draw call.
+  static EpdFontFamily::Style sceneTextStyle(uint8_t style) {
+    return style == 1 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
   }
 
   template <typename Gfx>
@@ -52,7 +59,7 @@ class GfxSceneRenderer {
                               const UiSceneRuntime::RenderEvent& event,
                               const char* text) {
     if (event.align == 0 || event.rect.width == 0) return event.rect.x;
-    int width = gfx.getTextWidth(runtimeFontId(event.font), text);
+    int width = gfx.getTextWidth(runtimeFontId(event.font), text, sceneTextStyle(event.style));
     if (width < 0) width = 0;
     if (width > event.rect.width) width = event.rect.width;
     const int remaining = static_cast<int>(event.rect.width) - width;
@@ -72,7 +79,8 @@ class GfxSceneRenderer {
 
   template <typename Gfx>
   static size_t fitUtf8Prefix(const Gfx& gfx, int fontId, const char* text,
-                              size_t len, int maxW) {
+                              size_t len, int maxW,
+                              EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
     if (!text || len == 0 || maxW <= 0) return 0;
     char tmp[256];
     size_t best = 0;
@@ -84,44 +92,143 @@ class GfxSceneRenderer {
       if (next >= sizeof(tmp)) break;
       memcpy(tmp, text, next);
       tmp[next] = '\0';
-      if (gfx.getTextWidth(fontId, tmp) > maxW) break;
+      if (gfx.getTextWidth(fontId, tmp, style) > maxW) break;
       best = next;
       i = next;
     }
     return best;
   }
 
-  // Wrap at most 2 lines inside ev.rect. Ellipsis only when a 2-line slot
-  // still cannot hold the remaining glyphs (or a 1-line slot overflows).
+  // Builtin 1-bit geometric icons use the same primitives as the scene.
+  // They are only a fallback for named icon nodes without a bitmap asset.
+  template <typename Gfx>
+  static void drawBuiltinIcon(const Gfx& gfx,
+                              const UiSceneRuntime::RenderEvent& ev) {
+    char name[16]{};
+    size_t n = ev.text.size < sizeof(name) - 1 ? ev.text.size : sizeof(name) - 1;
+    for (size_t i = 0; i < n; ++i) {
+      name[i] = static_cast<char>(ev.text.readByte(static_cast<uint16_t>(i)));
+    }
+    name[n] = '\0';
+    if (n == 0) return;
+    const int x = ev.rect.x + (ev.rect.width - 20) / 2;
+    const int y = ev.rect.y + (ev.rect.height - 20) / 2;
+    if (std::strcmp(name, "wifi") == 0) {
+      gfx.drawLine(x + 0, y + 6, x + 4, y + 3, 2, true);
+      gfx.drawLine(x + 4, y + 3, x + 9, y + 2, 2, true);
+      gfx.drawLine(x + 9, y + 2, x + 14, y + 3, 2, true);
+      gfx.drawLine(x + 14, y + 3, x + 18, y + 6, 2, true);
+      gfx.drawLine(x + 4, y + 10, x + 6, y + 8, 2, true);
+      gfx.drawLine(x + 6, y + 8, x + 9, y + 7, 2, true);
+      gfx.drawLine(x + 9, y + 7, x + 12, y + 8, 2, true);
+      gfx.drawLine(x + 12, y + 8, x + 14, y + 10, 2, true);
+      gfx.fillRect(x + 8, y + 13, 2, 2, true);
+      return;
+    }
+    if (std::strcmp(name, "sun") == 0) {
+      gfx.drawRoundedRect(x + 3, y + 3, 14, 14, 2, 7, true);
+      gfx.drawLine(x + 9, y + 0, x + 9, y + 2, 2, true);
+      gfx.drawLine(x + 9, y + 17, x + 9, y + 19, 2, true);
+      gfx.drawLine(x + 0, y + 9, x + 2, y + 9, 2, true);
+      gfx.drawLine(x + 17, y + 9, x + 19, y + 9, 2, true);
+      gfx.fillRect(x + 9, y + 9, 2, 2, true);
+      return;
+    }
+    if (std::strcmp(name, "book") == 0) {
+      gfx.drawLine(x + 9, y + 3, x + 9, y + 19, 2, true);
+      gfx.drawLine(x + 1, y + 1, x + 9, y + 3, 2, true);
+      gfx.drawLine(x + 1, y + 17, x + 9, y + 19, 2, true);
+      gfx.drawLine(x + 1, y + 1, x + 1, y + 17, 2, true);
+      gfx.drawLine(x + 9, y + 3, x + 17, y + 1, 2, true);
+      gfx.drawLine(x + 9, y + 19, x + 17, y + 17, 2, true);
+      gfx.drawLine(x + 17, y + 1, x + 17, y + 17, 2, true);
+      return;
+    }
+    if (std::strcmp(name, "sleep") == 0) {
+      gfx.drawLine(x + 4, y + 5, x + 2, y + 9, 2, true);
+      gfx.drawLine(x + 2, y + 9, x + 3, y + 13, 2, true);
+      gfx.drawLine(x + 3, y + 13, x + 6, y + 16, 2, true);
+      gfx.drawLine(x + 6, y + 16, x + 10, y + 17, 2, true);
+      gfx.drawLine(x + 10, y + 17, x + 14, y + 16, 2, true);
+      gfx.drawLine(x + 14, y + 16, x + 16, y + 15, 2, true);
+      gfx.drawLine(x + 16, y + 15, x + 14, y + 12, 2, true);
+      gfx.drawLine(x + 14, y + 12, x + 13, y + 8, 2, true);
+      gfx.drawLine(x + 13, y + 8, x + 10, y + 5, 2, true);
+      gfx.drawLine(x + 10, y + 5, x + 4, y + 5, 2, true);
+      gfx.drawLine(x + 14, y + 1, x + 19, y + 1, 2, true);
+      gfx.drawLine(x + 19, y + 1, x + 14, y + 6, 2, true);
+      gfx.drawLine(x + 14, y + 6, x + 19, y + 6, 2, true);
+      return;
+    }
+    if (std::strcmp(name, "lock") == 0) {
+      gfx.drawLine(x + 6, y + 7, x + 6, y + 3, 2, true);
+      gfx.drawLine(x + 6, y + 3, x + 8, y + 1, 2, true);
+      gfx.drawLine(x + 8, y + 1, x + 12, y + 1, 2, true);
+      gfx.drawLine(x + 12, y + 1, x + 14, y + 3, 2, true);
+      gfx.drawLine(x + 14, y + 3, x + 14, y + 7, 2, true);
+      gfx.drawRect(x + 2, y + 7, 16, 12, true);
+      gfx.fillRect(x + 9, y + 12, 2, 2, true);
+      return;
+    }
+    if (std::strcmp(name, "keys") == 0) {
+      gfx.drawRoundedRect(x + 1, y + 3, 18, 14, 2, 3, true);
+      gfx.drawLine(x + 6, y + 7, x + 6, y + 13, 2, true);
+      gfx.drawLine(x + 3, y + 10, x + 9, y + 10, 2, true);
+      gfx.fillRect(x + 14, y + 8, 2, 2, true);
+      gfx.fillRect(x + 16, y + 11, 2, 2, true);
+      return;
+    }
+    if (std::strcmp(name, "tune") == 0) {
+      gfx.drawLine(x + 14, y + 2, x + 11, y + 5, 2, true);
+      gfx.drawLine(x + 11, y + 5, x + 8, y + 9, 2, true);
+      gfx.drawLine(x + 8, y + 9, x + 1, y + 16, 2, true);
+      gfx.drawLine(x + 1, y + 16, x + 6, y + 19, 2, true);
+      gfx.drawLine(x + 6, y + 19, x + 12, y + 13, 2, true);
+      gfx.drawLine(x + 12, y + 13, x + 15, y + 10, 2, true);
+      gfx.drawLine(x + 15, y + 10, x + 18, y + 7, 2, true);
+      gfx.drawLine(x + 18, y + 7, x + 14, y + 10, 2, true);
+      gfx.drawLine(x + 14, y + 10, x + 11, y + 7, 2, true);
+      gfx.drawLine(x + 11, y + 7, x + 14, y + 2, 2, true);
+      return;
+    }
+    if (std::strcmp(name, "sliders") == 0) {
+      gfx.fillRect(x + 2, y + 8, 3, 3, true);
+      gfx.fillRect(x + 9, y + 8, 3, 3, true);
+      gfx.fillRect(x + 16, y + 8, 3, 3, true);
+      return;
+    }
+    gfx.drawRect(x, y, ev.rect.width, ev.rect.height, 1, true);
+  }
+
   template <typename Gfx>
   static void drawSceneText(const Gfx& gfx,
                             const UiSceneRuntime::RenderEvent& ev,
                             const char* buf) {
     if (!buf || buf[0] == '\0') return;
     const int fontId = runtimeFontId(ev.font);
+    const EpdFontFamily::Style style = sceneTextStyle(ev.style);
     const int maxW = ev.rect.width;
     int lineH = gfx.getLineHeight(fontId);
     if (lineH <= 0) lineH = 16;
     int maxLines = 1;
-    if (ev.rect.height > 20 &&
-        (ev.rect.height >= lineH * 2 || ev.rect.height >= 36)) {
+    if (ev.rect.height > 20 && (ev.rect.height >= lineH * 2 || ev.rect.height >= 36)) {
       maxLines = 2;
     }
-    const int fullW = gfx.getTextWidth(fontId, buf);
+    const int fullW = gfx.getTextWidth(fontId, buf, style);
     if (maxW <= 0 || fullW <= maxW || maxLines <= 1) {
       if (ev.ellipsis && maxW > 0 && fullW > maxW) {
         char lineBuf[256];
         static const char kEllipsis[] = "\xE2\x80\xA6";
-        const int ellW = gfx.getTextWidth(fontId, kEllipsis);
+        const int ellW = gfx.getTextWidth(fontId, kEllipsis, style);
         const int budget = maxW > ellW ? maxW - ellW : 0;
-        size_t take = fitUtf8Prefix(gfx, fontId, buf, strlen(buf), budget);
+        size_t take = fitUtf8Prefix(gfx, fontId, buf, strlen(buf), budget, style);
         if (take > sizeof(lineBuf) - 4) take = sizeof(lineBuf) - 4;
         memcpy(lineBuf, buf, take);
         memcpy(lineBuf + take, kEllipsis, 3);
         lineBuf[take + 3] = '\0';
-        gfx.drawText(fontId, alignedTextX(gfx, ev, lineBuf), ev.rect.y, lineBuf, true);
+        gfx.drawText(fontId, alignedTextX(gfx, ev, lineBuf), ev.rect.y, lineBuf, true, style);
       } else {
-        gfx.drawText(fontId, alignedTextX(gfx, ev, buf), ev.rect.y, buf, true);
+        gfx.drawText(fontId, alignedTextX(gfx, ev, buf), ev.rect.y, buf, true, style);
       }
       return;
     }
@@ -134,29 +241,29 @@ class GfxSceneRenderer {
       const size_t restLen = total - offset;
       char lineBuf[256];
       size_t take = 0;
-      if (last && ev.ellipsis && gfx.getTextWidth(fontId, rest) > maxW) {
+      if (last && ev.ellipsis && gfx.getTextWidth(fontId, rest, style) > maxW) {
         static const char kEllipsis[] = "\xE2\x80\xA6";
-        const int ellW = gfx.getTextWidth(fontId, kEllipsis);
+        const int ellW = gfx.getTextWidth(fontId, kEllipsis, style);
         const int budget = maxW > ellW ? maxW - ellW : 0;
-        take = fitUtf8Prefix(gfx, fontId, rest, restLen, budget);
+        take = fitUtf8Prefix(gfx, fontId, rest, restLen, budget, style);
         if (take > sizeof(lineBuf) - 4) take = sizeof(lineBuf) - 4;
         memcpy(lineBuf, rest, take);
         memcpy(lineBuf + take, kEllipsis, 3);
         lineBuf[take + 3] = '\0';
       } else {
-        take = last ? restLen : fitUtf8Prefix(gfx, fontId, rest, restLen, maxW);
+        take = last ? restLen : fitUtf8Prefix(gfx, fontId, rest, restLen, maxW, style);
         if (!last && take == 0) {
           take = utf8CharBytes(rest);
           if (take == 0 || take > restLen) break;
         }
-        if (last && gfx.getTextWidth(fontId, rest) > maxW) {
-          take = fitUtf8Prefix(gfx, fontId, rest, restLen, maxW);
+        if (last && gfx.getTextWidth(fontId, rest, style) > maxW) {
+          take = fitUtf8Prefix(gfx, fontId, rest, restLen, maxW, style);
         }
         if (take > sizeof(lineBuf) - 1) take = sizeof(lineBuf) - 1;
         memcpy(lineBuf, rest, take);
         lineBuf[take] = '\0';
       }
-      gfx.drawText(fontId, alignedTextX(gfx, ev, lineBuf), y, lineBuf, true);
+      gfx.drawText(fontId, alignedTextX(gfx, ev, lineBuf), y, lineBuf, true, style);
       offset += take;
       y += lineH;
     }
@@ -209,45 +316,6 @@ class GfxSceneRenderer {
       return dx*dx + dy*dy <= r*r;
     }
     return true;
-  }
-
-  // Visible placeholder for missing covers (hero 138x191 + mini 92x122).
-  // Not empty white: rounded border + diagonal cross + centered book spine.
-  template <typename Gfx>
-  static void drawCoverPlaceholder(const Gfx& gfx, const UiSceneRuntime::RenderEvent& ev) {
-    const int rx = ev.rect.x;
-    const int ry = ev.rect.y;
-    const int rw = ev.rect.width;
-    const int rh = ev.rect.height;
-    const int r = ev.radius;
-    if (rw <= 0 || rh <= 0) return;
-    // Outer border (rounded when radius set)
-    if (r > 0) {
-      gfx.drawRoundedRect(rx, ry, rw, rh, 1, r, true);
-    } else {
-      gfx.drawRect(rx, ry, rw, rh, 1, true);
-    }
-    if (rw < 12 || rh < 12) return;
-    // Diagonal cross (inset 3px from border so it doesn't overlap the stroke)
-    const int x0 = rx + 3;
-    const int y0 = ry + 3;
-    const int x1 = rx + rw - 4;
-    const int y1 = ry + rh - 4;
-    if (x1 > x0 && y1 > y0) {
-      gfx.drawLine(x0, y0, x1, y1, true);
-      gfx.drawLine(x1, y0, x0, y1, true);
-    }
-    // Centered book-rect ( ~40% of cover, centered )
-    const int bw = rw * 2 / 5;
-    const int bh = rh / 4;
-    if (bw >= 12 && bh >= 8) {
-      const int bx = rx + (rw - bw) / 2;
-      const int by = ry + (rh - bh) / 2;
-      gfx.drawRect(bx, by, bw, bh, 1, true);
-      // Small spine line inside the book rect
-      const int spineX = bx + bw / 4;
-      gfx.drawLine(spineX, by, spineX, by + bh - 1, true);
-    }
   }
 
   // Cover rendering: aspect-fill (preserve aspect, center-crop), rounded clipping, 1px outer stroke last.
@@ -333,7 +401,6 @@ class GfxSceneRenderer {
               const UiSceneAssets& assets,
               const Gfx& gfx) const {
     if (!packageData || packageLen == 0) return false;
-    M4FixedRuntimeUiFonts::ensureHubFaces(const_cast<Gfx&>(gfx));
 
     struct Ctx {
       const Gfx* gfx;
@@ -379,19 +446,32 @@ class GfxSceneRenderer {
           const bool fill = ev.fill != 0;
           const int r = ev.radius;
           const int stroke = ev.width ? ev.width : 1;
-          if (fill) {
-            gfx.drawRoundedRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, r, true);
+          if (fill && r > 0) {
+            gfx.drawRoundedRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, stroke, r, true);
+            gfx.fillRectStipple(ev.rect.x + 4, ev.rect.y + 4, ev.rect.width - 8,
+                                ev.rect.height - 8);
+          } else if (fill) {
+            // r == 0 + fill: stipple field only, no outline (Root selected row).
+            gfx.fillRectStipple(ev.rect.x + 4, ev.rect.y + 4, ev.rect.width - 8,
+                                ev.rect.height - 8);
           } else {
             gfx.drawRoundedRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, stroke, r, true);
           }
           break;
         }
         case UiScene::kNodeText: {
+          // TextView -> null-terminated tmp buffer (max 255 per compile)
           char buf[256]{};
           size_t n = ev.text.size < 255 ? ev.text.size : 255;
           for (size_t i = 0; i < n; ++i) buf[i] = static_cast<char>(ev.text.readByte(static_cast<uint16_t>(i)));
           buf[n] = '\0';
-          if (n > 0) drawSceneText(gfx, ev, buf);
+          // Use system chrome path: directly call gfx.drawText with font/style.
+          if (n > 0) {
+            // Truncate if needed via gfx.truncatedText is optional; source already bounded.
+            drawSceneText(gfx, ev, buf);
+          } else if (ev.text.size == 0 && ev.text.data == nullptr) {
+            // empty literal: still count as text node but no draw
+          }
           break;
         }
         case UiScene::kNodeCover: {
@@ -400,17 +480,21 @@ class GfxSceneRenderer {
             if (a && a->valid()) {
               drawCoverAsset(gfx, *a, ev);
             } else {
-              drawCoverPlaceholder(gfx, ev);
+              // Fallback placeholder: 1px border
+              gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
             }
           } else if (ev.text.size > 0) {
+            // Text fallback (path) — still attempt asset by item index if available
             const UiSceneAsset* a = assets.get(assetKey(ev));
             if (a && a->valid()) {
               drawCoverAsset(gfx, *a, ev);
             } else {
-              drawCoverPlaceholder(gfx, ev);
+              // Placeholder: draw rect + first glyph
+              gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
+              // optional: draw first glyph centered — keep minimal for test
             }
           } else {
-            drawCoverPlaceholder(gfx, ev);
+            gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
           }
           break;
         }
@@ -470,11 +554,11 @@ class GfxSceneRenderer {
             if (a && a->valid()) {
               draw1BitAsset(gfx, *a, ev.rect.x, ev.rect.y);
             } else {
-              gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
+              drawBuiltinIcon(gfx, ev);
             }
           } else {
             // A named icon without a resolved asset has no safe bitmap buffer.
-            gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
+            drawBuiltinIcon(gfx, ev);
           }
           break;
         }
@@ -535,7 +619,8 @@ class GfxSceneRenderer {
           }
           case UiScene::kNodeRoundRect: {
             const bool fill=ev.fill!=0; int r=ev.radius; int s=ev.width?ev.width:1;
-            if(fill) gfx.drawRoundedRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,r,true);
+            if(fill && r>0){ gfx.drawRoundedRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,s,r,true); gfx.fillRectStipple(ev.rect.x+4,ev.rect.y+4,ev.rect.width-8,ev.rect.height-8); }
+            else if(fill) gfx.fillRectStipple(ev.rect.x+4,ev.rect.y+4,ev.rect.width-8,ev.rect.height-8);
             else gfx.drawRoundedRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,s,r,true);
             break;
           }
@@ -546,9 +631,9 @@ class GfxSceneRenderer {
             break;
           }
           case UiScene::kNodeCover: {
-            if(ev.assetBinding!=kInvalidBindingId){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else GfxSceneRenderer::drawCoverPlaceholder(gfx,ev);}
-            else if(ev.text.size>0){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else GfxSceneRenderer::drawCoverPlaceholder(gfx,ev);}
-            else GfxSceneRenderer::drawCoverPlaceholder(gfx,ev);
+            if(ev.assetBinding!=kInvalidBindingId){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);}
+            else if(ev.text.size>0){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);}
+            else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);
             break;
           }
           case UiScene::kNodeProgress: {
@@ -567,8 +652,8 @@ class GfxSceneRenderer {
             break;
           }
           case UiScene::kNodeIcon: {
-            if(ev.assetBinding!=kInvalidBindingId){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::draw1BitAsset(gfx,*a,ev.rect.x,ev.rect.y); else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true); }
-            else { gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true); }
+            if(ev.assetBinding!=kInvalidBindingId){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::draw1BitAsset(gfx,*a,ev.rect.x,ev.rect.y); else GfxSceneRenderer::drawBuiltinIcon(gfx,ev); }
+            else { GfxSceneRenderer::drawBuiltinIcon(gfx,ev); }
             break;
           }
           case UiScene::kNodeBitmap: {

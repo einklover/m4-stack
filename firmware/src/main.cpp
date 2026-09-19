@@ -19,7 +19,6 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <utility>
 
 #include "qemu/M4QemuNet.h"
 
@@ -65,6 +64,8 @@ static volatile bool gM4QemuScreenMode = true;
 #include "activities/home/MyLibraryActivity.h"
 #include "activities/home/RecentBooksActivity.h"
 #include "activities/network/CrossPointWebServerActivity.h"
+#include "activities/network/WifiSelectionActivity.h"
+#include "network/M4WifiTransferPolicy.h"
 #include "activities/reader/ReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/apps/AppListActivity.h"
@@ -81,6 +82,7 @@ static volatile bool gM4QemuScreenMode = true;
 
 #include <BluetoothHIDManager.h>
 #include "util/ButtonNavigator.h"
+#include "util/M4RenderGuard.h"
 
 #ifdef CROSSPOINT_MURPHY_M4
 #include <FrontlightManager.h>
@@ -120,6 +122,7 @@ HalGPIO gpio;
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
 Activity* currentActivity;
+SemaphoreHandle_t gM4RenderMutex = nullptr;
 
 #ifdef CROSSPOINT_MURPHY_M4
 static M4SerialDebug::Bridge gM4DebugBridge;
@@ -532,14 +535,8 @@ void enterDeepSleep() {
 
 void onGoHome();
 void onGoHomeAnimated(bool animateEntry, int animationDirection);
-void onGoToMyLibrary();
 void onGoToMyLibraryWithPath(const std::string& path);
 void onGoToRecentBooks();
-void onGoToBrowser();
-void onGoToJianGuoYun();
-void onGoToDataCapsule();
-void onGoToBookmarkNotes();
-void onGoToNetwork();
 void onGoToReader(const std::string& initialEpubPath, const std::string& originalSourcePath = "") {
   exitActivity();
   enterNewActivity(
@@ -549,6 +546,13 @@ void onGoToReader(const std::string& initialEpubPath, const std::string& origina
 void onGoToFileTransfer() {
   exitActivity();
   enterNewActivity(new CrossPointWebServerActivity(renderer, mappedInputManager, onGoHome));
+}
+
+void onGoToNetwork() {
+  exitActivity();
+  enterNewActivity(new WifiSelectionActivity(
+      renderer, mappedInputManager, [](bool) { onGoHome(); },
+      M4WifiSelectionPurpose::SystemNetworking));
 }
 
 // USB debug entry point: use the already-prepared STA link and show the same
@@ -563,17 +567,16 @@ void onGoToSettings() {
   enterNewActivity(new SettingsActivity(renderer, mappedInputManager, onGoHome));
 }
 
-void onGoToNetwork() {
-  // Network management and file transfer share the three-method CrossPoint
-  // chooser; the AppList file manager keeps its separate MyLibrary route.
-  onGoToFileTransfer();
-}
+void onGoToMyLibrary();
+void onGoToRecentBooks();
+void onGoToBrowser();
+void onGoToJianGuoYun();
+void onGoToDataCapsule();
+void onGoToBookmarkNotes();
 
 void onGoToApps() {
   exitActivity();
   AppListActivity::Callbacks callbacks;
-  // Keep this wiring named: aggregate position changes previously let a
-  // drawer label land in a sibling destination after callback edits.
   callbacks.onSettingsOpen = onGoToSettings;
   callbacks.onFileManagerOpen = onGoToMyLibrary;
   callbacks.onRecentBooksOpen = onGoToRecentBooks;
@@ -586,14 +589,6 @@ void onGoToApps() {
 }
 
 void onGoToNativeApp(const std::string& appId) {
-  if (appId == "builtin.files") {
-    onGoToMyLibrary();
-    return;
-  }
-  if (appId == "builtin.settings") {
-    onGoToSettings();
-    return;
-  }
 #ifdef CROSSPOINT_MURPHY_M4
   if (!M4xIsValidPackageId(appId)) {
     onGoToApps();
@@ -727,6 +722,10 @@ void setup() {
 #endif
     delay(500);
     Serial.printf("[%lu] [M4-RC1] setup() start ver=" CROSSPOINT_VERSION "\n", millis());
+
+    if (gM4RenderMutex == nullptr) {
+      gM4RenderMutex = xSemaphoreCreateMutex();
+    }
 
     // ========== 设置时区（东八区）==========
     // 必须在 RTC 读取和 NTP 同步之前设置，否则 mktime/localtime_r 会按 UTC 处理时间
@@ -1554,10 +1553,6 @@ void loop() {
       const bool swipe = mappedInputManager.wasHomeSwipeGesture();
       onGoHomeAnimated(swipe, /*logical bottom→top=*/2);
       // Home activity entered; never run the old activity again this frame.
-      return;
-    } else if (!currentActivity->isHomeActivity() && mappedInputManager.wasHistoryGesture()) {
-      Serial.printf("[%lu] [M4-GESTURE] history (bottom bar)\n", millis());
-      onGoToRecentBooks();
       return;
     } else if (!currentActivity->isHomeActivity() && mappedInputManager.wasBackGesture()) {
       Serial.printf("[%lu] [M4-GESTURE] back (edge swipe / bottom bar)\n", millis());

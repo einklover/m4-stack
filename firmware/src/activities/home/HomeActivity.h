@@ -14,9 +14,6 @@
 #include "../../RecentBooksStore.h"
 #include "ui/pages/HomeSceneModel.h"
 #include "ui/scene/UiSceneAssets.h"
-#ifdef CROSSPOINT_MURPHY_M4
-#include "../../util/M4RuntimeMemory.h"
-#endif
 
 struct Rect;
 
@@ -83,12 +80,8 @@ class HomeActivity final : public Activity {
   static void loadRecentBooksInto(BackendContext& ctx, int maxBooks);
   static bool tryEnsureCoverThumbInCtx(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
                                        const std::function<bool()>& cancelled = {});
-  static bool tryDecodeCoverThumbIfExists(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
-                                          const std::function<bool()>& cancelled = {});
   static void publishHomeSceneFromBackendCtx(BackendContext& ctx);
   static bool publishHomeSceneWithAssetsCtx(BackendContext& ctx);
-  static bool publishHomeSceneWithAssetsFastCtx(BackendContext& ctx);
-  static void refreshMissingCoversInCtx(BackendContext& ctx, uint32_t epoch);
   // Legacy trampoline for compatibility (unused after refactor, kept to avoid ODR)
   [[noreturn]] void sceneBackendTaskLoop();
   void publishHomeSceneFromBackend();
@@ -136,11 +129,7 @@ class HomeActivity final : public Activity {
         onDataCapsuleOpen(onDataCapsuleOpen),
         onBookmarkNotesOpen(onBookmarkNotesOpen),
         onAppsOpen(onAppsOpen),
-        onOpenNativeApp(onOpenNativeApp) {
-#ifdef CROSSPOINT_MURPHY_M4
-    m4LogRuntimeMemory("home-enter");
-#endif
-  }
+        onOpenNativeApp(onOpenNativeApp) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

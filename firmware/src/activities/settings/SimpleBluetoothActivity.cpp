@@ -5,9 +5,12 @@
 #include <BluetoothHIDManager.h>
 #include <CrossPointSettings.h>
 
+#include <WiFi.h>
+
 #include "I18n.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/M4WifiTransferPolicy.h"
 #include "util/M4UiText.h"
 #include "util/M4ListTouchPolicy.h"
 #include "util/M4TouchListMetrics.h"
@@ -39,13 +42,17 @@ void SimpleBluetoothActivity::onEnter() {
   // 获取蓝牙管理器
   btMgr = &BluetoothHIDManager::getInstance();
   
-  // 如果蓝牙未启用，尝试启用
+  // Do not silently kill Wi-Fi on entry. If the radio is up, stay disabled
+  // until the user confirms “打开蓝牙会断开 Wi-Fi”.
   if (!btMgr->isEnabled()) {
-    Serial.printf("[%lu] [BT-UI] Enabling Bluetooth...\n", millis());
-    if (!btMgr->enable()) {
-      Serial.printf("[%lu] [BT-UI] Failed to enable Bluetooth\n", millis());
+    const bool wifiUp = WiFi.status() == WL_CONNECTED || !m4NetworkRadioMayOff();
+    if (!wifiUp) {
+      Serial.printf("[%lu] [BT-UI] Enabling Bluetooth...\n", millis());
+      if (!btMgr->enable()) {
+        Serial.printf("[%lu] [BT-UI] Failed to enable Bluetooth\n", millis());
+      }
+      delay(500);
     }
-    delay(500);
   }
   
   selectedIndex = 0;
@@ -104,7 +111,11 @@ void SimpleBluetoothActivity::loop() {
 
   // Touch edge-back mirrors physical Back on this screen.
   if (mappedInput.hasTouch() && mappedInput.wasBackGesture()) {
-    if (state == BtPageState::DEVICE_LIST) {
+    if (state == BtPageState::CONFIRM_WIFI_DISCONNECT) {
+      state = BtPageState::MAIN_MENU;
+      updateRequired = true;
+      return;
+    } else if (state == BtPageState::DEVICE_LIST) {
       state = BtPageState::MAIN_MENU;
       selectedIndex = 0;
       if (btMgr && btMgr->isScanning()) btMgr->stopScan();
@@ -133,7 +144,11 @@ void SimpleBluetoothActivity::loop() {
   
   // 返回键路由
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    if (state == BtPageState::DEVICE_LIST) {
+    if (state == BtPageState::CONFIRM_WIFI_DISCONNECT) {
+      state = BtPageState::MAIN_MENU;
+      updateRequired = true;
+      return;
+    } else if (state == BtPageState::DEVICE_LIST) {
       state = BtPageState::MAIN_MENU;
       selectedIndex = 0;
       if (btMgr && btMgr->isScanning()) btMgr->stopScan();
@@ -190,6 +205,8 @@ void SimpleBluetoothActivity::loop() {
   // 路由到各状态的输入处理
   if (state == BtPageState::MAIN_MENU) {
     handleMainMenuInput();
+  } else if (state == BtPageState::CONFIRM_WIFI_DISCONNECT) {
+    handleWifiDisconnectConfirm();
   } else if (state == BtPageState::DEVICE_LIST) {
     handleDeviceListInput();
   } else if (state == BtPageState::CONNECTED) {
@@ -274,6 +291,9 @@ void SimpleBluetoothActivity::render() {
   switch (state) {
     case BtPageState::MAIN_MENU:
       renderMainMenu();
+      break;
+    case BtPageState::CONFIRM_WIFI_DISCONNECT:
+      renderWifiDisconnectConfirm();
       break;
     case BtPageState::DEVICE_LIST:
       renderDeviceList();
@@ -554,6 +574,12 @@ void SimpleBluetoothActivity::handleMainMenuInput() {
       if (btMgr->isEnabled()) {
         btMgr->disable();
       } else {
+        const bool wifiUp = WiFi.status() == WL_CONNECTED || !m4NetworkRadioMayOff();
+        if (wifiUp) {
+          state = BtPageState::CONFIRM_WIFI_DISCONNECT;
+          updateRequired = true;
+          return;
+        }
         btMgr->enable();
         delay(500);
       }
@@ -614,6 +640,38 @@ void SimpleBluetoothActivity::handleMainMenuInput() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     activateMain();
   }
+}
+
+void SimpleBluetoothActivity::handleWifiDisconnectConfirm() {
+  M4ConfirmButton button = M4ConfirmButton::None;
+  bool footerPrimaryOrRow = false;
+  if (mappedInput.wasPressed(MappedInputManager::Button::Power)) {
+    button = M4ConfirmButton::Power;
+  }
+  int tx = 0;
+  int ty = 0;
+  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) ||
+      mappedInput.wasScreenTapped(tx, ty)) {
+    button = M4ConfirmButton::Confirm;
+    footerPrimaryOrRow = true;
+  }
+  if (!m4WifiBtConfirmAccepts(button, footerPrimaryOrRow)) return;
+  m4WifiReleaseAllOccupancyForConfirmedBt();
+  (void)m4WifiTryRadioOff(M4NetworkOwner::Other);
+  if (btMgr) {
+    btMgr->enable();
+    delay(500);
+  }
+  state = BtPageState::MAIN_MENU;
+  updateRequired = true;
+}
+
+void SimpleBluetoothActivity::renderWifiDisconnectConfirm() {
+  const auto pageHeight = renderer.getScreenHeight();
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 40, "确认", true, EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2, "打开蓝牙会断开 Wi-Fi");
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 48, "点按确认");
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 18, "左缘滑动取消");
 }
 
 // ============ 设备列表 ============

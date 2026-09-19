@@ -35,7 +35,7 @@ int main() {
   static_assert(kMaxSceneNodes == 128);
   static_assert(kMaxBindings == 64);
   static_assert(kMaxActions == 32);
-  static_assert(kMaxRepeatItems == 8);
+  static_assert(kMaxRepeatItems == 9);
 
   const Rect bounds{10, 20, 30, 40};
   assert(bounds.contains(10, 20));

@@ -21,7 +21,8 @@ enum class DataState : uint8_t { Loading, Ready, Stale, Empty, Error };
 static constexpr uint16_t kMaxSceneNodes = 128;
 static constexpr uint8_t kMaxBindings = 64;
 static constexpr uint8_t kMaxActions = 32;
-static constexpr uint8_t kMaxRepeatItems = 8;
+// Advanced Settings presents G0[0-4] + G1[5-8] in the first window.
+static constexpr uint8_t kMaxRepeatItems = 9;
 
 using BindingId = uint8_t;
 using ActionId = uint8_t;

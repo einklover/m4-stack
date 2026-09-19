@@ -4,6 +4,7 @@
 #include "activities/reader/TxtReaderChapterSelectionActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <Txt.h>
 #include <SDCardManager.h>
 
@@ -12,6 +13,7 @@
 #include "util/M4ErrorScreen.h"
 #include "util/M4UiText.h"
 #include "util/M4InputProfile.h"
+#include "util/M4RenderGuard.h"
 #include "util/M4PluginReaderBridge.h"
 #include "util/M4PluginTocList.h"
 #include "apps/M4ContentProviderSession.h"
@@ -21,6 +23,9 @@
 #include <cstring>
 #include <memory>
 #include <vector>
+
+// Process-wide render-submit mutex owned by main.cpp.
+extern SemaphoreHandle_t gM4RenderMutex;
 
 namespace {
 constexpr UBaseType_t kEventQueueLen = 24;
@@ -82,11 +87,20 @@ void AppRuntimeActivity::handleEventOnOwner(const M4xRuntime::Event& e) {
       } else {
         ready_.store(true, std::memory_order_relaxed);
         if (host_.isCancelRequested() || life_.isStopRequested()) break;
-        if (!host_.callDraw(err)) {
-          setFailed(err.empty() ? "draw_failed" : err);
-          renderError();
+        // First produced frame: start from a clean framebuffer and flush
+        // full to erase AppList/startup residue; later frames keep policy.
+        M4RenderGuard renderGuard(gM4RenderMutex, pdMS_TO_TICKS(2000));
+        if (!renderGuard.owns()) {
+          setFailed("render_lock");
+          exitRequested_.store(true, std::memory_order_relaxed);
         } else {
-          renderer.displayBuffer();
+          renderer.clearScreen();
+          if (!host_.callDraw(err)) {
+            setFailed(err.empty() ? "draw_failed" : err);
+            renderError();
+          } else {
+            renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+          }
         }
         if (host_.wantsExit()) exitRequested_.store(true, std::memory_order_relaxed);
       }
@@ -305,6 +319,7 @@ void AppRuntimeActivity::handleEventOnOwner(const M4xRuntime::Event& e) {
 
 void AppRuntimeActivity::runtimeTaskMain() {
   // Sole task allowed to enter host_/lua_State.
+  renderStartupPage();
   handleEventOnOwner(M4xRuntime::Event::makeStart());
 
   uint32_t lastDrawMs = millis();
@@ -356,6 +371,19 @@ void AppRuntimeActivity::runtimeTaskMain() {
   ready_.store(false, std::memory_order_relaxed);
   life_.publishDone();
   vTaskDelete(nullptr);
+}
+
+void AppRuntimeActivity::renderStartupPage() {
+  M4RenderGuard renderGuard(gM4RenderMutex, pdMS_TO_TICKS(2000));
+  if (!renderGuard.owns()) {
+    Serial.printf("[M4xRuntime] startup render lock unavailable\n");
+    return;
+  }
+  renderer.clearScreen();
+  const std::string bootTitle = app_.name.empty() ? app_.id : app_.name;
+  M4UiText::drawCentered(renderer, UI_12_FONT_ID, 300, bootTitle.c_str(), true, EpdFontFamily::BOLD);
+  M4UiText::drawCentered(renderer, UI_10_FONT_ID, 352, "正在启动…");
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
 }
 
 void AppRuntimeActivity::requestStopAndJoin() {
