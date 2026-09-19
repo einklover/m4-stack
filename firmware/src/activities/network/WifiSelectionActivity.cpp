@@ -738,8 +738,10 @@ void WifiSelectionActivity::renderNetworkList() const {
 
     const auto& network = networks[static_cast<size_t>(index)];
     const bool isCurrent = !connected.empty() && network.ssid == connected;
-    M4UiText::draw(renderer, UI_10_FONT_ID, row.x + 12, row.y + 10, network.ssid.c_str(),
-                   network.hasSavedPassword || isCurrent, EpdFontFamily::BOLD);
+    // SSID labels are primary content: saved/current state only affects the
+    // checkmark and metadata, never whether the label is rendered in ink.
+    M4UiText::draw(renderer, UI_10_FONT_ID, row.x + 12, row.y + 10, network.ssid.c_str(), true,
+                   EpdFontFamily::BOLD);
     if (isCurrent) {
       renderer.drawText(SMALL_FONT_ID, row.x + row.width - 52, row.y + 12, "✓");
     }

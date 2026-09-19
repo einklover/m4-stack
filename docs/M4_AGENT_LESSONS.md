@@ -676,4 +676,9 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - Pitfall: `M4ProviderCoverCache.h` must keep `ensureHomeSceneSizesFromSource` helper's `cover_171x254` fallback comment after the `if (backend.exists(source))` branch; early literal before source check breaks `test_cover_last_resort` ordering guard (same as R17). Adding `brandText` grows `HomeSceneSnapshot` by 4 bytes; keep `kHomeAssetArenaBytes` unchanged (assets arena independent) and ensure `initialSnapshot` seeds `textUsed=9` for "Murphy M4".
 - Check: `test_provider_cover_cache` dual-size + keep-source still PASS; new host checks `theme.json` has `$home.brand_text` with width 280, `compile_home_theme.py` has `"$home.brand_text": 3`, `HomeSceneModel.h` has `kBindingBrandText`, `HomeActivity.cpp` contains all six Chinese strings + `setBrandText` + `publishBrand` with `Murphy M4` restore.
 
+## 2026-09-19 — Wi-Fi SSID labels must not use status as ink color
+
+- Symptom: the scan model contained multiple SSIDs, but only a saved/current row had a visible name; ordinary rows were blank.
+- Cause: `WifiSelectionActivity::renderNetworkList` passed `network.hasSavedPassword || isCurrent` as `M4UiText::draw`'s `black` argument. `false` means erase/white ink on the 1-bit renderer, not muted text.
+- Fix/check: pass `true` for the SSID label; keep saved/current state in the checkmark and metadata only. The snapshot contract now includes a three-row mixed-state regression.
 

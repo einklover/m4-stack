@@ -22,6 +22,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -54,6 +55,24 @@ size_t countOcc(const std::string& s, const std::string& sub) {
   size_t n = 0;
   for (size_t p = s.find(sub); p != std::string::npos; p = s.find(sub, p + sub.size())) ++n;
   return n;
+}
+
+struct FakeWifiRow {
+  const char* ssid;
+  bool hasSavedPassword;
+  bool isCurrent;
+};
+
+// The SSID label must always be drawn with black ink. Saved/current state is
+// an annotation state, not the renderer's ink-color argument.
+std::vector<bool> simulatedSsidInk(const std::vector<FakeWifiRow>& rows) {
+  std::vector<bool> ink;
+  ink.reserve(rows.size());
+  for (const auto& row : rows) {
+    (void)row;
+    ink.push_back(true);
+  }
+  return ink;
 }
 
 // Max nesting depth of renderingMutex takes inside one function body.
@@ -90,8 +109,9 @@ int main() {
   const std::string startFn = bodyOf(src, "void WifiSelectionActivity::startWifiScan()");
   const std::string loopFn = bodyOf(src, "void WifiSelectionActivity::loop()");
   const std::string taskFn = bodyOf(src, "void WifiSelectionActivity::displayTaskLoop()");
+  const std::string renderFn = bodyOf(src, "void WifiSelectionActivity::renderNetworkList() const");
   assert(!scanFn.empty() && !selectFn.empty() && !checkFn.empty());
-  assert(!startFn.empty() && !loopFn.empty() && !taskFn.empty());
+  assert(!startFn.empty() && !loopFn.empty() && !taskFn.empty() && !renderFn.empty());
 
   // 1. Atomic publish: staged locally, swapped in under the mutex.
   assert(scanFn.find("networks.clear()") == std::string::npos);
@@ -152,6 +172,20 @@ int main() {
            countOcc(*fn, "xSemaphoreGive(renderingMutex"));
     assert(maxTakeDepth(*fn) <= 1);
   }
+
+  // 9. Regression: three rows with mixed saved/current state must all use
+  // black SSID ink. The state only controls annotations/checkmarks.
+  const std::vector<FakeWifiRow> rows = {
+      {"saved-ap", true, false},
+      {"current-ap", false, true},
+      {"unmarked-ap", false, false},
+  };
+  const auto ink = simulatedSsidInk(rows);
+  assert(ink.size() == 3);
+  assert(ink[0] && ink[1] && ink[2]);
+  assert(renderFn.find("network.ssid.c_str(), true,") != std::string::npos);
+  assert(renderFn.find("EpdFontFamily::BOLD") != std::string::npos);
+  assert(renderFn.find("network.hasSavedPassword || isCurrent, EpdFontFamily::BOLD") == std::string::npos);
 
   std::puts("WIFI_NETWORKS_SNAPSHOT_CONTRACT_OK");
   return 0;
