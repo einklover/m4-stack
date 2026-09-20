@@ -436,7 +436,7 @@ struct AuthorizationState {
   }
 
   // While disabled, no complete line may be delivered for execution.
-  // RX bytes are discarded (optionally still advance overflow discard state).
+  // Framed req/chk are NAK'd with usb_debug_off; they are never executed.
   bool shouldExecuteFrames() const { return authorized; }
 
   // Sleep keep-alive only when authorized and recent host traffic.
@@ -449,6 +449,19 @@ struct AuthorizationState {
 inline bool opCanEnableAuthorization(const char* op) {
   (void)op;
   return false;  // no protocol op may enable; only physical UI
+}
+
+// Unauthorized framed traffic: NAK ping/install so the host can tell
+// "debug off" from a dead CDC. Never execute. ok/err/prg/noise → nullptr.
+inline constexpr const char* kUnauthorizedErrorKey = "usb_debug_off";
+inline constexpr const char* kUnauthorizedErrorMessage = "请开启 USB 串口调试";
+
+inline const char* unauthorizedFrameError(const char* kind) {
+  if (!kind || !*kind) return nullptr;
+  if (std::strcmp(kind, "req") == 0 || std::strcmp(kind, "chk") == 0) {
+    return kUnauthorizedErrorKey;
+  }
+  return nullptr;
 }
 
 // Rate limit: first inject never blocked by zero epoch.

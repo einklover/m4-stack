@@ -304,11 +304,10 @@ void testReadingV51CanvasGeometry() {
   // chevron tip at row+26.
   const std::string cpp = loadSettingsCpp();
   assert(!cpp.empty());
-  assert(contains(cpp, "kReaderRowH = 52"));
-  assert(contains(cpp, "kReaderWinTop = 126"));
-  assert(contains(cpp, "516, 568, 620, 672") || contains(cpp, "516,568,620,672"));
-  assert(contains(cpp, "fillRectStipple(30, y + 8, 420, 36)"));
-  assert(contains(cpp, "y + 26"));
+  assert(contains(cpp, "kReaderRowH = 58"));
+  assert(contains(cpp, "kReaderWinTop = 130"));
+  assert(contains(cpp, "fillRectStipple(kReaderCardX + 2, y + 4, 460, 50)"));
+  assert(contains(cpp, "drawRoundedRect(kReaderCardX, kReaderWinTop, kReaderCardW, visible * kReaderRowH, 2, 11, true)"));
   printf("reading v5.1 canvas geometry PASS\n");
 }
 

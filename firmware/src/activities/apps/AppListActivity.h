@@ -114,6 +114,7 @@ class AppListActivity final : public ActivityWithSubactivity {
   bool selectedIsPlugin() const;
   void selectIndex(int index);
   void moveSelection(int delta);
+  void pageBy(int pages);
   void activateBuiltin(BuiltinAction action);
   void drawItemIcon(const DrawerItem& item, const TouchHitGeometry::Rect& tile) const;
 };

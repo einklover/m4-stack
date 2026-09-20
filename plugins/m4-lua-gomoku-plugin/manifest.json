@@ -1,0 +1,19 @@
+{
+  "id": "com.m4.gomoku",
+  "name": "五子棋",
+  "version": "0.1.2",
+  "versionCode": 3,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "V1 Lua 五子棋 15x15 vs CPU (freestyle five-in-a-row).",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}

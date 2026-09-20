@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -221,6 +222,37 @@ bool readSmallText(const std::string& path, std::string& out, size_t cap) {
   return readSmall(path, out, cap);
 }
 
+void appendAppErrorLog(const std::string& appId, const char* stage, const std::string& error) {
+  if (appId.empty() || error.empty()) return;
+  constexpr size_t kMaxBytes = 128u * 1024u;
+  std::string dir = std::string("/apps_data/") + appId + "/logs";
+  SdMan.mkdir(dir.c_str(), true);
+  const std::string path = dir + "/error.log";
+  const std::string prev = dir + "/error.log.prev";
+  if (SdMan.exists(path.c_str())) {
+    FsFile probe;
+    if (SdMan.openFileForRead("NP-LOG", path.c_str(), probe)) {
+      const size_t sz = probe.fileSize();
+      probe.close();
+      if (sz >= kMaxBytes) {
+        if (SdMan.exists(prev.c_str())) SdMan.remove(prev.c_str());
+        SdMan.rename(path.c_str(), prev.c_str());
+      }
+    }
+  }
+  FsFile f = SdMan.open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND);
+  if (!f) {
+    SdMan.mkdir(dir.c_str(), true);
+    f = SdMan.open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND);
+  }
+  if (!f) return;
+  char line[384];
+  const int n = std::snprintf(line, sizeof(line), "ms=%u stage=%s err=%s\n",
+                              static_cast<unsigned>(millis()), stage ? stage : "-", error.c_str());
+  if (n > 0) (void)f.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(n));
+  f.close();
+}
+
 bool writeTextFile(const std::string& path, const std::string& body) {
   if (path.empty() || body.empty() || !ensureParentDirs(path)) return false;
   if (SdMan.exists(path.c_str())) SdMan.remove(path.c_str());
@@ -291,13 +323,19 @@ bool commitTempFilesPair(const std::string& firstTemp, const std::string& firstF
     }
   }
 
-  bool committed = SdMan.rename(firstTemp.c_str(), firstFinal.c_str());
+  auto installOne = [&](const std::string& tempPath, const std::string& finalPath, size_t bytes) {
+    if (SdMan.rename(tempPath.c_str(), finalPath.c_str()) && fileSizeIs(finalPath, bytes)) return true;
+    if (SdMan.exists(finalPath.c_str())) SdMan.remove(finalPath.c_str());
+    if (!copyFileExact(tempPath, finalPath, bytes)) return false;
+    if (SdMan.exists(tempPath.c_str())) (void)SdMan.remove(tempPath.c_str());
+    return true;
+  };
+
+  bool committed = installOne(firstTemp, firstFinal, firstBytes);
   firstInstalled = committed;
-  committed = committed && fileSizeIs(firstFinal, firstBytes);
   if (committed) {
-    committed = SdMan.rename(secondTemp.c_str(), secondFinal.c_str());
+    committed = installOne(secondTemp, secondFinal, secondBytes);
     secondInstalled = committed;
-    committed = committed && fileSizeIs(secondFinal, secondBytes);
   }
   if (!committed) {
     restore();

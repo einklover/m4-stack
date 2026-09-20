@@ -411,7 +411,7 @@ void MyLibraryActivity::onEnter() {
   updateRequired = true;
 
   xTaskCreate(&MyLibraryActivity::taskTrampoline, "MyLibraryActivityTask",
-              4096,               // Stack size
+              8192,               // TTF chrome raster does not fit in 4KB
               this,               // Parameters
               1,                  // Priority
               &displayTaskHandle  // Task handle

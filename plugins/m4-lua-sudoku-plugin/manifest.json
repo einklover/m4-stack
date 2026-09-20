@@ -1,0 +1,19 @@
+{
+  "id": "com.m4.sudoku",
+  "name": "数独",
+  "version": "0.1.2",
+  "versionCode": 3,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "V1 Lua Sudoku (ReKindle: 9x9, easy/medium/hard, check/solve).",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}

@@ -80,9 +80,10 @@ void EpubReaderSettingsActivity::taskTrampoline(void* param) {
 
 namespace {
 
-constexpr int kReaderRowH = 52;
-constexpr int kReaderWinTop = 126;  // canvas row-0 top == window top at offset 0
-int readerCanvasRowY(int i);
+constexpr int kReaderRowH = 58;
+constexpr int kReaderWinTop = 130;
+constexpr int kReaderCardX = 8;
+constexpr int kReaderCardW = 464;
 
 }  // namespace
 
@@ -130,11 +131,9 @@ void EpubReaderSettingsActivity::loop() {
     // touch keeps matching displayed rows. Index/paging/input semantics same.
     const int pageItems = std::max(1, listHeight / kReaderRowH);
     const int pageStart = count == 0 ? 0 : (selectedIndex / pageItems) * pageItems;
-    const int offset =
-        (count == 0 ? kReaderWinTop : readerCanvasRowY(pageStart)) - kReaderWinTop;
     int hit = -1;
     for (int i = pageStart; i < count && i < pageStart + pageItems; ++i) {
-      const int y = readerCanvasRowY(i) - offset;
+      const int y = kReaderWinTop + (i - pageStart) * kReaderRowH;
       if (y >= listTop + listHeight) break;
       if (te.y >= y && te.y < y + kReaderRowH) {
         hit = i;
@@ -323,39 +322,6 @@ bool readerSettingNavigates(const SettingInfo& s) {
   return s.type == SettingType::ACTION || s.type == SettingType::VALUE;
 }
 
-// v5.1 22-row canvas (paint/touch share this table; index/paging semantics
-// never see it): G0 [0] @126; G1 [1-5] @217+52k; G2 [6-9] @516+52k (four
-// independent margins); G3 [10-13], G4 [14-18], G5 [19-21] continue with
-// the same 39px card-to-card rhythm, cards only (no invented titles).
-int readerCanvasRowY(int i) {
-  static constexpr int kBase[] = {126, 217, 269, 321, 373, 425, 516, 568, 620, 672,
-                                  763, 815, 867, 919, 1010, 1062, 1114, 1166, 1218,
-                                  1309, 1361, 1413};
-  if (i < 0) return -1;
-  if (i < 22) return kBase[i];
-  return kBase[21] + kReaderRowH * (i - 21);
-}
-
-int readerRowGroup(const SettingInfo& s) {
-  const char* k = s.key ? s.key : "";
-  if (std::strcmp(k, kM4ReaderSettingsScopeKey) == 0) return 0;
-  if (std::strcmp(k, kM4ReaderFontPickerKey) == 0 || std::strcmp(k, "firstlineintented") == 0 ||
-      std::strcmp(k, "readerPixelSize") == 0 || std::strcmp(k, "lineSpacing") == 0 ||
-      std::strcmp(k, "wordSpacing") == 0)
-    return 1;
-  if (std::strcmp(k, "screenMarginTop") == 0 || std::strcmp(k, "screenMarginBottom") == 0 ||
-      std::strcmp(k, "screenMarginLeft") == 0 || std::strcmp(k, "screenMarginRight") == 0)
-    return 2;
-  if (std::strcmp(k, "readingBackground") == 0 || std::strcmp(k, "underline") == 0 ||
-      std::strcmp(k, "underlineOffset") == 0 || std::strcmp(k, "underlineStyle") == 0)
-    return 3;
-  if (std::strcmp(k, "extraParagraphSpacing") == 0 || std::strcmp(k, "alignment") == 0 ||
-      std::strcmp(k, "showTimeInsteadOfChapter") == 0 || std::strcmp(k, "epubShowImages") == 0 ||
-      std::strcmp(k, "punctWidth") == 0)
-    return 4;
-  return 5;
-}
-
 }  // namespace
 
 void EpubReaderSettingsActivity::render() const {
@@ -364,100 +330,47 @@ void EpubReaderSettingsActivity::render() const {
   const auto pageHeight = renderer.getScreenHeight();
   auto metrics = UITheme::getInstance().getMetrics();
 
-  // v5.1 header (static band 0..91): brand + title + battery + hairline.
-  // No subtitle line (spec carries none). Baselines via exact line heights.
-  const int brandTop = 27 - renderer.getLineHeight(SMALL_FONT_ID);
-  const int titleTop = 72 - renderer.getLineHeight(UI_12_FONT_ID);
-  M4UiText::draw(renderer, SMALL_FONT_ID, 24, brandTop, "Murphy M4", true);
-  M4UiText::draw(renderer, UI_12_FONT_ID, 24, titleTop, kM4ReaderSettingsTitle, true,
-                 EpdFontFamily::BOLD);
+  M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 24, 15, "Murphy M4", true);
+  M4UiText::draw(renderer, NOTOSANS_18_FONT_ID, 24, 48, kM4ReaderSettingsTitle, true, EpdFontFamily::BOLD);
   const int readerBatt = powerManager.getBatteryPercentage() > 100
                              ? 100
                              : static_cast<int>(powerManager.getBatteryPercentage());
   renderer.drawRect(431, 18, 22, 10, true);
   renderer.fillRect(433, 20, (18 * readerBatt) / 100, 6, true);
   renderer.fillRect(453, 21, 2, 4, true);
-  renderer.drawLine(22, 91, 458, 91, true);
+  renderer.drawLine(8, 91, 472, 91, 2, true);
 
-  // Window math (kept shape, new pitch): the reserved footer space stays so
-  // the bottom whitespace and touch areas below the list are unchanged.
-  const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int listHeight = pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const int listBottom = listTop + listHeight;
+  const int listHeight = pageHeight - kReaderWinTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
   const int count = static_cast<int>(settings.size());
-
   const int pageItems = std::max(1, listHeight / kReaderRowH);
   const int pageStart = count == 0 ? 0 : (selectedIndex / pageItems) * pageItems;
-  const int offset =
-      (count == 0 ? kReaderWinTop : readerCanvasRowY(pageStart)) - kReaderWinTop;
+  const int visible = std::min(pageItems, std::max(0, count - pageStart));
+  renderer.drawRoundedRect(kReaderCardX, kReaderWinTop, kReaderCardW, visible * kReaderRowH, 2, 11, true);
 
-  // v5.1 section/card chrome, canvas-relative. Only G0-G2 carry real
-  // section strings; G3-G5 continue cards-only (no invented titles).
-  const int lh12 = renderer.getLineHeight(UI_12_FONT_ID);
-  struct SecChrome {
-    int baseY;
-    const char* text;
-  };
-  static constexpr SecChrome kSecs[] = {{116, "应用"}, {207, "字体与排版"}, {506, "页边距"}};
-  for (const auto& s : kSecs) {
-    const int y = s.baseY - offset;
-    if (y < -24 || y > pageHeight) continue;
-    M4UiText::draw(renderer, UI_12_FONT_ID, 24, y - lh12, s.text, true, EpdFontFamily::BOLD);
-  }
-  struct CardChrome {
-    int x, y, w, h;
-  };
-  static constexpr CardChrome kCards[] = {{22, 126, 436, 52},   {22, 217, 436, 260},
-                                          {22, 516, 436, 208},  {22, 763, 436, 208},
-                                          {22, 1010, 436, 260}, {22, 1309, 436, 156}};
-  for (const auto& c : kCards) {
-    const int y = c.y - offset;
-    if (y + c.h <= 0 || y >= pageHeight) continue;
-    renderer.drawRoundedRect(c.x, y, c.w, c.h, 1, 10, true);
-  }
-
-  const int labelTopDy = 32 - lh12;
-  const int valueTopDy = 32 - renderer.getLineHeight(UI_10_FONT_ID);
   for (int i = pageStart; i < count && i < pageStart + pageItems; ++i) {
-    const int y = readerCanvasRowY(i) - offset;
-    if (y >= listBottom) break;
-    if (y + kReaderRowH <= kReaderWinTop) continue;
+    const int y = kReaderWinTop + (i - pageStart) * kReaderRowH;
     const bool selected = (i == selectedIndex);
-    // v5.3 B: stipple field only; the card already draws the border.
     if (selected) {
-      renderer.fillRectStipple(30, y + 8, 420, 36);
+      renderer.fillRectStipple(kReaderCardX + 2, y + 4, 460, 50);
     }
     const std::string title = getChineseName(settings[i].name);
     const std::string value = readerSettingValueText(settings[i]);
     const bool chevron = readerSettingNavigates(settings[i]);
-    // Single value column at x418 (spec); chevron column starts at 440.
-    const int valueEdge = 418;
-    int titleW = valueEdge - 40 - (value.empty() ? 0 : 100);
-    if (titleW < 0) titleW = 0;
-    const std::string shownTitle = M4UiText::truncated(renderer, UI_12_FONT_ID, title.c_str(), titleW);
-    M4UiText::draw(renderer, UI_12_FONT_ID, 40, y + labelTopDy, shownTitle.c_str(), true,
-                   EpdFontFamily::BOLD);
+    const std::string shownTitle = M4UiText::truncated(renderer, NOTOSANS_18_FONT_ID, title.c_str(), 220);
+    M4UiText::draw(renderer, NOTOSANS_18_FONT_ID, 26, y + 16, shownTitle.c_str(), true);
     if (!value.empty()) {
       const std::string shownValue =
-          M4UiText::truncated(renderer, UI_10_FONT_ID, value.c_str(), 240);
-      const int valueW = M4UiText::textWidth(renderer, UI_10_FONT_ID, shownValue.c_str());
-      M4UiText::draw(renderer, UI_10_FONT_ID, valueEdge - valueW, y + valueTopDy, shownValue.c_str(),
-                     true);
+          M4UiText::truncated(renderer, NOTOSANS_14_FONT_ID, value.c_str(), 174);
+      const int valueW = M4UiText::textWidth(renderer, NOTOSANS_14_FONT_ID, shownValue.c_str());
+      M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 444 - valueW, y + 20, shownValue.c_str(), true);
     }
     if (chevron) {
-      renderer.drawLine(440, y + 21, 445, y + 26, 2, true);
-      renderer.drawLine(445, y + 26, 440, y + 31, 2, true);
+      renderer.drawLine(447, y + 24, 453, y + 30, 3, true);
+      renderer.drawLine(453, y + 30, 447, y + 36, 3, true);
     }
-    // Divider under the row iff the next row shares its group (SVG rhythm
-    // inside cards; same rule past the SVG screen). Row bottom - 1.
-    if (i + 1 < count && readerRowGroup(settings[i]) == readerRowGroup(settings[i + 1])) {
-      renderer.drawLine(40, y + kReaderRowH - 1, 446, y + kReaderRowH - 1, true);
-    }
+    renderer.drawLine(26, y + 57, 464, y + 57, 2, true);
   }
 
-  // Weak 1px scroll thumb, no track (paint-only; paging math above untouched).
-  // v5.2 B: fixed ~30px indicator like the Settings pages; the proportional
-  // bar painted a several-hundred-px line. Y mapping below is unchanged.
   if (count > pageItems) {
     const int trackY = kReaderWinTop;
     const int trackH = pageItems * kReaderRowH;

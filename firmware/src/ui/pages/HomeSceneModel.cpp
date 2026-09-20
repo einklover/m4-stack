@@ -379,6 +379,11 @@ bool HomeSceneModel::actionTarget(const HomeSceneSnapshot& snapshot,
   if (action == kActionOpenCurrentBook) return snapshot.currentExists;
   if (action == kActionOpenHistory) return true;
   if (action == kActionOpenApps) return true;
+  if (action == kActionOpenRecentBook && item && item->valid &&
+      item->sourceBinding == kBindingRecent && item->index < snapshot.recentCount) {
+    out->itemIndex = item->index;
+    return true;
+  }
   if (action == kActionOpenApp && item && item->valid &&
       item->sourceBinding == kBindingApps && item->index < snapshot.appCount) {
     out->itemIndex = item->index;

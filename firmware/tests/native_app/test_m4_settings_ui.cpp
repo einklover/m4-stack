@@ -85,6 +85,15 @@ std::string readFile(const char* path) {
   return ss.str();
 }
 
+std::string compactJson(const std::string& s) {
+  std::string o;
+  o.reserve(s.size());
+  for (char c : s) {
+    if (c != ' ' && c != '\n' && c != '\r' && c != '\t') o.push_back(c);
+  }
+  return o;
+}
+
 std::string loadFirst(const char* const* candidates, int n) {
   for (int i = 0; i < n; ++i) {
     std::string c = readFile(candidates[i]);
@@ -408,41 +417,15 @@ void testAdvancedWindowRelativeDirty() {
   m4SettingsUiEnterRoot(st);
   m4SettingsUiOpenChildList(st, "advanced");
   const int n = m4SettingsUiVisibleCount(st);
-  assert(n > 10);
+  assert(n == 5);
   paint.firstPaint = false;
-
-  // v5.1 9-row window: the window starts stepping at slot 9 (was 8).
-  while (st.selectedSlot < 8) m4SettingsUiMove(st, 1);
-  assert(st.selectedSlot == 8);
+  m4SettingsUiMove(st, 1);
+  assert(st.selectedSlot == 1);
   assert(st.windowStart == 0);
-
-  int old = st.selectedSlot;
-  int oldWin = st.windowStart;
-  m4SettingsUiMove(st, 1);
-  assert(st.selectedSlot == 9);
-  assert(st.windowStart == 1);
-  m4SettingsPaintNoteMove(st, paint, old, st.selectedSlot, 80, 4, oldWin);
-  auto req78 = m4SettingsPaintTake(paint, 68, 480, 800);
-  assertRefreshOnScreen(req78, 480, 800);
-  if (req78.mode == M4SettingsRefreshMode::Partial) {
-    assert(req78.rect.y == 68);
-    assert(req78.rect.y + req78.rect.h >= 736 &&
-           "windowStart change must Full or refresh the visible 9-row band");
-  }
-
-  while (st.selectedSlot < 10) m4SettingsUiMove(st, 1);
-  assert(st.selectedSlot == 10);
-  old = st.selectedSlot;
-  oldWin = st.windowStart;
-  m4SettingsUiMove(st, 1);
-  assert(st.selectedSlot == 11);
-  assert(st.windowStart == oldWin + 1);
-  m4SettingsPaintNoteMove(st, paint, old, st.selectedSlot, 80, 4, oldWin);
-  auto req910 = m4SettingsPaintTake(paint, 68, 480, 800);
-  assertRefreshOnScreen(req910, 480, 800);
-  assert(req910.mode == M4SettingsRefreshMode::Full ||
-         (req910.rect.h > 0 && req910.rect.y + req910.rect.h <= 800));
-  printf("Advanced 8→9 / 10→11 window-relative dirty PASS\n");
+  m4SettingsPaintNoteMove(st, paint, 0, st.selectedSlot, 80, 4, 0);
+  auto req = m4SettingsPaintTake(paint, 68, 480, 800);
+  assertRefreshOnScreen(req, 480, 800);
+  printf("Advanced group-index dirty PASS\n");
 #endif
 }
 
@@ -551,18 +534,20 @@ void testChoiceCheckmarkAndRestore() {
 }
 
 void testChildListChoiceCommitRestoresIdentitySlotWindow() {
-  // Advanced → uiFontSize (overflow ChildList) → Choice → commit must restore
-  // selectedKey/selectedSlot/windowStart together, not leave the Choice option index.
+  // 更多/高级 → 界面与字体 → 界面文字 → Choice → commit 必须一起还原
+  // selectedKey/selectedSlot/windowStart，不能停在 Choice 的选项下标。
   M4SettingsUiState st{};
   m4SettingsUiEnterRoot(st);
   m4SettingsUiSelectKey(st, "advanced");
   m4SettingsUiOpenChildList(st, "advanced");
+  m4SettingsUiOpenChildList(st, "advancedChrome");
   assert(st.page == M4SettingsPageKind::ChildList);
+  assert(streq(st.parentKey, "advancedChrome"));
   m4SettingsUiSelectKey(st, "uiFontSize");
   const int listSlot = st.selectedSlot;
   const int listWindow = st.windowStart;
-  assert(listSlot == 9);
-  assert(listWindow == 2);
+  assert(listSlot == 3);
+  assert(listWindow == 0);
   assert(streq(st.selectedKey, "uiFontSize"));
   const M4SettingsRow* before = m4SettingsUiVisibleRow(st, listSlot);
   assert(before && streq(before->key, "uiFontSize"));
@@ -668,12 +653,12 @@ void testAdvancedV51PitchHelpers() {
   m4SettingsUiOpenChildList(st, "advanced");
   assert(m4SettingsUiIsAdvancedPage(st));
   assert(m4SettingsUiContentOriginY(st) == kM4SettingsAdvancedOriginY);
-  assert(kM4SettingsAdvancedOriginY == 126);
-  assert(m4SettingsUiListItemH(st) == 52);
+  assert(kM4SettingsAdvancedOriginY == 130);
+  assert(m4SettingsUiListItemH(st) == 58);
   assert(m4SettingsUiListItemGap(st) == 0);
-  assert(m4SettingsWholeRowHit(240, 126, 0, 126, 52, 0, 480) == 0);
-  assert(m4SettingsWholeRowHit(240, 126 + 4 * 52 + 51, 0, 126, 52, 0, 480) == 4);
-  assert(m4SettingsWholeRowHit(240, 126 + 8 * 52, 0, 126, 52, 0, 480) == -1);
+  assert(m4SettingsWholeRowHit(240, 130, 0, 130, 58, 0, 480) == 0);
+  assert(m4SettingsWholeRowHit(240, 130 + 4 * 58 + 57, 0, 130, 58, 0, 480) == 4);
+  assert(m4SettingsWholeRowHit(240, 130 + 8 * 58, 0, 130, 58, 0, 480) == -1);
   // Grouped children and every other L2 consumer keep the legacy pitch.
   M4SettingsUiState ch{};
   m4SettingsUiEnterRoot(ch);
@@ -698,18 +683,25 @@ void testAdvancedV51TrueTitles() {
                                            "按钮提示",     "关机前全刷",
                                            "图片质量",     "图标风格",
                                            "图标选中风格"};
-  assert(m4SettingsChildCount("advanced") == 23);
-  for (int k = 0; k < 9; ++k) {
-    bool found = false;
-    for (int i = 0; i < 23; ++i) {
-      const M4SettingsRow* r = m4SettingsChildAt("advanced", i);
-      if (r && std::strcmp(r->key, kKeys[k]) == 0) {
-        assert(std::strcmp(r->titleZh, kWant[k]) == 0);
-        found = true;
+  assert(m4SettingsChildCount("advanced") == 5);
+  auto findTitle = [](const char* key) -> const char* {
+    static const char* groups[] = {"advancedDisplay", "advancedChrome", "advancedAnim",
+                                   "advancedConnect", "advancedSystem"};
+    for (const char* g : groups) {
+      const int n = m4SettingsChildCount(g);
+      for (int i = 0; i < n; ++i) {
+        const M4SettingsRow* r = m4SettingsChildAt(g, i);
+        if (r && r->key && std::strcmp(r->key, key) == 0) return r->titleZh;
       }
     }
-    assert(found);
+    return nullptr;
+  };
+  for (int k = 0; k < 9; ++k) {
+    const char* title = findTitle(kKeys[k]);
+    assert(title && std::strcmp(title, kWant[k]) == 0);
   }
+  const char* uiFont = findTitle("uiFontFamily");
+  assert(uiFont && std::strcmp(uiFont, "系统字体") == 0);
   printf("Advanced v5.1 true titles PASS\n");
 }
 
@@ -735,7 +727,8 @@ void testChildListsAndValues() {
   assert(m4SettingsChildCount("keys") >= 1);
   assert(streq(m4SettingsChildAt("keys", 0)->key, "remapButtons"));
   assert(m4SettingsChildCount("maintenance") >= 2);
-  assert(m4SettingsChildCount("advanced") > 8);
+  assert(m4SettingsChildCount("advanced") == 5);
+  assert(m4SettingsChildCount("advancedChrome") >= 1);
   char wifi[32]{};
   m4SettingsFormatWifiValue("", wifi, 32);
   assert(streq(wifi, "未连接"));
@@ -843,45 +836,41 @@ void testDangerPagesSource() {
 }
 
 void testThemeEightPxNoHubFour() {
+  auto hasRect = [](const std::string& src, const char* compactRect) {
+    return compactJson(src).find(compactRect) != std::string::npos;
+  };
   std::string l2 = loadThemeL2();
   assert(!l2.empty());
-  assert(l2.find("[4, 4, 428, 44]") != std::string::npos || l2.find("[4,4,428,44]") != std::string::npos);
-  assert(l2.find("[0, 12, 4, 56]") == std::string::npos && l2.find("[0,12,4,56]") == std::string::npos);
-  // Advanced v5.1 9-row window (authorized contract change from 8).
-  assert(l2.find("\"limit\": 9") != std::string::npos || l2.find("\"limit\":9") != std::string::npos);
+  assert(hasRect(l2, "[2,4,460,50]"));
+  assert(!hasRect(l2, "[0,12,4,56]"));
+  assert(compactJson(l2).find("\"limit\":9") != std::string::npos);
   assert(l2.find("$item.navigates") != std::string::npos && "chevron must gate on navigates");
-  // Root grouped package: 4 group repeats sum to the 8 flat catalog rows,
-  // each row keeps the 1px selected outline (round-2 item 3).
   std::string root = loadThemeRoot();
   assert(!root.empty());
   assert(root.find("\"$page.rows0\"") != std::string::npos);
   assert(root.find("\"$page.rows3\"") != std::string::npos);
-  assert(root.find("[2, 4, 428, 50]") != std::string::npos || root.find("[2,4,428,50]") != std::string::npos);
-  // Maintenance child page keeps the same header/row language in one static group.
+  assert(hasRect(root, "[2,4,460,50]"));
   std::string maint = loadThemeMaint();
   assert(!maint.empty());
-  assert(maint.find("[2, 5, 428, 62]") != std::string::npos || maint.find("[2,5,428,62]") != std::string::npos);
-  assert(maint.find("\"limit\": 4") != std::string::npos || maint.find("\"limit\":4") != std::string::npos);
-  // Small grouped child pages keep the same header/row language.
+  assert(hasRect(maint, "[2,4,460,50]"));
+  assert(compactJson(maint).find("\"limit\":4") != std::string::npos);
   std::string front = loadThemeChild("frontlight");
   assert(!front.empty());
-  assert(front.find("[2, 5, 428, 62]") != std::string::npos);
-  assert(front.find("\"limit\": 2") != std::string::npos || front.find("\"limit\":2") != std::string::npos);
+  assert(hasRect(front, "[2,4,460,50]"));
+  assert(compactJson(front).find("\"limit\":2") != std::string::npos);
   std::string keys = loadThemeChild("keys");
   assert(!keys.empty());
-  assert(keys.find("[2, 5, 428, 62]") != std::string::npos);
-  assert(keys.find("\"limit\": 6") != std::string::npos || keys.find("\"limit\":6") != std::string::npos);
-  // Choice pages use radio circles (no bar, no chevron); the check hook is
-  // geometric because U+2713 is outside the device UI charset (model keeps ✓).
+  assert(hasRect(keys, "[2,4,460,50]"));
+  assert(compactJson(keys).find("\"limit\":6") != std::string::npos);
   std::string choice = loadThemeChild("choice");
   assert(!choice.empty());
-  assert(choice.find("[30, 19, 34, 34]") != std::string::npos);
-  assert(choice.find("[0, 11, 8, 50]") == std::string::npos && choice.find("[0,11,8,50]") == std::string::npos);
-  assert(choice.find("[2, 5, 428, 62]") != std::string::npos);
-  assert(choice.find("\"x\": 392") != std::string::npos || choice.find("\"x\":392") != std::string::npos);
-  assert(choice.find("\"x2\": 410") != std::string::npos || choice.find("\"x2\":410") != std::string::npos);
+  assert(hasRect(choice, "[18,12,34,34]"));
+  assert(!hasRect(choice, "[0,11,8,50]"));
+  assert(hasRect(choice, "[2,4,460,50]"));
+  assert(compactJson(choice).find("\"x\":400") != std::string::npos);
+  assert(compactJson(choice).find("\"x2\":418") != std::string::npos);
   assert(choice.find("$item.value") == std::string::npos);
-  assert(choice.find("\"limit\": 8") != std::string::npos || choice.find("\"limit\":8") != std::string::npos);
+  assert(compactJson(choice).find("\"limit\":8") != std::string::npos);
   std::string hub = loadThemeHub();
   if (!hub.empty()) {
     assert(hub.find("\"limit\": 4") == std::string::npos && hub.find("\"limit\":4") == std::string::npos &&
@@ -903,21 +892,32 @@ void testAdvancedV51WindowCapacity9() {
   M4SettingsUiState st{};
   m4SettingsUiEnterRoot(st);
   m4SettingsUiOpenChildList(st, "advanced");
-  assert(m4SettingsChildCount("advanced") == 23);
-  m4SettingsUiMove(st, 22);
-  assert(st.selectedSlot == 22);
-  assert(st.windowStart == 14);  // 23 - 9
-  m4SettingsUiMove(st, -22);
-  assert(st.selectedSlot == 0);
+  assert(m4SettingsChildCount("advanced") == 5);
+  m4SettingsUiMove(st, 4);
+  assert(st.selectedSlot == 4);
   assert(st.windowStart == 0);
+  m4SettingsUiOpenChildList(st, "advancedChrome");
+  assert(streq(st.listStack, "advanced"));
+  assert(m4SettingsChildCount("advancedChrome") == 5);
+  bool uiFont = false;
+  for (int i = 0; i < 5; ++i) {
+    const M4SettingsRow* r = m4SettingsChildAt("advancedChrome", i);
+    if (r && std::strcmp(r->key, "uiFontFamily") == 0) uiFont = true;
+  }
+  assert(uiFont);
+  m4SettingsUiBackFromChildList(st);
+  assert(streq(st.parentKey, "advanced"));
+  assert(streq(st.selectedKey, "advancedChrome"));
   // 9th-row hitbox follows the group Y-table (slot 8 paints at rowY(0,8));
   // section gaps hit nothing.
   assert(m4SettingsAdvancedRowHit(240, m4SettingsAdvancedRowY(0, 8) + 10, 0) == 8);
-  assert(m4SettingsAdvancedRowHit(240, m4SettingsAdvancedRowY(0, 5) - 10, 0) == -1);
+  // RowY is linear 58px bands (section gaps are paint-only). y just above
+  // slot 5 still belongs to slot 4.
+  assert(m4SettingsAdvancedRowHit(240, m4SettingsAdvancedRowY(0, 5) - 10, 0) == 4);
   // The shared helper keeps its explicit 9-slot capability for other users.
-  assert(m4SettingsWholeRowHit(240, 126 + 8 * 52 + 10, 0, 126, 52, 0, 480, 9) == 8);
+  assert(m4SettingsWholeRowHit(240, 130 + 8 * 58 + 10, 0, 130, 58, 0, 480, 9) == 8);
   // Legacy 8-cap consumers keep their geometry.
-  assert(m4SettingsWholeRowHit(240, 126 + 8 * 52 + 10, 0, 126, 52, 0, 480) == -1);
+  assert(m4SettingsWholeRowHit(240, 130 + 8 * 58 + 10, 0, 130, 58, 0, 480) == -1);
   printf("Advanced v5.1 window capacity 9 PASS\n");
 }
 
@@ -958,7 +958,7 @@ void testAdvancedV51GroupRowGeometry() {
   // title (baseline = gapTop + 32) at every within-window group boundary.
   // Order/count/selection/window math never moves; only paint Y does, and
   // hit uses the very same table.
-  assert(kM4SettingsAdvancedSectionGap == 42);
+  assert(kM4SettingsAdvancedSectionGap == 24);
   assert(m4SettingsAdvancedGroupOf(0) == 0);
   assert(m4SettingsAdvancedGroupOf(4) == 0);
   assert(m4SettingsAdvancedGroupOf(5) == 1);
@@ -967,35 +967,29 @@ void testAdvancedV51GroupRowGeometry() {
   assert(m4SettingsAdvancedGroupOf(14) == 3);
   assert(m4SettingsAdvancedGroupOf(20) == 4);
   assert(m4SettingsAdvancedGroupOf(22) == 4);
-  // First screen: G0 contiguous from 126, G1 shifted to card 428..636.
-  assert(m4SettingsAdvancedRowY(0, 0) == 126);
-  assert(m4SettingsAdvancedRowY(0, 4) == 126 + 4 * 52);
-  assert(m4SettingsAdvancedRowY(0, 5) == 428);
-  assert(m4SettingsAdvancedRowY(0, 8) == 428 + 3 * 52);
-  assert(m4SettingsAdvancedRowY(0, 8) + 52 == 636);
-  assert(m4SettingsAdvancedRowY(0, 5) - 42 + 32 == 418);  // G1 title baseline
+  assert(m4SettingsAdvancedRowY(0, 0) == 130);
+  assert(m4SettingsAdvancedRowY(0, 4) == 130 + 4 * 58);
+  assert(m4SettingsAdvancedRowY(0, 5) == 130 + 5 * 58);
+  assert(m4SettingsAdvancedRowY(0, 8) == 130 + 8 * 58);
+  assert(m4SettingsAdvancedRowY(0, 8) + 58 <= 800);
   assert(!m4SettingsAdvancedSlotStartsGroup(0, 0));
   assert(!m4SettingsAdvancedSlotStartsGroup(0, 4));
   assert(m4SettingsAdvancedSlotStartsGroup(0, 5));
   assert(!m4SettingsAdvancedSlotStartsGroup(0, 8));
-  // Scrolled window ws=6: G1 tail, gap, G2, gap, G3 head; bottom fits 800.
-  assert(m4SettingsAdvancedRowY(6, 0) == 126);
-  assert(m4SettingsAdvancedRowY(6, 2) == 126 + 2 * 52);
+  assert(m4SettingsAdvancedRowY(6, 0) == 130);
+  assert(m4SettingsAdvancedRowY(6, 2) == 130 + 2 * 58);
   assert(m4SettingsAdvancedSlotStartsGroup(6, 3));
-  assert(m4SettingsAdvancedRowY(6, 3) == 126 + 3 * 52 + 42);
+  assert(m4SettingsAdvancedRowY(6, 3) == 130 + 3 * 58);
   assert(!m4SettingsAdvancedSlotStartsGroup(6, 7));
   assert(m4SettingsAdvancedSlotStartsGroup(6, 8));
-  assert(m4SettingsAdvancedRowY(6, 8) == 126 + 8 * 52 + 2 * 42);
-  assert(m4SettingsAdvancedRowY(6, 8) + 52 <= 800);
-  // Tail window ws=14 stays inside the viewport too.
-  assert(m4SettingsAdvancedRowY(14, 8) + 52 <= 800);
-  // Hit uses the same table: row interiors hit, section gaps miss.
-  assert(m4SettingsAdvancedRowHit(240, 126 + 10, 0) == 0);
-  assert(m4SettingsAdvancedRowHit(240, 428 + 10, 0) == 5);
-  assert(m4SettingsAdvancedRowHit(0, 428 + 10, 0) == 5);
-  assert(m4SettingsAdvancedRowHit(479, 428 + 10, 0) == 5);
-  assert(m4SettingsAdvancedRowHit(240, 386 + 10, 0) == -1);  // G0/G1 gap
-  assert(m4SettingsAdvancedRowHit(240, 126 + 3 * 52 + 42 + 10, 6) == 3);
+  assert(m4SettingsAdvancedRowY(6, 8) == 130 + 8 * 58);
+  assert(m4SettingsAdvancedRowY(6, 8) + 58 <= 800);
+  assert(m4SettingsAdvancedRowY(14, 8) + 58 <= 800);
+  assert(m4SettingsAdvancedRowHit(240, 130 + 10, 0) == 0);
+  assert(m4SettingsAdvancedRowHit(240, 130 + 5 * 58 + 10, 0) == 5);
+  assert(m4SettingsAdvancedRowHit(0, 130 + 5 * 58 + 10, 0) == 5);
+  assert(m4SettingsAdvancedRowHit(479, 130 + 5 * 58 + 10, 0) == 5);
+  assert(m4SettingsAdvancedRowHit(240, 130 + 3 * 58 + 10, 6) == 3);
   assert(m4SettingsAdvancedRowHit(10, 10, 0) == -1);
   printf("Advanced v5.1 group row geometry PASS\n");
 }
@@ -1028,68 +1022,38 @@ void testSceneTextStyleForwarding() {
 }
 
 void testRootV51IconRecipes() {
-  // v5.2 C: wifi/book/tune/sliders follow the v5.1 SVG linear recipes
-  // (arcs-as-polylines, open book, diagonal wrench, three dots) at 2px;
-  // sun branches stay byte-identical (no regression); sleep/lock/keys moved
-  // to v5.3 (moon, arch shackle, plus) and are pinned there.
-  // The header needs Arduino downstream, so the contract pins recipe text.
   std::string src = loadGfxSceneRenderer();
   assert(!src.empty());
-  // wifi: radius arcs + dot, no filled bars.
-  assert(src.find("x + 9, y + 2, x + 14, y + 3") != std::string::npos);
-  assert(src.find("fillRect(x + 1, y + 3, 18, 3, true)") == std::string::npos);
-  // book: open-book spine/outline, no text lines.
-  assert(src.find("x + 9, y + 3, x + 9, y + 19") != std::string::npos);
-  assert(src.find("x + 8, y + 6, x + 12, y + 6") == std::string::npos);
-  // tune: diagonal wrench, no slider knobs.
-  assert(src.find("x + 18, y + 7, x + 14, y + 10") != std::string::npos);
-  assert(src.find("fillRect(x + 4, y + 4, 5, 5, true)") == std::string::npos);
-  // sliders: three dots (v5.3 optical: 3px), no vertical tracks.
-  assert(src.find("fillRect(x + 16, y + 8, 3, 3, true)") != std::string::npos);
-  assert(src.find("drawLine(x + 7, y + 1, x + 7, y + 18, 2, true)") == std::string::npos);
-  // sun untouched; lock body and keys outline pinned at their v5.3 shapes.
-  assert(src.find("drawRoundedRect(x + 3, y + 3, 14, 14, 2, 7, true)") != std::string::npos);
-  assert(src.find("drawRect(x + 2, y + 7, 16, 12, true)") != std::string::npos);
-  assert(src.find("drawRoundedRect(x + 1, y + 3, 18, 14, 2, 3, true)") != std::string::npos);
+  assert(src.find("SettingsRowWifiIcon") != std::string::npos);
+  assert(src.find("SettingsRowSunIcon") != std::string::npos);
+  assert(src.find("SettingsRowBookIcon") != std::string::npos);
+  assert(src.find("SettingsRowSleepIcon") != std::string::npos);
+  assert(src.find("SettingsRowLockIcon") != std::string::npos);
+  assert(src.find("SettingsRowKeysIcon") != std::string::npos);
+  assert(src.find("SettingsRowTuneIcon") != std::string::npos);
+  assert(src.find("SettingsRowSlidersIcon") != std::string::npos);
+  assert(src.find("gfx.drawIcon(bmp, x0, y0, kSettingsRowIconSize, kSettingsRowIconSize)") != std::string::npos);
   printf("root v5.1 icon recipes PASS\n");
 }
 
 void testRootV53SelectedAndIcons() {
-  // v5.3 A Root-only: sleep crescent (no Z), lock arch shackle, keys plus;
-  // Root selected = stipple field only (r0+fill), no second outline.
-  // Header needs Arduino downstream: source-scan the recipe text.
   std::string src = loadGfxSceneRenderer();
   assert(!src.empty());
-  // sleep: crescent + sparkle, no Z bars.
-  assert(src.find("x + 14, y + 1, x + 19, y + 1") != std::string::npos);
-  assert(src.find("drawLine(x + 2, y + 3, x + 17, y + 3, 2, true)") == std::string::npos);
-  // lock: taller arch shackle + body (~19px optical), no square U top.
-  assert(src.find("x + 8, y + 1, x + 12, y + 1") != std::string::npos);
-  assert(src.find("drawRect(x + 2, y + 7, 16, 12, true)") != std::string::npos);
-  assert(src.find("drawLine(x + 4, y + 3, x + 15, y + 3, 2, true)") == std::string::npos);
-  // keys: plus + two pills (sun keeps its own center dot).
-  assert(src.find("x + 6, y + 7, x + 6, y + 13") != std::string::npos);
-  assert(src.find("x + 3, y + 10, x + 9, y + 10") != std::string::npos);
-  // wifi/book/sun/tune/sliders branches untouched.
-  assert(src.find("x + 9, y + 2, x + 14, y + 3") != std::string::npos);
-  assert(src.find("x + 9, y + 3, x + 9, y + 19") != std::string::npos);
-  assert(src.find("drawRoundedRect(x + 3, y + 3, 14, 14, 2, 7, true)") != std::string::npos);
-  assert(src.find("x + 18, y + 7, x + 14, y + 10") != std::string::npos);
-  assert(src.find("fillRect(x + 16, y + 8, 3, 3, true)") != std::string::npos);
-  // selected: r0+fill paints the stipple field with no outline.
+  assert(src.find("SettingsRowSleepIcon") != std::string::npos);
+  assert(src.find("SettingsRowLockIcon") != std::string::npos);
+  assert(src.find("SettingsRowKeysIcon") != std::string::npos);
   assert(src.find("stipple field only") != std::string::npos);
   printf("root v5.3 selected + icons PASS\n");
 }
 
 void testAdvancedV53SelectedStippleOnly() {
-  // v5.3 B: Advanced selected = stipple field only; the second full outline
-  // is gone while the Y table, groups, values, and chevrons stay put.
+  // Nested Advanced no longer paints its own 9-row overlay/card; theme L2
+  // rows are the same as other child lists.
   std::string src = loadSettingsActivityCpp();
   assert(!src.empty());
-  assert(src.find("drawRoundedRect(kRowX + 4, ry + 4, 428, 44, 1, 9, true)") == std::string::npos);
-  assert(src.find("fillRectStipple(kRowX + 8, ry + 8, 420, 36)") != std::string::npos);
-  assert(src.find("m4SettingsAdvancedRowY(ui_.windowStart, i)") != std::string::npos);
-  printf("advanced v5.3 selected stipple-only PASS\n");
+  assert(src.find("fillRectStipple(kRowX + 2, ry + 4, 460, 50)") == std::string::npos);
+  assert(src.find("drawRoundedRect(kCardX, kCardY, kCardW, kCardH, 2, 11, true)") == std::string::npos);
+  printf("advanced nested index uses theme L2 PASS\n");
 }
 
 }  // namespace

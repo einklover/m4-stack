@@ -51,6 +51,15 @@ void testDisplayTaskRechecksChildUnderMutex(const std::string& source) {
   assert(body.find("subActivity") == std::string::npos);
 }
 
+void testDrawerPagesWithScrollBar(const std::string& source) {
+  assert(source.find("void AppListActivity::pageBy(const int pages)") != std::string::npos);
+  assert(source.find("drawDrawerScrollBar") != std::string::npos);
+  assert(source.find("M4ListTouchPolicy::applyPage") != std::string::npos);
+  assert(source.find("SwipeDir::Up: pageBy(1)") != std::string::npos);
+  assert(source.find("SwipeDir::Down: pageBy(-1)") != std::string::npos);
+  assert(source.find("showScrollBar") != std::string::npos);
+}
+
 void testPluginEnterIsSerialized(const std::string& source) {
   const std::string body = functionBody(source, "void AppListActivity::openSelected()", "void AppListActivity::openInstall()");
   const size_t take = body.find("xSemaphoreTake(renderingMutex_");
@@ -70,6 +79,7 @@ int main() {
   assert(!source.empty());
   testDisplayTaskRechecksChildUnderMutex(source);
   testPluginEnterIsSerialized(source);
+  testDrawerPagesWithScrollBar(source);
   std::cout << "app drawer handoff contracts: ALL PASS\n";
   return 0;
 }

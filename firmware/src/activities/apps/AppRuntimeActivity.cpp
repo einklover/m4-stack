@@ -244,6 +244,8 @@ void AppRuntimeActivity::handleEventOnOwner(const M4xRuntime::Event& e) {
         break;
       }
       if (host_.isCancelRequested()) break;
+      // Sample before draw(): plugins may clear frame_changed at end of draw.
+      const bool keyChanged = host_.frameChanged();
       if (!host_.callDraw(err)) {
         if (host_.isCancelRequested()) break;
         setFailed(err.empty() ? "draw_failed" : err);
@@ -261,6 +263,10 @@ void AppRuntimeActivity::handleEventOnOwner(const M4xRuntime::Event& e) {
         break;
       }
       if (subActivity || M4PluginReaderSession::handoffBlocksLuaDisplay()) break;
+      if (!keyChanged && !host_.frameChanged()) {
+        if (host_.wantsExit()) exitRequested_.store(true, std::memory_order_relaxed);
+        break;
+      }
       renderer.displayBuffer();
       if (host_.wantsExit()) exitRequested_.store(true, std::memory_order_relaxed);
       break;
@@ -293,6 +299,7 @@ void AppRuntimeActivity::handleEventOnOwner(const M4xRuntime::Event& e) {
         break;
       }
       if (host_.isCancelRequested()) break;
+      const bool touchChanged = host_.frameChanged();
       if (!host_.callDraw(err)) {
         if (host_.isCancelRequested()) break;
         setFailed(err.empty() ? "draw_failed" : err);
@@ -310,6 +317,10 @@ void AppRuntimeActivity::handleEventOnOwner(const M4xRuntime::Event& e) {
         break;
       }
       if (subActivity || M4PluginReaderSession::handoffBlocksLuaDisplay()) break;
+      if (!touchChanged && !host_.frameChanged()) {
+        if (host_.wantsExit()) exitRequested_.store(true, std::memory_order_relaxed);
+        break;
+      }
       renderer.displayBuffer();
       if (host_.wantsExit()) exitRequested_.store(true, std::memory_order_relaxed);
       break;

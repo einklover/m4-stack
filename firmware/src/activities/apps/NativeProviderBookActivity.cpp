@@ -220,7 +220,30 @@ void NativeProviderBookActivity::onEnter() {
   // Local/persisted catalog discovery is cheap and does not start network I/O.
   // A missing catalog is intentionally not an error on the detail page.
   if (!prepareCatalog()) error_.clear();
+  if (coverUrl_.empty()) {
+    M4NativeProviderBookDetail::Request shelfReq;
+    shelfReq.providerId = providerId_;
+    shelfReq.appId = appId_;
+    shelfReq.bookId = bookId_;
+    shelfReq.title = title_;
+    shelfReq.author = author_;
+    shelfReq.coverOnly = true;
+    const auto shelf = M4NativeProviderBookDetail::fetch(shelfReq);
+    if (!shelf.detail.coverUrl.empty()) coverUrl_ = shelf.detail.coverUrl;
+    if (title_.empty() && !shelf.detail.title.empty()) title_ = shelf.detail.title;
+    if (author_.empty() && !shelf.detail.author.empty()) author_ = shelf.detail.author;
+  }
   if (autoStartReading_) {
+    // Bind the cover template even when skipping detail, so Home has a path
+    // to retry from the shelf URL without waiting on BookDetail HTTPS.
+    if (providerCoverBmpPath_.empty()) {
+      providerCoverBmpPath_ = M4ProviderCoverCache::bmpTemplatePath(providerId_, bookId_);
+      M4NovelProvider::BookDetail seed;
+      seed.title = title_;
+      seed.author = author_;
+      seed.coverUrl = coverUrl_;
+      updateRecentProviderMetadata(providerId_, bookId_, seed, providerCoverBmpPath_);
+    }
     // History / TOC-handoff: skip the detail page so chapter switch has an
     // owner without bouncing the user through the book card.
     if (titles_) {
@@ -296,7 +319,10 @@ bool NativeProviderBookActivity::startCatalogBootstrap(PendingCatalogAction acti
   renderCatalogLoading(true);
   // Defer the task start without blocking the activity loop. This lets Back
   // cancel the handoff while the first FAST frame settles on the panel.
-  catalogStartAtMs_ = millis() + 600u;
+  // FAST_REFRESH of the loading frame can hold the shared SPI bus for well over
+  // 600ms. Fanqie catalog HTTPS often finishes in ~2s; starting that soon races
+  // the panel and shows catalog_commit_failed after a successful parse.
+  catalogStartAtMs_ = millis() + 1600u;
   catalogStartPending_ = true;
   return true;
 }
@@ -925,6 +951,26 @@ void NativeProviderBookActivity::loop() {
   // before detail finished) so RecentBooks still gets the cover for Home
   // retry without reopening detail (bug A).
   if (detailLoading_) pollDetailLoading();
+
+  // Skip-to-read (all native readers): after the chapter is on screen, pull
+  // the cover from the shelf URL. No detail JSON, so this does not race the
+  // catalog/chapter TLS handshake.
+  if (state_ == State::Reader && !detailAttempted_ && !detailLoading_ && !coverAcquireAttempted_ &&
+      !catalogStartPending_ && !chapterStartPending_) {
+    const auto metrics = UITheme::getInstance().getMetrics();
+    M4NativeProviderBookDetail::Request req;
+    req.providerId = providerId_;
+    req.appId = appId_;
+    req.bookId = bookId_;
+    req.title = title_;
+    req.author = author_;
+    req.coverUrl = coverUrl_;
+    req.coverOnly = true;
+    if (M4NativeProviderBookDetailAsync::start(req, metrics.homeCoverWidth, metrics.homeCoverThumbHeight)) {
+      coverAcquireAttempted_ = true;
+      detailLoading_ = true;
+    }
+  }
 
   if (state_ == State::Detail) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {

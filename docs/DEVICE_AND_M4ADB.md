@@ -8,6 +8,16 @@ Run one repository `m4adb` daemon for a device. Normal commands reuse that owner
 
 The bridge requires the device's Developer Options USB serial debugging/control setting. Without that runtime authorization, the custom debug bridge is not available.
 
+## First-time install (like `adb install`)
+
+On the device, enable **设置 → 系统 → 开发者选项 → USB 串口控制**. Then from the repository root, one command installs through the single USB owner (default transport is USB, not Wi-Fi):
+
+```bash
+python3 firmware/scripts/m4adb.py install plugins/m4-lua-2048-plugin --launch
+```
+
+`--launch` starts the `id` from `manifest.json` after a successful install. Do not start a second `m4adb`, do not pass `--no-daemon` against a live hardware owner, and do not `pkill -f m4adb.py`. If ping times out, the daemon stays up; enable USB serial debugging and retry the same command.
+
 ## Basic commands
 
 The audited command surface is `firmware/scripts/m4adb.py --help`. From the repository root:
@@ -19,6 +29,7 @@ python3 firmware/scripts/m4adb.py ping
 python3 firmware/scripts/m4adb.py status
 python3 firmware/scripts/m4adb.py ui
 python3 firmware/scripts/m4adb.py logs
+python3 firmware/scripts/m4adb.py install path/to/plugin_or.m4x --launch
 ```
 
 Use `--port PORT` when automatic detection is ambiguous. The daemon lifecycle commands are also available:

@@ -1,10 +1,16 @@
 {
   "format": 1,
   "id": "murphy-settings-hub-retired",
-  "screen": [480, 800],
+  "screen": [
+    480,
+    800
+  ],
   "bindings": {},
   "actions": {},
   "nodes": [
-    {"type": "clear", "color": "white"}
+    {
+      "type": "clear",
+      "color": "white"
+    }
   ]
 }

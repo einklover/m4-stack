@@ -739,12 +739,14 @@ static EpdFont* loadFontFile(const String& path) {
   return createSdFont(path, hdr);
 }
 
-EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, int fontSize) {
-  if (loadedFonts[familyName][fontSize]) {
-    return loadedFonts[familyName][fontSize];
-  }
-
+EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, int fontSize,
+                                                 TtfFaceRole role) {
   const bool isRuntimeFont = isRuntimeFontName(String(familyName.c_str()));
+  const LoadedFaceKey cacheKey{fontSize, static_cast<uint8_t>(
+      isRuntimeFont && role == TtfFaceRole::Chrome ? 1 : 0)};
+  if (loadedFonts[familyName][cacheKey]) {
+    return loadedFonts[familyName][cacheKey];
+  }
 
   if (isRuntimeFont) {
     gRuntimeFontDiagnostic = {};
@@ -759,13 +761,25 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
              fontPath.c_str());
     appendFontDiagnostic(diag);
 
-    TtfEpdFont* regular = new (std::nothrow) TtfEpdFont(fontPath, (uint16_t)fontSize);
+    // Budget follows the face role, never creation order (B6): whichever face
+    // is created first must not steal the reader budget from the other. The
+    // reader face keeps 512 slots / 768KB for CJK-heavy pages; chrome faces
+    // (small/UI sizes) use 96 slots / 96KB.
+    const bool isChrome = (role == TtfFaceRole::Chrome);
+    const uint16_t slots =
+        isChrome ? TtfEpdFont::kDefaultEmbeddedSlots : TtfEpdFont::kDefaultRuntimeSlots;
+    const size_t budget =
+        isChrome ? TtfEpdFont::kDefaultEmbeddedBudget : TtfEpdFont::kDefaultRuntimeBudget;
+    Serial.printf("[FontMgr] Runtime face role=%s slots=%u budget=%u\n", isChrome ? "chrome" : "reader",
+                  static_cast<unsigned>(slots), static_cast<unsigned>(budget));
+    TtfEpdFont* regular = new (std::nothrow) TtfEpdFont(fontPath, (uint16_t)fontSize, slots, budget);
     if (regular && regular->valid()) {
       gRuntimeFontDiagnostic.ok = true;
       strncpy(gRuntimeFontDiagnostic.stage, "ready", sizeof(gRuntimeFontDiagnostic.stage) - 1);
       EpdFontFamily* fontFamily = new EpdFontFamily(regular, nullptr, nullptr, nullptr);
-      loadedFonts[familyName][fontSize] = fontFamily;
-      snprintf(diag, sizeof(diag), "load_ok family=%s size=%d", familyName.c_str(), fontSize);
+      loadedFonts[familyName][cacheKey] = fontFamily;
+      snprintf(diag, sizeof(diag), "load_ok family=%s size=%d role=%s", familyName.c_str(), fontSize,
+               isChrome ? "chrome" : "reader");
       appendFontDiagnostic(diag);
       return fontFamily;
     }
@@ -802,7 +816,7 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
 
   if (regular) {
     EpdFontFamily* fontFamily = new EpdFontFamily(regular, nullptr, nullptr, nullptr);
-    loadedFonts[familyName][fontSize] = fontFamily;
+    loadedFonts[familyName][cacheKey] = fontFamily;
     return fontFamily;
   }
 

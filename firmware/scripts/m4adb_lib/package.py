@@ -109,6 +109,30 @@ def build_m4x(src: Path, out: Path) -> Path:
     return out
 
 
+def read_package_manifest(path: Path) -> dict:
+    """Read manifest.json from a source directory or a .m4x zip."""
+    path = path.resolve()
+    if path.is_dir():
+        return read_manifest(path)
+    if path.is_file() and path.suffix.lower() == ".m4x":
+        with zipfile.ZipFile(path) as zf:
+            try:
+                raw = zf.read("manifest.json")
+            except KeyError as e:
+                raise FileNotFoundError(f"manifest.json missing in {path}") from e
+        return json.loads(raw.decode("utf-8"))
+    raise FileNotFoundError(f"not a .m4x or source dir: {path}")
+
+
+def package_app_id(path: Path) -> str:
+    """App id from manifest.json (directory or .m4x)."""
+    mf = read_package_manifest(path)
+    app_id = mf.get("id")
+    if not app_id or not str(app_id).strip():
+        raise ValueError(f"manifest.json missing id in {path}")
+    return str(app_id).strip()
+
+
 def resolve_package(path: Path, cache_dir: Path) -> tuple[Path, str, Optional[dict]]:
     """
     Return (m4x_path, content_hash, manifest_or_None).
@@ -127,7 +151,12 @@ def resolve_package(path: Path, cache_dir: Path) -> tuple[Path, str, Optional[di
             side.write_text(ch + "\n", encoding="utf-8")
         return out, ch, mf
     if path.is_file() and path.suffix.lower() == ".m4x":
-        return path, content_hash_file(path), None
+        mf: Optional[dict] = None
+        try:
+            mf = read_package_manifest(path)
+        except (FileNotFoundError, json.JSONDecodeError, zipfile.BadZipFile):
+            mf = None
+        return path, content_hash_file(path), mf
     raise FileNotFoundError(f"not a .m4x or source dir: {path}")
 
 

@@ -71,8 +71,9 @@ void taskMain(void*) {
 
 bool start(const M4NativeProviderBookDetail::Request& request,
            int homeCoverWidth, int homeCoverThumbHeight) {
-  if (request.providerId.empty() || request.bookId.empty() || request.maxBytes == 0 ||
-      homeCoverWidth <= 0 || homeCoverThumbHeight <= 0) {
+  if (request.providerId.empty() || request.bookId.empty() ||
+      (!request.coverOnly && request.maxBytes == 0) || homeCoverWidth <= 0 ||
+      homeCoverThumbHeight <= 0) {
     return false;
   }
   bool expected = false;

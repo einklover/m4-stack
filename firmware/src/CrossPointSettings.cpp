@@ -156,6 +156,8 @@ bool CrossPointSettings::saveToFile() const {
   doc["customFontFamily"]          = customFontFamily;
   doc["readerPixelSize"]            = getReaderPixelSize();
   doc["uiFontSize"]                 = getUiFontSize();
+  doc["uiFontFamily"]               = getUiFontFamily();
+  doc["uiCustomFontFamily"]         = uiCustomFontFamily;
   // Keep the old key for one release so older firmware sees a sensible size;
   // all current runtime decisions use readerPixelSize.
   doc["customFontSize"]            = getReaderPixelSize();
@@ -275,6 +277,8 @@ void CrossPointSettings::resetToDefaults() {
   fontFamily = SYSTEM_FONT;
   readerPixelSize = 26;
   uiFontSize = 1;
+  uiFontFamily = SYSTEM_FONT;
+  uiCustomFontFamily[0] = '\0';
   customFontSize = 0;
   customFontFamily[0] = '\0';
   fontSize = LARGE;
@@ -842,6 +846,12 @@ bool CrossPointSettings::loadFromFile() {
             if (uiTier < 0 || uiTier > 2) uiTier = 1;
             uiFontSize = static_cast<uint8_t>(uiTier);
           }
+          {
+            int uiFam = doc["uiFontFamily"] | (int)SYSTEM_FONT;
+            if (uiFam < 0 || uiFam > 1) uiFam = SYSTEM_FONT;
+            uiFontFamily = static_cast<uint8_t>(uiFam);
+          }
+          getString("uiCustomFontFamily", uiCustomFontFamily, sizeof(uiCustomFontFamily));
           lineSpacing              = doc["lineSpacing"]              | (uint8_t)NORMAL;
           customLineSpacing        = doc["customLineSpacing"]        | (uint8_t)10;
           wordSpacing              = static_cast<int8_t>(doc["wordSpacing"] | 0);

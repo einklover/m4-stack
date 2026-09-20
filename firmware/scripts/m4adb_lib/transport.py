@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Optional
 
 
@@ -17,6 +18,10 @@ class Transport(ABC):
 
     @abstractmethod
     def close(self) -> None: ...
+
+    def alive(self) -> bool:
+        """OS handle still usable. Not a firmware handshake."""
+        return True
 
 
 def is_pipe_port(port: str) -> bool:
@@ -45,6 +50,28 @@ def is_pty_port(port: str) -> bool:
     return name.startswith("ttys") or parent == "pts"
 
 
+def is_hardware_port(port: str) -> bool:
+    """True for USB CDC / ACM nodes. PTY and QEMU pipes are not hardware."""
+    if not port or is_pipe_port(port) or is_pty_port(port):
+        return False
+    path = port.replace("\\", "/").lower()
+    return any(x in path for x in ("usbmodem", "ttyacm", "ttyusb", "usbserial"))
+
+
+def port_node_present(port: str) -> bool:
+    """Whether the host still sees the serial/pipe node. Not a ping."""
+    if not port:
+        return False
+    if is_pipe_port(port):
+        base = port
+        if base.endswith(".in"):
+            base = base[:-3]
+        elif base.endswith(".out"):
+            base = base[:-4]
+        return Path(base + ".in").exists() or Path(base + ".out").exists() or Path(base).exists()
+    return Path(port).exists()
+
+
 class SerialTransport(Transport):
     def __init__(self, port: str, baud: int = 115200) -> None:
         try:
@@ -66,7 +93,17 @@ class SerialTransport(Transport):
         # allows pyserial's default DTR/RTS assertion to reset ESP32-S3 first.
         self._ser.dtr = False
         self._ser.rts = False
+        try:
+            self._ser.exclusive = True
+        except Exception:
+            pass
         self._ser.open()
+        # macOS CDC may still assert DTR during open(); clear again after.
+        try:
+            self._ser.dtr = False
+            self._ser.rts = False
+        except Exception:
+            pass
         # tcdrain/flush on a PTY waits until the guest UART reads. External TTF
         # paints block poll() for several seconds, so flush() makes ./m4sim ui
         # tap/key look timed out. USB serial still drains.
@@ -118,6 +155,15 @@ class SerialTransport(Transport):
             self._ser.close()
         except Exception:
             pass
+
+    def alive(self) -> bool:
+        try:
+            if not getattr(self._ser, "is_open", False):
+                return False
+            _ = self._ser.in_waiting
+            return True
+        except Exception:
+            return False
 
 
 class PipeTransport(Transport):
@@ -234,6 +280,11 @@ class PipeTransport(Transport):
                     os.close(fd)
                 except Exception:
                     pass
+        self._fd_in = None
+        self._fd_out = None
+
+    def alive(self) -> bool:
+        return getattr(self, "_fd_in", None) is not None and getattr(self, "_fd_out", None) is not None
 
 
 class MockTransport(Transport):

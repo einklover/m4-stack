@@ -44,8 +44,14 @@ class FontManager {
   // Persist font diagnostics because serial output is not reliable on USB.
   static void appendFontDiagnostic(const char* line);
 
+  // Which UI role a runtime TTF face serves. The PSRAM budget follows the
+  // role — never creation order (B6):
+  // - Reader: the main reading face, 512 slots / 768KB.
+  // - Chrome: system UI small/body faces, 96 slots / 96KB.
+  enum class TtfFaceRole : uint8_t { Reader, Chrome };
+
   // Load a specific family and size (returns pointer to cached family or new one)
-  EpdFontFamily* getCustomFontFamily(const std::string& familyName, int fontSize);
+  EpdFontFamily* getCustomFontFamily(const std::string& familyName, int fontSize, TtfFaceRole role);
 
   // 清除已加载字体的内存缓存（切换字体时调用，迫使重新加载并写入 flash）
   void clearLoadedFonts();
@@ -94,6 +100,15 @@ class FontManager {
   std::vector<RuntimeFontInfo> runtimeFonts;
   bool scanned = false;
 
-  // Map: FamilyName -> Size -> EpdFontFamily*
-  std::map<std::string, std::map<int, EpdFontFamily*>> loadedFonts;
+  // Runtime TTF: (family, sizePx, role) so chrome/reader at the same px do not
+  // share a budget. epdfont ignores role (always 0).
+  struct LoadedFaceKey {
+    int sizePx = 0;
+    uint8_t role = 0;
+    bool operator<(const LoadedFaceKey& o) const {
+      if (sizePx != o.sizePx) return sizePx < o.sizePx;
+      return role < o.role;
+    }
+  };
+  std::map<std::string, std::map<LoadedFaceKey, EpdFontFamily*>> loadedFonts;
 };

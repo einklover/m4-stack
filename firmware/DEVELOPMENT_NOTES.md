@@ -27,7 +27,7 @@
 **[H-1] 设备"不断重启"（看起来像死循环重启）**
 - 症状：连续执行 `m4adb ping/status/install`（每次新开串口）后设备反复 `rst:0x15 (USB_UART_CHIP_RESET)` 重启；flash 刚结束立刻被另一进程抢串口也会复位。
 - 根因：ESP32-S3 USB Serial/JTAG（CDC）在主机侧 `open()/close()` 时经常触发 `USB_UART_CHIP_RESET`；host 串口生命周期在打断 boot，不是固件无故重启。
-- 解决/规避：全程唯一串口 owner；优先一条持久 `m4adb shell` 会话跑完 ping→status→install→launch；禁止 `for i in range(N): open→ping→close`；flash 结束后等设备重新枚举 + 5–15s 再连 m4adb。怀疑重启时先 `lsof /dev/cu.usbmodem*` 检查占用，停掉 host 进程后设备稳定即确诊为串口 thrash。（M4_USB_SERIAL_OPS.md、M4_AI_UPDATE_GUIDE.md §2/§7.2、M4_SERIAL_DEBUG_BRIDGE.md）
+- 解决/规避：全程唯一串口 owner（`/tmp/m4adb-<digest>.lock` flock）；CLI 只走 Unix socket。ping 超时**不得** `stop_daemon` 再 spawn。怀疑重启时先 `lsof /dev/cu.usbmodem*`；用 `m4adb daemon_stop` 停已知会话，禁止 `pkill -f m4adb.py`。固件在 `Serial.begin` 前写 RTC USB reset-disable 位（需刷机后生效）。（DEVICE_AND_M4ADB.md、M4_SERIAL_DEBUG_BRIDGE.md）
 
 **[H-2] 设备完全静默（连 esptool 都收不到数据，只能物理断电）**
 - 症状：反复 open→超时→close 之后设备无 boot 日志、无桥响应，esptool 报 `No serial data received`（USB 仍枚举）；用户物理断电重启才恢复。
@@ -41,12 +41,12 @@
 
 **[H-4] 桥无响应/握手超时**
 - 症状：`@M4DBG` 无响应、`等待响应超时`，或只能看到启动日志。
-- 根因：开发者选项"USB 串口控制"默认**关**；桥关闭时固件丢弃 CDC 输入，且刷机不会替你打开开关；也可能是仍在 boot 或 e-ink 阻塞。
-- 解决/规避：设备上 设置→系统→开发者选项→USB 串口控制=开；仍超时则拔插 USB、释放端口；桥开关跨重启持久，不信任的 USB 主机上不要长期开着。（M4_SERIAL_DEBUG_BRIDGE.md、M4_USB_SERIAL_OPS.md §2.6、§5）
+- 根因：开发者选项"USB 串口控制"默认**关**；未授权时固件对 framed `req`/`chk` 回复 `usb_debug_off`（不执行）；刷机不会替你打开开关；也可能是仍在 boot 或 e-ink 阻塞。
+- 解决/规避：设备上 设置→系统→开发者选项→USB 串口控制=开；host 收到 `usb_debug_off` 或 ping 超时**不要**再开 daemon。桥开关跨重启持久。（DEVICE_AND_M4ADB.md、M4_SERIAL_DEBUG_BRIDGE.md）
 
 **[H-5] m4adb daemon 双开抢端口**
-- 症状：命令连不上 socket 自动起新 daemon → 双 daemon 抢端口 → 设备复位；`--no-daemon` 与常驻 daemon 混用 = 双端口冲突。
-- 解决/规避：遇到异常先 `pkill -f m4adb.py; rm -f /tmp/m4adb-*.sock` 再重来；最稳模式是单连接脚本（`Client(SerialTransport(port,115200))`）跑完全流程；设备重启会导致 daemon 死、日志流丢失，抓日志时留意。（M4_DEVELOPMENT_NOTES.md §4）
+- 症状：旧实现把 ping 超时当成死 daemon，`stop_daemon` 后再 spawn → 双 owner 抢 CDC → `rst:0x15`。
+- 解决/规避：每端口 flock；socket 活着则 reuse；锁占用则 wait；只有都空才 spawn；`--no-daemon` 在已有 owner 时拒绝。异常时 `m4adb daemon_stop`（已知 socket），**禁止** `pkill -f m4adb.py`。mux 允许多个 CLI 共用一个 daemon（logs 不再挤掉 install）。
 
 **[H-6] 截图是 PBM，OCR 失败**
 - 症状：tesseract 读 /tmp 下文件有时失败。
@@ -77,7 +77,7 @@
 **[F-2] otatool 自动选槽失败：`No module named esptool`**
 - 症状：固件写入成功但 `otatool.py switch_ota_partition --slot 1` 失败；parttool 读分区表失败。
 - 根因：otatool 内部用 `sys.executable` 拉起框架自带 esptool.py；本机 `/opt/anaconda3/bin/python` 无 esptool 模块。只设 `IDF_PATH` 不够。
-- 解决/规避：用 `~/.platformio/penv/bin/python` 跑同一 otatool 命令即成功；选槽后必须 `read_otadata` 复核（`Firmware: 0x00000010` = slot 1）；指南里 `PYTHONPATH=tool-esptoolpy` 方案未在本机验证。另：因系统 Python 缺 rich_click 导致自动选槽失败时，不要重复写固件，只用 PlatformIO Python 重试槽位切换。（M4_UPDATE_BLOCKED_SD_WRITE_20260801.md §1.1、M4_AI_UPDATE_GUIDE.md §1.2/§7.1）
+- 解决/规避：`murphy_m4_app1_flash.py` / `flash_app1_once.sh` 必须用 `~/.platformio/penv/bin/python` 调 otatool（不要 shebang/anaconda/`python3`）。写入已 `Hash of data verified` 时不要重写 APP1，只重试切槽。选槽后可 `read_otadata` 复核（`Firmware: 0x00000010` = slot 1）。（M4_UPDATE_BLOCKED_SD_WRITE_20260801.md §1.1、M4_AI_UPDATE_GUIDE.md §1.2/§7.1）
 
 **[F-3] 全片写工厂镜像：高波特率下 USB 应答丢失**
 - 症状：921600 波特全写 16MiB 在接近完成时丢失 USB 响应；460800 重写在 99.9% 处又丢最后一次 USB ack。
@@ -484,7 +484,7 @@
 
 **[SEC-2] 调试桥开关只能本地开，且默认关**
 - 症状/根因：早期拆 `murphy_m4_debug` 双固件方案被否；桥字符串"二进制不存在"≠安全，安全属性是"运行时默认关"。
-- 解决/规避：单一 `murphy_m4` 固件含桥，由设备上 开发者选项→USB 串口控制（默认 off）控制；off 时有界丢弃 CDC RX、解析器保持 reset、使能时 flush（关闭期间收到的字节不得在使能后执行）；上传中关闭必须安全中止并清 `.part`、重置 SHA/chunk/parser/幂等状态、停止 keep-alive；无任何串口/RPC 能远程开授权；X3/X4 不编译桥。（task_prompts/grok_m4_runtime_developer_option_20260730.md、M4_SERIAL_DEBUG_BRIDGE.md）
+- 解决/规避：单一 `murphy_m4` 固件含桥，由设备上 开发者选项→USB 串口控制（默认 off）控制；off 时 framed `req`/`chk` 回复 `usb_debug_off` 且不执行、不 keep-awake；使能时 flush（关闭期间收到的字节不得在使能后执行）；上传中关闭必须安全中止；无任何串口/RPC 能远程开授权；X3/X4 不编译桥。
 
 **[SEC-3] 沙箱路径边界**
 - 症状/根因：Lua 提供全路径不可信；`fs.*`/`reader.openText` 需要路径沙箱。
@@ -504,7 +504,7 @@
 
 **[E-2] 诊断脚本被 kill 留半开连接**
 - 症状/根因：kill 后串口被占、设备可能卡异常状态。
-- 解决/规避：操作前 `lsof /dev/cu.usbmodem*` 检查，残留进程先 pkill。（M4_AI_UPDATE_GUIDE.md §7.2）
+- 解决/规避：操作前 `lsof /dev/cu.usbmodem*` 检查；停会话用 `m4adb daemon_stop`，不要 `pkill -f m4adb.py`。
 
 **[E-3] 安装解压期间串口刷屏 `E task_wdt: esp_task_wdt_reset(707): task not found`**
 - 症状/根因：`M4xInstaller.cpp` 在未注册 watchdog 的任务里调 `esp_task_wdt_reset()`。

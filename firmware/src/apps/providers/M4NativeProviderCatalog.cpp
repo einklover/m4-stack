@@ -306,9 +306,11 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
 
   bool commit() {
     if (!close() || written_ == 0 || tmpPath_.empty()) return false;
-    for (int attempt = 0; attempt < 3; ++attempt) {
+    // Let a concurrent FAST_REFRESH drop the shared SPI bus before FatFS rename.
+    delay(120);
+    for (int attempt = 0; attempt < 8; ++attempt) {
       if (M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true)) return true;
-      delay(40 + attempt * 60);
+      delay(80 + attempt * 80);
     }
     return false;
   }
@@ -517,6 +519,7 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
           },
           [] { return cancelled(); });
     }
+    M4NativeProviderHttp::releaseTlsSession();
     const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0 && !mem.empty();
     if (!parsed) {
       mem.clear();
@@ -575,6 +578,7 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
         },
         [] { return cancelled(); });
   }
+  M4NativeProviderHttp::releaseTlsSession();
   const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0;
   if (!parsed) {
     file.discard();
@@ -629,6 +633,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
         [&](size_t bytes) { publish(Phase::Receiving, bytes, window.count(), {}, false, totalHint); },
         M4ProgressiveCatalog::windowCancel(window, [] { return cancelled(); }));
   }
+  M4NativeProviderHttp::releaseTlsSession();
 
   // First window filled → open immediately (partial). HTTP was cancelled early.
   // Do NOT overwrite these real titles with placeholders — placeholders are only
@@ -638,6 +643,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
       file.discard();
       Serial.printf("[NativeCatalog] first-window commit failed rows=%u path=%s\n",
                     static_cast<unsigned>(window.count()), finalPath.c_str());
+      M4NativeProviderIo::logHttpTlsIf(job.appId, "catalog", "catalog_commit_failed");
       publish(Phase::Error, net.bytes, window.count(), "catalog_commit_failed", false, totalHint);
       return false;
     }
@@ -700,6 +706,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
         (error == "http_401" || error == "http_403" || error == "login_required")) {
       publish(Phase::AuthRequired, net.bytes, 0, error);
     } else {
+      M4NativeProviderIo::logHttpTlsIf(job.appId, "catalog", error);
       publish(Phase::Error, net.bytes, rowCount, cancelled() ? "cancelled" : error);
     }
     return false;
@@ -708,6 +715,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
     file.discard();
     Serial.printf("[NativeCatalog] small-catalog commit failed rows=%u path=%s\n",
                   static_cast<unsigned>(rowCount), finalPath.c_str());
+    M4NativeProviderIo::logHttpTlsIf(job.appId, "catalog", "catalog_commit_failed");
     publish(Phase::Error, net.bytes, rowCount, "catalog_commit_failed");
     return false;
   }
@@ -785,6 +793,7 @@ void taskMain(void*) {
         } else {
           Serial.printf("[NativeCatalog] full refill failed err=%s keep placeholders\n",
                         fullErr.c_str());
+          M4NativeProviderIo::logHttpTlsIf(job.appId, "catalog", fullErr);
           // Stale Legado shelf on a fresh first open (empty 200 {"data":[]},
           // 404 locator gone, or changed response shape with zero records):
           // replace the hollow Ready-with-placeholders state with a visible

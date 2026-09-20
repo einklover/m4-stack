@@ -80,6 +80,10 @@ class HomeActivity final : public Activity {
   static void loadRecentBooksInto(BackendContext& ctx, int maxBooks);
   static bool tryEnsureCoverThumbInCtx(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
                                        const std::function<bool()>& cancelled = {});
+  static bool tryDecodeCoverThumbIfExists(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
+                                          const UiScene::AssetKey& key, const std::function<bool()>& cancelled);
+  static bool publishHomeSceneWithAssetsFastCtx(BackendContext& ctx);
+  static void refreshMissingCoversInCtx(BackendContext& ctx);
   static void publishHomeSceneFromBackendCtx(BackendContext& ctx);
   static bool publishHomeSceneWithAssetsCtx(BackendContext& ctx);
   // Legacy trampoline for compatibility (unused after refactor, kept to avoid ODR)

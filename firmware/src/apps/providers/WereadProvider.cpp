@@ -761,6 +761,15 @@ class WereadProvider final : public M4NativeProvider::Adapter {
       return bad;
     }
     M4NativeProvider::FetchResult out;
+    const std::string logApp =
+        req.book.appId.empty() ? std::string("com.weread.client") : req.book.appId;
+    struct ChapterHttpLog {
+      std::string appId;
+      M4NativeProvider::FetchResult* r;
+      ~ChapterHttpLog() {
+        if (r && !r->ok) M4NativeProviderIo::logHttpTlsIf(appId, "chapter", r->error);
+      }
+    } chapterHttpLog{logApp, &out};
     size_t cached = 0;
     if (M4NativeProviderIo::cacheComplete(req.cacheAbsPath, &cached)) {
       out.ok = true;

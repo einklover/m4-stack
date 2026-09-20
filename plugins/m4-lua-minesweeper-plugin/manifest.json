@@ -1,0 +1,19 @@
+{
+  "id": "com.m4.minesweeper",
+  "name": "扫雷",
+  "version": "0.1.8",
+  "versionCode": 9,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "V1 Lua Minesweeper (ReKindle: easy/medium/hard, first-click safe, flag/dig).",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}

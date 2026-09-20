@@ -45,6 +45,12 @@ class TtfEpdFont : public EpdFont {
   size_t cacheBudget() const { return cacheBudget_; }
   bool hasCodepoint(uint32_t cp) const;
   void clearCaches();
+  // Append dirty PSRAM glyphs to SD. Safe to call from the main idle loop.
+  static int idleFlushDirty(int maxGlyphs);
+  // Effective family key: path hash mixed with the font-file fingerprint, so
+  // a replaced TTF under the same path stops matching stale SD records (B5).
+  uint32_t familyKey() const { return famHash_; }
+  int dirtySlotCount() const;
 
  private:
   enum class Backend : uint8_t { Glyf, Cff1, Cff2 };
@@ -54,11 +60,21 @@ class TtfEpdFont : public EpdFont {
     EpdGlyph glyph{};
     uint8_t* bitmap = nullptr;
     uint32_t bitmapSize = 0;
+    bool dirty = false;
+    bool fromSd = false;
   };
 
   bool usesCffBackend() const { return backend_ != Backend::Glyf; }
   int ensureGlyph(uint32_t cp) const;
   void evictSlot(int slot) const;
+  int pickSlot() const;
+  bool publishGlyph(int slot, uint32_t cp, uint8_t w, uint8_t h, uint8_t adv, int16_t left,
+                    int16_t top, const uint8_t* bits, uint32_t len, bool fromSd) const;
+  void trimCache(int keepSlot) const;
+  int flushDirtySlots(int maxGlyphs) const;
+  bool flushBackedOff() const;
+  void registerLive();
+  void unregisterLive();
   bool allocateEntries();
   bool finishInit(const char* sourceLabel);
   bool backendFindGlyph(uint32_t cp, uint16_t& gid) const;
@@ -75,6 +91,15 @@ class TtfEpdFont : public EpdFont {
 
   String path_;
   String runtimeError_;
+  // Path hash mixed with the font fingerprint (B5). Computed once at init;
+  // falls back to the plain path hash when the fingerprint is unavailable.
+  uint32_t famHash_ = 0;
+  // Last successful SD flush (Ok/Duplicate), for live-table victim choice.
+  mutable uint32_t lastFlushActivityMs_ = 0;
+  // Last transient SD failure; idleFlushDirty skips this face until the
+  // backoff below expires instead of churning the same head glyph (B2).
+  mutable uint32_t lastTransientSkipMs_ = 0;
+  static constexpr uint32_t kFlushTransientBackoffMs = 5000;
   uint16_t sizePx_ = 0;
   uint16_t renderSizePx_ = 0;
   uint16_t maxSlots_ = kDefaultRuntimeSlots;

@@ -123,6 +123,12 @@ inline Face resolve(const GfxRenderer& renderer, int layoutFontId) {
 // selected Reader TTF may replace the public UI IDs, but it must never replace
 // the built-in font used by a TOC/chapter list.
 inline Face resolveSystem(const GfxRenderer& renderer, int layoutFontId) {
+  // A user-selected system TTF lives on the public chrome IDs. Do not divert
+  // to boot-captured private aliases or Home/status keep the old bitmap face.
+  const bool uiTtf = SETTINGS.getUiFontFamily() == CrossPointSettings::FONT_CUSTOM &&
+                     SETTINGS.uiCustomFontFamily[0] != '\0';
+  if (uiTtf) return resolve(renderer, layoutFontId);
+
   // With the normal system/legacy font configuration the public UI mapping is
   // already the authoritative system face. Only a selected runtime Reader
   // TTF needs the private aliases below; avoiding a capture here also keeps

@@ -39,6 +39,9 @@
 #include "components/themes/fengyan/FengyanTheme.h"
 #include "activities/home/HomeSceneAssetDecoder.h"
 #include "util/M4ProviderCoverCache.h"
+#include "qemu/M4QemuNet.h"
+#include "apps/providers/M4NativeProviderBookDetail.h"
+#include "apps/providers/M4LegadoBridge.h"
 
 namespace {
 
@@ -101,6 +104,93 @@ std::string homeSceneText(const HomeScene::HomeSceneSnapshot& snapshot,
   return result;
 }
 
+namespace HomeCoverPolicyA {
+
+bool homeWifiConnected() { return M4QemuNet::staConnected(); }
+
+std::string firstMatchingAppId(const std::string& providerId) {
+  const auto apps = M4xRegistry::load();
+  for (const auto& app : apps) {
+    if (app.provider == providerId) return app.id;
+  }
+  return {};
+}
+
+std::string resolveCoverUrlFromShelf(const std::string& providerId, const std::string& bookId) {
+  if (providerId.empty() || bookId.empty()) return {};
+  const auto apps = M4xRegistry::load();
+  const std::string coverBase = M4LegadoBridge::baseUrl();
+  for (const auto& app : apps) {
+    if (app.provider != providerId) continue;
+    const std::string path = std::string("/apps_data/") + app.id + "/provider/shelf_rows.tsv";
+    FsFile f;
+    if (!SdMan.openFileForRead("HOME-SHELF", path.c_str(), f)) continue;
+    std::string line;
+    char buf[128];
+    M4NovelProvider::BookDetail detail{};
+    bool found = false;
+    while (f.available()) {
+      const int n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf) - 1);
+      if (n <= 0) break;
+      buf[n] = 0;
+      for (int i = 0; i < n; ++i) {
+        if (buf[i] == '\n') {
+          if (M4NativeProviderBookDetail::applyShelfRowForProvider(providerId, line, bookId, detail,
+                                                                   coverBase)) {
+            found = true;
+          }
+          line.clear();
+          if (found) {
+            f.close();
+            if (providerId == "legado") {
+              const std::string proxied = M4LegadoBridge::coverProxyUrl(coverBase, detail.coverUrl);
+              return proxied.empty() ? detail.coverUrl : proxied;
+            }
+            return detail.coverUrl;
+          }
+        } else if (buf[i] != '\r' && buf[i] != '\0') {
+          if (line.size() < 3u * 1024u) line.push_back(buf[i]);
+        }
+      }
+    }
+    if (!found && M4NativeProviderBookDetail::applyShelfRowForProvider(providerId, line, bookId,
+                                                                      detail, coverBase)) {
+      f.close();
+      if (providerId == "legado") {
+        const std::string proxied = M4LegadoBridge::coverProxyUrl(coverBase, detail.coverUrl);
+        return proxied.empty() ? detail.coverUrl : proxied;
+      }
+      return detail.coverUrl;
+    }
+    f.close();
+  }
+  return {};
+}
+
+std::string resolveCoverUrlViaDetail(const std::string& providerId, const std::string& bookId,
+                                     const std::string& appIdHint, const std::function<bool()>& cancelled) {
+  if (cancelled && cancelled()) return {};
+  if (providerId != "legado" && !homeWifiConnected()) return {};
+  M4NativeProviderBookDetail::Request req;
+  req.providerId = providerId;
+  req.bookId = bookId;
+  req.appId = appIdHint.empty() ? firstMatchingAppId(providerId) : appIdHint;
+  req.maxBytes = 48u * 1024u;
+  const auto result = M4NativeProviderBookDetail::fetch(req, cancelled);
+  if (!result.ok) return {};
+  return result.detail.coverUrl;
+}
+
+std::string resolveCoverUrlForHistory(const std::string& providerId, const std::string& bookId,
+                                      const std::function<bool()>& cancelled) {
+  std::string url = resolveCoverUrlFromShelf(providerId, bookId);
+  if (!url.empty()) return url;
+  if (cancelled && cancelled()) return {};
+  return resolveCoverUrlViaDetail(providerId, bookId, firstMatchingAppId(providerId), cancelled);
+}
+
+}  // namespace HomeCoverPolicyA
+
 }  // namespace
 
 void HomeActivity::sceneBackendTaskTrampoline(void* param) {
@@ -148,6 +238,12 @@ void HomeActivity::loadRecentBooksInto(BackendContext& ctx, int maxBooks) {
   for (RecentBook book : books) {
     if (static_cast<int>(ctx.recentBooks.size()) >= maxBooks) break;
     if (M4ContentProvider::isHistoryUri(book.path.c_str())) {
+      if (book.coverBmpPath.empty()) {
+        std::string pid, bid;
+        if (M4ContentProvider::parseHistoryUri(book.path.c_str(), pid, bid)) {
+          book.coverBmpPath = M4ProviderCoverCache::bmpTemplatePath(pid, bid);
+        }
+      }
       book.progress = loadBookProgress(book.originalSourcePath.empty() ? book.path : book.originalSourcePath);
       ctx.recentBooks.push_back(book);
       continue;
@@ -181,6 +277,123 @@ bool HomeActivity::tryEnsureCoverThumbInCtx(BackendContext& ctx, const std::stri
   return SdMan.exists(thumb.c_str());
 }
 
+bool HomeActivity::tryDecodeCoverThumbIfExists(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
+                                               const UiScene::AssetKey& key, const std::function<bool()>& cancelled) {
+  (void)ctx;
+  if (coverBmpPath.empty()) return false;
+  std::string thumb = UITheme::getCoverThumbPath(coverBmpPath, w, h);
+  if (!SdMan.exists(thumb.c_str())) return false;
+  if (cancelled && cancelled()) return false;
+  HomeScene::HomeScenePublication& draftPub = ctx.model.draftPublication();
+  return HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, cancelled);
+}
+
+bool HomeActivity::publishHomeSceneWithAssetsFastCtx(BackendContext& ctx) {
+  uint32_t epoch = ctx.epoch.load(std::memory_order_acquire);
+  auto isCancelled = [&ctx, epoch]() -> bool {
+    return ctx.cancelled.load(std::memory_order_acquire) ||
+           ctx.epoch.load(std::memory_order_acquire) != epoch;
+  };
+  if (isCancelled()) return false;
+  if (!ctx.recentBooks.empty()) {
+    const RecentBook& cur = ctx.recentBooks.front();
+    UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
+    (void)tryDecodeCoverThumbIfExists(ctx, cur.coverBmpPath, HomeScene::kHomeCurrentCoverW,
+                                      HomeScene::kHomeCurrentCoverH, key, isCancelled);
+  }
+  if (isCancelled()) return false;
+  // Recent row is books after the hero (index 0), so four unique covers can show.
+  for (size_t slot = 0; slot < 3; ++slot) {
+    const size_t i = slot + 1;
+    if (i >= ctx.recentBooks.size()) break;
+    if (isCancelled()) return false;
+    const RecentBook& b = ctx.recentBooks[i];
+    UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, static_cast<uint8_t>(slot)};
+    (void)tryDecodeCoverThumbIfExists(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW,
+                                      HomeScene::kHomeRecentCoverH, key, isCancelled);
+  }
+  const auto apps = M4xRegistry::load();
+  for (size_t i = 0; i < apps.size() && i < 4; ++i) {
+    if (isCancelled()) return false;
+    const auto& app = apps[i];
+    UiScene::AssetKey key{HomeScene::kBindingItemIcon, HomeScene::kBindingApps, static_cast<uint8_t>(i)};
+    (void)HomeSceneAssetDecoder::decodeAppIconForPublication(ctx.model.draftPublication(), app.path, app.icon, key,
+                                                             isCancelled);
+  }
+  if (isCancelled()) return false;
+  if (ctx.model.publish()) {
+    ctx.updateRequired.store(true, std::memory_order_release);
+    return true;
+  }
+  return false;
+}
+
+void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx) {
+  uint32_t epoch = ctx.epoch.load(std::memory_order_acquire);
+  auto isCancelled = [&ctx, epoch]() -> bool {
+    return ctx.cancelled.load(std::memory_order_acquire) ||
+           ctx.epoch.load(std::memory_order_acquire) != epoch;
+  };
+  if (isCancelled()) return;
+  bool anyDecoded = false;
+  HomeScene::HomeScenePublication& draftPub = ctx.model.draftPublication();
+
+  auto trySlot = [&](const RecentBook& book, int w, int h, const UiScene::AssetKey& key) {
+    if (isCancelled() || book.coverBmpPath.empty()) return;
+    std::string thumb = UITheme::getCoverThumbPath(book.coverBmpPath, w, h);
+    if (SdMan.exists(thumb.c_str())) {
+      if (HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) {
+        anyDecoded = true;
+      }
+      return;
+    }
+    if (tryEnsureCoverThumbInCtx(ctx, book.coverBmpPath, w, h, isCancelled) &&
+        SdMan.exists(thumb.c_str()) &&
+        HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) {
+      anyDecoded = true;
+      return;
+    }
+    if (isCancelled()) return;
+    std::string pid, bid;
+    if (!M4ContentProvider::parseHistoryUri(book.path.c_str(), pid, bid)) return;
+    if (!HomeCoverPolicyA::homeWifiConnected()) {
+      Serial.printf("[Home] acquire skip %s/%s no wifi\n", pid.c_str(), bid.c_str());
+      return;
+    }
+    const std::string url = HomeCoverPolicyA::resolveCoverUrlForHistory(pid, bid, isCancelled);
+    if (url.empty() || isCancelled()) return;
+    M4ProviderCoverCache::Request req;
+    req.providerId = pid;
+    req.bookId = bid;
+    req.coverUrl = url;
+    req.width = w;
+    req.height = h;
+    req.cancelled = isCancelled;
+    const auto acquired = M4ProviderCoverCache::acquireProviderCover(req);
+    if (isCancelled() || acquired.coverBmpPath.empty()) return;
+    if (tryEnsureCoverThumbInCtx(ctx, acquired.coverBmpPath, w, h, isCancelled) &&
+        SdMan.exists(thumb.c_str()) &&
+        HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled)) {
+      anyDecoded = true;
+    }
+  };
+
+  if (!ctx.recentBooks.empty()) {
+    UiScene::AssetKey key{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId, UiScene::kInvalidAssetItemIndex};
+    trySlot(ctx.recentBooks.front(), HomeScene::kHomeCurrentCoverW, HomeScene::kHomeCurrentCoverH, key);
+  }
+  for (size_t slot = 0; slot < 3; ++slot) {
+    const size_t i = slot + 1;
+    if (i >= ctx.recentBooks.size()) break;
+    if (isCancelled()) return;
+    UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, static_cast<uint8_t>(slot)};
+    trySlot(ctx.recentBooks[i], HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH, key);
+  }
+  if (anyDecoded && !isCancelled() && ctx.model.publish()) {
+    ctx.updateRequired.store(true, std::memory_order_release);
+  }
+}
+
 bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
   uint32_t epoch = ctx.epoch.load(std::memory_order_acquire);
   auto isCancelled = [&ctx, epoch]() -> bool {
@@ -200,13 +413,15 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     }
   }
   if (isCancelled()) return false;
-  for (size_t i = 0; i < ctx.recentBooks.size() && i < 3; ++i) {
+  for (size_t slot = 0; slot < 3; ++slot) {
+    const size_t i = slot + 1;
+    if (i >= ctx.recentBooks.size()) break;
     if (isCancelled()) return false;
     const RecentBook& b = ctx.recentBooks[i];
     if (tryEnsureCoverThumbInCtx(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH,
                                  isCancelled)) {
       std::string thumb = UITheme::getCoverThumbPath(b.coverBmpPath, HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH);
-      UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, static_cast<uint8_t>(i)};
+      UiScene::AssetKey key{HomeScene::kBindingItemCover, HomeScene::kBindingRecent, static_cast<uint8_t>(slot)};
       (void)HomeSceneAssetDecoder::decodeCoverForPublication(draftPub, thumb.c_str(), key, isCancelled);
     }
     if (isCancelled()) return false;
@@ -235,7 +450,9 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
     return ctx.cancelled.load(std::memory_order_acquire) ||
            ctx.epoch.load(std::memory_order_acquire) != epoch;
   };
-  loadRecentBooksInto(ctx, metrics.homeRecentBooksCount);
+  // One hero + three recent slots; skip the current book in the row so four unique covers show.
+  const int homeBookSlots = metrics.homeRecentBooksCount > 4 ? metrics.homeRecentBooksCount : 4;
+  loadRecentBooksInto(ctx, homeBookSlots);
   if (isCancelled()) return;
   ctx.model.begin(UiScene::DataState::Ready);
   ctx.model.setBattery(powerManager.getBatteryPercentage());
@@ -246,8 +463,9 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
     ctx.model.setCurrentPaths(current.path.c_str(), current.originalSourcePath.c_str());
   }
   uint8_t recentIndex = 0;
-  for (const RecentBook& book : ctx.recentBooks) {
+  for (size_t i = 1; i < ctx.recentBooks.size(); ++i) {
     if (isCancelled()) return;
+    const RecentBook& book = ctx.recentBooks[i];
     if (ctx.model.addRecent(book.title.c_str(), book.author.c_str(), "", book.coverBmpPath.c_str(), book.progress)) {
       ctx.model.setRecentPaths(recentIndex++, book.path.c_str(), book.originalSourcePath.c_str());
     }
@@ -266,7 +484,11 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
   }
   if (ctx.recentBooks.empty() && !hasApps) ctx.model.begin(UiScene::DataState::Empty);
   if (isCancelled()) return;
-  (void)publishHomeSceneWithAssetsCtx(ctx);
+  (void)publishHomeSceneWithAssetsFastCtx(ctx);
+  if (isCancelled()) return;
+  vTaskDelay(pdMS_TO_TICKS(80));
+  if (isCancelled()) return;
+  refreshMissingCoversInCtx(ctx);
 }
 
 // Legacy wrappers kept for non-refactored call sites (should not be used in M4 path).
@@ -314,8 +536,12 @@ bool HomeActivity::dispatchHomeSceneAction(
   if (!backendCtx) return false;
   HomeScene::HomeSceneSnapshot snapshot{};
   if (!backendCtx->model.copyLatest(snapshot)) return false;
-  if (action.action == HomeScene::kActionOpenCurrentBook && snapshot.recentCount > 0) {
-    const auto& book = snapshot.recent[0];
+  if (action.action == HomeScene::kActionOpenCurrentBook && snapshot.currentExists) {
+    onSelectBook(homeSceneText(snapshot, snapshot.currentPath),
+                 homeSceneText(snapshot, snapshot.currentOriginalSource));
+  } else if (action.action == HomeScene::kActionOpenRecentBook &&
+             action.itemIndex < snapshot.recentCount) {
+    const auto& book = snapshot.recent[action.itemIndex];
     onSelectBook(homeSceneText(snapshot, book.path),
                  homeSceneText(snapshot, book.originalSource));
   } else if (action.action == HomeScene::kActionOpenHistory) {
@@ -346,6 +572,16 @@ void HomeActivity::handleSnapshotInput() {
   if (!backendCtx->model.copyLatest(snapshot)) return;
   const auto source = HomeScene::HomeSceneModel::bindingSource(snapshot);
 
+  const auto swipe = mappedInput.wasSwipe();
+  if (mappedInput.wasHomeSwipeGesture() || swipe == MappedInputManager::SwipeDir::Up) {
+    HomeScene::HomeSceneActionTarget appsAction{};
+    if (HomeScene::HomeSceneModel::actionTarget(snapshot, HomeScene::kActionOpenApps, nullptr,
+                                                &appsAction)) {
+      queueHomeSceneAction(appsAction);
+    }
+    return;
+  }
+
   // Home is the root activity; consume Back locally without touching the
   // backend. Global Home gestures are handled by main.cpp before this loop.
   const int focusCount = snapshot.recentCount + snapshot.appCount;
@@ -369,6 +605,7 @@ void HomeActivity::handleSnapshotInput() {
       UiSceneRuntime::SceneItemContext item{};
       UiScene::ActionId actionId = HomeScene::kActionOpenCurrentBook;
       if (sceneFocusIndex < snapshot.recentCount) {
+        actionId = HomeScene::kActionOpenRecentBook;
         item = {true, HomeScene::kBindingRecent, sceneFocusIndex,
                 snapshot.recentCount};
       } else {
@@ -409,11 +646,10 @@ void HomeActivity::renderSnapshotScene() {
   // This keeps asset arena pointers valid for the whole frame even if backend publishes next frame.
   auto pinned = backendCtx->model.acquirePublication();
   if (!pinned.valid()) {
-    renderer.clearScreen();
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     return;
   }
   const HomeScene::HomeScenePublication& pub = pinned.value();
+  if (pub.snapshot.state == UiScene::DataState::Loading) return;
   // Build immutable assets view pointing into the pinned arena — still backend-free.
   UiScene::UiSceneAssets assets;
   HomeScene::homePublicationToAssets(pub, assets);
@@ -730,16 +966,13 @@ void HomeActivity::onEnter() {
   // Publish initial Loading via the context's model (PSRAM-backed arena).
   backendCtx->model.publishLoading();
   updateRequired.store(false, std::memory_order_release);
+  backendCtx->updateRequired.store(false, std::memory_order_release);
 #else
   auto metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);
 #endif
 
-  // Trigger first update
 #ifdef CROSSPOINT_MURPHY_M4
-  if (backendCtx) backendCtx->updateRequired.store(true, std::memory_order_release);
-  else updateRequired.store(true, std::memory_order_release);
-
   // Capture task ownership before another task can run against HomeActivity.
   // The trampoline moves this owner into its task-local shared_ptr exactly once.
   auto* backendHolder = new std::shared_ptr<BackendContext>(backendCtx);

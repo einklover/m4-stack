@@ -116,6 +116,31 @@ int main() {
   assert(!applyShelfRow("0123456789abcdefEXTRA\tnope\ta\t1", "0123456789abcdef", collision));
   assert(collision.title.empty());
 
+  // JJWXC/Fanqie/WeRead 5-col shelves store cover in column 4; must not
+  // reuse the Legado lastChapter mapping.
+  M4NovelProvider::BookDetail jj;
+  assert(applyShelfRowForProvider(
+      "jjwxc", "12345\t晋江书\t作者\t0.1\thttps://static.jjwxc.net/cover.jpg", "12345", jj));
+  assert(jj.title == "晋江书");
+  assert(jj.coverUrl == "https://static.jjwxc.net/cover.jpg");
+  assert(jj.lastChapter.empty());
+
+  M4NovelProvider::BookDetail fq;
+  assert(applyShelfRowForProvider(
+      "fanqie", "bid\t番茄书\t甲\t\thttps://p-novel.byteimg.com/t.jpg", "bid", fq));
+  assert(fq.coverUrl == "https://p-novel.byteimg.com/t.jpg");
+
+  M4NovelProvider::BookDetail wr;
+  assert(applyShelfRowForProvider(
+      "weread", "wid\t微信书\t乙\t12\thttps://wfqqreader.qq.com/c.jpg", "wid", wr));
+  assert(wr.coverUrl == "https://wfqqreader.qq.com/c.jpg");
+
+  M4NovelProvider::BookDetail lgFive;
+  assert(applyShelfRowForProvider("legado", "aabbccddeeff0011\t旧书\t佚名\t10\t最新章",
+                                  "aabbccddeeff0011", lgFive, "http://10.0.0.9:8080"));
+  assert(lgFive.lastChapter == "最新章");
+  assert(lgFive.coverUrl.empty());
+
   std::printf("legado local detail (shelf/seed, no bookshelf refetch): PASS\n");
   return 0;
 }

@@ -20,6 +20,7 @@ struct M4SettingsUiState {
   char selectedKey[32]{};
   char parentKey[32]{};
   char choiceKey[32]{};
+  char listStack[32]{};
   int selectedSlot = 0;
   int windowStart = 0;
   int choiceCount = 0;
@@ -55,27 +56,48 @@ constexpr M4SettingsRow kMaintenance[] = {
 };
 
 constexpr M4SettingsRow kAdvanced[] = {
+    {"advancedDisplay", "显示与刷新", M4SettingsControl::Navigate, true},
+    {"advancedChrome", "界面与字体", M4SettingsControl::Navigate, true},
+    {"advancedAnim", "动画", M4SettingsControl::Navigate, true},
+    {"advancedConnect", "连接与同步", M4SettingsControl::Navigate, true},
+    {"advancedSystem", "系统", M4SettingsControl::Navigate, true},
+};
+
+constexpr M4SettingsRow kAdvancedDisplay[] = {
     {"statusBar", "阅读进度", M4SettingsControl::Choice, true},
     {"hideBatteryPercentage", "隐藏电池百分比", M4SettingsControl::Choice, true},
     {"refreshFrequency", "刷新频率", M4SettingsControl::Number, true},
     {"neverFullRefresh", "永不全刷", M4SettingsControl::Toggle, true},
     {"buttonHintsEnabled", "按钮提示", M4SettingsControl::Toggle, true},
     {"sleepBeforeFullRefresh", "关机前全刷", M4SettingsControl::Toggle, true},
+};
+
+constexpr M4SettingsRow kAdvancedChrome[] = {
     {"imageQuality", "图片质量", M4SettingsControl::Choice, true},
     {"iconStyle", "图标风格", M4SettingsControl::Choice, true},
     {"homeIconStyle", "图标选中风格", M4SettingsControl::Choice, true},
     {"uiFontSize", "界面文字", M4SettingsControl::Choice, true},
+    {"uiFontFamily", "系统字体", M4SettingsControl::Navigate, true},
+};
+
+constexpr M4SettingsRow kAdvancedAnim[] = {
     {"systemAnimationEnabled", "系统动画", M4SettingsControl::Toggle, true},
     {"pageTurnAnimationSteps", "翻页步数", M4SettingsControl::Number, true},
     {"pageTurnAnimationMult", "翻页倍率", M4SettingsControl::Number, true},
     {"pageTurnAnimationTp", "翻页 TP", M4SettingsControl::Number, true},
     {"pageTurnAnimationFrameRate", "翻页帧率", M4SettingsControl::Choice, true},
+};
+
+constexpr M4SettingsRow kAdvancedConnect[] = {
     {"wifiAlwaysReselect", "始终重选网络", M4SettingsControl::Toggle, true},
     {"autoSyncTimeOnBoot", "开机同步时间", M4SettingsControl::Toggle, true},
     {"bluetooth", "蓝牙", M4SettingsControl::Navigate, true},
     {"koreader", "KOReader 同步", M4SettingsControl::Navigate, true},
     {"jianguo", "坚果云", M4SettingsControl::Navigate, true},
     {"dataCapsule", "数据胶囊", M4SettingsControl::Navigate, true},
+};
+
+constexpr M4SettingsRow kAdvancedSystem[] = {
     {"systemLanguage", "系统语言", M4SettingsControl::Toggle, true},
     {"directTxtRead", "直接打开 TXT", M4SettingsControl::Toggle, true},
 };
@@ -101,6 +123,26 @@ inline const M4SettingsRow* tableFor(const char* parent, int* count) {
     if (count) *count = (int)(sizeof(kAdvanced) / sizeof(kAdvanced[0]));
     return kAdvanced;
   }
+  if (std::strcmp(parent, "advancedDisplay") == 0) {
+    if (count) *count = (int)(sizeof(kAdvancedDisplay) / sizeof(kAdvancedDisplay[0]));
+    return kAdvancedDisplay;
+  }
+  if (std::strcmp(parent, "advancedChrome") == 0) {
+    if (count) *count = (int)(sizeof(kAdvancedChrome) / sizeof(kAdvancedChrome[0]));
+    return kAdvancedChrome;
+  }
+  if (std::strcmp(parent, "advancedAnim") == 0) {
+    if (count) *count = (int)(sizeof(kAdvancedAnim) / sizeof(kAdvancedAnim[0]));
+    return kAdvancedAnim;
+  }
+  if (std::strcmp(parent, "advancedConnect") == 0) {
+    if (count) *count = (int)(sizeof(kAdvancedConnect) / sizeof(kAdvancedConnect[0]));
+    return kAdvancedConnect;
+  }
+  if (std::strcmp(parent, "advancedSystem") == 0) {
+    if (count) *count = (int)(sizeof(kAdvancedSystem) / sizeof(kAdvancedSystem[0]));
+    return kAdvancedSystem;
+  }
   if (count) *count = 0;
   return nullptr;
 }
@@ -122,6 +164,12 @@ inline bool m4SettingsUiIsAdvancedPage(const M4SettingsUiState& st) {
   return st.page == M4SettingsPageKind::ChildList && std::strcmp(st.parentKey, "advanced") == 0;
 }
 
+inline bool m4SettingsUiIsAdvancedFamily(const M4SettingsUiState& st) {
+  if (st.page != M4SettingsPageKind::ChildList) return false;
+  if (std::strcmp(st.parentKey, "advanced") == 0) return true;
+  return std::strcmp(st.listStack, "advanced") == 0;
+}
+
 inline int m4SettingsChildCount(const char* parentKey) {
   int n = 0;
   m4_settings_root_ui_detail::tableFor(parentKey, &n);
@@ -133,6 +181,19 @@ inline const M4SettingsRow* m4SettingsChildAt(const char* parentKey, int index) 
   const M4SettingsRow* rows = m4_settings_root_ui_detail::tableFor(parentKey, &n);
   if (!rows || index < 0 || index >= n) return nullptr;
   return &rows[index];
+}
+
+inline const char* m4SettingsChildListTitle(const char* parentKey) {
+  if (!parentKey || !parentKey[0]) return "设置";
+  const M4SettingsRow* rootRow =
+      m4SettingsRowByKey(m4SettingsRootCatalog(), kM4SettingsRootCount, parentKey);
+  if (rootRow && rootRow->titleZh) return rootRow->titleZh;
+  const int n = m4SettingsChildCount("advanced");
+  for (int i = 0; i < n; ++i) {
+    const M4SettingsRow* row = m4SettingsChildAt("advanced", i);
+    if (row && row->key && std::strcmp(row->key, parentKey) == 0 && row->titleZh) return row->titleZh;
+  }
+  return "设置";
 }
 
 inline void m4SettingsFormatWifiValue(const char* ssid, char* out, int outLen) {
@@ -219,8 +280,7 @@ inline int m4SettingsUiMove(M4SettingsUiState& st, int delta) {
   st.selectedSlot = next;
   // Advanced v5.1 shows 9 rows per window; Choice pages keep the 8-row
   // theme limit and every other page never exceeds 8 rows.
-  const int winCap =
-      (st.page == M4SettingsPageKind::Choice) ? 8 : (m4SettingsUiIsAdvancedPage(st) ? 9 : 8);
+  const int winCap = 8;
   st.windowStart = m4_settings_root_ui_detail::linearWindowStart(next, count, winCap);
   if (st.page == M4SettingsPageKind::Choice) return next;
   const M4SettingsRow* row = m4SettingsUiVisibleRow(st, next);
@@ -377,15 +437,13 @@ inline bool m4SettingsUiConfirmDecide(M4SettingsUiState& st, M4ConfirmButton b, 
 // Root never scrolls (8 rows == window), so bands are absolute.
 constexpr int kM4SettingsRootOriginY = 112;
 constexpr int kM4SettingsRootRowH = 58;
-constexpr int kM4SettingsL2OriginY = 112;
-constexpr int kM4SettingsL2ItemH = 72;
-constexpr int kM4SettingsL2Gap = 4;
-// Advanced v5.1: flat 9-row window at 52px pitch from y126 (first row top ==
-// first-screen card top; G0[0-4] + G1[5-8] visible). Volumetric identity
-// (order/count/selection/window) never sees pitch; paint, touch, thumb,
-// and overdraw read it via helpers. Other L2 pages keep the 8-cap.
-constexpr int kM4SettingsAdvancedOriginY = 126;
-constexpr int kM4SettingsAdvancedItemH = 52;
+constexpr int kM4SettingsL2OriginY = 130;
+constexpr int kM4SettingsL2ItemH = 58;
+constexpr int kM4SettingsL2Gap = 0;
+// Advanced: 9-row window at the same 58px pitch as Root/L2, origin y130
+// so the list card never encloses the page title/hairline.
+constexpr int kM4SettingsAdvancedOriginY = 130;
+constexpr int kM4SettingsAdvancedItemH = 58;
 constexpr int kM4SettingsAdvancedGap = 0;
 // Advanced v5.1 section grammar (layout-v5.1-advanced): real group intervals
 // shared by paint, touch, and tests. A 42px gap plus the new group's title
@@ -395,7 +453,7 @@ constexpr int kM4SettingsAdvancedGap = 0;
 // the hit table below do.
 constexpr int kM4SettingsAdvancedGroupStarts[] = {0, 5, 9, 14, 20};
 constexpr int kM4SettingsAdvancedGroupCount = 5;
-constexpr int kM4SettingsAdvancedSectionGap = 42;
+constexpr int kM4SettingsAdvancedSectionGap = 24;
 constexpr int kM4SettingsAdvancedSectionTitleBaselineDy = 32;  // from gap top
 
 inline int m4SettingsAdvancedGroupOf(int flatIndex) {
@@ -413,12 +471,8 @@ inline bool m4SettingsAdvancedSlotStartsGroup(int windowStart, int slot) {
 }
 
 inline int m4SettingsAdvancedRowY(int windowStart, int slot) {
-  int y = kM4SettingsAdvancedOriginY;
-  for (int i = 1; i <= slot; ++i) {
-    y += kM4SettingsAdvancedItemH + kM4SettingsAdvancedGap;
-    if (m4SettingsAdvancedSlotStartsGroup(windowStart, i)) y += kM4SettingsAdvancedSectionGap;
-  }
-  return y;
+  (void)windowStart;
+  return kM4SettingsAdvancedOriginY + slot * (kM4SettingsAdvancedItemH + kM4SettingsAdvancedGap);
 }
 
 inline int m4SettingsAdvancedRowHit(int x, int y, int windowStart) {
@@ -432,12 +486,12 @@ inline int m4SettingsAdvancedRowHit(int x, int y, int windowStart) {
 // Small grouped child pages (frontlight/keys/maintenance) carry the same header
 // one label lower so their single static group (label + card) fits; rows keep
 // L2 pitch and the flat ChildList order/count/identity math never changes.
-constexpr int kM4SettingsGroupedChildOriginY = 138;
+constexpr int kM4SettingsGroupedChildOriginY = 130;
 
 inline bool m4SettingsUiIsGroupedChildPage(const M4SettingsUiState& st) {
   if (st.page != M4SettingsPageKind::ChildList) return false;
   return std::strcmp(st.parentKey, "frontlight") == 0 || std::strcmp(st.parentKey, "keys") == 0 ||
-         std::strcmp(st.parentKey, "maintenance") == 0;
+         std::strcmp(st.parentKey, "maintenance") == 0 || m4SettingsUiIsAdvancedFamily(st);
 }
 
 inline int m4SettingsUiContentOriginY(const M4SettingsUiState& st) {
@@ -513,7 +567,13 @@ inline M4DirtyUnion m4SettingsUiNoteMoveRoot(M4SettingsUiState& st, int oldSlot,
   return d;
 }
 
-inline void m4SettingsUiOpenChildList(M4SettingsUiState& st, const char* parentKey) {
+inline void m4SettingsUiOpenChildList(M4SettingsUiState& st, const char* parentKey, bool push = true) {
+  if (push && st.page == M4SettingsPageKind::ChildList && st.parentKey[0] && parentKey &&
+      std::strcmp(st.parentKey, parentKey) != 0) {
+    m4SettingsCopyKey(st.listStack, (int)sizeof(st.listStack), st.parentKey);
+  } else if (!push) {
+    st.listStack[0] = '\0';
+  }
   st.returnPage = M4SettingsPageKind::Root;
   st.page = M4SettingsPageKind::ChildList;
   m4SettingsCopyKey(st.parentKey, (int)sizeof(st.parentKey), parentKey);
@@ -522,6 +582,24 @@ inline void m4SettingsUiOpenChildList(M4SettingsUiState& st, const char* parentK
   st.burstCount = 0;
   const M4SettingsRow* first = m4SettingsChildAt(parentKey, 0);
   m4SettingsCopyKey(st.selectedKey, (int)sizeof(st.selectedKey), first && first->key ? first->key : "");
+}
+
+inline bool m4SettingsUiBackFromChildList(M4SettingsUiState& st) {
+  if (st.page != M4SettingsPageKind::ChildList) return false;
+  if (st.listStack[0]) {
+    char here[32]{};
+    m4SettingsCopyKey(here, (int)sizeof(here), st.parentKey);
+    char up[32]{};
+    m4SettingsCopyKey(up, (int)sizeof(up), st.listStack);
+    m4SettingsUiOpenChildList(st, up, false);
+    m4SettingsUiSelectKey(st, here);
+    return true;
+  }
+  char parent[32]{};
+  m4SettingsCopyKey(parent, (int)sizeof(parent), st.parentKey);
+  m4SettingsUiEnterRoot(st);
+  m4SettingsUiSelectKey(st, parent);
+  return true;
 }
 
 inline void m4SettingsUiPushEditor(M4SettingsUiState& st) {

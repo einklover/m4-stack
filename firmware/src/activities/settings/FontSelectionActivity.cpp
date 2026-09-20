@@ -62,8 +62,8 @@ FontGridLayout makeFontGridLayout(int screenWidth, int screenHeight, int headerH
 }  // namespace
 
 FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& inputManager,
-                                             std::function<void(bool)> onClose)
-    : Activity("Font Selection", renderer, inputManager), onClose(onClose) {}
+                                             std::function<void(bool)> onClose, Target target)
+    : Activity("Font Selection", renderer, inputManager), onClose(onClose), target_(target) {}
 
 FontSelectionActivity::~FontSelectionActivity() {}
 
@@ -72,15 +72,23 @@ void FontSelectionActivity::onEnter() {
   Activity::onEnter();
   FontManager::getInstance().invalidateScan();
   fontFamilies = FontManager::getInstance().getAvailableTtfFamilies();
-  Serial.printf("[FSA] Got %d families\n", fontFamilies.size());
+  if (target_ == Target::SystemUi) {
+    fontFamilies.insert(fontFamilies.begin(), std::string());
+  }
+  Serial.printf("[FSA] Got %d families target=%s\n", fontFamilies.size(),
+                target_ == Target::SystemUi ? "ui" : "reader");
 
-  std::string current = SETTINGS.customFontFamily;
+  std::string current = target_ == Target::SystemUi ? SETTINGS.uiCustomFontFamily : SETTINGS.customFontFamily;
   selectedIndex = 0;
   scrollOffset = 0;
-  for (size_t i = 0; i < fontFamilies.size(); i++) {
-    if (fontFamilies[i] == current) {
-      selectedIndex = static_cast<int>(i);
-      break;
+  if (target_ == Target::SystemUi && SETTINGS.getUiFontFamily() != CrossPointSettings::FONT_CUSTOM) {
+    selectedIndex = 0;
+  } else {
+    for (size_t i = 0; i < fontFamilies.size(); i++) {
+      if (!fontFamilies[i].empty() && fontFamilies[i] == current) {
+        selectedIndex = static_cast<int>(i);
+        break;
+      }
     }
   }
   render();
@@ -180,6 +188,44 @@ void FontSelectionActivity::loop() {
 
 void FontSelectionActivity::saveAndExit() {
   if (selectedIndex >= 0 && selectedIndex < (int)fontFamilies.size()) {
+    if (target_ == Target::SystemUi) {
+      const std::string previousFamily = SETTINGS.uiCustomFontFamily;
+      const uint8_t previousMode = SETTINGS.getUiFontFamily();
+      const std::string chosen = fontFamilies[selectedIndex];
+      const bool wantSystem = chosen.empty();
+      const bool fontChanged =
+          wantSystem ? previousMode != CrossPointSettings::SYSTEM_FONT
+                     : (previousMode != CrossPointSettings::FONT_CUSTOM || previousFamily != chosen);
+      if (!fontChanged) {
+        onClose(true);
+        return;
+      }
+      GUI.drawPopup(renderer, L(Str::kLoadingFontPleaseWait));
+      if (wantSystem) {
+        SETTINGS.setUiFontFamily(CrossPointSettings::SYSTEM_FONT);
+        SETTINGS.uiCustomFontFamily[0] = '\0';
+        SETTINGS.saveToFile();
+        EpdFontLoader::applySystemChrome(renderer);
+        onClose(true);
+        return;
+      }
+      strncpy(SETTINGS.uiCustomFontFamily, chosen.c_str(), sizeof(SETTINGS.uiCustomFontFamily) - 1);
+      SETTINGS.uiCustomFontFamily[sizeof(SETTINGS.uiCustomFontFamily) - 1] = '\0';
+      SETTINGS.setUiFontFamily(CrossPointSettings::FONT_CUSTOM);
+      if (EpdFontLoader::applySystemChrome(renderer)) {
+        SETTINGS.saveToFile();
+        onClose(true);
+        return;
+      }
+      strncpy(SETTINGS.uiCustomFontFamily, previousFamily.c_str(), sizeof(SETTINGS.uiCustomFontFamily) - 1);
+      SETTINGS.uiCustomFontFamily[sizeof(SETTINGS.uiCustomFontFamily) - 1] = '\0';
+      SETTINGS.setUiFontFamily(previousMode);
+      SETTINGS.saveToFile();
+      EpdFontLoader::applySystemChrome(renderer);
+      onClose(false);
+      return;
+    }
+
     const std::string previousFamily = SETTINGS.customFontFamily;
     const uint8_t previousMode = SETTINGS.fontFamily;
     const bool fontChanged = previousMode != CrossPointSettings::FONT_CUSTOM ||
@@ -268,14 +314,22 @@ void FontSelectionActivity::render() const {
                      boxY + 12 + i * (lineH + lineSpacing), lines[i]);
     }
   } else {
-    const std::string current = SETTINGS.customFontFamily;
+    const std::string current =
+        target_ == Target::SystemUi ? SETTINGS.uiCustomFontFamily : SETTINGS.customFontFamily;
     for (int slot = 0; slot < grid.itemsPerPage; ++slot) {
       const int index = scrollOffset + slot;
       if (index >= static_cast<int>(fontFamilies.size())) break;
 
       const auto r = grid.cellRect(slot);
       const bool focused = index == selectedIndex;
-      const bool active = SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM && fontFamilies[index] == current;
+      const bool active = target_ == Target::SystemUi
+                              ? ((fontFamilies[index].empty() &&
+                                  SETTINGS.getUiFontFamily() != CrossPointSettings::FONT_CUSTOM) ||
+                                 (SETTINGS.getUiFontFamily() == CrossPointSettings::FONT_CUSTOM &&
+                                  fontFamilies[index] == current && !fontFamilies[index].empty()))
+                              : (SETTINGS.fontFamily == CrossPointSettings::FONT_CUSTOM &&
+                                 fontFamilies[index] == current);
+      const char* rawLabel = fontFamilies[index].empty() ? L(Str::kSystemFace) : fontFamilies[index].c_str();
 
       // Reference apps use a colored outline. On E-Ink we translate that to a
       // double-line focus frame, while the loaded font gets a small stable ink
@@ -289,7 +343,7 @@ void FontSelectionActivity::render() const {
       }
 
       const std::string label = M4UiText::truncated(renderer, UI_10_FONT_ID,
-                                                    fontFamilies[index].c_str(), r.width - 24,
+                                                    rawLabel, r.width - 24,
                                                     (focused || active) ? EpdFontFamily::BOLD
                                                                         : EpdFontFamily::REGULAR);
       M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x + 8, r.y, r.width - 8, r.height,

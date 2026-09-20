@@ -127,9 +127,8 @@ def test_settings_theme_no_forbidden_node_types():
         )
 
 def test_settings_theme_no_stroke():
-    # Border rule (grouped-root revision): no stroke>1 anywhere; 1px outlines
-    # only as top-level group cards (round_rect r=8, no fill); repeat children
-    # stay stroke-free; no filled rects or filled r>0 round_rects (no solid cards).
+    # Border rule: chrome cards may be 2px; no stroke>2. Repeat children stay
+    # 1px (radio / selected outline / Root stipple). No solid filled cards.
     hub = _find_hub()
     l2 = _find_l2()
     files = [(hub, "hub.json"), (l2, "l2.json")]
@@ -153,7 +152,7 @@ def test_settings_theme_no_stroke():
         bad = []
         for n in _all_nodes(theme):
             stroke = n.get("stroke")
-            if isinstance(stroke, int) and stroke > 1:
+            if isinstance(stroke, int) and stroke > 2:
                 bad.append((n.get("type"), stroke, n.get("rect")))
             if n.get("type") == "rect" and n.get("fill") is True:
                 bad.append(("rect-fill", n.get("rect")))
@@ -164,9 +163,10 @@ def test_settings_theme_no_stroke():
                         and n.get("visible_if") == "$item.selected"):
                     bad.append(("round_rect-fill-r", n.get("r"), n.get("rect")))
         for n in nodes:
-            if n.get("type") == "round_rect" and isinstance(n.get("stroke"), int) and n["stroke"] == 1:
-                # v5.1 root cards use r=11; every other page stays r=8 (root-only round).
-                ok_radius = (n.get("r") == 11) if label == "root.json" else (n.get("r") == 8)
+            if n.get("type") == "round_rect" and isinstance(n.get("stroke"), int) and n["stroke"] in (1, 2) \
+                    and n.get("visible_if") is None:
+                # All settings pages share Root card radius 11.
+                ok_radius = n.get("r") == 11
                 if n.get("fill") is True or not ok_radius:
                     bad.append(("card-shape", n.get("rect")))
         for r in [n for n in _all_nodes(theme) if n.get("type") == "repeat"]:
@@ -186,7 +186,7 @@ def test_settings_theme_no_stroke():
                               and c.get("fill") is True and len(rect) == 4
                               and rect[2] > rect[3] and c.get("r", 0) > 0
                               and c.get("visible_if") == "$item.selected")
-                ok_stipple = (label == "root.json" and c.get("type") == "round_rect"
+                ok_stipple = (c.get("type") == "round_rect"
                               and c.get("stroke") == 1 and c.get("fill") is True
                               and len(rect) == 4 and rect[2] > rect[3]
                               and c.get("r", -1) == 0
@@ -253,17 +253,17 @@ def test_l2_v51_window_capacity_9_and_navigates_chevron():
     )
     children = r.get("children", [])
     chev = {(c["x"], c["y"], c["x2"], c["y2"]) for c in children
-            if c.get("type") == "line" and c.get("width") == 2 and c.get("color") == "black"}
-    assert chev == {(418, 21, 423, 26), (423, 26, 418, 31)}, \
-        f"l2 repeat must carry exactly the 2-stroke > chevron, got {chev}"
+            if c.get("type") == "line" and c.get("width") == 3 and c.get("color") == "black"}
+    assert chev == {(447, 24, 453, 30), (453, 30, 447, 36)}, \
+        f"l2 repeat must carry exactly the 3-stroke > chevron, got {chev}"
     for c in children:
         if c.get("type") == "line" and (c["x"], c["y"], c["x2"], c["y2"]) in chev:
             assert c.get("visible_if") == "$item.navigates", (
                 f"chevron strokes must gate on $item.navigates (toggle rows flip in place), got {c}"
             )
-    name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [18, 18, 200, 20]), None)
+    name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [18, 16, 200, 22]), None)
     assert name is not None and name.get("visible_if") == "$item.is_row"
-    value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [222, 20, 174, 18]), None)
+    value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [270, 20, 174, 18]), None)
     assert value is not None and value.get("visible_if") == "$item.is_row"
 
 # ---------------------------------------------------------------------------
@@ -297,7 +297,7 @@ def test_settings_chrome_rects_match_spec():
     assert title_nodes, f"l2 must have title text rect [24,48,300,32] per spec §3. Nodes: {nodes[:3]} at {l2}"
     for tn in title_nodes:
         font = tn.get("font", "")
-        assert font == "ui_24_bold", f"l2 title font must be ui_24_bold, got {font} in {tn}"
+        assert font == "ui_18_bold", f"l2 title font must be ui_18_bold, got {font} in {tn}"
         txt = tn.get("text", "")
         assert txt == "$page.title" or txt == "设置" or txt.startswith("$"), f"l2 title must be $page.title, got {txt!r}"
 
@@ -308,46 +308,48 @@ def test_settings_chrome_rects_match_spec():
 
     line_nodes = [n for n in nodes if n.get("type") == "line"]
     assert line_nodes, "l2 must have a line node (hairline)"
-    chrome_lines = [ln for ln in line_nodes if ln.get("x") == 22 and ln.get("y") == 91 and ln.get("x2") == 458 and ln.get("y2") == 91]
-    assert chrome_lines, f"l2 must have hairline (22,91)-(458,91) width 1. Found lines: {line_nodes}"
+    chrome_lines = [ln for ln in line_nodes if ln.get("x") == 8 and ln.get("y") == 91 and ln.get("x2") == 472 and ln.get("y2") == 91]
+    assert chrome_lines, f"l2 must have hairline (8,91)-(472,91) width 2. Found lines: {line_nodes}"
     for ln in chrome_lines:
-        assert ln.get("width", 1) == 1, f"hairline width must be 1, got {ln.get('width')}"
+        assert ln.get("width", 1) == 2, f"hairline width must be 2, got {ln.get('width')}"
 
     repeats = [n for n in nodes if n.get("type") == "repeat"]
     assert repeats, "l2 must have a repeat"
     for r in repeats:
-        assert r.get("x") == 22 and r.get("y") == 126, f"l2 repeat x/y must be 22,126 per spec §3, got x={r.get('x')} y={r.get('y')}"
+        assert r.get("x") == 8 and r.get("y") == 130, f"l2 repeat x/y must be 8,130, got x={r.get('x')} y={r.get('y')}"
 
-    cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 1]
-    assert cards == [], f"l2 flat rows breathe on dividers (no window card), got {cards}"
+    cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 2]
+    assert cards == [[8, 130, 464, 522]], f"l2 window card must be static at y130, got {cards}"
+    assert not any(c.get("type") == "icon" for n in nodes if n.get("type") == "repeat" for c in n.get("children", [])), \
+        "L2 rows must not carry icons"
 
     r = next((n for n in nodes if n.get("type") == "repeat" and n.get("limit") == 9), None)
     assert r is not None, f"l2 must have repeat limit 9 at {l2}"
-    assert r.get("item_width") == 436 and r.get("item_height") == 52, f"l2 repeat item 436x52, got {r}"
+    assert r.get("item_width") == 464 and r.get("item_height") == 58, f"l2 repeat item 464x58, got {r}"
     assert r.get("gap") == 0, f"l2 gap 0, got {r.get('gap')}"
     children = r.get("children", [])
-    tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [4, 4, 428, 44]), None)
-    assert tick is not None, f"l2 repeat must have selected outline [4,4,428,44], children={children}"
+    tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 4, 460, 50]), None)
+    assert tick is not None, f"l2 repeat must have selected outline [2,4,460,50], children={children}"
     assert tick.get("stroke") == 1
-    assert tick.get("r", tick.get("radius", 0)) == 9
+    assert tick.get("r", tick.get("radius", 0)) == 0
     assert tick.get("fill") is True
     assert tick.get("visible_if") == "$item.selected"
-    name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [18, 18, 200, 20]), None)
-    assert name is not None, f"l2 must have setting name [18,18,200,20], children={children}"
+    name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [18, 16, 200, 22]), None)
+    assert name is not None, f"l2 must have setting name [18,16,200,22], children={children}"
     assert name.get("font") == "ui_18_regular", f"l2 name font ui_18_regular, got {name.get('font')}"
     assert name.get("visible_if") == "$item.is_row"
     assert not any(c.get("visible_if") == "$item.is_section" for c in children), "theme must not paint section rows"
-    value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [222, 20, 174, 18]), None)
-    assert value is not None, f"l2 must have value [222,20,174,18] (chevron reserve)"
+    value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [270, 20, 174, 18]), None)
+    assert value is not None, f"l2 must have value [270,20,174,18] (chevron reserve)"
     assert value.get("font") == "ui_14_regular"
     assert value.get("align") == "right", f"value align right, got {value.get('align')}"
     assert value.get("visible_if") == "$item.is_row"
     assert value.get("text") == "$item.value"
     chev = {(c["x"], c["y"], c["x2"], c["y2"]) for c in children
             if c.get("type") == "line" and c.get("visible_if") == "$item.navigates"
-            and c.get("width") == 2 and c.get("color") == "black"}
-    assert chev == {(418, 21, 423, 26), (423, 26, 418, 31)}, \
-        f"l2 repeat must carry exactly the 2-stroke > chevron gated on $item.navigates, got {chev}"
+            and c.get("width") == 3 and c.get("color") == "black"}
+    assert chev == {(447, 24, 453, 30), (453, 30, 447, 36)}, \
+        f"l2 repeat must carry exactly the 3-stroke > chevron gated on $item.navigates, got {chev}"
 
 def test_root_grouped_chrome_matches_spec():
     # Root-only grouped package: fixed 8-row catalog in 4 visual groups.
@@ -359,58 +361,55 @@ def test_root_grouped_chrome_matches_spec():
     assert theme.get("screen") == [480, 800]
 
     title = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 48, 300, 32]]
-    assert title and title[0].get("font") == "ui_24_bold" and title[0].get("text") == "$page.title"
+    assert title and title[0].get("font") == "ui_18_bold" and title[0].get("text") == "$page.title"
     brand = [n for n in nodes if n.get("type") == "text" and n.get("text") == "Murphy M4"]
     assert brand, "root must carry the Murphy M4 brand chrome"
     assert not [n for n in nodes if n.get("type") == "text" and n.get("text") == "简洁、克制、易读"], \
         "v5.1 root header carries no subtitle line"
-    hair = [n for n in nodes if n.get("type") == "line" and (n.get("x"), n.get("y"), n.get("x2"), n.get("y2")) == (22, 91, 458, 91)]
-    assert hair and hair[0].get("width", 1) == 1, "root hairline must be (22,91)-(458,91) width 1"
+    hair = [n for n in nodes if n.get("type") == "line" and (n.get("x"), n.get("y"), n.get("x2"), n.get("y2")) == (8, 91, 472, 91)]
+    assert hair and hair[0].get("width", 1) == 2, "root hairline must be (8,91)-(472,91) width 2"
 
     labels = [n.get("text") for n in nodes
-              if n.get("type") == "text" and n.get("font") == "ui_14_bold" and n.get("rect") in (
-                  [24, 105, 300, 20], [24, 205, 300, 20], [24, 363, 300, 20], [24, 579, 300, 20])]
+              if n.get("type") == "text" and n.get("font") == "ui_18_bold" and n.get("rect") in (
+                  [12, 105, 300, 24], [12, 205, 300, 24], [12, 363, 300, 24], [12, 579, 300, 24])]
     assert labels == ["连接与设备", "阅读与显示", "设备与操作", "系统与其他"], f"root group labels wrong: {labels}"
 
-    cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 1]
-    assert cards == [[22, 130, 436, 58], [22, 230, 436, 116], [22, 388, 436, 174], [22, 604, 436, 116]], \
+    cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 2]
+    assert cards == [[8, 130, 464, 58], [8, 230, 464, 116], [8, 388, 464, 174], [8, 604, 464, 116]], \
         f"root group cards wrong: {cards}"
     dividers = {(n.get("x"), n.get("y"), n.get("x2"), n.get("y2")) for n in nodes
-                if n.get("type") == "line" and n.get("width", 1) == 1
-                and (n.get("x"), n.get("x2")) == (58, 446)}
-    assert dividers == {(58, 288, 446, 288), (58, 446, 446, 446), (58, 504, 446, 504),
-                        (58, 662, 446, 662)}, f"root group dividers wrong: {dividers}"
+                if n.get("type") == "line" and n.get("width", 1) == 2
+                and (n.get("x"), n.get("x2")) == (64, 464)}
+    assert dividers == {(64, 288, 464, 288), (64, 446, 464, 446), (64, 504, 464, 504),
+                        (64, 662, 464, 662)}, f"root group dividers wrong: {dividers}"
 
     repeats = [n for n in nodes if n.get("type") == "repeat"]
     assert [(r.get("source"), r.get("limit"), r.get("x"), r.get("y"),
              r.get("item_width"), r.get("item_height"), r.get("gap")) for r in repeats] == [
-        ("$page.rows0", 1, 24, 130, 432, 58, 0),
-        ("$page.rows1", 2, 24, 230, 432, 58, 0),
-        ("$page.rows2", 3, 24, 388, 432, 58, 0),
-        ("$page.rows3", 2, 24, 604, 432, 58, 0),
+        ("$page.rows0", 1, 8, 130, 464, 58, 0),
+        ("$page.rows1", 2, 8, 230, 464, 58, 0),
+        ("$page.rows2", 3, 8, 388, 464, 58, 0),
+        ("$page.rows3", 2, 8, 604, 464, 58, 0),
     ], f"root group repeats wrong: {repeats}"
     assert sum(r.get("limit") for r in repeats) == 8, "root group limits must sum to the 8 catalog rows"
-    # Per-group v4 row geometry (item coords): icon box/label baseline/value
-    # anchor/chevron column. Baselines equal SVG values up to 2px (repeat
-    # shared children cannot express per-row 1px optical tweaks).
     v4_rows = {
-        "$page.rows0": {"icon": [15, 18, 18, 18], "name": [46, 18, 170, 20],
-                        "value": [220, 22, 174, 18],
-                        "chev": {(415, 24, 421, 30), (421, 30, 415, 36)}},
-        "$page.rows1": {"icon": [15, 15, 18, 18], "name": [46, 18, 170, 20],
-                        "value": [220, 22, 174, 18],
-                        "chev": {(415, 24, 421, 30), (421, 30, 415, 36)}},
-        "$page.rows2": {"icon": [15, 15, 18, 18], "name": [46, 18, 170, 20],
-                        "value": [220, 22, 174, 18],
-                        "chev": {(415, 24, 421, 30), (421, 30, 415, 36)}},
-        "$page.rows3": {"icon": [15, 15, 18, 18], "name": [46, 18, 170, 20],
-                        "value": [220, 22, 174, 18],
-                        "chev": {(415, 24, 421, 30), (421, 30, 415, 36)}},
+        "$page.rows0": {"icon": [8, 5, 48, 48], "name": [64, 16, 200, 22],
+                        "value": [270, 20, 174, 18],
+                        "chev": {(447, 24, 453, 30), (453, 30, 447, 36)}},
+        "$page.rows1": {"icon": [8, 5, 48, 48], "name": [64, 16, 200, 22],
+                        "value": [270, 20, 174, 18],
+                        "chev": {(447, 24, 453, 30), (453, 30, 447, 36)}},
+        "$page.rows2": {"icon": [8, 5, 48, 48], "name": [64, 16, 200, 22],
+                        "value": [270, 20, 174, 18],
+                        "chev": {(447, 24, 453, 30), (453, 30, 447, 36)}},
+        "$page.rows3": {"icon": [8, 5, 48, 48], "name": [64, 16, 200, 22],
+                        "value": [270, 20, 174, 18],
+                        "chev": {(447, 24, 453, 30), (453, 30, 447, 36)}},
     }
     for r in repeats:
         exp = v4_rows[r.get("source")]
         children = r.get("children", [])
-        tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 4, 428, 50]), None)
+        tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 4, 460, 50]), None)
         assert tick is not None and tick.get("stroke") == 1 and tick.get("r", -1) == 0 \
             and tick.get("fill") is True \
             and tick.get("visible_if") == "$item.selected", f"root rows keep the selected stipple field, got {children}"
@@ -426,7 +425,7 @@ def test_root_grouped_chrome_matches_spec():
             f"root row value wrong: {children}"
         chev = {(c["x"], c["y"], c["x2"], c["y2"]) for c in children
                 if c.get("type") == "line" and c.get("visible_if") == "$item.is_row"
-                and c.get("width") == 2}
+                and c.get("width") == 3}
         assert chev == exp["chev"], f"root chevron wrong: {chev}"
         assert not any(c.get("visible_if") == "$item.is_section" for c in children)
 
@@ -448,36 +447,36 @@ def test_maintenance_grouped_chrome_matches_spec():
     nodes = theme.get("nodes", [])
     assert theme.get("screen") == [480, 800]
 
-    title = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 40, 300, 32]]
-    assert title and title[0].get("font") == "ui_24_bold" and title[0].get("text") == "$page.title"
+    title = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 48, 300, 32]]
+    assert title and title[0].get("font") == "ui_18_bold" and title[0].get("text") == "$page.title"
     brand = [n for n in nodes if n.get("type") == "text" and n.get("text") == "Murphy M4"]
     assert brand, "maintenance must carry the Murphy M4 brand chrome"
-    hair = [n for n in nodes if n.get("type") == "line" and (n.get("x"), n.get("y"), n.get("x2"), n.get("y2")) == (23, 100, 456, 100)]
-    assert hair and hair[0].get("width", 1) == 1
-    label = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 108, 300, 20]]
-    assert label and label[0].get("text") == "设备维护" and label[0].get("font") == "ui_16_bold"
-    cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 1]
-    assert cards == [[22, 132, 436, 312]], f"maintenance card wrong: {cards}"
+    hair = [n for n in nodes if n.get("type") == "line" and (n.get("x"), n.get("y"), n.get("x2"), n.get("y2")) == (8, 91, 472, 91)]
+    assert hair and hair[0].get("width", 1) == 2
+    label = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [12, 105, 300, 24]]
+    assert label and label[0].get("text") == "设备维护" and label[0].get("font") == "ui_18_bold"
+    cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 2]
+    assert cards == [[8, 130, 464, 232]], f"maintenance card wrong: {cards}"
 
     repeats = [n for n in nodes if n.get("type") == "repeat"]
     assert len(repeats) == 1, f"maintenance must have exactly one flat repeat, got {repeats}"
     r = repeats[0]
     assert (r.get("source"), r.get("limit"), r.get("x"), r.get("y"),
             r.get("item_width"), r.get("item_height"), r.get("gap")) == \
-        ("$page.rows", 4, 24, 138, 432, 72, 4), f"maintenance repeat wrong: {r}"
+        ("$page.rows", 4, 8, 130, 464, 58, 0), f"maintenance repeat wrong: {r}"
     children = r.get("children", [])
-    tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 5, 428, 62]), None)
-    assert tick is not None and tick.get("stroke") == 1 and tick.get("r", 0) == 8 \
+    tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 4, 460, 50]), None)
+    assert tick is not None and tick.get("stroke") == 1 and tick.get("r", 0) == 0 \
         and tick.get("fill") is True and tick.get("visible_if") == "$item.selected"
-    name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [20, 13, 232, 22]), None)
-    assert name is not None and name.get("font") == "ui_16_bold" and name.get("visible_if") == "$item.is_row"
-    value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [260, 17, 148, 18]), None)
+    name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [18, 16, 200, 22]), None)
+    assert name is not None and name.get("font") == "ui_18_regular" and name.get("visible_if") == "$item.is_row"
+    value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [270, 20, 174, 18]), None)
     assert value is not None and value.get("font") == "ui_14_regular" \
         and value.get("align") == "right" and value.get("text") == "$item.value"
     chev = {(c["x"], c["y"], c["x2"], c["y2"]) for c in children
             if c.get("type") == "line" and c.get("visible_if") == "$item.is_row"
-            and c.get("width") == 2}
-    assert chev == {(416, 27, 426, 36), (426, 36, 416, 45)}, f"maintenance chevron wrong: {chev}"
+            and c.get("width") == 3}
+    assert chev == {(447, 24, 453, 30), (453, 30, 447, 36)}, f"maintenance chevron wrong: {chev}"
     bindings = theme.get("bindings", {})
     assert bindings.get("$page.title") == 70 and bindings.get("$page.rows") == 72 \
         and bindings.get("$item.value") == 74 and bindings.get("$item.selected") == 75 \
@@ -489,50 +488,51 @@ def _assert_grouped_child_chrome(path, label_text, card_rect, limit, radio=False
     theme = _load_json(path)
     nodes = theme.get("nodes", [])
     assert theme.get("screen") == [480, 800]
-    title = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 40, 300, 32]]
-    assert title and title[0].get("font") == "ui_24_bold" and title[0].get("text") == "$page.title"
+    title = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 48, 300, 32]]
+    assert title and title[0].get("font") == "ui_18_bold" and title[0].get("text") == "$page.title"
     brand = [n for n in nodes if n.get("type") == "text" and n.get("text") == "Murphy M4"]
     assert brand, f"{path} must carry the Murphy M4 brand chrome"
-    hair = [n for n in nodes if n.get("type") == "line" and (n.get("x"), n.get("y"), n.get("x2"), n.get("y2")) == (23, 100, 456, 100)]
-    assert hair and hair[0].get("width", 1) == 1
+    hair = [n for n in nodes if n.get("type") == "line" and (n.get("x"), n.get("y"), n.get("x2"), n.get("y2")) == (8, 91, 472, 91)]
+    assert hair and hair[0].get("width", 1) == 2
     if label_text is not None:
-        label = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [24, 108, 300, 20]]
-        assert label and label[0].get("text") == label_text and label[0].get("font") == "ui_16_bold"
-        cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 1]
+        label = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [12, 105, 300, 24]]
+        assert label and label[0].get("text") == label_text and label[0].get("font") == "ui_18_bold"
+        cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 2]
         assert cards == [card_rect], f"{path} card wrong: {cards}"
     repeats = [n for n in nodes if n.get("type") == "repeat"]
     assert len(repeats) == 1
     r = repeats[0]
     assert r.get("source") == "$page.rows" and r.get("limit") == limit
     assert (r.get("x"), r.get("y"), r.get("item_width"), r.get("item_height"), r.get("gap")) == \
-        (24, 138 if label_text is not None else 112, 432, 72, 4), f"{path} repeat wrong: {r}"
+        (8, 130, 464, 58, 0), f"{path} repeat wrong: {r}"
     children = r.get("children", [])
     if radio:
         assert not any(c.get("type") == "round_rect" and c.get("rect") == [0, 11, 8, 50] for c in children), \
             f"{path} choice rows must not carry the selected bar"
-        outer = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [30, 19, 34, 34]), None)
+        outer = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [18, 12, 34, 34]), None)
         assert outer is not None and outer.get("stroke") == 1 and outer.get("r") == 17 \
             and outer.get("visible_if") == "$item.is_row", f"{path} radio circle wrong: {children}"
         assert not any(c.get("type") == "round_rect" and c.get("rect") == [35, 24, 24, 24] for c in children), \
             f"{path} inner ring was replaced by the geometric hook: {children}"
-        assert not any(c.get("type") == "line" and c.get("width") == 2 for c in children), \
+        assert not any(c.get("type") == "line" and c.get("visible_if") == "$item.is_row"
+                       and abs(c.get("x2", 0) - c.get("x", 0)) <= 20 for c in children), \
             f"{path} choice rows must not carry a chevron"
-        outline = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 5, 428, 62]), None)
-        assert outline is not None and outline.get("stroke") == 1 and outline.get("r", 0) == 8 \
+        outline = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 4, 460, 50]), None)
+        assert outline is not None and outline.get("stroke") == 1 and outline.get("r", 0) == 0 \
             and outline.get("fill") is True and outline.get("visible_if") == "$item.selected", \
             f"{path} choice rows carry the restrained selected outline, got {children}"
     else:
-        tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 5, 428, 62]), None)
-        assert tick is not None and tick.get("stroke") == 1 and tick.get("r", 0) == 8 \
+        tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 4, 460, 50]), None)
+        assert tick is not None and tick.get("stroke") == 1 and tick.get("r", 0) == 0 \
             and tick.get("fill") is True and tick.get("visible_if") == "$item.selected"
         chev = {(c["x"], c["y"], c["x2"], c["y2"]) for c in children
                 if c.get("type") == "line" and c.get("visible_if") == "$item.is_row"
-                and c.get("width") == 2}
-        assert chev == {(416, 27, 426, 36), (426, 36, 416, 45)}, f"{path} chevron wrong: {chev}"
-    name_w = 172 if radio else 232
-    name_x = 76 if radio else 20
-    name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [name_x, 13, name_w, 22]), None)
-    assert name is not None and name.get("font") == "ui_16_bold" and name.get("visible_if") == "$item.is_row"
+                and c.get("width") == 3}
+        assert chev == {(447, 24, 453, 30), (453, 30, 447, 36)}, f"{path} chevron wrong: {chev}"
+    name_w = 200
+    name_x = 64 if radio else 18
+    name = next((c for c in children if c.get("type") == "text" and c.get("rect") == [name_x, 16, name_w, 22]), None)
+    assert name is not None and name.get("font") == "ui_18_regular" and name.get("visible_if") == "$item.is_row"
     if radio:
         # No ✓ text node (U+2713 is outside the device UI charset): the checked
         # cursor row carries a geometric hook instead; model still sets ✓.
@@ -541,9 +541,9 @@ def _assert_grouped_child_chrome(path, label_text, card_rect, limit, radio=False
         hook = {(c["x"], c["y"], c["x2"], c["y2"]) for c in children
                 if c.get("type") == "line" and c.get("visible_if") == "$item.selected"
                 and c.get("width") == 3 and c.get("color") == "black"}
-        assert hook == {(392, 28, 398, 34), (398, 34, 410, 22)}, f"{path} check hook wrong: {hook}"
+        assert hook == {(400, 22, 406, 28), (406, 28, 418, 16)}, f"{path} check hook wrong: {hook}"
         return
-    value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [260, 17, 148, 18]), None)
+    value = next((c for c in children if c.get("type") == "text" and c.get("rect") == [270, 20, 174, 18]), None)
     assert value is not None and value.get("font") == "ui_14_regular" \
         and value.get("align") == "right" and value.get("text") == "$item.value"
     bindings = theme.get("bindings", {})
@@ -556,13 +556,13 @@ def _assert_grouped_child_chrome(path, label_text, card_rect, limit, radio=False
 def test_frontlight_grouped_chrome_matches_spec():
     if not FRONT_JSON.is_file():
         pytest.skip("frontlight.json missing")
-    _assert_grouped_child_chrome(FRONT_JSON, "亮度与色温", [22, 132, 436, 160], 2)
+    _assert_grouped_child_chrome(FRONT_JSON, "亮度与色温", [8, 130, 464, 116], 2)
 
 
 def test_keys_grouped_chrome_matches_spec():
     if not KEYS_JSON.is_file():
         pytest.skip("keys.json missing")
-    _assert_grouped_child_chrome(KEYS_JSON, "按键功能", [22, 132, 436, 464], 6)
+    _assert_grouped_child_chrome(KEYS_JSON, "按键功能", [8, 130, 464, 348], 6)
 
 
 def test_choice_radio_chrome_matches_spec():

@@ -296,13 +296,17 @@ void Bridge::poll() {
   // is not stuck across many e-ink-blocked loops. Cap keeps the owner loop fair.
   constexpr int kRxBudget = 1024;
   if (!auth_.shouldExecuteFrames()) {
-    // Boundedly discard CDC RX so the buffer cannot arm commands after enable.
+    // Parse framed req/chk and NAK usb_debug_off. Never execute, never keep-awake.
     int budget = kRxBudget;
     while (budget-- > 0 && Serial.available() > 0) {
-      (void)Serial.read();
+      const int b = Serial.read();
+      if (b < 0) break;
+      bool lineReady = false;
+      intake_.feed(static_cast<char>(b), lineReady);
+      if (!lineReady) continue;
+      handleUnauthorizedLine(intake_.buf);
+      intake_.clearAfterHandle();
     }
-    intake_.reset();
-    intake_.discardUntilNewline = false;
     return;
   }
   if (enableRxDrainPending_) {
@@ -364,6 +368,18 @@ bool Bridge::parseFrame(const char* line, char* reqIdOut, size_t reqIdCap, char*
   while (*p == ' ') ++p;
   *payloadStart = p;
   return true;
+}
+
+void Bridge::handleUnauthorizedLine(const char* line) {
+  char reqId[kMaxReqIdLen + 1] = {};
+  char kind[8] = {};
+  const char* payload = nullptr;
+  if (!parseFrame(line, reqId, sizeof(reqId), kind, sizeof(kind), &payload)) return;
+  if (!M4SerialDebugPolicy::isValidReqId(reqId)) return;
+  const char* err = M4SerialDebugPolicy::unauthorizedFrameError(kind);
+  if (!err) return;
+  replyErr(reqId, err, M4SerialDebugPolicy::kUnauthorizedErrorMessage);
+  Serial.flush();
 }
 
 void Bridge::handleLine(const char* line) {

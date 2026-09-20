@@ -10,6 +10,7 @@
 #include "fontIds.h"
 #include <EpdFontFamily.h>
 #include "util/M4FixedRuntimeUiFonts.h"
+#include "components/icons/settings_row.h"
 
 namespace UiScene {
 
@@ -99,8 +100,9 @@ class GfxSceneRenderer {
     return best;
   }
 
-  // Builtin 1-bit geometric icons use the same primitives as the scene.
-  // They are only a fallback for named icon nodes without a bitmap asset.
+  // Named settings-row icons: 48x48 1-bpp stamps (0=ink). Fallback if no asset.
+  // Arrays are packed 90° CW so drawIcon's portrait framebuffer mapping is upright.
+  static constexpr int kSettingsRowIconSize = 48;
   template <typename Gfx>
   static void drawBuiltinIcon(const Gfx& gfx,
                               const UiSceneRuntime::RenderEvent& ev) {
@@ -111,93 +113,24 @@ class GfxSceneRenderer {
     }
     name[n] = '\0';
     if (n == 0) return;
-    const int x = ev.rect.x + (ev.rect.width - 20) / 2;
-    const int y = ev.rect.y + (ev.rect.height - 20) / 2;
-    if (std::strcmp(name, "wifi") == 0) {
-      gfx.drawLine(x + 0, y + 6, x + 4, y + 3, 2, true);
-      gfx.drawLine(x + 4, y + 3, x + 9, y + 2, 2, true);
-      gfx.drawLine(x + 9, y + 2, x + 14, y + 3, 2, true);
-      gfx.drawLine(x + 14, y + 3, x + 18, y + 6, 2, true);
-      gfx.drawLine(x + 4, y + 10, x + 6, y + 8, 2, true);
-      gfx.drawLine(x + 6, y + 8, x + 9, y + 7, 2, true);
-      gfx.drawLine(x + 9, y + 7, x + 12, y + 8, 2, true);
-      gfx.drawLine(x + 12, y + 8, x + 14, y + 10, 2, true);
-      gfx.fillRect(x + 8, y + 13, 2, 2, true);
+    const int s = ev.rect.width < ev.rect.height ? ev.rect.width : ev.rect.height;
+    if (s < 8) return;
+    const int x0 = ev.rect.x + (ev.rect.width - kSettingsRowIconSize) / 2;
+    const int y0 = ev.rect.y + (ev.rect.height - kSettingsRowIconSize) / 2;
+    const uint8_t* bmp = nullptr;
+    if (std::strcmp(name, "wifi") == 0) bmp = SettingsRowWifiIcon;
+    else if (std::strcmp(name, "sun") == 0) bmp = SettingsRowSunIcon;
+    else if (std::strcmp(name, "book") == 0) bmp = SettingsRowBookIcon;
+    else if (std::strcmp(name, "sleep") == 0) bmp = SettingsRowSleepIcon;
+    else if (std::strcmp(name, "lock") == 0) bmp = SettingsRowLockIcon;
+    else if (std::strcmp(name, "keys") == 0) bmp = SettingsRowKeysIcon;
+    else if (std::strcmp(name, "tune") == 0) bmp = SettingsRowTuneIcon;
+    else if (std::strcmp(name, "sliders") == 0) bmp = SettingsRowSlidersIcon;
+    if (bmp) {
+      gfx.drawIcon(bmp, x0, y0, kSettingsRowIconSize, kSettingsRowIconSize);
       return;
     }
-    if (std::strcmp(name, "sun") == 0) {
-      gfx.drawRoundedRect(x + 3, y + 3, 14, 14, 2, 7, true);
-      gfx.drawLine(x + 9, y + 0, x + 9, y + 2, 2, true);
-      gfx.drawLine(x + 9, y + 17, x + 9, y + 19, 2, true);
-      gfx.drawLine(x + 0, y + 9, x + 2, y + 9, 2, true);
-      gfx.drawLine(x + 17, y + 9, x + 19, y + 9, 2, true);
-      gfx.fillRect(x + 9, y + 9, 2, 2, true);
-      return;
-    }
-    if (std::strcmp(name, "book") == 0) {
-      gfx.drawLine(x + 9, y + 3, x + 9, y + 19, 2, true);
-      gfx.drawLine(x + 1, y + 1, x + 9, y + 3, 2, true);
-      gfx.drawLine(x + 1, y + 17, x + 9, y + 19, 2, true);
-      gfx.drawLine(x + 1, y + 1, x + 1, y + 17, 2, true);
-      gfx.drawLine(x + 9, y + 3, x + 17, y + 1, 2, true);
-      gfx.drawLine(x + 9, y + 19, x + 17, y + 17, 2, true);
-      gfx.drawLine(x + 17, y + 1, x + 17, y + 17, 2, true);
-      return;
-    }
-    if (std::strcmp(name, "sleep") == 0) {
-      gfx.drawLine(x + 4, y + 5, x + 2, y + 9, 2, true);
-      gfx.drawLine(x + 2, y + 9, x + 3, y + 13, 2, true);
-      gfx.drawLine(x + 3, y + 13, x + 6, y + 16, 2, true);
-      gfx.drawLine(x + 6, y + 16, x + 10, y + 17, 2, true);
-      gfx.drawLine(x + 10, y + 17, x + 14, y + 16, 2, true);
-      gfx.drawLine(x + 14, y + 16, x + 16, y + 15, 2, true);
-      gfx.drawLine(x + 16, y + 15, x + 14, y + 12, 2, true);
-      gfx.drawLine(x + 14, y + 12, x + 13, y + 8, 2, true);
-      gfx.drawLine(x + 13, y + 8, x + 10, y + 5, 2, true);
-      gfx.drawLine(x + 10, y + 5, x + 4, y + 5, 2, true);
-      gfx.drawLine(x + 14, y + 1, x + 19, y + 1, 2, true);
-      gfx.drawLine(x + 19, y + 1, x + 14, y + 6, 2, true);
-      gfx.drawLine(x + 14, y + 6, x + 19, y + 6, 2, true);
-      return;
-    }
-    if (std::strcmp(name, "lock") == 0) {
-      gfx.drawLine(x + 6, y + 7, x + 6, y + 3, 2, true);
-      gfx.drawLine(x + 6, y + 3, x + 8, y + 1, 2, true);
-      gfx.drawLine(x + 8, y + 1, x + 12, y + 1, 2, true);
-      gfx.drawLine(x + 12, y + 1, x + 14, y + 3, 2, true);
-      gfx.drawLine(x + 14, y + 3, x + 14, y + 7, 2, true);
-      gfx.drawRect(x + 2, y + 7, 16, 12, true);
-      gfx.fillRect(x + 9, y + 12, 2, 2, true);
-      return;
-    }
-    if (std::strcmp(name, "keys") == 0) {
-      gfx.drawRoundedRect(x + 1, y + 3, 18, 14, 2, 3, true);
-      gfx.drawLine(x + 6, y + 7, x + 6, y + 13, 2, true);
-      gfx.drawLine(x + 3, y + 10, x + 9, y + 10, 2, true);
-      gfx.fillRect(x + 14, y + 8, 2, 2, true);
-      gfx.fillRect(x + 16, y + 11, 2, 2, true);
-      return;
-    }
-    if (std::strcmp(name, "tune") == 0) {
-      gfx.drawLine(x + 14, y + 2, x + 11, y + 5, 2, true);
-      gfx.drawLine(x + 11, y + 5, x + 8, y + 9, 2, true);
-      gfx.drawLine(x + 8, y + 9, x + 1, y + 16, 2, true);
-      gfx.drawLine(x + 1, y + 16, x + 6, y + 19, 2, true);
-      gfx.drawLine(x + 6, y + 19, x + 12, y + 13, 2, true);
-      gfx.drawLine(x + 12, y + 13, x + 15, y + 10, 2, true);
-      gfx.drawLine(x + 15, y + 10, x + 18, y + 7, 2, true);
-      gfx.drawLine(x + 18, y + 7, x + 14, y + 10, 2, true);
-      gfx.drawLine(x + 14, y + 10, x + 11, y + 7, 2, true);
-      gfx.drawLine(x + 11, y + 7, x + 14, y + 2, 2, true);
-      return;
-    }
-    if (std::strcmp(name, "sliders") == 0) {
-      gfx.fillRect(x + 2, y + 8, 3, 3, true);
-      gfx.fillRect(x + 9, y + 8, 3, 3, true);
-      gfx.fillRect(x + 16, y + 8, 3, 3, true);
-      return;
-    }
-    gfx.drawRect(x, y, ev.rect.width, ev.rect.height, 1, true);
+    gfx.drawRect(ev.rect.x, ev.rect.y, s, s, 1, true);
   }
 
   template <typename Gfx>
@@ -316,6 +249,23 @@ class GfxSceneRenderer {
       return dx*dx + dy*dy <= r*r;
     }
     return true;
+  }
+
+  template <typename Gfx>
+  static void drawCoverPlaceholder(const Gfx& gfx, const UiSceneRuntime::RenderEvent& ev) {
+    const int x = ev.rect.x;
+    const int y = ev.rect.y;
+    const int w = ev.rect.width;
+    const int h = ev.rect.height;
+    if (w <= 0 || h <= 0) return;
+    const int r = ev.radius > 0 ? ev.radius : 4;
+    gfx.drawRoundedRect(x, y, w, h, 1, r, true);
+    const int inset = 4;
+    if (w > inset * 2 && h > inset * 2) {
+      gfx.drawLine(x + inset, y + inset, x + w - inset - 1, y + h - inset - 1, 1, true);
+      gfx.drawLine(x + w - inset - 1, y + inset, x + inset, y + h - inset - 1, 1, true);
+      gfx.fillRect(x + 3, y + inset, 3, h - inset * 2, true);
+    }
   }
 
   // Cover rendering: aspect-fill (preserve aspect, center-crop), rounded clipping, 1px outer stroke last.
@@ -480,21 +430,17 @@ class GfxSceneRenderer {
             if (a && a->valid()) {
               drawCoverAsset(gfx, *a, ev);
             } else {
-              // Fallback placeholder: 1px border
-              gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
+              drawCoverPlaceholder(gfx, ev);
             }
           } else if (ev.text.size > 0) {
-            // Text fallback (path) — still attempt asset by item index if available
             const UiSceneAsset* a = assets.get(assetKey(ev));
             if (a && a->valid()) {
               drawCoverAsset(gfx, *a, ev);
             } else {
-              // Placeholder: draw rect + first glyph
-              gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
-              // optional: draw first glyph centered — keep minimal for test
+              drawCoverPlaceholder(gfx, ev);
             }
           } else {
-            gfx.drawRect(ev.rect.x, ev.rect.y, ev.rect.width, ev.rect.height, 1, true);
+            drawCoverPlaceholder(gfx, ev);
           }
           break;
         }
@@ -631,9 +577,9 @@ class GfxSceneRenderer {
             break;
           }
           case UiScene::kNodeCover: {
-            if(ev.assetBinding!=kInvalidBindingId){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);}
-            else if(ev.text.size>0){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);}
-            else gfx.drawRect(ev.rect.x,ev.rect.y,ev.rect.width,ev.rect.height,1,true);
+            if(ev.assetBinding!=kInvalidBindingId){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else GfxSceneRenderer::drawCoverPlaceholder(gfx, ev);}
+            else if(ev.text.size>0){ auto a=assets.get(GfxSceneRenderer::assetKey(ev)); if(a&&a->valid()) GfxSceneRenderer::drawCoverAsset(gfx,*a,ev); else GfxSceneRenderer::drawCoverPlaceholder(gfx, ev);}
+            else GfxSceneRenderer::drawCoverPlaceholder(gfx, ev);
             break;
           }
           case UiScene::kNodeProgress: {

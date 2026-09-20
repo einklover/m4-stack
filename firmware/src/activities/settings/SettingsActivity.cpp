@@ -152,6 +152,7 @@ void SettingsActivity::onEnter() {
 #ifdef CROSSPOINT_MURPHY_M4
   appendAction(allSettings_, L(Str::kDeveloperOptions), "developerOptions");
   appendAction(allSettings_, L(Str::kSwitchBootSlot), "switchBootSlot");
+  appendAction(allSettings_, L(Str::kUiFontFamily), "uiFontFamily");
 #endif
 
   navState_ = SettingsNavState{};
@@ -201,10 +202,7 @@ void SettingsActivity::handleBack() {
     return;
   }
   if (ui_.page == M4SettingsPageKind::ChildList) {
-    char parent[32]{};
-    m4SettingsCopyKey(parent, (int)sizeof(parent), ui_.parentKey);
-    m4SettingsUiEnterRoot(ui_);
-    m4SettingsUiSelectKey(ui_, parent);
+    m4SettingsUiBackFromChildList(ui_);
     m4SettingsPaintResetFull(paint_, ui_);
     rebuildModel();
     updateRequired = true;
@@ -286,7 +284,8 @@ void SettingsActivity::loop() {
       const bool pageDown = swipe == MappedInputManager::SwipeDir::Up;
       const int oldSlot = ui_.selectedSlot;
       const int oldWin = ui_.windowStart;
-      int next = M4ListTouchPolicy::applyPage(ui_.selectedSlot, count, 8, pageDown);
+      const int pageItems = 8;
+      int next = M4ListTouchPolicy::applyPage(ui_.selectedSlot, count, pageItems, pageDown);
       next = m4SettingsNavMoveClamp(next, 0, count);
       m4SettingsUiMove(ui_, next - oldSlot);
       if (ui_.page == M4SettingsPageKind::Root) {
@@ -308,8 +307,6 @@ void SettingsActivity::loop() {
       // Advanced hit uses the group Y table (same table the rows paint);
       // every other list keeps the contiguous whole-row helper.
       const int hit = (ui_.page == M4SettingsPageKind::Root) ? m4SettingsRootRowHit(tx, ty, 480)
-                      : m4SettingsUiIsAdvancedPage(ui_)     ? m4SettingsAdvancedRowHit(tx, ty,
-                                                                                       ui_.windowStart)
                                                             : m4SettingsWholeRowHit(
                                                                   tx, ty, 0,
                                                                   m4SettingsUiContentOriginY(ui_),
@@ -391,9 +388,7 @@ void SettingsActivity::rebuildModel() {
     sceneModel_.clearWindow();
     const char* title = "设置";
     if (ui_.page == M4SettingsPageKind::ChildList) {
-      const M4SettingsRow* parent =
-          m4SettingsRowByKey(m4SettingsRootCatalog(), kM4SettingsRootCount, ui_.parentKey);
-      if (parent && parent->titleZh) title = parent->titleZh;
+      title = m4SettingsChildListTitle(ui_.parentKey);
     } else if (ui_.page == M4SettingsPageKind::Choice) {
       const SettingInfo* info = findSettingByKey(ui_.choiceKey[0] ? ui_.choiceKey : ui_.selectedKey);
       title = info && info->name ? info->name : "选择";
@@ -424,7 +419,9 @@ void SettingsActivity::rebuildModel() {
         // flip where they stand (value, no chevron). Other L2 pages keep
         // today's paint (navigates defaults to true).
         bool navigates = true;
-        if (m4SettingsUiIsAdvancedPage(ui_)) {
+        if (m4SettingsChildCount(row->key) > 0) {
+          navigates = true;
+        } else if (m4SettingsUiIsAdvancedFamily(ui_)) {
           navigates = row->control != M4SettingsControl::Toggle;
           if (navigates && info && info->type == SettingType::ENUM &&
               (int)info->enumValues.size() < 3 && row->control != M4SettingsControl::Choice) {
@@ -434,13 +431,6 @@ void SettingsActivity::rebuildModel() {
         sceneModel_.setWindowRow((uint8_t)i, row->key, rowTitle, value.c_str(), false,
                                  idx == ui_.selectedSlot, navigates);
       }
-    }
-    if (m4SettingsUiIsAdvancedPage(ui_)) {
-      // Rows are painted by the C++ group layout below (section gaps need
-      // per-group Y the uniform scene repeat cannot express): hide the scene
-      // rows so the repeat paints chrome only. Snapshot rows stay filled for
-      // the C++ painter.
-      sceneModel_.setWindowCount(0);
     }
   }
   sceneModel_.publish();
@@ -496,6 +486,12 @@ std::string SettingsActivity::valueTextForSetting(const SettingInfo& info) const
 }
 
 std::string SettingsActivity::liveValueForKey(const char* key) const {
+  if (key && std::strcmp(key, "uiFontFamily") == 0) {
+    if (SETTINGS.getUiFontFamily() == CrossPointSettings::FONT_CUSTOM && SETTINGS.uiCustomFontFamily[0]) {
+      return SETTINGS.uiCustomFontFamily;
+    }
+    return L(Str::kSystemFace);
+  }
   const SettingInfo* info = findSettingByKey(key);
   if (!info) return {};
   return valueTextForSetting(*info);
@@ -623,6 +619,11 @@ void SettingsActivity::launchAction(const SettingInfo& setting) {
 #endif
   } else if (strcmp(k, "wifi") == 0) {
     enterNewActivity(new WifiSelectionActivity(renderer, mappedInput, [restore](bool) { restore(); }));
+#ifdef CROSSPOINT_MURPHY_M4
+  } else if (strcmp(k, "uiFontFamily") == 0) {
+    enterNewActivity(new FontSelectionActivity(renderer, mappedInput, [restore](bool) { restore(); },
+                                               FontSelectionActivity::Target::SystemUi));
+#endif
   } else {
     xSemaphoreGive(renderingMutex);
     return;
@@ -635,6 +636,26 @@ void SettingsActivity::toggleCurrentSetting() {
   if (!key || !key[0]) {
     key = navState_.selectedKey[0] ? navState_.selectedKey : nullptr;
   }
+  if (key && m4SettingsChildCount(key) > 0 &&
+      (ui_.page == M4SettingsPageKind::Root || ui_.page == M4SettingsPageKind::ChildList)) {
+    if (std::strcmp(key, "wifi") == 0) {
+      SettingInfo wifi = SettingInfo::Action("Wi-Fi");
+      wifi.key = "wifi";
+      launchAction(wifi);
+      return;
+    }
+    if (std::strcmp(key, "readerLayout") == 0) {
+      const SettingInfo* info = findSettingByKey(key);
+      if (info) launchAction(*info);
+      return;
+    }
+    m4SettingsUiOpenChildList(ui_, key);
+    m4SettingsPaintResetFull(paint_, ui_);
+    rebuildModel();
+    updateRequired = true;
+    return;
+  }
+
   if (isRootDoorKey(key) && ui_.page == M4SettingsPageKind::Root) {
     if (std::strcmp(key, "wifi") == 0) {
       SettingInfo wifi = SettingInfo::Action("Wi-Fi");
@@ -826,113 +847,21 @@ void SettingsActivity::render() const {
   }
 
   const int count = m4SettingsUiVisibleCount(ui_);
-  const bool isAdvanced = m4SettingsUiIsAdvancedPage(ui_);
-  const int winCap = isAdvanced ? 9 : 8;
+  const int winCap = 8;
   if (count > winCap) {
-    // Advanced v5.1: fixed short 34px 1px thumb at x470, no track.
-    // Every other page keeps its restrained proportional thumb.
-    const int barW = isAdvanced ? 1 : 4;
-    const int barX = isAdvanced ? 470 : 468;
-    const int trackY = isAdvanced ? kM4SettingsAdvancedOriginY : kM4SettingsL2OriginY;
+    const int barW = 4;
+    const int barX = 468;
+    const int trackY = m4SettingsUiContentOriginY(ui_);
     const int itemH = m4SettingsUiListItemH(ui_);
     const int itemGap = m4SettingsUiListItemGap(ui_);
     const int trackH = winCap * itemH + (winCap - 1) * itemGap;
-    // v5.1 spec short thumb; Y stays proportional to windowStart below.
-    int thumbH = isAdvanced ? 34 : (trackH * 8) / count;
+    int thumbH = (trackH * 8) / count;
     if (thumbH < 24) thumbH = 24;
     if (thumbH > trackH) thumbH = trackH;
     const int maxStart = count - winCap;
     int thumbY = trackY;
     if (maxStart > 0) thumbY = trackY + ((trackH - thumbH) * ui_.windowStart) / maxStart;
-    // Restrained indicator: thumb only, no track line.
     renderer.fillRect(barX, thumbY, barW, thumbH, true);
-  }
-
-  // Advanced groups, paint-only. Group intervals live in
-  // kM4SettingsAdvancedGroupStarts (shared with touch/tests); order/count/
-  // selection/window math never see groups.
-  // Group names reuse the real subtitle classification (no invented titles).
-  static constexpr const char* kAdvGroupNames[] = {"显示与刷新", "图标与文字", "动画",
-                                                   "连接与同步", "系统"};
-  if (isAdvanced) {
-    // Group-layout row paint (layout-v5.1-advanced): the scene repeat is
-    // empty for this page (see rebuildModel) and rows are painted here at
-    // the shared Y table with the exact l2 row geometry (436x52 pitch,
-    // title/value/divider/chevron rects, NOTOSANS_18/14 faces). Boundary
-    // slots also draw the new group's section title in the 42px gap.
-    const int advSlots = count - ui_.windowStart < 9 ? count - ui_.windowStart : 9;
-    for (int i = 0; i < advSlots; ++i) {
-      const auto& row = snap.window[i];
-      if (!row.isRow) continue;
-      const int ry = m4SettingsAdvancedRowY(ui_.windowStart, i);
-      constexpr int kRowX = 22;
-      // v5.3 B: stipple field only; the card already draws the border.
-      if (row.selected) {
-        renderer.fillRectStipple(kRowX + 8, ry + 8, 420, 36);
-      }
-      char titleBuf[256]{};
-      char valueBuf[256]{};
-      auto copyRef = [&](SettingsScene::SettingsTextRef ref, char* out) {
-        auto tv = snap.textView(ref);
-        size_t n = tv.size < 255 ? tv.size : 255;
-        for (size_t k = 0; k < n; ++k) out[k] = static_cast<char>(tv.readByte(static_cast<uint16_t>(k)));
-      };
-      copyRef(row.title, titleBuf);
-      copyRef(row.value, valueBuf);
-      drawAdvancedRowText(renderer, NOTOSANS_18_FONT_ID, kRowX + 18, ry + 18, 200, titleBuf, false);
-      drawAdvancedRowText(renderer, NOTOSANS_14_FONT_ID, kRowX + 222, ry + 20, 174, valueBuf, true);
-      renderer.drawLine(kRowX + 18, ry + 51, kRowX + 424, ry + 51, true);
-      if (row.navigates) {
-        renderer.drawLine(kRowX + 418, ry + 21, kRowX + 423, ry + 26, 2, true);
-        renderer.drawLine(kRowX + 423, ry + 26, kRowX + 418, ry + 31, 2, true);
-      }
-      if (m4SettingsAdvancedSlotStartsGroup(ui_.windowStart, i)) {
-        const int g = m4SettingsAdvancedGroupOf(ui_.windowStart + i);
-        const int baseline = ry - kM4SettingsAdvancedSectionGap +
-                             kM4SettingsAdvancedSectionTitleBaselineDy;
-        const int top = baseline - renderer.getLineHeight(UI_12_FONT_ID);
-        M4UiText::draw(renderer, UI_12_FONT_ID, 24, top, kAdvGroupNames[g], true, EpdFontFamily::BOLD);
-      }
-    }
-  }
-  const int advVisible = count - ui_.windowStart < 9 ? count - ui_.windowStart : 9;
-  if (isAdvanced && ui_.windowStart == 0) {
-    // First-screen legend: G0's section + card (v5.1: 5 rows x 52px).
-    const int sectionTop = 116 - renderer.getLineHeight(UI_12_FONT_ID);
-    M4UiText::draw(renderer, UI_12_FONT_ID, 24, sectionTop, "阅读与刷新", true, EpdFontFamily::BOLD);
-    renderer.drawRoundedRect(22, 126, 436, 260, 1, 10, true);
-  }
-
-  // Sticky group title for scrolled windows, paint-only: the y92-126 zone
-  // is always empty (rows start at 126), so the top visible row's real group
-  // is named there without moving any row.
-  if (isAdvanced && ui_.windowStart > 0) {
-    int g = m4SettingsAdvancedGroupOf(ui_.windowStart);
-    const int sectionTop = 116 - renderer.getLineHeight(UI_12_FONT_ID);
-    M4UiText::draw(renderer, UI_12_FONT_ID, 24, sectionTop, kAdvGroupNames[g], true,
-                   EpdFontFamily::BOLD);
-  }
-
-  if (isAdvanced) {
-    // One shared light container per visible group segment, clipped to the
-    // viewport by construction (only visible slots): corners round only
-    // where the group truly starts/ends. G0 at windowStart==0 is covered
-    // by the legend card above, so it is skipped, never double-drawn.
-    for (int g = 0; g < kM4SettingsAdvancedGroupCount; ++g) {
-      const int gs = kM4SettingsAdvancedGroupStarts[g];
-      const int ge = (g + 1 < kM4SettingsAdvancedGroupCount) ? kM4SettingsAdvancedGroupStarts[g + 1] : count;
-      const int s0 = gs > ui_.windowStart ? gs : ui_.windowStart;
-      const int end = ui_.windowStart + advVisible;
-      const int s1 = ge < end ? ge : end;
-      if (s0 >= s1) continue;
-      if (ui_.windowStart == 0 && g == 0) continue;
-      const int y0 = m4SettingsAdvancedRowY(ui_.windowStart, s0 - ui_.windowStart);
-      const int y1 =
-          m4SettingsAdvancedRowY(ui_.windowStart, s1 - ui_.windowStart - 1) + kM4SettingsAdvancedItemH;
-      const bool rt = (s0 == gs);
-      const bool rb = (s1 == ge);
-      renderer.drawRoundedRect(22, y0, 436, y1 - y0, 1, 12, rt, rt, rb, rb, true);
-    }
   }
 
   // Apple-minimal: no persistent footer/hint bar on normal list pages.

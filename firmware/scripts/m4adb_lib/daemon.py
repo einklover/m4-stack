@@ -1,51 +1,86 @@
 """Persistent USB-Serial/JTAG bridge for m4adb.
 
 The ESP32-S3 can reset when a CDC handle is opened repeatedly.  This module
-keeps exactly one SerialTransport open and exposes a 0600 Unix socket; CLI
+keeps exactly one transport open and exposes a 0600 Unix socket; CLI
 invocations use the socket and never reopen the hardware port.
 
 Guarantees:
-  * Single instance per port: a second `serve()` on the same socket path
-    exits immediately unless the existing daemon is dead (stale socket).
-  * Auto-reconnect: if the device resets or the USB handle dies, the daemon
-    keeps serving the socket and periodically reopens the serial port with
-    bounded backoff. Clients only ever see a momentary timeout, never a
-    "daemon disconnected" that requires manual restart.
+  * Single instance per port: ``fcntl.flock`` on ``/tmp/m4adb-<digest>.lock``.
+    A second ``serve()`` exits immediately (code 2) without touching serial.
+  * No handshake in the daemon: it does not ping / wait_ready.  Clients do.
+  * No reconnect-on-timeout: a quiet or unauthorized device is not "dead".
+    Serial is reopened only after the port node vanished and reappeared,
+    with timestamp backoff (the accept loop is never blocked on sleep).
+  * Many CLI peers: listen backlog 32, line-buffered TX, RX broadcast.
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
 import select
 import socket
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
-from .transport import make_transport
+from .owner import ExclusivePortLock, owner_paths, socket_path_for_port
+from .transport import make_transport, port_node_present
 
-
-def socket_path_for_port(port: str) -> Path:
-    """Return a stable, per-port socket path without leaking the full path."""
-    digest = hashlib.sha1(port.encode("utf-8", errors="replace")).hexdigest()[:12]
-    return Path("/tmp") / f"m4adb-{digest}.sock"
+# Re-export: waveform_lab / screen viewer import these from daemon.
+__all__ = [
+    "BridgeDaemon",
+    "DaemonTransport",
+    "daemon_alive",
+    "socket_path_for_port",
+    "stop_daemon",
+    "serial_port_alive",
+    "should_reopen_serial",
+]
 
 
 def serial_port_alive(transport) -> bool:
-    """Probe whether the underlying serial port still responds.  A transient
-    e-ink refresh stall keeps the port open (in_waiting works, read may be
-    empty); a removed/unplugged device raises immediately."""
+    """Probe whether the underlying serial/pipe handle still responds."""
+    fn = getattr(transport, "alive", None)
+    if callable(fn):
+        try:
+            return bool(fn())
+        except Exception:  # noqa: BLE001
+            return False
     try:
         ser = getattr(transport, "_ser", None)
         if ser is not None:
             _ = ser.in_waiting
             return True
-        # PipeTransport: open FIFOs are enough; there is no pyserial handle.
-        return getattr(transport, "_fd_in", None) is not None
+        if getattr(transport, "_fd_in", None) is not None:
+            return True
+        # Custom/test transports without pyserial internals stay open until
+        # write/read fails or they implement alive().
+        return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def should_reopen_serial(
+    *,
+    serial_open: bool,
+    port_present: bool,
+    last_attempt: float,
+    now: float,
+    delay: float,
+) -> bool:
+    """Reopen only when we have no handle, the node exists, and backoff elapsed.
+
+    Ping timeout is intentionally not an input.  A live handle is never
+    replaced just because the firmware is quiet or unauthorized.
+    """
+    if serial_open:
+        return False
+    if not port_present:
+        return False
+    if last_attempt > 0.0 and (now - last_attempt) < delay:
+        return False
+    return True
 
 
 class DaemonTransport:
@@ -96,7 +131,10 @@ def daemon_alive(path: Path, timeout: float = 0.25) -> bool:
 
 
 def stop_daemon(path: Path, timeout: float = 1.0) -> bool:
-    """Ask a daemon to stop; returns false when no daemon is listening."""
+    """Ask a daemon to stop; returns false when no daemon is listening.
+
+    Only ``m4adb daemon_stop`` should call this.  A ping timeout must not.
+    """
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(timeout)
@@ -109,36 +147,57 @@ def stop_daemon(path: Path, timeout: float = 1.0) -> bool:
 
 
 class BridgeDaemon:
-    """Single-owner serial forwarder with automatic serial reconnection.
+    """Single-owner serial forwarder with multiplexed CLI peers.
 
-    The Unix socket stays bound for the daemon's lifetime.  When the device
-    disappears (USB unplug, reset after flash, CDC handle death), the daemon
-    does NOT exit: it keeps accepting clients (they get a controlled error or
-    timeout) and retries opening the serial port with bounded backoff until
-    the device returns.
+    The Unix socket stays bound for the daemon's lifetime.  Serial is opened
+    once and kept.  Reopen happens only after the port node disappears and
+    comes back — never because a client handshake timed out.
     """
 
-    #: Serial reopen backoff bounds (seconds).
-    RECONNECT_BASE_DELAY = 0.5
-    RECONNECT_MAX_DELAY = 8.0
+    RECONNECT_BASE_DELAY = 2.0
+    RECONNECT_MAX_DELAY = 30.0
+    LISTEN_BACKLOG = 32
+    PEER_BUF_MAX = 65536
 
-    def __init__(self, port: str, baud: int, path: Path) -> None:
+    def __init__(
+        self,
+        port: str,
+        baud: int,
+        path: Path,
+        transport_factory: Optional[Callable[[], object]] = None,
+        lock: Optional[ExclusivePortLock] = None,
+    ) -> None:
         self.port = port
         self.baud = int(baud)
         self.path = Path(path)
-        self.serial: Optional[SerialTransport] = None
+        self._transport_factory = transport_factory
+        self._lock = lock
+        self.serial = None
         self.listener: Optional[socket.socket] = None
-        self.peer: Optional[socket.socket] = None
+        self.peers: list[socket.socket] = []
+        self._peer_buf: dict[int, bytes] = {}
         self.running = True
-        self._reconnect_delay = self.RECONNECT_BASE_DELAY
+        self._reconnect_delay = 0.0  # first open is immediate
+        self._last_open_attempt = 0.0
+        self._owns_socket = False
 
-    def _close_peer(self) -> None:
-        if self.peer is not None:
-            try:
-                self.peer.close()
-            except OSError:
-                pass
-            self.peer = None
+    def _factory(self):
+        if self._transport_factory is not None:
+            return self._transport_factory()
+        return make_transport(self.port, self.baud)
+
+    def _close_peer(self, peer: socket.socket) -> None:
+        try:
+            peer.close()
+        except OSError:
+            pass
+        if peer in self.peers:
+            self.peers.remove(peer)
+        self._peer_buf.pop(id(peer), None)
+
+    def _close_all_peers(self) -> None:
+        for peer in list(self.peers):
+            self._close_peer(peer)
 
     def _close_serial(self) -> None:
         if self.serial is not None:
@@ -149,108 +208,192 @@ class BridgeDaemon:
             self.serial = None
 
     def _cleanup(self) -> None:
-        self._close_peer()
+        self._close_all_peers()
         if self.listener is not None:
             try:
                 self.listener.close()
             except OSError:
                 pass
             self.listener = None
+        if self._owns_socket:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            self._owns_socket = False
         self._close_serial()
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+        if self._lock is not None:
+            self._lock.release()
+            self._lock = None
 
-    def _open_serial(self, ready_timeout: float) -> bool:
-        """Open (or reopen) the serial port and wait for the bridge to be
-        ready.  Returns True only when the device is usable."""
+    def _try_open_serial(self) -> bool:
+        """Open serial once.  Does not ping, does not close a live handle."""
+        self._last_open_attempt = time.time()
         try:
-            self._close_serial()
-            self.serial = make_transport(self.port, self.baud)
-            from .client import Client
-
-            Client(self.serial, default_timeout=3).wait_ready(timeout=ready_timeout)
+            self.serial = self._factory()
             self._reconnect_delay = self.RECONNECT_BASE_DELAY
             return True
         except Exception as exc:  # noqa: BLE001
-            print(f"m4adb daemon reconnect: {exc}", file=sys.stderr, flush=True)
+            print(f"m4adb daemon serial open failed: {exc}", file=sys.stderr, flush=True)
             self._close_serial()
+            if self._reconnect_delay <= 0:
+                self._reconnect_delay = self.RECONNECT_BASE_DELAY
+            else:
+                self._reconnect_delay = min(
+                    self._reconnect_delay * 2, self.RECONNECT_MAX_DELAY
+                )
             return False
 
+    def _broadcast(self, data: str) -> None:
+        if not data:
+            return
+        raw = data.encode("utf-8", errors="replace")
+        for peer in list(self.peers):
+            try:
+                peer.sendall(raw)
+            except OSError:
+                self._close_peer(peer)
+
+    def _handle_peer_bytes(self, peer: socket.socket, data: bytes) -> None:
+        key = id(peer)
+        buf = self._peer_buf.get(key, b"") + data
+        if len(buf) > self.PEER_BUF_MAX:
+            buf = b""
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            line_nl = line + b"\n"
+            if line_nl == b"@M4ADBD/1 shutdown\n":
+                self.running = False
+                break
+            if self.serial is not None:
+                try:
+                    self.serial.write(line_nl.decode("utf-8", errors="replace"))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"m4adb daemon serial write: {exc}", file=sys.stderr, flush=True)
+                    if not serial_port_alive(self.serial):
+                        self._close_serial()
+                        self._last_open_attempt = time.time()
+        self._peer_buf[key] = buf
+
+    def _pump_serial(self) -> None:
+        if self.serial is None:
+            return
+        if not serial_port_alive(self.serial):
+            present = port_node_present(self.port)
+            print(
+                f"m4adb daemon: serial handle dead (port_present={present}); "
+                "will not reopen until backoff elapses",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._close_serial()
+            self._last_open_attempt = time.time()
+            if self._reconnect_delay <= 0:
+                self._reconnect_delay = self.RECONNECT_BASE_DELAY
+            return
+        try:
+            data = self.serial.read(0.01)
+            if data:
+                self._broadcast(data)
+        except (ConnectionError, OSError) as exc:
+            present = port_node_present(self.port)
+            print(
+                f"m4adb daemon: serial read error ({exc}); port_present={present}",
+                file=sys.stderr,
+                flush=True,
+            )
+            if not present or not serial_port_alive(self.serial):
+                self._close_serial()
+                self._last_open_attempt = time.time()
+
+    def _maybe_reopen(self) -> None:
+        if not should_reopen_serial(
+            serial_open=self.serial is not None,
+            port_present=port_node_present(self.port),
+            last_attempt=self._last_open_attempt,
+            now=time.time(),
+            delay=self._reconnect_delay,
+        ):
+            return
+        if self._try_open_serial():
+            print(f"m4adb daemon serial ready port={self.port}", flush=True)
+
     def serve(self, ready_timeout: float = 60.0) -> int:
+        # ready_timeout is accepted for CLI compatibility and ignored: the
+        # daemon never wait_ready()'s.  Handshake belongs to the CLI.
+        _ = ready_timeout
+        lock = self._lock
+        if lock is None:
+            paths = owner_paths(self.port)
+            lock = ExclusivePortLock(paths.lock, paths.pid)
+            self._lock = lock
+        if not lock.try_acquire():
+            print(
+                f"m4adb daemon: port already owned (lock {lock.lock_path})",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 2
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             if self.path.exists():
                 if daemon_alive(self.path):
+                    # Live socket while we hold the flock: another owner without
+                    # flock (legacy). Do not unlink their socket.
                     print(f"daemon already running: {self.path}", file=sys.stderr, flush=True)
                     return 2
-                # Stale socket: previous daemon died without unlinking.
-                self.path.unlink()
+                try:
+                    self.path.unlink()
+                except FileNotFoundError:
+                    pass
             self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self.listener.bind(str(self.path))
+            self._owns_socket = True
             os.chmod(self.path, 0o600)
-            self.listener.listen(1)
-            self.listener.settimeout(0.05)
+            self.listener.listen(self.LISTEN_BACKLOG)
+            self.listener.setblocking(False)
             print(f"m4adb daemon socket={self.path}", file=sys.stderr, flush=True)
-            # First serial open happens here, once per daemon lifetime.
-            if not self._open_serial(ready_timeout):
-                print("m4adb daemon: serial open failed at startup; retrying in background",
-                      file=sys.stderr, flush=True)
-            else:
+            if self._try_open_serial():
                 print(f"m4adb daemon ready socket={self.path} port={self.port}", flush=True)
+            else:
+                print(
+                    "m4adb daemon: serial not open yet; serving socket, will retry with backoff",
+                    file=sys.stderr,
+                    flush=True,
+                )
             while self.running:
-                # Accept CLI peers even while the serial is down so clients get
-                # a clean error instead of a refused connection.
-                if self.peer is None:
+                rlist = [self.listener] + self.peers
+                try:
+                    readable, _, _ = select.select(rlist, [], [], 0.05)
+                except (InterruptedError, ValueError):
+                    readable = []
+                if self.listener in readable:
                     try:
-                        self.peer, _ = self.listener.accept()
-                        self.peer.setblocking(False)
-                    except socket.timeout:
+                        while True:
+                            peer, _ = self.listener.accept()
+                            peer.setblocking(False)
+                            self.peers.append(peer)
+                            self._peer_buf[id(peer)] = b""
+                    except BlockingIOError:
                         pass
                     except OSError:
                         break
-                if self.peer is not None:
+                for peer in list(self.peers):
+                    if peer not in readable:
+                        continue
                     try:
-                        readable, _, _ = select.select([self.peer], [], [], 0)
-                        if readable:
-                            data = self.peer.recv(8192)
-                            if not data:
-                                self._close_peer()
-                            elif data == b"@M4ADBD/1 shutdown\n":
-                                self.running = False
-                            elif self.serial is not None:
-                                self.serial.write(data.decode("utf-8", errors="replace"))
-                    except (BlockingIOError, ConnectionError, OSError):
-                        self._close_peer()
-                # Pump device output continuously, even between CLI calls.
-                if self.serial is not None:
-                    try:
-                        data = self.serial.read(0.01)
-                        if data and self.peer is not None:
-                            self.peer.sendall(data.encode("utf-8", errors="replace"))
-                    except (ConnectionError, OSError) as exc:
-                        # The e-ink main loop can block USB CDC briefly during a
-                        # long refresh; a transient read error must NOT kill the
-                        # daemon. Only give up the serial when the device is
-                        # really gone, then schedule a reconnect.
-                        if not serial_port_alive(self.serial):
-                            print(f"m4adb daemon: device lost ({exc}); will reconnect",
-                                  file=sys.stderr, flush=True)
-                            self._close_peer()
-                            self._close_serial()
-                elif self.running:
-                    # Device is gone; retry with bounded backoff.
-                    try:
-                        time.sleep(self._reconnect_delay)
-                    except KeyboardInterrupt:
-                        self.running = False
-                        break
-                    if self._open_serial(ready_timeout):
-                        print(f"m4adb daemon reconnected port={self.port}", flush=True)
-                    else:
-                        self._reconnect_delay = min(
-                            self._reconnect_delay * 2, self.RECONNECT_MAX_DELAY)
+                        data = peer.recv(8192)
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        self._close_peer(peer)
+                        continue
+                    if not data:
+                        self._close_peer(peer)
+                        continue
+                    self._handle_peer_bytes(peer, data)
+                self._pump_serial()
+                self._maybe_reopen()
         except Exception as exc:  # pragma: no cover - exercised on real host
             print(f"m4adb daemon error: {exc}", file=sys.stderr, flush=True)
             return 1

@@ -171,12 +171,32 @@ void testEarlyReaderHandoff() {
   std::cout << "earlyReaderHandoff PASS\n";
 }
 
+void testHomeSwipeOpensAppsAndHealInLoad() {
+  std::string homeCpp = readFile("firmware/src/activities/home/HomeActivity.cpp");
+  assert(homeCpp.find("wasHomeSwipeGesture") != std::string::npos);
+  assert(homeCpp.find("SwipeDir::Up") != std::string::npos);
+  assert(homeCpp.find("kActionOpenApps") != std::string::npos);
+  assert(homeCpp.find("bmpTemplatePath") != std::string::npos);
+  assert(homeCpp.find("kActionOpenRecentBook") != std::string::npos);
+  std::cout << "homeSwipeAndHeal PASS\n";
+}
+
+void testRecentRowSkipsCurrentBook() {
+  std::string homeCpp = readFile("firmware/src/activities/home/HomeActivity.cpp");
+  assert(homeCpp.find("snapshot.currentPath") != std::string::npos);
+  assert(homeCpp.find("four unique covers") != std::string::npos);
+  assert(homeCpp.find("slot + 1") != std::string::npos);
+  std::cout << "recentRowSkipsCurrent PASS\n";
+}
+
 int main() {
   testHealMissingCoverPath();
   testFirstPublishDoesNotRequireEnsureSized();
-  testCacheHitVsMiss();
   testPlaceholderRendering();
   testEarlyReaderHandoff();
+  testHomeSwipeOpensAppsAndHealInLoad();
+  testRecentRowSkipsCurrentBook();
+  testCacheHitVsMiss();
   std::cout << "ALL placeholder_async tests PASS\n";
   return 0;
 }

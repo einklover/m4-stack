@@ -361,7 +361,7 @@ build.
 
 5. **Hostfwd vs guest outbound.** `m4sim.py` 默认 `hostfwd=tcp:127.0.0.1:18080-:80`/`18081` 在 macOS 上被 ControlCenter 占用导致 `Could not set up host forwarding rule`。Fanqie 仅需 guest outbound，经 `-nic user,model=open_eth` 无 hostfwd 即可获 guest IP `10.0.2.15` 并拉取目录。区分两者，outbound-only 测试可省略 hostfwd。
 
-6. **m4adb install transport / sandbox HTTP.** 默认 `auto` 会起本地 `WifiFileServer` (`wifi_serve.py:146` `socket.bind` → `PermissionError: [Errno 1] Operation not permitted` in sandbox)。这是宿主限制，非 plugin/QEMU 失败。显式 `m4adb install --transport usb` 走串口分片 (`m4adb_lib/client.py:320-332` `if mode=="usb": install_usb`)，可经 `/tmp/m4sim-home-plugin-real/artifacts/m4uart.pipe` 成功安装 Fanqie。先查 CLI/help/source 再选 transport。
+6. **m4adb install transport / sandbox HTTP.** `install` 默认已是 `usb`（类似 `adb install`）。旧默认 `auto` 会起本地 `WifiFileServer` (`wifi_serve.py` `socket.bind` → sandbox `PermissionError`)。需要 Wi-Fi 时显式 `--transport auto` 或 `wifi`。QEMU 隔离仍用 `--port <PTY> --no-daemon`，且不得对正在占用的硬件口用 `--no-daemon`。
 
 7. **Single m4adb client per FIFO.** 同一串口 FIFO 上避免并发 `m4adb` 客户端；install 长命令执行期间勿并行 `ping`/`ui`/`screenshot`，否则串口组帧干扰。观察期间仅做进程检查，待首个客户端退出后再用 m4adb 验证；`running` 不等于卡死。
 

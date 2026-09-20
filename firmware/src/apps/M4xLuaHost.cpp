@@ -36,7 +36,9 @@
 #include "WifiCredentialStore.h"
 #include "qemu/M4QemuNet.h"
 
+#include <GfxRenderer.h>
 #include <EpdFontLoader.h>
+#include <cstring>
 #include <mbedtls/sha256.h>
 
 // Full types for the reused keep-alive connection members (netTls_/netHttp_).
@@ -632,6 +634,45 @@ int l_gui_fillRect(lua_State* L) {
   const int w = static_cast<int>(luaL_checknumber(L, 3));
   const int ht = static_cast<int>(luaL_checknumber(L, 4));
   h->renderer_->fillRect(x, y, w, ht, true);
+  return 0;
+}
+
+Color luaGuiDitherColor(lua_State* L, int idx) {
+  if (lua_type(L, idx) == LUA_TSTRING) {
+    const char* s = lua_tostring(L, idx);
+    if (s) {
+      if (strcmp(s, "white") == 0) return White;
+      if (strcmp(s, "light") == 0 || strcmp(s, "lightgray") == 0) return LightGray;
+      if (strcmp(s, "dark") == 0 || strcmp(s, "darkgray") == 0) return DarkGray;
+      if (strcmp(s, "black") == 0) return Black;
+    }
+  }
+  const int n = static_cast<int>(luaL_optnumber(L, idx, static_cast<lua_Number>(LightGray)));
+  if (n <= 1) return White;
+  if (n <= 5) return LightGray;
+  if (n <= 10) return DarkGray;
+  return Black;
+}
+
+int l_gui_fillRectDither(lua_State* L) {
+  auto* h = hostFromLua(L);
+  if (!h || !h->renderer_) return 0;
+  const int x = static_cast<int>(luaL_checknumber(L, 1));
+  const int y = static_cast<int>(luaL_checknumber(L, 2));
+  const int w = static_cast<int>(luaL_checknumber(L, 3));
+  const int ht = static_cast<int>(luaL_checknumber(L, 4));
+  h->renderer_->fillRectDither(x, y, w, ht, luaGuiDitherColor(L, 5));
+  return 0;
+}
+
+int l_gui_fillRectStipple(lua_State* L) {
+  auto* h = hostFromLua(L);
+  if (!h || !h->renderer_) return 0;
+  const int x = static_cast<int>(luaL_checknumber(L, 1));
+  const int y = static_cast<int>(luaL_checknumber(L, 2));
+  const int w = static_cast<int>(luaL_checknumber(L, 3));
+  const int ht = static_cast<int>(luaL_checknumber(L, 4));
+  h->renderer_->fillRectStipple(x, y, w, ht);
   return 0;
 }
 
@@ -4930,6 +4971,8 @@ bool M4xLuaHost::start(GfxRenderer& renderer, const M4xInstalledApp& app, std::s
       {"lineHeight", l_gui_lineHeight},
       {"drawRect", l_gui_drawRect},
       {"fillRect", l_gui_fillRect},
+      {"fillRectDither", l_gui_fillRectDither},
+      {"fillRectStipple", l_gui_fillRectStipple},
       {"drawLine", l_gui_drawLine},
       {"drawQR", l_gui_drawQR},
       {"qrSize", l_gui_qrSize},

@@ -9,8 +9,9 @@ What this tool does (when not --dry-run):
   1. Resolve and validate esptool + otatool BEFORE any flash write.
   2. Preflight: read partition table @ 0x8000 and verify factory dual-OTA shape.
   3. Optionally back up current APP1 and otadata.
-  4. Write firmware.bin only at absolute offset 0x6e0000 (APP1).
-  5. Select OTA slot 1 via otatool; fail the run if switch fails.
+  4. Write firmware.bin only at absolute offset 0x6e0000 (APP1)
+     with --after no-reset (do not pass --baud on USB-Serial/JTAG).
+  5. Select OTA slot 1 via PlatformIO python + otatool; fail if switch fails.
 
 Rollback to factory APP0:
   python3 scripts/murphy_m4_app1_flash.py --port /dev/cu.usbmodemXXXX --select-slot 0
@@ -40,6 +41,11 @@ APP1_OFF = 0x6E0000
 APP1_SIZE = 0x6D0000
 OTADATA_OFF = 0xE000
 OTADATA_SIZE = 0x2000
+PENV_PYTHON = Path.home() / ".platformio" / "penv" / "bin" / "python"
+PENV_ESPTOOL = Path.home() / ".platformio" / "penv" / "bin" / "esptool.py"
+PIO_IDF = Path.home() / ".platformio" / "packages" / "framework-espidf"
+# USB-Serial/JTAG: do not pass --baud (stub baud-change desyncs ~29%).
+# UART adapters may set --baud 460800 or 115200.
 
 
 class FlashError(Exception):
@@ -59,15 +65,21 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def find_penv_python() -> str:
+    """otatool uses sys.executable to spawn esptool; anaconda has no esptool."""
+    if PENV_PYTHON.exists():
+        return str(PENV_PYTHON)
+    return sys.executable
+
+
 def find_esptool() -> str:
+    if PENV_ESPTOOL.exists():
+        return str(PENV_ESPTOOL)
     for cand in ("esptool.py", "esptool"):
         path = shutil.which(cand)
         if path:
             return path
-    pio = Path.home() / ".platformio" / "penv" / "bin" / "esptool.py"
-    if pio.exists():
-        return str(pio)
-    raise FlashError("esptool.py not found on PATH")
+    raise FlashError("esptool.py not found (expected ~/.platformio/penv/bin/esptool.py)")
 
 
 def find_otatool() -> str:
@@ -85,7 +97,7 @@ def find_otatool() -> str:
             if cand.exists():
                 return str(cand)
     # PlatformIO ships framework-espidf with otatool even without a full IDF install.
-    pio_pkg = Path.home() / ".platformio" / "packages" / "framework-espidf"
+    pio_pkg = PIO_IDF
     for cand in (
         pio_pkg / "components" / "app_update" / "otatool.py",
         pio_pkg / "tools" / "otatool.py",
@@ -105,41 +117,50 @@ def find_otatool() -> str:
     )
 
 
-def run(cmd: list[str], dry_run: bool) -> None:
+def run(cmd: list[str], dry_run: bool, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(cmd))
     if dry_run:
         return
     try:
-        subprocess.check_call(cmd)
+        subprocess.check_call(cmd, env=env)
     except subprocess.CalledProcessError as e:
         raise FlashError(f"command failed ({e.returncode}): {' '.join(cmd)}") from e
 
 
-def read_flash(esptool: str, port: str, offset: int, size: int, out: Path, dry_run: bool) -> None:
+def esptool_serial_args(esptool: str, port: str, baud: int | None) -> list[str]:
+    # no-reset: skip RTS between preflight read and the APP1 write.
+    args = [
+        esptool,
+        "--chip",
+        "esp32s3",
+        "--port",
+        port,
+        "--before",
+        "default-reset",
+        "--after",
+        "no-reset",
+    ]
+    if baud:
+        args.extend(["--baud", str(baud)])
+    return args
+
+
+def read_flash(
+    esptool: str, port: str, offset: int, size: int, out: Path, dry_run: bool, baud: int | None
+) -> None:
     run(
-        [
-            esptool,
-            "--chip",
-            "esp32s3",
-            "--port",
-            port,
-            "read_flash",
-            f"0x{offset:x}",
-            f"0x{size:x}",
-            str(out),
-        ],
+        esptool_serial_args(esptool, port, baud)
+        + ["read_flash", f"0x{offset:x}", f"0x{size:x}", str(out)],
         dry_run,
     )
 
 
-def write_flash(esptool: str, port: str, offset: int, image: Path, dry_run: bool) -> None:
+def write_flash(
+    esptool: str, port: str, offset: int, image: Path, dry_run: bool, baud: int | None
+) -> None:
     run(
-        [
-            esptool,
-            "--chip",
-            "esp32s3",
-            "--port",
-            port,
+        esptool_serial_args(esptool, port, baud)
+        + [
             "write_flash",
             "--flash_mode",
             "dio",
@@ -180,11 +201,23 @@ def verify_partition_table(pt: bytes) -> None:
     print("Preflight OK: factory dual-OTA partition identity matches.")
 
 
+def otatool_env() -> dict[str, str]:
+    env = os.environ.copy()
+    idf = env.get("IDF_PATH") or str(PIO_IDF)
+    env["IDF_PATH"] = idf
+    part = str(Path(idf) / "components" / "partition_table")
+    prev = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = part if not prev else part + os.pathsep + prev
+    return env
+
+
 def select_ota_slot(otatool: str, port: str, slot: int, dry_run: bool) -> None:
     if slot not in (0, 1):
         raise FlashError("slot must be 0 (APP0) or 1 (APP1)")
+    py = find_penv_python()
     run(
         [
+            py,
             otatool,
             "--port",
             port,
@@ -193,8 +226,9 @@ def select_ota_slot(otatool: str, port: str, slot: int, dry_run: bool) -> None:
             str(slot),
         ],
         dry_run,
+        env=otatool_env(),
     )
-    print(f"OTA slot {slot} selected via otatool.")
+    print(f"OTA slot {slot} selected via otatool ({py}).")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,6 +242,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="Print actions only; no device I/O")
     ap.add_argument("--backup-dir", default="backups/m4_app1", help="Directory for pre-write backups")
     ap.add_argument("--skip-backup", action="store_true", help="Skip APP1/otadata backup")
+    ap.add_argument(
+        "--baud",
+        type=int,
+        default=None,
+        help="Optional UART baud. Omit on USB-Serial/JTAG (stub baud-change drops ~29%%).",
+    )
     ap.add_argument(
         "--select-slot",
         type=int,
@@ -228,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
         otatool = find_otatool()
         print(f"esptool={esptool}")
         print(f"otatool={otatool}")
+        print(f"penv_python={find_penv_python()} baud={args.baud}")
         print("Policy: never write bootloader, partition table, NVS, or APP0.")
 
         if args.select_slot is not None:
@@ -254,7 +295,9 @@ def main(argv: list[str] | None = None) -> int:
         stamp = time.strftime("%Y%m%d_%H%M%S")
 
         pt_path = backup_dir / f"partitions_{stamp}.bin"
-        read_flash(esptool, args.port, PART_TABLE_OFF, PART_TABLE_SIZE, pt_path, args.dry_run)
+        read_flash(
+            esptool, args.port, PART_TABLE_OFF, PART_TABLE_SIZE, pt_path, args.dry_run, args.baud
+        )
         if not args.dry_run:
             verify_partition_table(pt_path.read_bytes())
         else:
@@ -264,12 +307,14 @@ def main(argv: list[str] | None = None) -> int:
             app1_bak = backup_dir / f"app1_before_{stamp}.bin"
             ota_bak = backup_dir / f"otadata_before_{stamp}.bin"
             print(f"Backing up APP1 -> {app1_bak}")
-            read_flash(esptool, args.port, APP1_OFF, APP1_SIZE, app1_bak, args.dry_run)
+            read_flash(esptool, args.port, APP1_OFF, APP1_SIZE, app1_bak, args.dry_run, args.baud)
             print(f"Backing up otadata -> {ota_bak}")
-            read_flash(esptool, args.port, OTADATA_OFF, OTADATA_SIZE, ota_bak, args.dry_run)
+            read_flash(
+                esptool, args.port, OTADATA_OFF, OTADATA_SIZE, ota_bak, args.dry_run, args.baud
+            )
 
         print(f"Writing APP1 only at 0x{APP1_OFF:x} (size limit 0x{APP1_SIZE:x})")
-        write_flash(esptool, args.port, APP1_OFF, fw, args.dry_run)
+        write_flash(esptool, args.port, APP1_OFF, fw, args.dry_run, args.baud)
         print("Selecting OTA slot 1 (APP1)")
         select_ota_slot(otatool, args.port, 1, args.dry_run)
         print("Done. Power-cycle or reset the device.")

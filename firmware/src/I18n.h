@@ -105,6 +105,8 @@
   /* --- 阅读设置项名称 --- */ \
   STR(kFontSize,                "字号",              "字號") \
   STR(kUiFontSize,              "系统字号",          "系統字號") \
+  STR(kUiFontFamily,            "系统字体",          "系統字體") \
+  STR(kSystemFace,              "系统",              "系統") \
   STR(kValAuto,                 "自动",              "自動") \
   STR(kFirstLineIndent,         "首行缩进",          "首行縮進") \
   STR(kLineSpacing,             "行间距",            "行間距") \

@@ -39,10 +39,11 @@ extern SemaphoreHandle_t gM4RenderMutex;
 
 namespace {
 constexpr unsigned long kAppLongPressMs = 700;
-constexpr int kDrawerColumns = 3;
-constexpr int kDrawerTileHeight = 120;
-constexpr int kDrawerGapX = 8;
+constexpr int kDrawerColumns = 4;
+constexpr int kDrawerMinTileHeight = 118;
+constexpr int kDrawerGapX = 6;
 constexpr int kDrawerGapY = 8;
+constexpr int kDrawerPadX = 4;
 constexpr int kDrawerIconSlot = 80;
 constexpr int kBuiltinIconSize = 32;
 constexpr size_t kDrawerLabelMaxChars = 4;
@@ -63,11 +64,25 @@ struct DrawerGridLayout {
   int bottom = 0;
   int startX = 0;
   int tileWidth = 0;
-  int tileHeight = kDrawerTileHeight;
+  int tileHeight = kDrawerMinTileHeight;
   int rows = 1;
   int pageStart = 0;
   int pageItems = kDrawerColumns;
   int itemCount = 0;
+  int scrollBarX = 0;
+  int scrollBarWidth = 0;
+  int scrollTrackHeight = 0;
+  bool showScrollBar = false;
+
+  int totalPages() const {
+    if (pageItems <= 0) return 1;
+    return std::max(1, (itemCount + pageItems - 1) / pageItems);
+  }
+
+  int currentPage() const {
+    if (pageItems <= 0) return 0;
+    return pageStart / pageItems;
+  }
 
   TouchHitGeometry::Rect tileRect(const int index) const {
     if (index < pageStart || index >= pageStart + pageItems || index >= itemCount || tileWidth <= 0) return {};
@@ -84,6 +99,19 @@ struct DrawerGridLayout {
     }
     return -1;
   }
+
+  bool scrollBarContains(const int x, const int y) const {
+    if (!showScrollBar) return false;
+    const int left = scrollBarX - scrollBarWidth - 8;
+    return x >= left && x < scrollBarX + 8 && y >= top && y < bottom;
+  }
+
+  int pageFromScrollY(const int y) const {
+    const int pages = totalPages();
+    if (pages <= 1 || scrollTrackHeight <= 0) return 0;
+    const int rel = std::min(std::max(y - top, 0), scrollTrackHeight - 1);
+    return std::min(pages - 1, (rel * pages) / scrollTrackHeight);
+  }
 };
 
 DrawerGridLayout makeDrawerGridLayout(const GfxRenderer& renderer, const int selectedIndex, const int itemCount) {
@@ -92,20 +120,45 @@ DrawerGridLayout makeDrawerGridLayout(const GfxRenderer& renderer, const int sel
   const auto metrics = UITheme::getInstance().getMetrics();
   layout.top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   layout.bottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  layout.scrollTrackHeight = std::max(0, layout.bottom - layout.top);
 
-  const int availableHeight = std::max(0, layout.bottom - layout.top);
-  layout.rows = std::max(1, (availableHeight + kDrawerGapY) / (kDrawerTileHeight + kDrawerGapY));
+  const int availableHeight = layout.scrollTrackHeight;
+  layout.rows = std::max(1, (availableHeight + kDrawerGapY) / (kDrawerMinTileHeight + kDrawerGapY));
+  while (layout.rows > 1) {
+    const int used = layout.rows * kDrawerMinTileHeight + (layout.rows - 1) * kDrawerGapY;
+    if (used <= availableHeight) break;
+    --layout.rows;
+  }
+  const int rowGaps = std::max(0, layout.rows - 1) * kDrawerGapY;
+  layout.tileHeight = std::max(kDrawerMinTileHeight,
+                               (availableHeight - rowGaps) / std::max(1, layout.rows));
   layout.pageItems = layout.rows * kDrawerColumns;
   if (layout.itemCount > 0) {
     const int safeSelected = std::min(std::max(selectedIndex, 0), layout.itemCount - 1);
     layout.pageStart = (safeSelected / layout.pageItems) * layout.pageItems;
   }
+  layout.showScrollBar = layout.itemCount > layout.pageItems;
+  layout.scrollBarWidth = metrics.scrollBarWidth;
+  layout.scrollBarX = renderer.getScreenWidth() - kDrawerPadX - layout.scrollBarWidth;
 
-  const int gridWidth = renderer.getScreenWidth() - 2 * metrics.contentSidePadding;
+  const int rightGutter = layout.showScrollBar ? (layout.scrollBarWidth + 6) : 0;
+  const int gridWidth = renderer.getScreenWidth() - 2 * kDrawerPadX - rightGutter;
   layout.tileWidth = std::max(1, (gridWidth - (kDrawerColumns - 1) * kDrawerGapX) / kDrawerColumns);
-  const int actualGridWidth = kDrawerColumns * layout.tileWidth + (kDrawerColumns - 1) * kDrawerGapX;
-  layout.startX = std::max(0, (renderer.getScreenWidth() - actualGridWidth) / 2);
+  layout.startX = kDrawerPadX;
   return layout;
+}
+
+void drawDrawerScrollBar(const GfxRenderer& renderer, const DrawerGridLayout& layout) {
+  if (!layout.showScrollBar) return;
+  const int pages = layout.totalPages();
+  const int trackH = layout.scrollTrackHeight;
+  if (pages <= 1 || trackH <= 0) return;
+  const int thumbH = std::max(layout.scrollBarWidth + 8, (trackH * layout.pageItems) / std::max(1, layout.itemCount));
+  const int travel = std::max(0, trackH - thumbH);
+  const int thumbY =
+      layout.top + (pages > 1 ? (travel * layout.currentPage()) / (pages - 1) : 0);
+  renderer.drawLine(layout.scrollBarX, layout.top, layout.scrollBarX, layout.bottom, true);
+  renderer.fillRect(layout.scrollBarX - layout.scrollBarWidth, thumbY, layout.scrollBarWidth, thumbH, true);
 }
 
 const uint8_t* builtinIconBitmap(const UIIcon icon) {
@@ -139,24 +192,26 @@ void draw1BitIcon(const GfxRenderer& renderer, const uint8_t* icon, const int x,
 
 void AppListActivity::drawItemIcon(const DrawerItem& item, const TouchHitGeometry::Rect& tile) const {
   constexpr int iconTopPadding = 8;
+  constexpr int labelReserve = 28;
+  const int iconSlot = std::max(kDrawerIconSlot, tile.height - labelReserve - iconTopPadding);
   const int iconY = tile.y + iconTopPadding;
   if (item.plugin && !item.pluginIcon.empty()) {
     const int iconX = tile.x + (tile.width - HomeScene::kHomeAppIconW) / 2;
     draw1BitIcon(renderer, item.pluginIcon.data(), iconX,
-                 iconY + (kDrawerIconSlot - HomeScene::kHomeAppIconH) / 2);
+                 iconY + (iconSlot - HomeScene::kHomeAppIconH) / 2);
     return;
   }
 
   if (const uint8_t* bitmap = HomeSceneAssetDecoder::builtinSheetIcon(item.id.c_str())) {
     const int iconX = tile.x + (tile.width - HomeScene::kHomeAppIconW) / 2;
-    draw1BitIcon(renderer, bitmap, iconX, iconY + (kDrawerIconSlot - HomeScene::kHomeAppIconH) / 2);
+    draw1BitIcon(renderer, bitmap, iconX, iconY + (iconSlot - HomeScene::kHomeAppIconH) / 2);
     return;
   }
 
   const uint8_t* bitmap = builtinIconBitmap(item.icon);
   if (!bitmap) return;
   const int iconX = tile.x + (tile.width - kBuiltinIconSize) / 2;
-  renderer.drawIcon(bitmap, iconX, iconY + (kDrawerIconSlot - kBuiltinIconSize) / 2, kBuiltinIconSize,
+  renderer.drawIcon(bitmap, iconX, iconY + (iconSlot - kBuiltinIconSize) / 2, kBuiltinIconSize,
                     kBuiltinIconSize);
 }
 
@@ -293,7 +348,7 @@ void AppListActivity::onEnter() {
   childScreenOwned_.store(false, std::memory_order_release);
   reload();
   updateRequired_ = true;
-  xTaskCreate(&AppListActivity::taskTrampoline, "AppList", 4096, this, 1, &displayTaskHandle_);
+  xTaskCreate(&AppListActivity::taskTrampoline, "AppList", 8192, this, 1, &displayTaskHandle_);
 }
 
 void AppListActivity::onExit() {
@@ -348,6 +403,13 @@ void AppListActivity::moveSelection(const int delta) {
   next %= count;
   if (next < 0) next += count;
   selectIndex(next);
+}
+
+void AppListActivity::pageBy(const int pages) {
+  if (items_.empty() || pages == 0) return;
+  const int count = static_cast<int>(items_.size());
+  const auto layout = makeDrawerGridLayout(renderer, selectedIndex_, count);
+  selectIndex(M4ListTouchPolicy::applyPage(selectedIndex_, count, layout.pageItems, pages > 0));
 }
 
 void AppListActivity::activateBuiltin(const BuiltinAction action) {
@@ -541,6 +603,12 @@ void AppListActivity::loop() {
         return;
       }
 
+      if (layout.scrollBarContains(tx, ty)) {
+        const int page = layout.pageFromScrollY(ty);
+        selectIndex(page * layout.pageItems);
+        return;
+      }
+
       const int hit = layout.indexFromPoint(tx, ty);
       if (hit >= 0) {
         selectIndex(hit);
@@ -563,8 +631,8 @@ void AppListActivity::loop() {
       switch (sw) {
         case MappedInputManager::SwipeDir::Left: moveSelection(-1); break;
         case MappedInputManager::SwipeDir::Right: moveSelection(1); break;
-        case MappedInputManager::SwipeDir::Up: moveSelection(-kDrawerColumns); break;
-        case MappedInputManager::SwipeDir::Down: moveSelection(kDrawerColumns); break;
+        case MappedInputManager::SwipeDir::Up: pageBy(1); break;
+        case MappedInputManager::SwipeDir::Down: pageBy(-1); break;
         case MappedInputManager::SwipeDir::None: break;
       }
       return;
@@ -646,10 +714,11 @@ void AppListActivity::render() const {
       // intact (「文件管理」). Pixel truncate at tile.width-8 became 「文件管…」.
       const std::string label = utf8EllipsizeChars(item.label.c_str(), kDrawerLabelMaxChars);
       const int labelWidth = M4UiText::textWidth(renderer, UI_12_FONT_ID, label.c_str());
-      const int labelY = tile.y + kDrawerIconSlot + 8;
+      const int labelY = tile.y + tile.height - 24;
       M4UiText::draw(renderer, UI_12_FONT_ID, tile.x + std::max(0, (tile.width - labelWidth) / 2), labelY,
                      label.c_str(), true);
     }
+    drawDrawerScrollBar(renderer, layout);
   }
 
   const bool pluginSelected = framePluginSelected;

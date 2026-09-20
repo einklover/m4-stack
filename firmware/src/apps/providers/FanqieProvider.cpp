@@ -78,6 +78,16 @@ class FanqieProvider final : public M4NativeProvider::Adapter {
     // is still at epoch. One bounded SNTP poll, only if time is out of range.
     M4OnlineClockSync::ensureOnce();
 
+    // Discovery (snssdk) leaves a TLS session that fragments internal SRAM.
+    // Release it and re-check the gate before the :8043 chapter handshake.
+    if (!M4NativeProviderHttp::prepareHttps()) {
+      out.error = "tls_internal_oom";
+      M4NativeProviderIo::logHttpTlsIf(
+          req.book.appId.empty() ? std::string("com.fanqie.client") : req.book.appId, "chapter",
+          out.error);
+      return out;
+    }
+
     const auto fetchAttempt = [&]() {
       M4NativeProvider::FetchResult attempt;
       M4NativeProviderIo::PartFileSink file;
@@ -152,7 +162,13 @@ class FanqieProvider final : public M4NativeProvider::Adapter {
     if (kMaxChapterAttempts > 1 && !out.ok &&
         out.error == "http_ESP_ERR_HTTP_FETCH_HEADER" && !cancelled()) {
       M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
+      M4NativeProviderHttp::releaseTlsSession();
       out = fetchAttempt();
+    }
+    if (!out.ok) {
+      M4NativeProviderIo::logHttpTlsIf(
+          req.book.appId.empty() ? std::string("com.fanqie.client") : req.book.appId, "chapter",
+          out.error);
     }
     return out;
   }

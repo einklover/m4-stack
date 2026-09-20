@@ -41,7 +41,7 @@
       "y": 52,
       "x2": 456,
       "y2": 52,
-      "width": 1,
+      "width": 2,
       "color": "black"
     },
     {
@@ -52,8 +52,8 @@
         434,
         230
       ],
-      "r": 10,
-      "stroke": 1
+      "r": 12,
+      "stroke": 2
     },
     {
       "type": "cover",
@@ -187,7 +187,8 @@
             122
           ],
           "radius": 5,
-          "binding": "$item.cover"
+          "binding": "$item.cover",
+          "action": "open_recent_book"
         },
         {
           "type": "text",
@@ -200,7 +201,8 @@
           "text": "$item.title",
           "font": "ui_14_regular",
           "align": "center",
-          "ellipsis": true
+          "ellipsis": true,
+          "action": "open_recent_book"
         }
       ]
     },

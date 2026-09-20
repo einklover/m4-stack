@@ -20,6 +20,7 @@
 #ifdef CROSSPOINT_MURPHY_M4
 #include "../EpdFont/CenterKernelEpdFont.h"
 #include "../EpdFont/ScaledEpdFont.h"
+#include "../EpdFont/TtfEpdFont.h"
 #include "../../src/util/CenterKernelFont.h"
 #include "../../src/util/M4FixedRuntimeUiFonts.h"
 #endif
@@ -121,15 +122,50 @@ void bindReaderBody(GfxRenderer& renderer, int targetPx) {
 bool bindSystemChrome(GfxRenderer& renderer) {
   const int uiPx = M4FontPolicy::chromeUiPxFromTier(SETTINGS.getUiFontSize());
   const int smallPx = M4FontPolicy::kChromeSmallPx;
+  if (SETTINGS.getUiFontFamily() == CrossPointSettings::FONT_CUSTOM && SETTINGS.uiCustomFontFamily[0]) {
+    EpdFontFamily* uiFam = FontManager::getInstance().getCustomFontFamily(
+        SETTINGS.uiCustomFontFamily, uiPx, FontManager::TtfFaceRole::Chrome);
+    EpdFontFamily* smFam = FontManager::getInstance().getCustomFontFamily(
+        SETTINGS.uiCustomFontFamily, smallPx, FontManager::TtfFaceRole::Chrome);
+    if (uiFam && smFam) {
+      renderer.replaceFont(SMALL_FONT_ID, *smFam);
+      renderer.replaceFont(UI_10_FONT_ID, *uiFam);
+      renderer.replaceFont(UI_12_FONT_ID, *uiFam);
+      // Private aliases used by drawSystem() while a Reader TTF is selected;
+      // keep them on the UI face so Home/status do not stay on the boot bitmap.
+      renderer.replaceFont(M4FixedRuntimeUiFonts::kSystemSmallFontId, *smFam);
+      renderer.replaceFont(M4FixedRuntimeUiFonts::kSystemUi10FontId, *uiFam);
+      renderer.replaceFont(M4FixedRuntimeUiFonts::kSystemUi12FontId, *uiFam);
+      // Settings/Home scene ui_14/ui_18 map to NOTOSANS_14/18. Those IDs were
+      // reader/content; chrome TTF must own the UI sizes or row titles stay Noto.
+      renderer.replaceFont(NOTOSANS_12_FONT_ID, *smFam);
+      renderer.replaceFont(NOTOSANS_14_FONT_ID, *smFam);
+      renderer.replaceFont(NOTOSANS_18_FONT_ID, *uiFam);
+      Serial.printf("[M4-FONT] UI TTF chrome family=%s small=%dpx ui=%dpx (tier=%u)\n",
+                    SETTINGS.uiCustomFontFamily, smallPx, uiPx,
+                    static_cast<unsigned>(SETTINGS.getUiFontSize()));
+      return true;
+    }
+    Serial.printf("[M4-FONT] UI TTF chrome load failed family=%s; falling back to CenterKernel\n",
+                  SETTINGS.uiCustomFontFamily);
+  }
   if (!bindCkBlob(centerKernelChromeSmall) || !bindCkBlob(centerKernelChromeUi)) {
     Serial.println("[M4-FONT] CenterKernel chrome blob missing");
     return false;
   }
   bindCkFace(centerKernelChromeSmall, smallPx);
   bindCkFace(centerKernelChromeUi, uiPx);
-  renderer.replaceFont(SMALL_FONT_ID, EpdFontFamily(&centerKernelChromeSmall));
-  renderer.replaceFont(UI_10_FONT_ID, EpdFontFamily(&centerKernelChromeUi, &centerKernelChromeUi));
-  renderer.replaceFont(UI_12_FONT_ID, EpdFontFamily(&centerKernelChromeUi, &centerKernelChromeUi));
+  const EpdFontFamily smFam(&centerKernelChromeSmall);
+  const EpdFontFamily uiFam(&centerKernelChromeUi, &centerKernelChromeUi);
+  renderer.replaceFont(SMALL_FONT_ID, smFam);
+  renderer.replaceFont(UI_10_FONT_ID, uiFam);
+  renderer.replaceFont(UI_12_FONT_ID, uiFam);
+  renderer.replaceFont(M4FixedRuntimeUiFonts::kSystemSmallFontId, smFam);
+  renderer.replaceFont(M4FixedRuntimeUiFonts::kSystemUi10FontId, uiFam);
+  renderer.replaceFont(M4FixedRuntimeUiFonts::kSystemUi12FontId, uiFam);
+  renderer.replaceFont(NOTOSANS_12_FONT_ID, smFam);
+  renderer.replaceFont(NOTOSANS_14_FONT_ID, smFam);
+  renderer.replaceFont(NOTOSANS_18_FONT_ID, uiFam);
   Serial.printf("[M4-FONT] CenterKernel chrome small=%dpx ui=%dpx (tier=%u)\n", smallPx, uiPx,
                 static_cast<unsigned>(SETTINGS.getUiFontSize()));
   return true;
@@ -151,8 +187,9 @@ void logFontMap(const GfxRenderer& renderer, const char* stage, int readerId) {
 }
 #endif
 
-bool insertCustomFamily(GfxRenderer& renderer, const char* familyName, int size) {
-  EpdFontFamily* family = FontManager::getInstance().getCustomFontFamily(familyName, size);
+bool insertCustomFamily(GfxRenderer& renderer, const char* familyName, int size,
+                      FontManager::TtfFaceRole role) {
+  EpdFontFamily* family = FontManager::getInstance().getCustomFontFamily(familyName, size, role);
   if (!family) {
     Serial.printf("[FontLoader] Failed to load '%s' size %d\n", familyName, size);
     char line[192];
@@ -169,15 +206,17 @@ bool insertCustomFamily(GfxRenderer& renderer, const char* familyName, int size)
   return true;
 }
 
-bool loadAndInsertCustom(GfxRenderer& renderer, const char* familyName, int size, std::vector<int>& outIds) {
-  if (!insertCustomFamily(renderer, familyName, size)) return false;
+bool loadAndInsertCustom(GfxRenderer& renderer, const char* familyName, int size,
+                       std::vector<int>& outIds, FontManager::TtfFaceRole role) {
+  if (!insertCustomFamily(renderer, familyName, size, role)) return false;
   const int id = hashFontId(familyName, size);
   outIds.push_back(id);
   return true;
 }
 
 void promoteToReaderIds(GfxRenderer& renderer, const char* familyName, int size) {
-  EpdFontFamily* family = FontManager::getInstance().getCustomFontFamily(familyName, size);
+  EpdFontFamily* family = FontManager::getInstance().getCustomFontFamily(
+      familyName, size, FontManager::TtfFaceRole::Reader);
   if (!family) return;
   // The release epdfont is a single fixed ~16 px face. Promote it only to
   // reader/content IDs. UI_10/UI_12/SMALL stay on the builtin 15x16 1-bit
@@ -238,6 +277,15 @@ bool EpdFontLoader::applySystemChrome(GfxRenderer& renderer) {
 #else
   (void)renderer;
   return false;
+#endif
+}
+
+int EpdFontLoader::idleFlushTtfGlyphs(int maxGlyphs) {
+#ifdef CROSSPOINT_MURPHY_M4
+  return TtfEpdFont::idleFlushDirty(maxGlyphs);
+#else
+  (void)maxGlyphs;
+  return 0;
 #endif
 }
 
@@ -339,7 +387,9 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
 
     bool any = false;
     for (int sz : sizes) {
-      any = loadAndInsertCustom(renderer, d.loadCustomFamily.c_str(), sz, loadedCustomIds) || any;
+      any = loadAndInsertCustom(renderer, d.loadCustomFamily.c_str(), sz, loadedCustomIds,
+                                FontManager::TtfFaceRole::Reader) ||
+            any;
     }
     if (!any) {
       customLoadSucceeded = false;
@@ -377,7 +427,8 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
   // 2) System/UI promotion: canonical only (never families.front() / Latin-only).
   if (!d.promoteSystemFamily.empty()) {
     EpdFontFamily* fam = FontManager::getInstance().getCustomFontFamily(
-        d.promoteSystemFamily, M4FontPolicy::kCanonicalEpdfontPixelSize);
+        d.promoteSystemFamily, M4FontPolicy::kCanonicalEpdfontPixelSize,
+        FontManager::TtfFaceRole::Reader);
     if (!fam) {
       Serial.printf("[M4-FONT] DIAG: failed to load canonical '%s' for system promotion\n",
                     d.promoteSystemFamily.c_str());
@@ -418,7 +469,9 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
                     SETTINGS.getReaderPixelSize());
       Serial.flush();
       const int size = SETTINGS.getReaderPixelSize();
-      legacyCustomLoadSucceeded = loadAndInsertCustom(renderer, SETTINGS.customFontFamily, size, loadedCustomIds);
+      legacyCustomLoadSucceeded = loadAndInsertCustom(renderer, SETTINGS.customFontFamily, size,
+                                                        loadedCustomIds,
+                                                        FontManager::TtfFaceRole::Reader);
     }
   }
   sdFontsLoaded_ = true;

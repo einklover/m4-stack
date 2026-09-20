@@ -215,6 +215,17 @@ Result requestToSink(const Request& req, M4xJsonStream::Sink& sink,
   return perform(req, sink, progress, cancelled);
 }
 
+void releaseTlsSession() { M4HttpTransport::shutdown(); }
+
+bool prepareHttps() {
+  M4HttpTransport::shutdown();
+  if (M4NativeProviderHeavyGate::tlsBlockAvailable()) return true;
+  for (int i = 0; i < 8 && !M4NativeProviderHeavyGate::tlsBlockAvailable(); ++i) {
+    delay(25);
+  }
+  return M4NativeProviderHeavyGate::tlsBlockAvailable();
+}
+
 bool requestSmall(const Request& req, std::string& bodyOut, Result& resultOut,
                   size_t hardCap, const CancelFn& cancelled) {
   bodyOut.clear();

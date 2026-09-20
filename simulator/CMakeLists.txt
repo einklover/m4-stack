@@ -112,6 +112,7 @@ endif()
 add_executable(m4_runtime_ttf_switch_tests
   tests/runtime_ttf_switch.cpp
   ../firmware/lib/EpdFont/TtfEpdFont.cpp
+  ../firmware/lib/EpdFont/TtfGlyphSdCache.cpp
   ../firmware/lib/EpdFont/EpdFont.cpp
   ../firmware/lib/Utf8/Utf8.cpp
   ../firmware/lib/TtfReader/src/TtfReader.cpp

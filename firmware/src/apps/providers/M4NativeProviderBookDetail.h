@@ -2,6 +2,7 @@
 
 #include "apps/providers/M4LegadoBridge.h"
 #include "apps/providers/M4NovelProviderContract.h"
+#include "apps/providers/M4ProviderShelfCache.h"
 
 #include <cstddef>
 #include <algorithm>
@@ -22,6 +23,10 @@ struct Request {
   std::string author;
   std::string coverUrl;
   size_t maxBytes = 96u * 1024u;
+  // Skip remote detail JSON and only hydrate from the local shelf row.
+  // Used after skip-to-read so Fanqie/JJWXC/WeRead/Legado can acquire a
+  // cover without a second HTTPS round-trip.
+  bool coverOnly = false;
 };
 
 struct Result {
@@ -125,6 +130,7 @@ inline std::string cleanIntro(const std::string& src) {
 // Host-testable shelf-row parser. Legado shelf_rows.tsv columns:
 //   id \t name \t author \t totalChapterNum [\t latestChapterTitle [\t coverUrl [\t intro]]]
 // Returns true when the line matches bookId and yields at least a title.
+// Five-column Legado rows are lastChapter, never cover.
 inline bool applyShelfRow(const std::string& line, const std::string& bookId,
                           M4NovelProvider::BookDetail& book,
                           const std::string& coverBase = {}) {
@@ -156,6 +162,63 @@ inline bool applyShelfRow(const std::string& line, const std::string& bookId,
   }
   if (field >= 7 && !fields[6].empty()) {
     book.intro = detail::cleanIntro(fields[6]);
+  }
+  return !book.title.empty();
+}
+
+// Schema-aware parser for Fanqie/JJWXC/WeRead/Legado shelves. Column 4 on a
+// 5-col JJWXC/Fanqie/WeRead row is cover, not lastChapter.
+inline bool applyShelfRowForProvider(const std::string& providerId, const std::string& line,
+                                     const std::string& bookId, M4NovelProvider::BookDetail& book,
+                                     const std::string& coverBase = {}) {
+  const auto* schema = M4ProviderShelfCache::schema(providerId);
+  if (!schema || schema->columns.size() < 3) {
+    return applyShelfRow(line, bookId, book, coverBase);
+  }
+  constexpr size_t kFieldMax = 192;
+  if (bookId.empty() || line.rfind(bookId, 0) != 0) return false;
+  if (line.size() <= bookId.size() || line[bookId.size()] != '\t') return false;
+
+  const size_t colN = schema->columns.size() > 7 ? 7 : schema->columns.size();
+  std::string fields[7];
+  size_t field = 0;
+  size_t start = 0;
+  for (size_t i = 0; i <= line.size() && field < colN; ++i) {
+    if (i == line.size() || line[i] == '\t') {
+      fields[field] = line.substr(start, i - start);
+      ++field;
+      start = i + 1;
+    }
+  }
+  if (fields[0] != bookId) return false;
+
+  auto take = [&](size_t i) -> std::string {
+    if (i >= field || fields[i].empty()) return {};
+    return detail::boundedUtf8Field(std::move(fields[i]), kFieldMax);
+  };
+
+  for (size_t i = 1; i < field && i < schema->columns.size(); ++i) {
+    const std::string& name = schema->columns[i];
+    if (name == "book_name" || name == "novelName" || name == "title" || name == "name") {
+      const std::string v = take(i);
+      if (!v.empty()) book.title = v;
+    } else if (name == "author" || name == "authorName") {
+      const std::string v = take(i);
+      if (!v.empty()) book.author = v;
+    } else if (name == "latestChapterTitle") {
+      const std::string v = take(i);
+      if (!v.empty()) book.lastChapter = v;
+    } else if (name == "cover" || name == "coverUrl" || name == "thumb_url") {
+      const std::string v = take(i);
+      if (v.empty()) continue;
+      if (name == "coverUrl") {
+        book.coverUrl = M4LegadoBridge::coverProxyUrl(coverBase, v);
+      } else {
+        book.coverUrl = v;
+      }
+    } else if (name == "intro") {
+      if (i < field && !fields[i].empty()) book.intro = detail::cleanIntro(fields[i]);
+    }
   }
   return !book.title.empty();
 }

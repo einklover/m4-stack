@@ -198,6 +198,17 @@ bool convertWapBody(const std::string& rawPath, size_t bodyOff, size_t bodyLen,
   bool inEntity = false;
   std::string tag;
   std::string entity;
+  size_t sinceNewline = 0;
+
+  auto emitBreakIfNeeded = [&](uint32_t lastCp) -> bool {
+    bool sentence = lastCp == 0x3002u || lastCp == 0xFF01u || lastCp == 0xFF1Fu ||
+                    lastCp == static_cast<uint32_t>('.') || lastCp == static_cast<uint32_t>('!') ||
+                    lastCp == static_cast<uint32_t>('?');
+    if (!sentence && sinceNewline < 80) return true;
+    if (!emitAscii(out, '\n')) return false;
+    sinceNewline = 0;
+    return true;
+  };
 
   auto newlineForTag = [&]() -> bool {
     std::string low = tag;
@@ -265,10 +276,13 @@ bool convertWapBody(const std::string& rawPath, size_t bodyOff, size_t bodyLen,
       const uint8_t b = buf[i];
       if (inTag) {
         if (b == '>') {
-          if (newlineForTag() && !emitAscii(out, '\n')) {
-            err = "sd_write_failed";
-            f.close();
-            return false;
+          if (newlineForTag()) {
+            if (!emitAscii(out, '\n')) {
+              err = "sd_write_failed";
+              f.close();
+              return false;
+            }
+            sinceNewline = 0;
           }
           inTag = false;
           tag.clear();
@@ -320,10 +334,24 @@ bool convertWapBody(const std::string& rawPath, size_t bodyOff, size_t bodyLen,
         continue;
       }
       if (b < 0x80) {
-        if (b != '\r' && !emitAscii(out, static_cast<char>(b))) {
+        if (b == '\r') {
+          ++i;
+          continue;
+        }
+        if (!emitAscii(out, static_cast<char>(b))) {
           err = "sd_write_failed";
           f.close();
           return false;
+        }
+        if (b == '\n') {
+          sinceNewline = 0;
+        } else {
+          ++sinceNewline;
+          if (!emitBreakIfNeeded(static_cast<uint32_t>(b))) {
+            err = "sd_write_failed";
+            f.close();
+            return false;
+          }
         }
         ++i;
         continue;
@@ -357,7 +385,14 @@ bool convertWapBody(const std::string& rawPath, size_t bodyOff, size_t bodyLen,
           continue;
         }
         const uint16_t cp = table.lookup(b, b2);
-        if (!emitCodepoint(out, cp ? cp : '?')) {
+        const uint32_t outCp = cp ? static_cast<uint32_t>(cp) : static_cast<uint32_t>('?');
+        if (!emitCodepoint(out, outCp)) {
+          err = "sd_write_failed";
+          f.close();
+          return false;
+        }
+        ++sinceNewline;
+        if (!emitBreakIfNeeded(outCp)) {
           err = "sd_write_failed";
           f.close();
           return false;
@@ -416,6 +451,14 @@ class JjwxcProvider final : public M4NativeProvider::Adapter {
       return out;
     }
 
+    if (!M4NativeProviderHttp::prepareHttps()) {
+      out.error = "tls_internal_oom";
+      M4NativeProviderIo::logHttpTlsIf(
+          req.book.appId.empty() ? std::string("com.jjwxc.client") : req.book.appId, "chapter",
+          out.error);
+      return out;
+    }
+
     M4NativeProviderIo::PartFileSink file;
     if (!file.open(req.cacheAbsPath)) {
       out.error = "sd_open_failed";
@@ -440,6 +483,9 @@ class JjwxcProvider final : public M4NativeProvider::Adapter {
       M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
       out.error = net.ok ? (M4xJsonStream::errorString(scalar.error())) : net.error;
       if (out.error.empty()) out.error = "empty_content";
+      M4NativeProviderIo::logHttpTlsIf(
+          req.book.appId.empty() ? std::string("com.jjwxc.client") : req.book.appId, "chapter",
+          out.error);
       return out;
     }
     const size_t n = file.written();
@@ -474,6 +520,13 @@ class JjwxcProvider final : public M4NativeProvider::Adapter {
       out.error = "login_required";
       return out;
     }
+    if (!M4NativeProviderHttp::prepareHttps()) {
+      out.error = "tls_internal_oom";
+      M4NativeProviderIo::logHttpTlsIf(
+          req.book.appId.empty() ? std::string("com.jjwxc.client") : req.book.appId, "chapter",
+          out.error);
+      return out;
+    }
 
     const std::string raw = req.cacheAbsPath + ".wap.tmp";
     RawFileSink rawSink;
@@ -497,6 +550,9 @@ class JjwxcProvider final : public M4NativeProvider::Adapter {
       if (SdMan.exists(raw.c_str())) SdMan.remove(raw.c_str());
       out.error = net.error.empty() ? "wap_download" : net.error;
       if (out.error == "http_401" || out.error == "http_403") out.authRequired = true;
+      M4NativeProviderIo::logHttpTlsIf(
+          req.book.appId.empty() ? std::string("com.jjwxc.client") : req.book.appId, "chapter",
+          out.error);
       return out;
     }
 

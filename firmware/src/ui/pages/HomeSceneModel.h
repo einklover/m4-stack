@@ -36,6 +36,7 @@ constexpr UiScene::ActionId kActionOpenCurrentBook = 0;
 constexpr UiScene::ActionId kActionOpenHistory = 1;
 constexpr UiScene::ActionId kActionOpenApps = 2;
 constexpr UiScene::ActionId kActionOpenApp = 3;
+constexpr UiScene::ActionId kActionOpenRecentBook = 4;
 
 constexpr uint8_t kInvalidItemIndex = 0xFF;
 constexpr std::size_t kMaxRecentItems = 4;

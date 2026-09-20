@@ -536,7 +536,7 @@ void JianGuoBrowserActivity::onEnter() {
   updateRequired = true;
 
   xTaskCreate(&JianGuoBrowserActivity::taskTrampoline, "JianGuoBookBrowserTask",
-              4096,               // Stack size
+              8192,               // TTF chrome raster does not fit in 4KB
               this,               // Parameters
               1,                  // Priority
               &displayTaskHandle  // Task handle

@@ -11,7 +11,10 @@
 
 class FontSelectionActivity : public Activity {
  public:
-  FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& inputManager, std::function<void(bool)> onClose);
+  enum class Target { Reader, SystemUi };
+
+  FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& inputManager, std::function<void(bool)> onClose,
+                        Target target = Target::Reader);
   ~FontSelectionActivity() override;
   void onEnter() override;
   void loop() override;
@@ -19,6 +22,7 @@ class FontSelectionActivity : public Activity {
 
  private:
   std::function<void(bool)> onClose;
+  Target target_ = Target::Reader;
   std::vector<std::string> fontFamilies;
   int selectedIndex = 0;
   int scrollOffset = 0;

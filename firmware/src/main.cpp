@@ -100,6 +100,7 @@ static volatile bool gM4QemuScreenMode = true;
 
 #ifdef CROSSPOINT_MURPHY_M4
 #include "debug/M4SerialDebugBridge.h"
+#include "debug/M4UsbSerialResetPolicy.h"
 #include "apps/M4xRegistry.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
 #include "activities/apps/AppRuntimeActivity.h"
@@ -713,6 +714,9 @@ void setup() {
 #if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
     Serial.setRxBufferSize(8192);
 #endif
+#ifdef CROSSPOINT_MURPHY_M4
+    M4UsbSerialResetPolicy::applyBeforeSerialBegin();
+#endif
     Serial.begin(115200);
 #ifdef CROSSPOINT_MURPHY_M4
     Serial.printf("[%lu] [M4-BUZZER] early sanitize complete gpio=46 inactive=LOW\n", millis());
@@ -1297,6 +1301,9 @@ void loop() {
 #endif
 
   gpio.update();
+#ifdef CROSSPOINT_MURPHY_M4
+  EpdFontLoader::idleFlushTtfGlyphs(2);
+#endif
 
 #ifndef CROSSPOINT_X3
   // NTP同步状态机（在主线程中执行，避免WiFi驱动问题）

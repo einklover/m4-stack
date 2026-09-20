@@ -27,6 +27,9 @@
 #include <HalDisplay.h>
 #include <cstring>
 #include "esp_heap_caps.h"
+#if defined(ESP32)
+#include "esp_task_wdt.h"
+#endif
 #include "util/M4ContentProviderContract.h"
 #include "util/M4HistoryReopen.h"
 #include "apps/M4ContentProviderSession.h"
@@ -3459,14 +3462,24 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
 
     // Word wrap if needed
     while (!line.empty() && static_cast<int>(outLines.size()) < linesPerPage) {
+#if defined(ESP32)
+      esp_task_wdt_reset();
+#endif
       // 第一次迭代使用原始行标记，后续迭代标记为拆行
       bool currentIsOriginal = isFirstIterationOfLine && isOriginalLine;
       isFirstIterationOfLine = false;
 
-      // 精确计算行宽
-      int lineWidth = renderer.getTextWidth(cachedFontId, line.c_str());
+      // 超长无换行正文（晋江 VIP HTML 常整章一行）不能每次对剩余全文测宽：
+      // getTextWidth 会走 TTF 线性槽扫描，O(剩余字数²) 会把 display task 拖进 TASK_WDT。
+      const size_t kFullMeasureCap = static_cast<size_t>(std::max(96, viewportWidth));
+      int lineWidth = 0;
+      if (line.length() <= kFullMeasureCap) {
+        lineWidth = renderer.getTextWidth(cachedFontId, line.c_str());
+      } else {
+        lineWidth = viewportWidth + 1;
+      }
       // 标准模式：加上标点宽度补偿
-      if (punctStandard) {
+      if (punctStandard && line.length() <= kFullMeasureCap) {
         lineWidth += calculatePunctWidthAdjustment(renderer, cachedFontId, line);
       }
       // 缩进判断：原生行 + 需要缩进 + 无已有空格

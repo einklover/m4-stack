@@ -121,6 +121,7 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     bool ok = true;
     if (open_) {
       ok = flushBuffer();
+      if (ok) f_.sync();
       f_.close();
       open_ = false;
     }
@@ -469,6 +470,7 @@ void taskMain(void*) {
       const auto net = M4NativeProviderHttp::requestToSink(
           spec.request, jsonSink,
           [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); });
+      M4NativeProviderHttp::releaseTlsSession();
       const bool finished = net.ok && rows.finish();
       const size_t rowCount = rewrite.written();
       const bool parsed = finished;
@@ -493,11 +495,13 @@ void taskMain(void*) {
                            : M4xJsonStream::errorString(rows.error()));
         writeDiscoveryDiag(job.appId, "error", net.ok, net.bytes, error, rowCount, rewrite.skipped(),
                            hadSidecar);
+        M4NativeProviderIo::logHttpTlsIf(job.appId, "discovery", error);
         publish(Phase::Error, net.bytes, rowCount, error);
       } else if (!commitShelfGeneration(file, job.providerId, job.appId)) {
         file.discard();
         writeDiscoveryDiag(job.appId, "commit_fail", net.ok, net.bytes, "discovery_commit_failed",
                            rowCount, rewrite.skipped(), hadSidecar);
+        M4NativeProviderIo::logHttpTlsIf(job.appId, "discovery", "discovery_commit_failed");
         publish(Phase::Error, net.bytes, rowCount, "discovery_commit_failed");
       } else {
         writeDiscoveryDiag(job.appId, "ready", net.ok, net.bytes, "-", rowCount, rewrite.skipped(),
@@ -543,6 +547,7 @@ void taskMain(void*) {
               }
             },
             [&]() { return rows.recordCount() >= spec.maxRows; });
+        M4NativeProviderHttp::releaseTlsSession();
         const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
         const bool finished = net.ok && rows.finish();
         const bool parsed = (finished && (rows.recordCount() > 0 || job.providerId == "weread")) ||
@@ -569,6 +574,7 @@ void taskMain(void*) {
           } else {
             writeDiscoveryDiag(job.appId, "error", net.ok || boundedWindow, net.bytes, error,
                                rows.recordCount(), 0, false);
+            M4NativeProviderIo::logHttpTlsIf(job.appId, "discovery", error);
             publish(Phase::Error, net.bytes, rows.recordCount(), error);
           }
           break;
@@ -578,6 +584,7 @@ void taskMain(void*) {
           writeDiscoveryDiag(job.appId, "commit_fail", net.ok || boundedWindow, net.bytes,
                              "discovery_commit_failed",
                              rows.recordCount(), 0, false);
+          M4NativeProviderIo::logHttpTlsIf(job.appId, "discovery", "discovery_commit_failed");
           publish(Phase::Error, net.bytes, rows.recordCount(), "discovery_commit_failed");
         } else {
           writeDiscoveryDiag(job.appId, "ready", net.ok || boundedWindow, net.bytes, "-",
