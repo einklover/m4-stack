@@ -61,27 +61,8 @@ class FontManager {
   // destroyed on a real family/reader-size switch. The legacy clear path only
   // clears caches because historical epdfont objects have mixed ownership;
   // keeping this operation TTF-only avoids changing that legacy contract.
-  void releaseRuntimeTtfFaces() {
-    for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
-      auto& sizes = familyIt->second;
-      for (auto sizeIt = sizes.begin(); sizeIt != sizes.end();) {
-        EpdFontFamily* family = sizeIt->second;
-        const EpdFont* font = family ? family->getFont(EpdFontFamily::REGULAR) : nullptr;
-        if (font && font->isRuntimeTtf()) {
-          delete const_cast<EpdFont*>(font);
-          delete family;
-          sizeIt = sizes.erase(sizeIt);
-        } else {
-          ++sizeIt;
-        }
-      }
-      if (sizes.empty()) {
-        familyIt = loadedFonts.erase(familyIt);
-      } else {
-        ++familyIt;
-      }
-    }
-  }
+  void releaseRuntimeTtfFaces();
+  void releaseRuntimeTtfFaces(TtfFaceRole role);
 
   // Force next getAvailableFamilies() to re-scan /fonts and /FONT (M4 hot-plug / first boot).
   void invalidateScan() {

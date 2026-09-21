@@ -9,7 +9,25 @@
 #include "activities/settings/M4SettingsConfirm.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/M4ListTouchPolicy.h"
 #include "util/M4UiText.h"
+
+namespace {
+
+M4ListTouchPolicy::DialogTwoButtonLayout warningDialogLayout(const GfxRenderer& renderer) {
+  return M4ListTouchPolicy::makeCenteredTwoButtons(renderer.getScreenWidth(), renderer.getScreenHeight() - 190,
+                                                   144, 64, 24, 2);
+}
+
+void drawWarningButton(const GfxRenderer& renderer, const M4ListTouchPolicy::DialogTwoButtonLayout& layout,
+                       int index, const char* label) {
+  const auto r = layout.buttonRect(index);
+  renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, index == 1 ? Color::Black : Color::LightGray);
+  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, index == 0,
+                              EpdFontFamily::BOLD, 8);
+}
+
+}  // namespace
 
 void ResetSettingsActivity::taskTrampoline(void* param) {
   auto* self = static_cast<ResetSettingsActivity*>(param);
@@ -66,7 +84,9 @@ void ResetSettingsActivity::render() {
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 - 25, L(Str::kResetSettingsDetails), true);
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 15, L(Str::kResetSettingsWarn), true,
                               EpdFontFamily::BOLD);
-  
+    const auto dialog = warningDialogLayout(renderer);
+    drawWarningButton(renderer, dialog, 0, L(Str::kCancel));
+    drawWarningButton(renderer, dialog, 1, L(Str::kConfirmReset));
     const auto labels = mappedInput.mapLabels(L(Str::kCancel), L(Str::kConfirmReset), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
@@ -100,6 +120,25 @@ void ResetSettingsActivity::doReset() {
 
 void ResetSettingsActivity::loop() {
   if (state == WARNING) {
+    int tx = 0, ty = 0;
+    if (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty)) {
+      int hit = -1;
+      if (M4ListTouchPolicy::dialogButtonFromPoint(warningDialogLayout(renderer), tx, ty, hit)) {
+        if (hit == 0) {
+          Serial.printf("[%lu] [RESET] User cancelled by touch\n", millis());
+          goBack();
+        } else {
+          Serial.printf("[%lu] [RESET] User confirmed by touch\n", millis());
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          state = RESETTING;
+          xSemaphoreGive(renderingMutex);
+          updateRequired = true;
+          vTaskDelay(10 / portTICK_PERIOD_MS);
+          doReset();
+        }
+        return;
+      }
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
         m4SettingsDangerAccepts(M4ConfirmButton::Power, true)) {
       return;
@@ -124,7 +163,9 @@ void ResetSettingsActivity::loop() {
   }
 
   if (state == SUCCESS) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    int tx = 0, ty = 0;
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty))) {
       goBack();
     }
     return;

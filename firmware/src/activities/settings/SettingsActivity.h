@@ -180,6 +180,7 @@ class SettingsActivity final : public ActivityWithSubactivity {
   void applyChoiceIndex(const char* key, int index);
   void restoreSavedKey(bool committed);
   void performSwitchBootSlot();
+  void syncConfirmChrome();
   void submitDisplay(const M4SettingsRefreshRequest& req) const;
   M4SettingsControl controlForKey(const char* key) const;
 
@@ -195,4 +196,13 @@ class SettingsActivity final : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool isFullscreenActivity() const override {
+    return ui_.page == M4SettingsPageKind::Confirm;
+  }
+  uint8_t touchFooterButtonsMask() const override {
+    if (ui_.page == M4SettingsPageKind::Confirm) {
+      return M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm;
+    }
+    return 0;
+  }
 };

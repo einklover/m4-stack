@@ -101,8 +101,13 @@ static volatile bool gM4QemuScreenMode = true;
 #ifdef CROSSPOINT_MURPHY_M4
 #include "debug/M4SerialDebugBridge.h"
 #include "debug/M4UsbSerialResetPolicy.h"
+#include "apps/M4HttpTransport.h"
 #include "apps/M4xRegistry.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
+#include "apps/providers/M4NativeProviderBookDetailAsync.h"
+#include "apps/providers/M4NativeProviderCatalog.h"
+#include "apps/providers/M4NativeProviderDiscovery.h"
+#include "apps/providers/M4NativeProviderManager.h"
 #include "activities/apps/AppRuntimeActivity.h"
 #include "activities/apps/NativeAppActivity.h"
 #endif
@@ -428,6 +433,39 @@ void exitActivity() {
   }
 }
 
+#ifdef CROSSPOINT_MURPHY_M4
+static void releaseM4HomeBoundaryResources() {
+  // Activities join their own workers in onExit(). These process-wide jobs can
+  // outlive an activity, so cancel them before reclaiming the shared TLS
+  // session. Never tear down the HTTP handle while one of them still owns it.
+  M4NativeProviderManager::cancelForeground();
+  M4NativeProviderCatalog::cancel();
+  M4NativeProviderBookDetailAsync::cancel();
+
+  const unsigned long deadline = millis() + 450;
+  while ((M4NativeProviderCatalog::busy() || M4NativeProviderBookDetailAsync::busy() ||
+          M4NativeProviderDiscovery::busy() || M4NativeProviderManager::busy()) &&
+         static_cast<long>(deadline - millis()) > 0) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  const bool providerBusy = M4NativeProviderCatalog::busy() ||
+                            M4NativeProviderBookDetailAsync::busy() ||
+                            M4NativeProviderDiscovery::busy() ||
+                            M4NativeProviderManager::busy();
+  if (!providerBusy) {
+    M4HttpTransport::shutdown();
+  } else {
+    Serial.println("[M4-BOUNDARY] provider worker still active; defer TLS shutdown");
+  }
+
+  // Reader TTF faces are the largest transient allocation (PSRAM glyph cache
+  // plus sfnt/cmap state). Chrome faces remain because renderer aliases are
+  // still active on the new Home scene.
+  EpdFontLoader::releaseRuntimeReaderFonts(renderer);
+}
+#endif
+
 void enterNewActivity(Activity* activity) {
   currentActivity = activity;
   currentActivity->onEnter();
@@ -586,6 +624,7 @@ void onGoToApps() {
   callbacks.onDataCapsuleOpen = onGoToDataCapsule;
   callbacks.onBookmarkNotesOpen = onGoToBookmarkNotes;
   callbacks.onNetworkOpen = onGoToNetwork;
+  callbacks.onFileTransferOpen = onGoToFileTransfer;
   enterNewActivity(new AppListActivity(renderer, mappedInputManager, onGoHome, std::move(callbacks)));
 }
 
@@ -660,6 +699,9 @@ void onGoToBookmarkNotes() {
 
 void onGoHomeAnimated(const bool animateEntry, const int animationDirection) {
   exitActivity();
+#ifdef CROSSPOINT_MURPHY_M4
+  releaseM4HomeBoundaryResources();
+#endif
   enterNewActivity(new HomeActivity(renderer, mappedInputManager,
                                     [](const std::string& path, const std::string& originalSourcePath) { onGoToReader(path, originalSourcePath); },
                                     onGoToMyLibrary, onGoToRecentBooks,
@@ -1302,7 +1344,15 @@ void loop() {
 
   gpio.update();
 #ifdef CROSSPOINT_MURPHY_M4
-  EpdFontLoader::idleFlushTtfGlyphs(2);
+  // SD glyph persistence is best-effort. Do one glyph at a time and leave a
+  // short quiet window for touch, rendering and provider work; flushing two
+  // records on every 10ms loop made slow cards feel permanently stuck.
+  static unsigned long lastGlyphFlush = 0;
+  if (currentActivity && !currentActivity->isReaderActivity() &&
+      !mappedInputManager.wasTouchActivity() && millis() - lastGlyphFlush >= 250) {
+    EpdFontLoader::idleFlushTtfGlyphs(1);
+    lastGlyphFlush = millis();
+  }
 #endif
 
 #ifndef CROSSPOINT_X3

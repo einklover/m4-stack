@@ -439,7 +439,7 @@ def test_root_grouped_chrome_matches_spec():
 
 def test_maintenance_grouped_chrome_matches_spec():
     # Maintenance child page: same header language, one static group
-    # (label + card) over the flat 4-row child list. No model change:
+    # (label + card) over the flat 5-row child list. No model change:
     # ChildList order/count/identity math never see the card.
     if not MAINT_JSON.is_file():
         pytest.skip(f"{MAINT_JSON} missing — maintenance chrome cannot be checked")
@@ -456,14 +456,14 @@ def test_maintenance_grouped_chrome_matches_spec():
     label = [n for n in nodes if n.get("type") == "text" and n.get("rect") == [12, 105, 300, 24]]
     assert label and label[0].get("text") == "设备维护" and label[0].get("font") == "ui_18_bold"
     cards = [n.get("rect") for n in nodes if n.get("type") == "round_rect" and n.get("stroke") == 2]
-    assert cards == [[8, 130, 464, 232]], f"maintenance card wrong: {cards}"
+    assert cards == [[8, 130, 464, 290]], f"maintenance card wrong: {cards}"
 
     repeats = [n for n in nodes if n.get("type") == "repeat"]
     assert len(repeats) == 1, f"maintenance must have exactly one flat repeat, got {repeats}"
     r = repeats[0]
     assert (r.get("source"), r.get("limit"), r.get("x"), r.get("y"),
             r.get("item_width"), r.get("item_height"), r.get("gap")) == \
-        ("$page.rows", 4, 8, 130, 464, 58, 0), f"maintenance repeat wrong: {r}"
+            ("$page.rows", 5, 8, 130, 464, 58, 0), f"maintenance repeat wrong: {r}"
     children = r.get("children", [])
     tick = next((c for c in children if c.get("type") == "round_rect" and c.get("rect") == [2, 4, 460, 50]), None)
     assert tick is not None and tick.get("stroke") == 1 and tick.get("r", 0) == 0 \

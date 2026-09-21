@@ -21,6 +21,7 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "apps/M4xRegistry.h"
+#include "apps/M4HomeDock.h"
 #include "util/M4ContentProviderContract.h"
 #include "util/M4HistoryReopen.h"
 #include "util/M4HomeBookDetailMeta.h"
@@ -312,7 +313,7 @@ bool HomeActivity::publishHomeSceneWithAssetsFastCtx(BackendContext& ctx) {
     (void)tryDecodeCoverThumbIfExists(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW,
                                       HomeScene::kHomeRecentCoverH, key, isCancelled);
   }
-  const auto apps = M4xRegistry::load();
+  const auto apps = M4HomeDock::orderedApps(M4xRegistry::load());
   for (size_t i = 0; i < apps.size() && i < 4; ++i) {
     if (isCancelled()) return false;
     const auto& app = apps[i];
@@ -426,7 +427,7 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     }
     if (isCancelled()) return false;
   }
-  const auto apps = M4xRegistry::load();
+  const auto apps = M4HomeDock::orderedApps(M4xRegistry::load());
   for (size_t i = 0; i < apps.size() && i < 4; ++i) {
     if (isCancelled()) return false;
     const auto& app = apps[i];
@@ -470,7 +471,7 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
       ctx.model.setRecentPaths(recentIndex++, book.path.c_str(), book.originalSourcePath.c_str());
     }
   }
-  const auto apps = M4xRegistry::load();
+  const auto apps = M4HomeDock::orderedApps(M4xRegistry::load());
   bool hasApps = false;
   for (const auto& app : apps) {
     if (isCancelled()) return;

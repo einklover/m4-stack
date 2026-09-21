@@ -756,6 +756,11 @@ M4NativeProvider::Progress progress() {
   return gProgress;
 }
 
+bool busy() {
+  std::lock_guard<std::mutex> lock(gMu);
+  return gWorker != nullptr;
+}
+
 void acknowledgeAuth(const std::string& providerId) {
   std::lock_guard<std::mutex> lock(gMu);
   if (gProgress.providerId == providerId &&

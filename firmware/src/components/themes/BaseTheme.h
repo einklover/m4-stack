@@ -61,6 +61,7 @@ struct ThemeMetrics {
 };
 
 enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Cog,
+              WifiTransfer,
               // 32x32 icons for Fengyan theme menu
               Folder32, History32, Netdisk32, Setting32, Wifi32, Shuqian32, Apps32 };
 

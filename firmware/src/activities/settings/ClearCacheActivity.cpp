@@ -9,7 +9,25 @@
 #include "activities/settings/M4SettingsConfirm.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/M4ListTouchPolicy.h"
 #include "util/M4UiText.h"
+
+namespace {
+
+M4ListTouchPolicy::DialogTwoButtonLayout warningDialogLayout(const GfxRenderer& renderer) {
+  return M4ListTouchPolicy::makeCenteredTwoButtons(renderer.getScreenWidth(), renderer.getScreenHeight() - 190,
+                                                   144, 64, 24, 2);
+}
+
+void drawWarningButton(const GfxRenderer& renderer, const M4ListTouchPolicy::DialogTwoButtonLayout& layout,
+                       int index, const char* label) {
+  const auto r = layout.buttonRect(index);
+  renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, index == 1 ? Color::Black : Color::LightGray);
+  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, index == 0,
+                              EpdFontFamily::BOLD, 8);
+}
+
+}  // namespace
 
 void ClearCacheActivity::taskTrampoline(void* param) {
   auto* self = static_cast<ClearCacheActivity*>(param);
@@ -68,7 +86,9 @@ void ClearCacheActivity::render() {
                               EpdFontFamily::BOLD);
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 10, L(Str::kClearCacheDesc3), true);
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 30, L(Str::kClearCacheDesc4), true);
-  
+    const auto dialog = warningDialogLayout(renderer);
+    drawWarningButton(renderer, dialog, 0, L(Str::kCancel));
+    drawWarningButton(renderer, dialog, 1, L(Str::kClear));
     const auto labels = mappedInput.mapLabels(L(Str::kCancel), L(Str::kClear), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
@@ -155,6 +175,25 @@ void ClearCacheActivity::clearCache() {
 
 void ClearCacheActivity::loop() {
   if (state == WARNING) {
+    int tx = 0, ty = 0;
+    if (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty)) {
+      int hit = -1;
+      if (M4ListTouchPolicy::dialogButtonFromPoint(warningDialogLayout(renderer), tx, ty, hit)) {
+        if (hit == 0) {
+          Serial.printf("[%lu] [CLEAR_CACHE] User cancelled by touch\n", millis());
+          goBack();
+        } else {
+          Serial.printf("[%lu] [CLEAR_CACHE] User confirmed by touch\n", millis());
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          state = CLEARING;
+          xSemaphoreGive(renderingMutex);
+          updateRequired = true;
+          vTaskDelay(10 / portTICK_PERIOD_MS);
+          clearCache();
+        }
+        return;
+      }
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
         m4SettingsDangerAccepts(M4ConfirmButton::Power, true)) {
       return;
@@ -179,7 +218,9 @@ void ClearCacheActivity::loop() {
   }
 
   if (state == SUCCESS || state == FAILED) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    int tx = 0, ty = 0;
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty))) {
       goBack();
     }
     return;

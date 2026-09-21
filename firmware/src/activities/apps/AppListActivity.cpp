@@ -10,6 +10,7 @@
 #include "MappedInputManager.h"
 #include "NativeAppActivity.h"
 #include "activities/home/HomeSceneAssetDecoder.h"
+#include "apps/M4HomeDock.h"
 #include "apps/M4xInstaller.h"
 #include "components/icons/book.h"
 #include "components/icons/cog.h"
@@ -20,6 +21,7 @@
 #include "components/icons/settings.h"
 #include "components/icons/transfer.h"
 #include "components/icons/wifi.h"
+#include "components/icons/wifi_transfer.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/ButtonNavigator.h"
@@ -57,6 +59,18 @@ TouchHitGeometry::Rect uninstallDataToggleRect(const GfxRenderer& renderer) {
   constexpr int width = 260;
   constexpr int height = 52;
   return {std::max(0, (renderer.getScreenWidth() - width) / 2), renderer.getScreenHeight() - 290, width, height};
+}
+
+TouchHitGeometry::Rect dockSlotRect(const GfxRenderer& renderer, int slot) {
+  constexpr int width = 190;
+  constexpr int height = 64;
+  constexpr int gap = 20;
+  constexpr int top = 235;
+  const int row = slot / 2;
+  const int col = slot % 2;
+  const int totalWidth = width * 2 + gap;
+  const int startX = (renderer.getScreenWidth() - totalWidth) / 2;
+  return {startX + col * (width + gap), top + row * (height + 18), width, height};
 }
 
 struct DrawerGridLayout {
@@ -168,6 +182,7 @@ const uint8_t* builtinIconBitmap(const UIIcon icon) {
     case UIIcon::Recent: return RecentIcon;
     case UIIcon::Settings: return SettingsIcon;
     case UIIcon::Transfer: return TransferIcon;
+    case UIIcon::WifiTransfer: return WifiTransferIcon;
     case UIIcon::Library: return LibraryIcon;
     case UIIcon::Wifi: return WifiIcon;
     case UIIcon::Hotspot: return HotspotIcon;
@@ -292,6 +307,7 @@ void AppListActivity::reload() {
   // Keep the non-Fengyan home destinations available from the drawer. Optional
   // entries use the same configured-state checks as the legacy home menu.
   addBuiltin(BuiltinAction::FileManager, "builtin.files", L(Str::kFileManager), UIIcon::Folder);
+  addBuiltin(BuiltinAction::FileTransfer, "builtin.transfer", L(Str::kWifiTransfer), UIIcon::WifiTransfer);
   addBuiltin(BuiltinAction::RecentBooks, "builtin.history", L(Str::kReadingHistory), UIIcon::Recent);
   if (std::strlen(SETTINGS.opdsServerUrl) > 0) {
     addBuiltin(BuiltinAction::Opds, "builtin.opds", L(Str::kOPDSBrowser), UIIcon::Hotspot);
@@ -417,6 +433,9 @@ void AppListActivity::activateBuiltin(const BuiltinAction action) {
     case BuiltinAction::FileManager:
       if (callbacks_.onFileManagerOpen) callbacks_.onFileManagerOpen();
       return;
+    case BuiltinAction::FileTransfer:
+      if (callbacks_.onFileTransferOpen) callbacks_.onFileTransferOpen();
+      return;
     case BuiltinAction::RecentBooks:
       if (callbacks_.onRecentBooksOpen) callbacks_.onRecentBooksOpen();
       return;
@@ -493,13 +512,43 @@ void AppListActivity::openInstall() {
   }));
 }
 
+void AppListActivity::openContextMenu() {
+  if (!selectedIsPlugin()) return;
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    mode_ = 2;
+    M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+    updateRequired_ = true;
+    xSemaphoreGive(renderingMutex_);
+  }
+}
+
+void AppListActivity::pinSelected(const int slot) {
+  if (!selectedIsPlugin() || slot < 0 || slot >= M4HomeDock::kSlotCount) return;
+  const auto& item = items_[static_cast<size_t>(selectedIndex_)];
+  if (item.id.empty()) return;
+  if (!M4HomeDock::setSlot(slot, item.id)) {
+    Serial.printf("[M4x] failed to pin %s to home slot %d\n", item.id.c_str(), slot + 1);
+    return;
+  }
+  Serial.printf("[M4x] pinned %s to home slot %d\n", item.id.c_str(), slot + 1);
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    mode_ = 0;
+    M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+    updateRequired_ = true;
+    xSemaphoreGive(renderingMutex_);
+  }
+}
+
 void AppListActivity::uninstallSelected() {
   if (!selectedIsPlugin()) return;
   const auto& item = items_[static_cast<size_t>(selectedIndex_)];
   if (item.appIndex < 0 || item.appIndex >= static_cast<int>(apps_.size())) return;
+  const std::string appId = apps_[static_cast<size_t>(item.appIndex)].id;
   std::string err;
-  if (!M4xInstaller::uninstall(apps_[static_cast<size_t>(item.appIndex)].id, uninstallClearData_, err)) {
+  if (!M4xInstaller::uninstall(appId, uninstallClearData_, err)) {
     Serial.printf("[M4x] uninstall failed: %s\n", err.c_str());
+  } else {
+    M4HomeDock::clear(appId);
   }
   reload();
   if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -522,7 +571,7 @@ void AppListActivity::loop() {
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
-    if (mode_ == 1) {
+    if (mode_ == 1 || mode_ == 2) {
       if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         mode_ = 0;
         M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
@@ -536,6 +585,39 @@ void AppListActivity::loop() {
   }
 
   const int count = static_cast<int>(items_.size());
+  if (mode_ == 2) {
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      for (int slot = 0; slot < M4HomeDock::kSlotCount; ++slot) {
+        if (dockSlotRect(renderer, slot).contains(tx, ty)) {
+          pinSelected(slot);
+          return;
+        }
+      }
+      const auto dialog = uninstallDialogLayout(renderer);
+      int hit = -1;
+      if (M4ListTouchPolicy::dialogButtonFromPoint(dialog, tx, ty, hit)) {
+        if (hit == 0) {
+          if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            mode_ = 0;
+            M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+            updateRequired_ = true;
+            xSemaphoreGive(renderingMutex_);
+          }
+        } else {
+          mode_ = 1;
+          M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+          updateRequired_ = true;
+        }
+      }
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      pinSelected(0);
+    }
+    return;
+  }
+
   if (mode_ == 1) {
     int tx = 0, ty = 0;
     if (mappedInput.wasScreenTapped(tx, ty)) {
@@ -613,12 +695,7 @@ void AppListActivity::loop() {
       if (hit >= 0) {
         selectIndex(hit);
         if (selectedIsPlugin() && mappedInput.lastScreenTouchHeldMs() >= kAppLongPressMs) {
-          if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-            mode_ = 1;
-            M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-            updateRequired_ = true;
-            xSemaphoreGive(renderingMutex_);
-          }
+          openContextMenu();
         } else {
           openSelected();
         }
@@ -680,7 +757,30 @@ void AppListActivity::render() const {
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, L(Str::kApps));
 
-  if (frame.mode == 1 && framePluginSelected) {
+  if (frame.mode == 2 && framePluginSelected) {
+    const auto& item = frame.items[static_cast<size_t>(frame.selectedIndex)];
+    const auto& app = frame.apps[static_cast<size_t>(item.appIndex)];
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, 100, "扩展应用", true, EpdFontFamily::BOLD);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 150, app.name.c_str());
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 190, "固定到主页的位置");
+    for (int slot = 0; slot < M4HomeDock::kSlotCount; ++slot) {
+      const auto r = dockSlotRect(renderer, slot);
+      renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, Color::LightGray);
+      char label[24];
+      std::snprintf(label, sizeof(label), "主页位置 %d", slot + 1);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, true,
+                                  EpdFontFamily::BOLD, 8);
+    }
+    const auto dialog = uninstallDialogLayout(renderer);
+    const auto drawContextButton = [&](const int index, const char* label) {
+      const auto r = dialog.buttonRect(index);
+      renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, index == 1 ? Color::Black : Color::LightGray);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, index == 0,
+                                  EpdFontFamily::BOLD, 8);
+    };
+    drawContextButton(0, L(Str::kCancel));
+    drawContextButton(1, L(Str::kUninstallApp));
+  } else if (frame.mode == 1 && framePluginSelected) {
     const auto& item = frame.items[static_cast<size_t>(frame.selectedIndex)];
     const auto& app = frame.apps[static_cast<size_t>(item.appIndex)];
     const auto dialog = uninstallDialogLayout(renderer);
@@ -722,10 +822,11 @@ void AppListActivity::render() const {
   }
 
   const bool pluginSelected = framePluginSelected;
-  const auto labels = frame.mode == 1 ? mappedInput.mapLabels(L(Str::kBackShort), L(Str::kConfirm), "", "")
-                                 : mappedInput.mapLabels(L(Str::kBackShort), L(Str::kOpen),
-                                                         pluginSelected ? L(Str::kUninstallApp) : "",
-                                                         L(Str::kInstallApp));
+  const auto labels = (frame.mode == 1 || frame.mode == 2)
+                          ? mappedInput.mapLabels(L(Str::kBackShort), L(Str::kConfirm), "", "")
+                          : mappedInput.mapLabels(L(Str::kBackShort), L(Str::kOpen),
+                                                  pluginSelected ? L(Str::kUninstallApp) : "",
+                                                  L(Str::kInstallApp));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }

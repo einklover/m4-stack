@@ -105,6 +105,12 @@ constexpr char FilesPageHtml[] PROGMEM = R"rawliteral(<!DOCTYPE html><html><head
     .folder-action-btn:hover {
       background-color: #d68910;
     }
+    .plugin-action-btn {
+      background-color: #8e44ad;
+    }
+    .plugin-action-btn:hover {
+      background-color: #7d3c98;
+    }
     /* Upload modal */
     .modal-overlay {
       display: none;
@@ -281,6 +287,12 @@ constexpr char FilesPageHtml[] PROGMEM = R"rawliteral(<!DOCTYPE html><html><head
       background-color: #e0e0e0;
       border-radius: 10px;
       overflow: hidden;
+    }
+    #plugin-progress-fill {
+      height: 100%;
+      width: 0%;
+      background-color: #8e44ad;
+      transition: width 0.3s ease;
     }
     #progress-fill {
       height: 100%;
@@ -619,7 +631,7 @@ constexpr char FilesPageHtml[] PROGMEM = R"rawliteral(<!DOCTYPE html><html><head
         font-size: 0.9em;
       }
     }
-  </style> </head><body><div class="nav-links"><a href="/">首页</a><a href="/files">文件管理</a><a href="/settings">设置</a></div><div class="page-header"><div class="page-header-left"><h1>📁 文件管理</h1><div class="breadcrumb-inline" id="directory-breadcrumbs"></div></div><div class="action-buttons"><button class="action-btn upload-action-btn" onclick="openUploadModal()">📤 上传</button><button class="action-btn folder-action-btn" onclick="openFolderModal()">📁 新建文件夹</button></div></div><div class="failed-uploads-banner" id="failedUploadsBanner"><div class="failed-uploads-header"><h3 class="failed-uploads-title">⚠️ 部分文件上传失败</h3><button class="dismiss-btn" onclick="dismissFailedUploads()" title="Dismiss">&times;</button></div><div id="failedFilesList"></div><button class="retry-all-btn" onclick="retryAllFailedUploads()">重试所有失败上传</button></div><div class="card"><div class="contents-header"><h2 class="contents-title">目录内容</h2><span class="summary-inline" id="folder-summary"></span></div><div id="file-table"><div class="loader-container"><span class="loader"></span></div></div></div><div class="card"><p style="text-align: center; color: #95a5a6; margin: 0;"> CrossLink 电子书阅读器 </p></div><div class="modal-overlay" id="uploadModal"><div class="modal"><button class="modal-close" onclick="closeUploadModal()">&times;</button><h3>📤 上传文件</h3><div class="upload-form"><p class="file-info">选择文件上传到 <strong id="uploadPathDisplay"></strong></p><input type="file" id="fileInput" onchange="validateFile()" multiple><button id="uploadBtn" class="upload-btn" onclick="uploadFile()" disabled>上传</button><div id="progress-container"><div id="progress-bar"><div id="progress-fill"></div></div><div id="progress-text"></div></div></div></div></div><div class="modal-overlay" id="folderModal"><div class="modal"><button class="modal-close" onclick="closeFolderModal()">&times;</button><h3>📁 新建文件夹</h3><div class="folder-form"><p class="file-info">在 <strong id="folderPathDisplay"></strong> 创建新文件夹</p><input type="text" id="folderName" class="folder-input" placeholder="文件夹名称..."><button class="folder-btn" onclick="createFolder()">创建文件夹</button></div></div></div><div class="modal-overlay" id="deleteModal"><div class="modal"><button class="modal-close" onclick="closeDeleteModal()">&times;</button><h3>🗑️ 删除项目</h3><div class="folder-form"><p class="delete-warning">⚠️ 此操作不可撤销！</p><p class="file-info">确定要删除：</p><p class="delete-item-name" id="deleteItemName"></p><input type="hidden" id="deleteItemPath"><input type="hidden" id="deleteItemType"><button class="delete-btn-confirm" onclick="confirmDelete()">删除</button><button class="delete-btn-cancel" onclick="closeDeleteModal()">取消</button></div></div></div><div class="modal-overlay" id="renameModal"><div class="modal"><button class="modal-close" onclick="closeRenameModal()">&times;</button><h3>✏️ 重命名</h3><div class="folder-form"><p class="file-info">重命名 <strong id="renameItemName"></strong></p><input type="text" id="renameNewName" class="folder-input" placeholder="新文件名..."><input type="hidden" id="renameItemPath"><button class="rename-btn-confirm" onclick="confirmRename()">重命名</button><button class="delete-btn-cancel" onclick="closeRenameModal()">取消</button></div></div></div><div class="modal-overlay" id="moveModal"><div class="modal"><button class="modal-close" onclick="closeMoveModal()">&times;</button><h3>📂 移动文件</h3><div class="folder-form"><p class="file-info">移动 <strong id="moveItemName"></strong></p><input type="text" id="moveDestPath" class="folder-input" list="moveFolderOptions" placeholder="/目标/文件夹"><datalist id="moveFolderOptions"></datalist><input type="hidden" id="moveItemPath"><button class="move-btn-confirm" onclick="confirmMove()">移动</button><button class="delete-btn-cancel" onclick="closeMoveModal()">取消</button></div></div></div> <script>
+  </style> </head><body><div class="nav-links"><a href="/">首页</a><a href="/files">文件管理</a><a href="/settings">设置</a></div><div class="page-header"><div class="page-header-left"><h1>📁 文件管理</h1><div class="breadcrumb-inline" id="directory-breadcrumbs"></div></div><div class="action-buttons"><button class="action-btn upload-action-btn" onclick="openUploadModal()">📤 上传</button><button class="action-btn plugin-action-btn" onclick="openPluginModal()">📦 安装插件</button><button class="action-btn folder-action-btn" onclick="openFolderModal()">📁 新建文件夹</button></div></div><div class="failed-uploads-banner" id="failedUploadsBanner"><div class="failed-uploads-header"><h3 class="failed-uploads-title">⚠️ 部分文件上传失败</h3><button class="dismiss-btn" onclick="dismissFailedUploads()" title="Dismiss">&times;</button></div><div id="failedFilesList"></div><button class="retry-all-btn" onclick="retryAllFailedUploads()">重试所有失败上传</button></div><div class="card"><div class="contents-header"><h2 class="contents-title">目录内容</h2><span class="summary-inline" id="folder-summary"></span></div><div id="file-table"><div class="loader-container"><span class="loader"></span></div></div></div><div class="card"><p style="text-align: center; color: #95a5a6; margin: 0;"> CrossLink 电子书阅读器 </p></div><div class="modal-overlay" id="uploadModal"><div class="modal"><button class="modal-close" onclick="closeUploadModal()">&times;</button><h3>📤 上传文件</h3><div class="upload-form"><p class="file-info">选择文件上传到 <strong id="uploadPathDisplay"></strong></p><input type="file" id="fileInput" onchange="validateFile()" multiple><p class="file-info">选择 <code>.m4x</code> 插件包会在上传后直接安装。</p><button id="uploadBtn" class="upload-btn" onclick="uploadFile()" disabled>上传</button><div id="progress-container"><div id="progress-bar"><div id="progress-fill"></div></div><div id="progress-text"></div></div></div></div></div><div class="modal-overlay" id="pluginModal"><div class="modal"><button class="modal-close" onclick="closePluginModal()">&times;</button><h3>📦 安装插件</h3><div class="upload-form"><p class="file-info">从电脑选择 <strong>.m4x</strong> 插件安装包，上传后设备会直接安装。</p><input type="file" id="pluginFileInput" accept=".m4x,.M4X" onchange="validatePluginFile()"><button id="pluginInstallBtn" class="upload-btn" onclick="installPluginPackage()" disabled>安装</button><div id="plugin-progress-container" style="display:none;margin-top:12px;"><div id="progress-bar"><div id="plugin-progress-fill"></div></div><div id="plugin-progress-text"></div></div></div></div></div><div class="modal-overlay" id="folderModal"><div class="modal"><button class="modal-close" onclick="closeFolderModal()">&times;</button><h3>📁 新建文件夹</h3><div class="folder-form"><p class="file-info">在 <strong id="folderPathDisplay"></strong> 创建新文件夹</p><input type="text" id="folderName" class="folder-input" placeholder="文件夹名称..."><button class="folder-btn" onclick="createFolder()">创建文件夹</button></div></div></div><div class="modal-overlay" id="deleteModal"><div class="modal"><button class="modal-close" onclick="closeDeleteModal()">&times;</button><h3>🗑️ 删除项目</h3><div class="folder-form"><p class="delete-warning">⚠️ 此操作不可撤销！</p><p class="file-info">确定要删除：</p><p class="delete-item-name" id="deleteItemName"></p><input type="hidden" id="deleteItemPath"><input type="hidden" id="deleteItemType"><button class="delete-btn-confirm" onclick="confirmDelete()">删除</button><button class="delete-btn-cancel" onclick="closeDeleteModal()">取消</button></div></div></div><div class="modal-overlay" id="renameModal"><div class="modal"><button class="modal-close" onclick="closeRenameModal()">&times;</button><h3>✏️ 重命名</h3><div class="folder-form"><p class="file-info">重命名 <strong id="renameItemName"></strong></p><input type="text" id="renameNewName" class="folder-input" placeholder="新文件名..."><input type="hidden" id="renameItemPath"><button class="rename-btn-confirm" onclick="confirmRename()">重命名</button><button class="delete-btn-cancel" onclick="closeRenameModal()">取消</button></div></div></div><div class="modal-overlay" id="moveModal"><div class="modal"><button class="modal-close" onclick="closeMoveModal()">&times;</button><h3>📂 移动文件</h3><div class="folder-form"><p class="file-info">移动 <strong id="moveItemName"></strong></p><input type="text" id="moveDestPath" class="folder-input" list="moveFolderOptions" placeholder="/目标/文件夹"><datalist id="moveFolderOptions"></datalist><input type="hidden" id="moveItemPath"><button class="move-btn-confirm" onclick="confirmMove()">移动</button><button class="delete-btn-cancel" onclick="closeMoveModal()">取消</button></div></div></div> <script>
   // get current path from query parameter
   const currentPath = decodeURIComponent(new URLSearchParams(window.location.search).get('path') || '/');
 
@@ -756,6 +768,65 @@ constexpr char FilesPageHtml[] PROGMEM = R"rawliteral(<!DOCTYPE html><html><head
     document.getElementById('progress-fill').style.backgroundColor = '#27ae60';
   }
 
+  function isM4xFile(file) {
+    return file && /\.m4x$/i.test(file.name);
+  }
+
+  function openPluginModal() {
+    document.getElementById('pluginModal').classList.add('open');
+  }
+
+  function closePluginModal() {
+    document.getElementById('pluginModal').classList.remove('open');
+    document.getElementById('pluginFileInput').value = '';
+    document.getElementById('pluginInstallBtn').disabled = true;
+    document.getElementById('plugin-progress-container').style.display = 'none';
+    document.getElementById('plugin-progress-fill').style.width = '0%';
+    document.getElementById('plugin-progress-fill').style.backgroundColor = '#27ae60';
+  }
+
+  function validatePluginFile() {
+    const input = document.getElementById('pluginFileInput');
+    const btn = document.getElementById('pluginInstallBtn');
+    const file = input.files && input.files[0];
+    btn.disabled = !isM4xFile(file);
+  }
+
+  async function installPluginPackage() {
+    const input = document.getElementById('pluginFileInput');
+    const file = input.files && input.files[0];
+    if (!isM4xFile(file)) {
+      alert('请选择 .m4x 插件安装包');
+      return;
+    }
+    const fill = document.getElementById('plugin-progress-fill');
+    const text = document.getElementById('plugin-progress-text');
+    const btn = document.getElementById('pluginInstallBtn');
+    document.getElementById('plugin-progress-container').style.display = 'block';
+    fill.style.width = '0%';
+    fill.style.backgroundColor = '#8e44ad';
+    text.textContent = '正在上传并安装 ' + file.name;
+    btn.disabled = true;
+    try {
+      await uploadFileHTTP(file, (loaded, total) => {
+        const percent = Math.round((loaded / total) * 100);
+        fill.style.width = percent + '%';
+        text.textContent = '正在上传 ' + file.name + ' — ' + percent + '%';
+      }, null, null, '/apps_inbox', true);
+      fill.style.width = '100%';
+      fill.style.backgroundColor = '#4caf50';
+      text.textContent = '插件已安装：' + file.name;
+      setTimeout(() => {
+        closePluginModal();
+        hydrate();
+      }, 1000);
+    } catch (error) {
+      fill.style.backgroundColor = '#e74c3c';
+      text.textContent = '安装失败：' + (error.message || error);
+      btn.disabled = false;
+    }
+  }
+
   function openFolderModal() {
     document.getElementById('folderPathDisplay').textContent = currentPath === '/' ? '/ 🏠' : currentPath;
     document.getElementById('folderModal').classList.add('open');
@@ -885,13 +956,16 @@ function uploadFileWebSocket(file, onProgress, onComplete, onError) {
 }
 
 // Upload file via HTTP (fallback method)
-function uploadFileHTTP(file, onProgress, onComplete, onError) {
+function uploadFileHTTP(file, onProgress, onComplete, onError, uploadPath, forceInstall) {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
     formData.append('file', file);
 
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/upload?path=' + encodeURIComponent(currentPath), true);
+    const dest = uploadPath || currentPath;
+    let url = '/upload?path=' + encodeURIComponent(dest);
+    if (forceInstall || isM4xFile(file)) url += '&install=1';
+    xhr.open('POST', url, true);
 
     xhr.upload.onprogress = function(e) {
       if (e.lengthComputable && onProgress) {
@@ -990,7 +1064,11 @@ function uploadFile() {
     };
 
     try {
-      if (useWebSocket) {
+      if (isM4xFile(file)) {
+        progressText.textContent = `正在上传并安装 ${file.name} (${currentIndex + 1}/${files.length}) [HTTP]`;
+        await uploadFileHTTP(file, onProgress, null, null, currentPath, true);
+        onComplete();
+      } else if (useWebSocket) {
         await uploadFileWebSocket(file, onProgress, null, null);
         onComplete();
       } else {
@@ -999,7 +1077,7 @@ function uploadFile() {
       }
     } catch (error) {
       console.error('Upload error:', error);
-      if (useWebSocket && error.message === 'WebSocket connection failed') {
+      if (useWebSocket && !isM4xFile(file) && error.message === 'WebSocket connection failed') {
         // Fall back to HTTP for all subsequent uploads
         console.log('WebSocket failed, falling back to HTTP');
         useWebSocket = false;

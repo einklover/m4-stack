@@ -289,6 +289,19 @@ int EpdFontLoader::idleFlushTtfGlyphs(int maxGlyphs) {
 #endif
 }
 
+void EpdFontLoader::releaseRuntimeReaderFonts(GfxRenderer& renderer) {
+  // Hash IDs are the only renderer aliases owned by the runtime reader TTF
+  // path. Remove them before destroying their FontManager objects; chrome TTF
+  // faces deliberately stay alive because the current Home/settings renderer
+  // may still point at their NOTOSANS aliases.
+  for (const int id : loadedCustomIds) renderer.removeFont(id);
+  loadedCustomIds.clear();
+  FontManager::getInstance().releaseRuntimeTtfFaces(FontManager::TtfFaceRole::Reader);
+  activeRuntimeTtfFamily.clear();
+  activeRuntimeTtfSize = -1;
+  sdFontsLoaded_ = false;
+}
+
 void EpdFontLoader::ensureFontsFromSd(GfxRenderer& renderer) {
   if (sdFontsLoaded_) {
     return;

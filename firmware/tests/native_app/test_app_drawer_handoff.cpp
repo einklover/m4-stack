@@ -51,6 +51,14 @@ void testDisplayTaskRechecksChildUnderMutex(const std::string& source) {
   assert(body.find("subActivity") == std::string::npos);
 }
 
+void testDrawerHasWifiTransfer(const std::string& source) {
+  assert(source.find("BuiltinAction::FileTransfer") != std::string::npos);
+  assert(source.find("onFileTransferOpen") != std::string::npos);
+  assert(source.find("L(Str::kWifiTransfer)") != std::string::npos);
+  assert(source.find("UIIcon::WifiTransfer") != std::string::npos);
+  assert(source.find("WifiTransferIcon") != std::string::npos);
+}
+
 void testDrawerPagesWithScrollBar(const std::string& source) {
   assert(source.find("void AppListActivity::pageBy(const int pages)") != std::string::npos);
   assert(source.find("drawDrawerScrollBar") != std::string::npos);
@@ -80,6 +88,7 @@ int main() {
   testDisplayTaskRechecksChildUnderMutex(source);
   testPluginEnterIsSerialized(source);
   testDrawerPagesWithScrollBar(source);
+  testDrawerHasWifiTransfer(source);
   std::cout << "app drawer handoff contracts: ALL PASS\n";
   return 0;
 }

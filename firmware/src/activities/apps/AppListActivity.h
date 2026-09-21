@@ -24,6 +24,7 @@ class AppListActivity final : public ActivityWithSubactivity {
     std::function<void()> onDataCapsuleOpen;
     std::function<void()> onBookmarkNotesOpen;
     std::function<void()> onNetworkOpen;
+    std::function<void()> onFileTransferOpen;
   };
 
   explicit AppListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -37,7 +38,7 @@ class AppListActivity final : public ActivityWithSubactivity {
   void loop() override;
   bool showTouchNavigation() const override { return false; }
   uint8_t touchFooterButtonsMask() const override {
-    return mode_ == 1 ? M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm
+    return mode_ == 1 || mode_ == 2 ? M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm
                       : M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm |
                             M4FooterTouchPolicy::Right |
                             (selectedIsPlugin() ? M4FooterTouchPolicy::Left : 0);
@@ -46,6 +47,7 @@ class AppListActivity final : public ActivityWithSubactivity {
  private:
   enum class BuiltinAction : uint8_t {
     FileManager,
+    FileTransfer,
     RecentBooks,
     Opds,
     JianGuo,
@@ -84,7 +86,7 @@ class AppListActivity final : public ActivityWithSubactivity {
   std::vector<DrawerItem> items_;
   int selectedIndex_ = 0;
   std::atomic<bool> updateRequired_{false};
-  // 0 = list mode, 1 = confirm uninstall
+  // 0 = list mode, 1 = confirm uninstall, 2 = plugin context menu
   int mode_ = 0;
   bool uninstallClearData_ = true;
 
@@ -110,6 +112,8 @@ class AppListActivity final : public ActivityWithSubactivity {
   void render() const;
   void openSelected();
   void openInstall();
+  void pinSelected(int slot);
+  void openContextMenu();
   void uninstallSelected();
   bool selectedIsPlugin() const;
   void selectIndex(int index);

@@ -5382,6 +5382,11 @@ std::string M4xLuaHost::debugUiJson() const {
 }
 
 void M4xLuaHost::stop() {
+  // AppRuntimeActivity is intentionally deferred for one event-loop turn, so
+  // do not leave the plugin's keep-alive HTTP/TLS objects alive until that
+  // deferred delete.  This is the owner task, and releaseNetworkSession only
+  // drops this host's clients; it does not disconnect shared Wi-Fi.
+  releaseNetworkSession();
   if (L_) {
     lua_close(static_cast<lua_State*>(L_));
     L_ = nullptr;

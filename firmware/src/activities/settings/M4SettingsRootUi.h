@@ -51,6 +51,7 @@ constexpr M4SettingsRow kKeys[] = {
 constexpr M4SettingsRow kMaintenance[] = {
     {"clearCache", "清理缓存", M4SettingsControl::Confirm, true},
     {"resetSettings", "重置设置", M4SettingsControl::Confirm, true},
+    {"batchInstall", "批量安装插件", M4SettingsControl::Navigate, true},
     {"developerOptions", "开发者选项", M4SettingsControl::Navigate, true},
     {"switchBootSlot", "切换启动槽", M4SettingsControl::Confirm, true},
 };
@@ -301,7 +302,7 @@ inline const char* m4SettingsUiFooterLabelForSlot(const M4SettingsUiState& st, i
     return m4SettingsFooterConfirmLabel(M4SettingsControl::Choice);
   }
   if (st.page == M4SettingsPageKind::Confirm) {
-    if (std::strcmp(st.selectedKey, "switchBootSlot") == 0) return "切换";
+    if (std::strcmp(st.selectedKey, "switchBootSlot") == 0) return "确认";
     return m4SettingsFooterConfirmLabel(M4SettingsControl::Confirm);
   }
   if (st.page == M4SettingsPageKind::ChildList) {

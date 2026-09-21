@@ -198,6 +198,51 @@ void FontManager::clearLoadedFonts() {
   loadedFonts.clear();
 }
 
+void FontManager::releaseRuntimeTtfFaces() {
+  for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
+    auto& sizes = familyIt->second;
+    for (auto sizeIt = sizes.begin(); sizeIt != sizes.end();) {
+      EpdFontFamily* family = sizeIt->second;
+      const EpdFont* font = family ? family->getFont(EpdFontFamily::REGULAR) : nullptr;
+      if (font && font->isRuntimeTtf()) {
+        delete const_cast<EpdFont*>(font);
+        delete family;
+        sizeIt = sizes.erase(sizeIt);
+      } else {
+        ++sizeIt;
+      }
+    }
+    if (sizes.empty()) {
+      familyIt = loadedFonts.erase(familyIt);
+    } else {
+      ++familyIt;
+    }
+  }
+}
+
+void FontManager::releaseRuntimeTtfFaces(TtfFaceRole role) {
+  const uint8_t roleKey = static_cast<uint8_t>(role == TtfFaceRole::Chrome ? 1 : 0);
+  for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
+    auto& sizes = familyIt->second;
+    for (auto sizeIt = sizes.begin(); sizeIt != sizes.end();) {
+      EpdFontFamily* family = sizeIt->second;
+      const EpdFont* font = family ? family->getFont(EpdFontFamily::REGULAR) : nullptr;
+      if (sizeIt->first.role == roleKey && font && font->isRuntimeTtf()) {
+        delete const_cast<EpdFont*>(font);
+        delete family;
+        sizeIt = sizes.erase(sizeIt);
+      } else {
+        ++sizeIt;
+      }
+    }
+    if (sizes.empty()) {
+      familyIt = loadedFonts.erase(familyIt);
+    } else {
+      ++familyIt;
+    }
+  }
+}
+
 const std::vector<std::string>& FontManager::getAvailableFamilies() {
   if (!scanned) {
     scanFonts();

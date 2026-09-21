@@ -1,0 +1,20 @@
+{
+  "id": "com.m4.pet",
+  "name": "电子宠物",
+  "version": "0.1.3",
+  "versionCode": 4,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "V1 Lua Tamagotchi for 480x800 e-ink: hatch, feed, play, meds, bath, persist.",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "sprites.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}

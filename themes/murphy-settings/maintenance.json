@@ -85,7 +85,7 @@
         8,
         130,
         464,
-        232
+        290
       ],
       "r": 11,
       "stroke": 2
@@ -93,7 +93,7 @@
     {
       "type": "repeat",
       "source": "$page.rows",
-      "limit": 4,
+      "limit": 5,
       "x": 8,
       "y": 130,
       "item_width": 464,

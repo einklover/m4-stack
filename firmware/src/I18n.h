@@ -67,7 +67,11 @@
   STR(kDataCapsuleConfig,       "数据胶囊配置",      "數據膠囊配置") \
   STR(kResetSettings,           "还原为初始设置",     "還原為初始設置") \
   STR(kClearCache,              "清理缓存",          "清理緩存") \
+  STR(kBatchInstallPlugins,     "批量安装插件",       "批量安裝插件") \
   STR(kSwitchBootSlot,          "切换启动区",        "切換啟動區") \
+  STR(kSwitchBootSlotDesc,      "将切换到另一启动区，设备会重启。", "將切換到另一啟動區，裝置會重啟。") \
+  STR(kSwitchBootSlotCurrent,   "当前启动区",        "目前啟動區") \
+  STR(kSwitchBootSlotTarget,    "目标启动区",        "目標啟動區") \
   STR(kApp0Official,            "APP0（官方）",       "APP0（官方）") \
   STR(kApp1Custom,              "APP1（自研）",       "APP1（自研）") \
   STR(kUnknownBootSlot,         "启动区未知",        "啟動區未知") \
@@ -444,6 +448,7 @@
   STR(kDownloadFailedShort,    "下载失败",           "下載失敗") \
   /* --- 网络功能 --- */ \
   STR(kFileTransfer,           "文件传输",           "文件傳輸") \
+  STR(kWifiTransfer,           "WiFi传书",           "WiFi傳書") \
   STR(kWifiName,               "wifi名称: ",         "wifi名稱: ") \
   STR(kConnectPhoneToHotspot,  "打开手机wifi连接到CrossLink热点", "打開手機wifi連接到CrossLink熱點") \
   STR(kOrScanQRConnectHotspot, "或扫描二维码连接到CrossLink热点", "或掃描二維碼連接到CrossLink熱點") \

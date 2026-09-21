@@ -1,15 +1,19 @@
 #include "SettingsActivity.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <GfxRenderer.h>
 #include <HardwareSerial.h>
 
 #include "util/ButtonNavigator.h"
+#include "util/M4FooterTouchPolicy.h"
+#include "util/M4TouchNavigation.h"
 #include "ButtonRemapActivity.h"
 #include "util/M4ListTouchPolicy.h"
 #include "util/TouchHitGeometry.h"
 #include "ClearCacheActivity.h"
+#include "activities/apps/BatchInstallActivity.h"
 #include "CrossPointSettings.h"
 #include "I18n.h"
 #include "KOReaderSettingsActivity.h"
@@ -78,6 +82,27 @@ void appendAction(std::vector<SettingInfo>& out, const char* name, const char* k
   auto act = SettingInfo::Action(name);
   act.key = key;
   out.push_back(std::move(act));
+}
+
+constexpr int kSwitchConfirmBtnY = 520;
+constexpr int kSwitchConfirmBtnH = 80;
+constexpr int kSwitchConfirmBtnW = 180;
+constexpr int kSwitchConfirmCancelX = 40;
+constexpr int kSwitchConfirmOkX = 260;
+
+int hitSwitchBootConfirm(int x, int y) {
+  if (y < kSwitchConfirmBtnY || y >= kSwitchConfirmBtnY + kSwitchConfirmBtnH) return -1;
+  if (x >= kSwitchConfirmCancelX && x < kSwitchConfirmCancelX + kSwitchConfirmBtnW) return 0;
+  if (x >= kSwitchConfirmOkX && x < kSwitchConfirmOkX + kSwitchConfirmBtnW) return 1;
+  return -1;
+}
+
+void drawSwitchConfirmButton(const GfxRenderer& renderer, int x, int y, int w, int h, const char* label) {
+  renderer.drawRect(x, y, w, h, 3, true);
+  const int textW = renderer.getTextWidth(UI_12_FONT_ID, label);
+  const int tx = x + (w - textW) / 2;
+  const int ty = y + (h - 28) / 2;
+  renderer.drawText(UI_12_FONT_ID, tx, ty, label, true);
 }
 
 bool isRootDoorKey(const char* key) {
@@ -149,6 +174,7 @@ void SettingsActivity::onEnter() {
   appendAction(allSettings_, L(Str::kDataCapsuleConfig), "dataCapsule");
   appendAction(allSettings_, L(Str::kClearCache), "clearCache");
   appendAction(allSettings_, L(Str::kResetSettings), "resetSettings");
+  appendAction(allSettings_, L(Str::kBatchInstallPlugins), "batchInstall");
 #ifdef CROSSPOINT_MURPHY_M4
   appendAction(allSettings_, L(Str::kDeveloperOptions), "developerOptions");
   appendAction(allSettings_, L(Str::kSwitchBootSlot), "switchBootSlot");
@@ -179,9 +205,15 @@ void SettingsActivity::onExit() {
   UITheme::getInstance().reload();
 }
 
+void SettingsActivity::syncConfirmChrome() {
+  M4TouchNavigation::activateForActivity(showTouchNavigation());
+  M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+}
+
 void SettingsActivity::handleBack() {
   if (ui_.page == M4SettingsPageKind::Confirm) {
     m4SettingsUiConfirmDecide(ui_, M4ConfirmButton::Back, true);
+    syncConfirmChrome();
     m4SettingsPaintResetFull(paint_, ui_);
     rebuildModel();
     updateRequired = true;
@@ -257,9 +289,24 @@ void SettingsActivity::loop() {
       handleBack();
       return;
     }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       handleBack();
       return;
+    }
+    if (mappedInput.hasTouch()) {
+      int tx = 0, ty = 0;
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        const int hit = hitSwitchBootConfirm(tx, ty);
+        if (hit == 0) {
+          handleBack();
+          return;
+        }
+        if (hit == 1) {
+          activateCurrent();
+          return;
+        }
+      }
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       activateCurrent();
@@ -613,6 +660,8 @@ void SettingsActivity::launchAction(const SettingInfo& setting) {
     enterNewActivity(new ClearCacheActivity(renderer, mappedInput, restore));
   } else if (strcmp(k, "resetSettings") == 0) {
     enterNewActivity(new ResetSettingsActivity(renderer, mappedInput, restore));
+  } else if (strcmp(k, "batchInstall") == 0) {
+    enterNewActivity(new BatchInstallActivity(renderer, mappedInput, restore));
 #ifdef CROSSPOINT_MURPHY_M4
   } else if (strcmp(k, "developerOptions") == 0) {
     enterNewActivity(new DeveloperOptionsActivity(renderer, mappedInput, restore));
@@ -695,6 +744,7 @@ void SettingsActivity::toggleCurrentSetting() {
 
   if (setting.key && std::strcmp(setting.key, "switchBootSlot") == 0) {
     m4SettingsUiOpenConfirm(ui_, setting.key);
+    syncConfirmChrome();
     m4SettingsPaintResetFull(paint_, ui_);
     rebuildModel();
     updateRequired = true;
@@ -751,6 +801,11 @@ void SettingsActivity::activateCurrent() {
   if (ui_.page == M4SettingsPageKind::Confirm) {
     if (m4SettingsUiConfirmDecide(ui_, M4ConfirmButton::Confirm, true) && ui_.bootSlotSwitchRequested) {
       performSwitchBootSlot();
+    } else {
+      syncConfirmChrome();
+      m4SettingsPaintResetFull(paint_, ui_);
+      rebuildModel();
+      updateRequired = true;
     }
     return;
   }
@@ -770,6 +825,7 @@ void SettingsActivity::performSwitchBootSlot() {
   } else {
     GUI.drawPopup(renderer, L(Str::kUnknownBootSlot));
     delay(700);
+    syncConfirmChrome();
     m4SettingsPaintResetFull(paint_, ui_);
     rebuildModel();
     updateRequired = true;
@@ -811,8 +867,24 @@ void SettingsActivity::render() const {
     renderer.clearScreen();
     const auto pageHeight = renderer.getScreenHeight();
     M4UiText::drawCentered(renderer, UI_12_FONT_ID, 15, L(Str::kSwitchBootSlot), true, EpdFontFamily::BOLD);
-    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 - 20, L(Str::kSwitchBootSlot), true);
-    const auto labels = mappedInput.mapLabels(L(Str::kCancel), L(Str::kToggle), "", "");
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 - 90, L(Str::kSwitchBootSlotDesc), true);
+#ifdef CROSSPOINT_MURPHY_M4
+    const auto* running = runningOtaPartition();
+    const char* current = runningOtaLabel();
+    const char* target = (running && running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) ? L(Str::kApp1Custom)
+                                                                                         : L(Str::kApp0Official);
+    char currentLine[64]{};
+    char targetLine[64]{};
+    std::snprintf(currentLine, sizeof(currentLine), "%s  %s", L(Str::kSwitchBootSlotCurrent), current);
+    std::snprintf(targetLine, sizeof(targetLine), "%s  %s", L(Str::kSwitchBootSlotTarget), target);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 - 40, currentLine, true);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 - 10, targetLine, true);
+#endif
+    drawSwitchConfirmButton(renderer, kSwitchConfirmCancelX, kSwitchConfirmBtnY, kSwitchConfirmBtnW,
+                            kSwitchConfirmBtnH, L(Str::kCancel));
+    drawSwitchConfirmButton(renderer, kSwitchConfirmOkX, kSwitchConfirmBtnY, kSwitchConfirmBtnW,
+                            kSwitchConfirmBtnH, L(Str::kConfirm));
+    const auto labels = mappedInput.mapLabels(L(Str::kCancel), L(Str::kConfirm), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     submitDisplay(req);
     return;

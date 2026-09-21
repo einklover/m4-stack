@@ -595,7 +595,7 @@ void testDangerNotPower() {
 }
 
 void testSwitchBootSlotIsDangerConfirmPage() {
-  const M4SettingsRow* row = m4SettingsChildAt("maintenance", 3);
+  const M4SettingsRow* row = m4SettingsChildAt("maintenance", 4);
   assert(row && streq(row->key, "switchBootSlot"));
   assert(row->control == M4SettingsControl::Confirm);
 
@@ -818,6 +818,9 @@ void testSettingsActivitySourceContracts() {
   assert(launch.find("switchToOtherOtaSlot") == std::string::npos);
   assert(launch.find("ESP.restart") == std::string::npos);
   assert(src.find("bootSlotSwitchRequested") != std::string::npos);
+  assert(src.find("mapLabels(L(Str::kCancel), L(Str::kConfirm)") != std::string::npos);
+  assert(src.find("mapLabels(L(Str::kCancel), L(Str::kToggle)") == std::string::npos);
+  assert(src.find("hitSwitchBootConfirm") != std::string::npos);
   printf("SettingsActivity source contracts PASS\n");
 }
 
@@ -853,7 +856,7 @@ void testThemeEightPxNoHubFour() {
   std::string maint = loadThemeMaint();
   assert(!maint.empty());
   assert(hasRect(maint, "[2,4,460,50]"));
-  assert(compactJson(maint).find("\"limit\":4") != std::string::npos);
+  assert(compactJson(maint).find("\"limit\":5") != std::string::npos);
   std::string front = loadThemeChild("frontlight");
   assert(!front.empty());
   assert(hasRect(front, "[2,4,460,50]"));
