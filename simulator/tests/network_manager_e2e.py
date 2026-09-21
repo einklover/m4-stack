@@ -4,8 +4,9 @@
 This intentionally does not use the m4adb ``wifi_transfer`` shortcut because
 that debug operation may auto-start a saved/QEMU STA connection and bypass the
 real NetworkModeSelectionActivity. Each journey boots a fresh SD image, enters
-File transfer from Home with physical key events, selects one production mode,
-then proves the parent and expected child activity remain stable.
+Apps from Home with physical key events, activates the default builtin.network
+item, selects one production mode, then proves the parent and expected child
+activity remain stable.
 
 The top-level status reports CrossPointWebServer while its nested activity is
 active. Use the existing structured ``ui`` dump to observe that child instead
@@ -214,16 +215,17 @@ def _assert_mode_stable(client: Client, proc: Any, qlog: Path, expected_subactiv
 
 def _enter_real_mode_selection(client: Client, proc: Any, qlog: Path) -> None:
     # Fresh SD + pristine flash/default settings produce the canonical Home menu:
-    # My Library, Recents, File transfer, Apps, Settings.
+    # My Library, Recents, File transfer, Apps, Settings. Enter Apps, then use
+    # AppList's default first item (builtin.network) to reach Network Manager.
     _wait_activity(client, proc, qlog, "Home", seconds=30.0)
-    _send_key(client, "down")
-    # Do not immediately inject a second physical key after the first key ACK.
-    # The ACK can precede the e-ink render/input loop finishing. A successful
-    # status read proves the bridge is processing requests again without
-    # risking a duplicate navigation key if an ACK were ever lost.
-    _wait_activity(client, proc, qlog, "Home", seconds=12.0)
-    _send_key(client, "down")
-    _wait_activity(client, proc, qlog, "Home", seconds=12.0)
+    for _ in range(3):
+        _send_key(client, "down")
+        # The key ACK can precede the e-ink render/input loop finishing. A
+        # successful status read proves the bridge is processing requests again
+        # before the next physical key is injected.
+        _wait_activity(client, proc, qlog, "Home", seconds=12.0)
+    _send_key(client, "confirm")
+    _wait_activity(client, proc, qlog, "AppList", seconds=20.0)
     _send_key(client, "confirm")
     # The picker is a nested child; top-level status intentionally remains the
     # CrossPointWebServer parent. Structured UI state is the truthful signal.

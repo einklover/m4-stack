@@ -1,0 +1,80 @@
+name: m4 P1E file-transfer memory governance
+
+on:
+  push:
+    branches:
+      - runtime/p1e-file-transfer-memory-governance
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preserve P2 memory governance host baseline
+        run: |
+          g++ -std=c++17 \
+            -Ifirmware/src/memory \
+            tests/contracts/memory_governance_contracts_red.cpp \
+            firmware/src/memory/M4MemoryGovernance.cpp \
+            -o /tmp/m4_memory_governance_contract
+          /tmp/m4_memory_governance_contract
+
+      - name: P1E file-transfer governance account host contract
+        run: |
+          g++ -std=c++17 \
+            -Ifirmware/src/memory \
+            tests/contracts/file_transfer_memory_account_contracts.cpp \
+            firmware/src/memory/M4MemoryGovernance.cpp \
+            -o /tmp/m4_file_transfer_memory_account_contract
+          /tmp/m4_file_transfer_memory_account_contract
+
+      - name: P1E file-transfer governance wiring contract
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "firmware/tests")
+          import test_m4_file_transfer_governance_wiring as contract
+
+          contract.test_file_transfer_service_owns_governance_account()
+          contract.test_http_runtime_admission_and_release_are_governed()
+          contract.test_captive_dns_admission_and_release_are_governed()
+          PY
+
+  firmware-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PlatformIO
+        run: |
+          python3 -m pip install --user platformio
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap firmware dependencies
+        run: bash scripts/bootstrap_deps.sh
+
+      - name: Build unchanged Murphy production profile
+        working-directory: firmware
+        run: |
+          pio run -e murphy_m4
+          test -f .pio/build/murphy_m4/firmware.bin
+
+      - name: Build Murphy plugin-debug QEMU profile
+        working-directory: firmware
+        run: |
+          pio run -e murphy_m4_qemu_plugin
+          test -f .pio/build/murphy_m4_qemu_plugin/firmware.bin
+
+# P1E gate rules:
+# - preserve the P2 host accounting baseline
+# - prove service-owned DNS/HTTP runtime admission and release are governed
+# - prove repeated/rollback lifecycle accounting returns to clean
+# - build production and plugin-debug simulator profiles
+# - no NetworkManager rewrite, device flash, UI redesign, or P3 scope

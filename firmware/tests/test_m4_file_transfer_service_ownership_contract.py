@@ -19,13 +19,15 @@ service_h = SERVICE_H.read_text(encoding="utf-8")
 service_cpp = SERVICE_CPP.read_text(encoding="utf-8")
 service = service_h + "\n" + service_cpp
 
-# P1B's durable invariant is the ownership boundary, not the legacy transport.
-# P1C is allowed to replace CrossPointWebServer with ESP-IDF httpd while this
-# contract continues to prove that Activity does not regain server ownership.
+# P1B's durable invariant is the ownership boundary, not the legacy transport
+# or the pre-P1D placement of the service object. P1D moved the service into a
+# deferred cleanup context so navigation can detach before concrete teardown.
 required_activity = [
     '#include "network/M4FileTransferService.h"',
-    "M4FileTransferService fileTransferService;",
-    "fileTransferService.stop(",
+    "M4FileTransferService service;",
+    "std::unique_ptr<DeferredCleanupContext> deferredCleanupContext;",
+    "M4FileTransferService& fileTransferService()",
+    "cleanup->service.stop(",
 ]
 missing_activity = [needle for needle in required_activity if needle not in activity_h + activity_cpp]
 if missing_activity:
