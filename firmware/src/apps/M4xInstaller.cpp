@@ -18,6 +18,18 @@
 
 namespace {
 
+// Install work can run from the serial bridge, UI, or network task.  Only
+// some of those callers are subscribed to the task watchdog; calling the
+// reset API from an unsubscribed task emits an error for every chunk and can
+// flood the control serial stream.  Feed it only when this task is subscribed.
+inline void resetTaskWdtIfSubscribed() {
+#if defined(ESP32)
+  if (esp_task_wdt_status(nullptr) == ESP_OK) {
+    (void)esp_task_wdt_reset();
+  }
+#endif
+}
+
 bool writeFileBytes(const char* path, const uint8_t* data, size_t n) {
   if (SdMan.exists(path)) SdMan.remove(path);
   FsFile f;
@@ -31,7 +43,7 @@ bool writeFileBytes(const char* path, const uint8_t* data, size_t n) {
       return false;
     }
     off += static_cast<size_t>(w);
-    esp_task_wdt_reset();
+    resetTaskWdtIfSubscribed();
     vTaskDelay(1);
   }
   f.close();
@@ -149,7 +161,7 @@ class SdWritePrint final : public Print {
       const int n = f_.write(buf + off, chunk);
       if (n <= 0) return off;
       off += static_cast<size_t>(n);
-      esp_task_wdt_reset();
+      resetTaskWdtIfSubscribed();
     }
     return off;
   }
@@ -262,7 +274,7 @@ bool extractListed(const std::string& packagePath, const std::string& destRoot, 
     }
     total += entryBytes;
     Serial.printf("[M4x] extracted %s (%u bytes)\n", rel.c_str(), static_cast<unsigned>(entryBytes));
-    esp_task_wdt_reset();
+    resetTaskWdtIfSubscribed();
   }
   return true;
 }
@@ -312,7 +324,7 @@ bool copyListedFiles(const std::string& fromRoot, const std::string& toRoot, con
       errOut = std::string("write_promote:") + rel;
       return false;
     }
-    esp_task_wdt_reset();
+    resetTaskWdtIfSubscribed();
   }
   return true;
 }
@@ -564,7 +576,7 @@ void M4xInstaller::ensureLayout() {
 M4xInstallResult M4xInstaller::probe(const std::string& packagePath) {
   M4xInstallResult r;
   ensureLayout();
-  esp_task_wdt_reset();
+  resetTaskWdtIfSubscribed();
 
   if (!SdMan.exists(packagePath.c_str())) {
     r.error = "not_found";
@@ -645,7 +657,7 @@ M4xInstallResult M4xInstaller::probe(const std::string& packagePath) {
 M4xInstallResult M4xInstaller::install(const std::string& packagePath) {
   Serial.printf("[M4x] install begin path=%s freeHeap=%u\n", packagePath.c_str(),
                 static_cast<unsigned>(ESP.getFreeHeap()));
-  esp_task_wdt_reset();
+  resetTaskWdtIfSubscribed();
 
   M4xInstallResult r = probe(packagePath);
   if (!r.ok) return r;

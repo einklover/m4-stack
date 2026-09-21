@@ -682,3 +682,8 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - Cause: `WifiSelectionActivity::renderNetworkList` passed `network.hasSavedPassword || isCurrent` as `M4UiText::draw`'s `black` argument. `false` means erase/white ink on the 1-bit renderer, not muted text.
 - Fix/check: pass `true` for the SSID label; keep saved/current state in the checkmark and metadata only. The snapshot contract now includes a three-row mixed-state regression.
 
+## 2026-09-21 — Home must cancel expensive reader layout cooperatively
+
+- Symptom: returning Home after opening a long Chinese TXT with a cold runtime TTF could appear hung. The reader exit path waited on the rendering mutex while a display task was still measuring/wrapping text.
+- Cause: the existing Home teardown released reader resources, but a long `getTextWidth`/wrap loop did not observe the reader's suppression flag until the whole page layout finished. This was amplified by the SD-backed history save performed during reader exit.
+- Fix/check: test the existing atomic suppression flag at outer line parsing, paragraph merge, wrapping, and per-character width loops; release the page buffer on the abort path. Keep Home cleanup ownership-based and bounded; do not clear the global ESP heap or add an arena without measured need. Validate with repeated 10-page reader cycles and record Home immediate/settled largest-internal-block values.

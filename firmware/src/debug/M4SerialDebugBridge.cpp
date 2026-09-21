@@ -9,6 +9,7 @@
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <SDCardManager.h>
+#include <esp_heap_caps.h>
 #include <mbedtls/sha256.h>
 
 #include <cstdio>
@@ -534,6 +535,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     snprintf(out, sizeof(out),
              "{\"op\":\"%s\",\"protocol\":%d,\"firmware\":\"%s\",\"activity\":\"%s\","
              "\"active_app\":\"%s\",\"free_heap\":%u,\"min_free_heap\":%u,\"free_psram\":%u,"
+             "\"largest_internal_block\":%u,"
              "\"reset_reason\":%u,"
              "\"sd_ok\":%s,\"screen_w\":%d,\"screen_h\":%d,\"orientation\":%d,"
              "\"wifi_connected\":%s,\"wifi_status\":%d,\"wifi_ssid\":\"%s\",\"wifi_ip\":\"%s\","
@@ -542,7 +544,9 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"swipe\",\"screenshot\",\"logs\",\"ui\",\"font\"]}",
              op, kProtocolVersion, st.firmwareVersion ? st.firmwareVersion : "", activityCopy_, appIdCopy_,
              static_cast<unsigned>(st.freeHeap), static_cast<unsigned>(st.minFreeHeap),
-             static_cast<unsigned>(st.freePsram), static_cast<unsigned>(st.resetReason),
+             static_cast<unsigned>(st.freePsram),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(st.resetReason),
              st.sdOk ? "true" : "false", st.screenW, st.screenH,
              st.orientation, wifiConnected ? "true" : "false", static_cast<int>(WiFi.status()), wifiSsidSafe,
              wifiIpSafe, wifiRssi);

@@ -538,6 +538,14 @@ void TxtReaderActivity::onExit() {
       (pluginSession_.active && pluginSwitchChapterIndex_ >= 0) ? 400u : 2500u;
   waitPhysicalEpdIdle(epdWaitMs);
 
+  // Serialize all SD-backed persistence with the display/index task.  The
+  // latter can still be inside loadPageAtOffset() after suppressDisplay_ is
+  // set; writing recent/progress files before taking this lock races the SD
+  // controller and can strand Home in an SDMMC timeout.
+  if (renderingMutex) {
+    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  }
+
   // If the reader is closed before its first physical page, preserve the
   // existing history semantics before tearing down the TXT object.
   persistOpenHistory();
@@ -550,11 +558,14 @@ void TxtReaderActivity::onExit() {
   // Normalize to BW mode so Home FAST does not flash residual AA red plane.
   renderer.setRenderMode(GfxRenderer::BW);
 
-  // Wait until not rendering to delete task
-  if (renderingMutex) {
-    xSemaphoreTake(renderingMutex, portMAX_DELAY);
-  }
+  // The display task is quiescent while renderingMutex is held.
   if (displayTaskHandle) {
+#if defined(ESP32)
+    // displayTaskLoop subscribes this transient task to TWDT.  Remove that
+    // subscription before deleting it so the next reader cycle can reuse the
+    // task slot without an "already subscribed" error.
+    (void)esp_task_wdt_delete(displayTaskHandle);
+#endif
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
   }
@@ -2070,6 +2081,12 @@ void TxtReaderActivity::applyAutoPageTurnSettings() {
 }
 
 void TxtReaderActivity::displayTaskLoop() {
+#if defined(ESP32)
+  // This task performs the long UTF-8/TTF page layout work.  It feeds the
+  // watchdog from loadPageAtOffset(), so subscribe the task once instead of
+  // emitting "task not found" on every glyph/line.
+  (void)esp_task_wdt_add(nullptr);
+#endif
   bool loggedFirstPhysical = false;
   while (true) {
     // Menu / settings / chapter list own the panel — do not race e-ink SPI.
@@ -3251,6 +3268,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
 
   // Parse lines from UTF-8 buffer (or raw UTF-8 file)
   size_t pos = 0;
+  bool abortRequested = false;
 
   // 首行缩进控制变量
   const std::string indentStr = "\xe3\x80\x80\xe3\x80\x80"; // 两个全角空格
@@ -3265,6 +3283,10 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
   const int cjkCharWidth = avgCharWidth;  // 汉字参考宽度
   // Decoded buffer is always UTF-8 when mappedDecode; never reset per-line carry.
   while (pos < chunkSize && static_cast<int>(outLines.size()) < linesPerPage) {
+    if (suppressDisplay_.load(std::memory_order_acquire)) {
+      abortRequested = true;
+      break;
+    }
     // Find end of line in UTF-8 buffer
     size_t lineEnd = pos;
     while (lineEnd < chunkSize && buffer[lineEnd] != '\n') {
@@ -3339,6 +3361,10 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
       const size_t maxMergeLen = static_cast<size_t>(viewportWidth) * 3;
 
       while (lineEnd + 1 < chunkSize && line.length() < maxMergeLen) {
+        if (suppressDisplay_.load(std::memory_order_acquire)) {
+          abortRequested = true;
+          break;
+        }
         size_t nextLineStart = lineEnd + 1; // 跳过当前行的 \n
         size_t nextLineEnd = nextLineStart;
 
@@ -3402,6 +3428,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
         mergeSegments.push_back({nextLineStart, nextDisplayLen, nextLineEnd});
       }
     }
+    if (abortRequested) break;
     // ========== 段落内行合并结束 ==========
 
     // 每个新段落开始时，isOriginalLine 设为 true
@@ -3462,6 +3489,10 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
 
     // Word wrap if needed
     while (!line.empty() && static_cast<int>(outLines.size()) < linesPerPage) {
+      if (suppressDisplay_.load(std::memory_order_acquire)) {
+        abortRequested = true;
+        break;
+      }
 #if defined(ESP32)
       esp_task_wdt_reset();
 #endif
@@ -3527,6 +3558,10 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
         int accWidth = 0;
         size_t charStart = 0;
         while (charStart < line.length()) {
+          if (suppressDisplay_.load(std::memory_order_acquire)) {
+            abortRequested = true;
+            break;
+          }
           uint8_t c = (uint8_t)line[charStart];
           size_t charLen = 1;
           if (c >= 0xF0) charLen = 4;
@@ -3557,6 +3592,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
         }
         breakPos = charStart;
       }
+      if (abortRequested) break;
 
       // 尝试在空格处断行（英文单词不截断）
       if (breakPos < line.length() && breakPos > 0) {
@@ -3588,6 +3624,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
       lineBytePos += skipChars;
       line = line.substr(skipChars);
     }
+    if (abortRequested) break;
 
     // Determine how much of the UTF-8 buffer we consumed
     if (line.empty()) {
@@ -3617,6 +3654,11 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
       isOriginalLine = true;
       break;
     }
+  }
+
+  if (abortRequested) {
+    if (needFree) free(buffer);
+    return false;
   }
 
   // Ensure we make progress even if calculations go wrong
