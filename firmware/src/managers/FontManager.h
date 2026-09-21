@@ -63,6 +63,11 @@ class FontManager {
   // keeping this operation TTF-only avoids changing that legacy contract.
   void releaseRuntimeTtfFaces();
   void releaseRuntimeTtfFaces(TtfFaceRole role);
+  // Delete detached runtime faces for one role while preserving the currently
+  // bound family/sizes. Used by system chrome after aliases have moved to the
+  // new face, preventing old UI-size variants from accumulating in PSRAM.
+  void releaseRuntimeTtfFacesExcept(TtfFaceRole role, const std::string& familyName,
+                                    int keepSizeA, int keepSizeB = -1);
 
   // Force next getAvailableFamilies() to re-scan /fonts and /FONT (M4 hot-plug / first boot).
   void invalidateScan() {

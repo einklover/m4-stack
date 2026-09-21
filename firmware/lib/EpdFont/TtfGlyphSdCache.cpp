@@ -3,6 +3,7 @@
 #if defined(ESP32)
 #include <Arduino.h>
 #include <SDCardManager.h>
+#include <esp_heap_caps.h>
 #include <vector>
 #endif
 
@@ -18,9 +19,123 @@ constexpr int kMaxIndex = 8192;
 struct DiskEnt {
   Key key;
   uint32_t offset = 0;
+  bool valid = false;
 };
 
-std::vector<DiskEnt> gIndex;
+// The persistent SD glyph index used to be std::vector-backed, which could pin
+// ~100KB+ of the scarce internal heap and then linearly scan it on every
+// lookup/rebuild. Keep both entries and the open-addressing hash table in
+// PSRAM-only storage. If PSRAM is unavailable, disable the cache for this turn
+// instead of stealing the contiguous internal heap needed by Wi-Fi/TLS.
+constexpr size_t kHashSlots = 16384;  // 2x kMaxIndex, power of two.
+DiskEnt* gIndex = nullptr;
+int32_t* gHash = nullptr;             // 0=empty, -1=tombstone, n=index+1.
+size_t gIndexSize = 0;
+size_t gActiveCount = 0;
+
+uint32_t indexHash(const Key& k) {
+  uint32_t h = k.familyHash ^ (static_cast<uint32_t>(k.sizePx) * 0x9e3779b9u) ^
+               (k.cp * 0x85ebca6bu);
+  h ^= h >> 16;
+  h *= 0x7feb352du;
+  h ^= h >> 15;
+  return h;
+}
+
+bool ensureIndexStorage() {
+  if (gIndex && gHash) return true;
+  auto* entries = static_cast<DiskEnt*>(
+      heap_caps_malloc(sizeof(DiskEnt) * kMaxIndex, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  auto* hash = static_cast<int32_t*>(
+      heap_caps_malloc(sizeof(int32_t) * kHashSlots, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!entries || !hash) {
+    if (entries) heap_caps_free(entries);
+    if (hash) heap_caps_free(hash);
+    Serial.printf("[TTF-GLYPH] PSRAM index alloc failed; cache disabled this turn\n");
+    return false;
+  }
+  gIndex = entries;
+  gHash = hash;
+  gIndexSize = 0;
+  gActiveCount = 0;
+  memset(gHash, 0, sizeof(int32_t) * kHashSlots);
+  return true;
+}
+
+void resetIndex() {
+  gIndexSize = 0;
+  gActiveCount = 0;
+  if (gHash) memset(gHash, 0, sizeof(int32_t) * kHashSlots);
+}
+
+int findIndex(const Key& k) {
+  if (!gHash || !gIndex) return -1;
+  size_t slot = static_cast<size_t>(indexHash(k)) & (kHashSlots - 1);
+  for (size_t probe = 0; probe < kHashSlots; ++probe) {
+    const int32_t v = gHash[slot];
+    if (v == 0) return -1;
+    if (v > 0) {
+      const size_t idx = static_cast<size_t>(v - 1);
+      if (idx < gIndexSize && gIndex[idx].valid && gIndex[idx].key == k) return static_cast<int>(idx);
+    }
+    slot = (slot + 1) & (kHashSlots - 1);
+  }
+  return -1;
+}
+
+bool upsertIndex(const Key& k, uint32_t offset) {
+  if (!ensureIndexStorage()) return false;
+  size_t slot = static_cast<size_t>(indexHash(k)) & (kHashSlots - 1);
+  size_t firstTombstone = kHashSlots;
+  for (size_t probe = 0; probe < kHashSlots; ++probe) {
+    const int32_t v = gHash[slot];
+    if (v > 0) {
+      const size_t idx = static_cast<size_t>(v - 1);
+      if (idx < gIndexSize && gIndex[idx].valid && gIndex[idx].key == k) {
+        gIndex[idx].offset = offset;  // duplicates keep the LAST record.
+        return true;
+      }
+    } else if (v == -1) {
+      if (firstTombstone == kHashSlots) firstTombstone = slot;
+    } else {
+      const size_t target = firstTombstone == kHashSlots ? slot : firstTombstone;
+      size_t idx = gIndexSize;
+      if (idx >= static_cast<size_t>(kMaxIndex)) {
+        idx = 0;
+        while (idx < gIndexSize && gIndex[idx].valid) ++idx;
+        if (idx >= gIndexSize) return false;
+      } else {
+        ++gIndexSize;
+      }
+      gIndex[idx].key = k;
+      gIndex[idx].offset = offset;
+      gIndex[idx].valid = true;
+      gHash[target] = static_cast<int32_t>(idx + 1);
+      ++gActiveCount;
+      return true;
+    }
+    slot = (slot + 1) & (kHashSlots - 1);
+  }
+  return false;
+}
+
+void dropIndex(int i) {
+  if (i < 0 || !gIndex || !gHash || static_cast<size_t>(i) >= gIndexSize || !gIndex[i].valid) return;
+  const Key k = gIndex[i].key;
+  size_t slot = static_cast<size_t>(indexHash(k)) & (kHashSlots - 1);
+  for (size_t probe = 0; probe < kHashSlots; ++probe) {
+    const int32_t v = gHash[slot];
+    if (v == 0) break;
+    if (v == i + 1) {
+      gHash[slot] = -1;
+      break;
+    }
+    slot = (slot + 1) & (kHashSlots - 1);
+  }
+  gIndex[i].valid = false;
+  if (gActiveCount) --gActiveCount;
+}
+
 // True only when gIndex reflects the file on SD. Stays false across
 // SD-not-ready / I/O failures so a later flush retries the scan instead of
 // appending blind duplicates of records it could not see (B1).
@@ -38,7 +153,8 @@ bool sLoggedOversize = false;
 enum class RebuildResult { Ok, NoFile, BadFile, IoError };
 
 RebuildResult rebuildIndex() {
-  gIndex.clear();
+  if (!ensureIndexStorage()) return RebuildResult::IoError;
+  resetIndex();
   gIndexed = false;
   if (!SdMan.ready()) return RebuildResult::IoError;
   if (!SdMan.exists(kPath)) return RebuildResult::NoFile;
@@ -65,7 +181,7 @@ RebuildResult rebuildIndex() {
   // Mirrors buildIndexFromBytes: full-header + bounds validation per record,
   // stop on violation (no resync marker), duplicates keep the LAST offset,
   // stop adding once kMaxIndex unique keys are collected.
-  while (gIndex.size() < static_cast<size_t>(kMaxIndex)) {
+  while (gActiveCount < static_cast<size_t>(kMaxIndex)) {
     if (static_cast<uint64_t>(pos) + kRecordHeader > fileSize) break;  // torn tail
     if (!f.seekSet(pos)) break;
     const int got = f.read(recHdr, sizeof(recHdr));
@@ -77,38 +193,12 @@ RebuildResult rebuildIndex() {
     const uint16_t n = readU16(recHdr + 17);
     if (n > kMaxBitmap) break;  // corrupt length
     if (static_cast<uint64_t>(pos) + kRecordHeader + n > fileSize) break;  // torn bitmap
-    bool dup = false;
-    for (auto& e : gIndex) {
-      if (e.key == k) {
-        e.offset = pos;
-        dup = true;
-        break;
-      }
-    }
-    if (!dup) {
-      DiskEnt e;
-      e.key = k;
-      e.offset = pos;
-      gIndex.push_back(e);
-    }
+    if (!upsertIndex(k, pos)) break;
     pos += static_cast<uint32_t>(kRecordHeader + n);
   }
   f.close();
   gIndexed = true;
   return RebuildResult::Ok;
-}
-
-int findIndex(const Key& k) {
-  for (size_t i = 0; i < gIndex.size(); ++i) {
-    if (gIndex[i].key == k) return static_cast<int>(i);
-  }
-  return -1;
-}
-
-void dropIndex(int i) {
-  if (i >= 0 && static_cast<size_t>(i) < gIndex.size()) {
-    gIndex.erase(gIndex.begin() + i);
-  }
 }
 
 bool writeFileHeader(FsFile& f) {
@@ -129,7 +219,8 @@ bool writeFileHeader(FsFile& f) {
 
 bool fileLookup(const Key& k, Glyph& out) {
 #if defined(ESP32)
-  if (!gIndexed) rebuildIndex();
+  if (!ensureIndexStorage()) return false;
+  if (!gIndexed && rebuildIndex() == RebuildResult::IoError) return false;
   const int i = findIndex(k);
   if (i < 0) return false;
   FsFile f;
@@ -187,7 +278,7 @@ bool fileLookup(const Key& k, Glyph& out) {
 
 AppendResult fileAppend(const Key& k, const Glyph& g) {
 #if defined(ESP32)
-  if (!SdMan.ready()) return AppendResult::TransientFail;
+  if (!SdMan.ready() || !ensureIndexStorage()) return AppendResult::TransientFail;
   if (g.bitmap.size() > kMaxBitmap) {
     if (!sLoggedOversize) {
       sLoggedOversize = true;
@@ -211,14 +302,14 @@ AppendResult fileAppend(const Key& k, const Glyph& g) {
         return AppendResult::TransientFail;
       }
       rf.close();
-      gIndex.clear();
+      resetIndex();
       gIndexed = true;
       Serial.printf("[TTF-GLYPH] cache reset: bad header, started fresh\n");
     }
     // NoFile: fall through to the create path below.
   }
   if (findIndex(k) >= 0) return AppendResult::Duplicate;
-  if (static_cast<int>(gIndex.size()) >= kMaxIndex) {
+  if (gActiveCount >= static_cast<size_t>(kMaxIndex)) {
     if (!sLoggedIndexFull) {
       sLoggedIndexFull = true;
       Serial.printf("[TTF-GLYPH] cache index full (%d); new glyphs stay PSRAM-only\n", kMaxIndex);
@@ -276,10 +367,10 @@ AppendResult fileAppend(const Key& k, const Glyph& g) {
     // power cut inside this window loses the tail (then B3 drops it).
     Serial.printf("[TTF-GLYPH] cache sync failed, keeping record anyway\n");
   }
-  DiskEnt e;
-  e.key = k;
-  e.offset = static_cast<uint32_t>(sz);
-  gIndex.push_back(e);
+  if (!upsertIndex(k, static_cast<uint32_t>(sz))) {
+    f.close();
+    return AppendResult::TransientFail;
+  }
   f.close();
   // The file only grows through this function, so after a successful append
   // the in-memory index is exact even when it started from NoFile.
@@ -294,7 +385,7 @@ AppendResult fileAppend(const Key& k, const Glyph& g) {
 
 void fileResetForTests() {
 #if defined(ESP32)
-  gIndex.clear();
+  resetIndex();
   gIndexed = false;
 #endif
 }

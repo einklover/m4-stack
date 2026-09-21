@@ -422,6 +422,9 @@ static Activity* deferredDeleteActivity = nullptr;
 
 void exitActivity() {
   if (currentActivity) {
+#ifdef CROSSPOINT_MURPHY_M4
+    const bool leavingReader = currentActivity->isReaderActivity();
+#endif
     currentActivity->onExit();
     // If there's a previously deferred activity, delete it now (it's no longer
     // in any call stack since we've completed at least one full loop iteration).
@@ -430,6 +433,12 @@ void exitActivity() {
     }
     deferredDeleteActivity = currentActivity;
     currentActivity = nullptr;
+#ifdef CROSSPOINT_MURPHY_M4
+    // Reader runtime TTF is transient. Release it at the generic activity
+    // boundary so Reader -> Library/Settings/Apps cannot carry a 768KB face
+    // and its internal raster scratch into the rest of the system.
+    if (leavingReader) EpdFontLoader::releaseRuntimeReaderFonts(renderer);
+#endif
   }
 }
 
@@ -459,10 +468,6 @@ static void releaseM4HomeBoundaryResources() {
     Serial.println("[M4-BOUNDARY] provider worker still active; defer TLS shutdown");
   }
 
-  // Reader TTF faces are the largest transient allocation (PSRAM glyph cache
-  // plus sfnt/cmap state). Chrome faces remain because renderer aliases are
-  // still active on the new Home scene.
-  EpdFontLoader::releaseRuntimeReaderFonts(renderer);
 }
 #endif
 

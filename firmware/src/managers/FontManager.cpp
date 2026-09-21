@@ -243,6 +243,30 @@ void FontManager::releaseRuntimeTtfFaces(TtfFaceRole role) {
   }
 }
 
+void FontManager::releaseRuntimeTtfFacesExcept(TtfFaceRole role, const std::string& familyName,
+                                               int keepSizeA, int keepSizeB) {
+  const uint8_t roleKey = static_cast<uint8_t>(role == TtfFaceRole::Chrome ? 1 : 0);
+  for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
+    auto& sizes = familyIt->second;
+    for (auto sizeIt = sizes.begin(); sizeIt != sizes.end();) {
+      EpdFontFamily* family = sizeIt->second;
+      const EpdFont* font = family ? family->getFont(EpdFontFamily::REGULAR) : nullptr;
+      const bool sameRole = sizeIt->first.role == roleKey;
+      const bool keep = sameRole && familyIt->first == familyName &&
+                        (sizeIt->first.sizePx == keepSizeA || sizeIt->first.sizePx == keepSizeB);
+      if (sameRole && !keep && font && font->isRuntimeTtf()) {
+        delete const_cast<EpdFont*>(font);
+        delete family;
+        sizeIt = sizes.erase(sizeIt);
+      } else {
+        ++sizeIt;
+      }
+    }
+    if (sizes.empty()) familyIt = loadedFonts.erase(familyIt);
+    else ++familyIt;
+  }
+}
+
 const std::vector<std::string>& FontManager::getAvailableFamilies() {
   if (!scanned) {
     scanFonts();

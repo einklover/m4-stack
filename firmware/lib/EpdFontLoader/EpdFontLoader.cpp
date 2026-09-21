@@ -141,6 +141,8 @@ bool bindSystemChrome(GfxRenderer& renderer) {
       renderer.replaceFont(NOTOSANS_12_FONT_ID, *smFam);
       renderer.replaceFont(NOTOSANS_14_FONT_ID, *smFam);
       renderer.replaceFont(NOTOSANS_18_FONT_ID, *uiFam);
+      FontManager::getInstance().releaseRuntimeTtfFacesExcept(
+          FontManager::TtfFaceRole::Chrome, SETTINGS.uiCustomFontFamily, smallPx, uiPx);
       Serial.printf("[M4-FONT] UI TTF chrome family=%s small=%dpx ui=%dpx (tier=%u)\n",
                     SETTINGS.uiCustomFontFamily, smallPx, uiPx,
                     static_cast<unsigned>(SETTINGS.getUiFontSize()));
@@ -166,6 +168,9 @@ bool bindSystemChrome(GfxRenderer& renderer) {
   renderer.replaceFont(NOTOSANS_12_FONT_ID, smFam);
   renderer.replaceFont(NOTOSANS_14_FONT_ID, smFam);
   renderer.replaceFont(NOTOSANS_18_FONT_ID, uiFam);
+  // All renderer aliases now point to CenterKernel, so no Chrome TTF remains
+  // reachable; free every old UI family/size immediately.
+  FontManager::getInstance().releaseRuntimeTtfFaces(FontManager::TtfFaceRole::Chrome);
   Serial.printf("[M4-FONT] CenterKernel chrome small=%dpx ui=%dpx (tier=%u)\n", smallPx, uiPx,
                 static_cast<unsigned>(SETTINGS.getUiFontSize()));
   return true;
@@ -300,6 +305,7 @@ void EpdFontLoader::releaseRuntimeReaderFonts(GfxRenderer& renderer) {
   activeRuntimeTtfFamily.clear();
   activeRuntimeTtfSize = -1;
   sdFontsLoaded_ = false;
+  logFontHeap("reader_released");
 }
 
 void EpdFontLoader::ensureFontsFromSd(GfxRenderer& renderer) {
