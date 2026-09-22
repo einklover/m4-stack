@@ -40,9 +40,7 @@ uint32_t rd32Face(const uint8_t* p) {
 void* faceAllocPsram(size_t n) {
   if (!n) return nullptr;
 #if defined(ARDUINO_ARCH_ESP32)
-  void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!p) p = heap_caps_malloc(n, MALLOC_CAP_8BIT);
-  return p;
+  return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
   return std::malloc(n);
 #endif

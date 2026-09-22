@@ -129,12 +129,13 @@ struct NetBodyBuf {
   }
   bool reserve(size_t n) {
     if (n <= cap) return true;
+#if defined(ARDUINO_ARCH_ESP32)
     char* p = static_cast<char*>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     bool caps = true;
-    if (!p) {
-      p = static_cast<char*>(malloc(n));
-      caps = false;
-    }
+#else
+    char* p = static_cast<char*>(malloc(n));
+    bool caps = false;
+#endif
     if (!p) return false;
     if (data && len) std::memcpy(p, data, len);
     const size_t oldLen = len;
@@ -1769,15 +1770,18 @@ int l_fs_readRange(lua_State* L) {
     return 2;
   }
   // M4xRuntime task stack is only ~12 KiB — never put a 16 KiB window on it.
-  // Prefer PSRAM; fall back to internal heap. Only-window allocation (toRead).
+  // This window is optional application working memory. Keep it PSRAM-only on
+  // ESP32; a failed allocation returns a clean Lua `oom` result instead of
+  // fragmenting the internal heap.
   static_assert(!M4xFsRange::isStackBufferSafe(M4xFsRange::kMaxLength),
                 "full readRange max must not be treated as stack-safe");
+#if defined(ARDUINO_ARCH_ESP32)
   uint8_t* buf = static_cast<uint8_t*>(heap_caps_malloc(toRead, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   bool fromCaps = true;
-  if (!buf) {
-    buf = static_cast<uint8_t*>(malloc(toRead));
-    fromCaps = false;
-  }
+#else
+  uint8_t* buf = static_cast<uint8_t*>(malloc(toRead));
+  bool fromCaps = false;
+#endif
   if (!buf) {
     f.close();
     lua_pushnil(L);
@@ -3656,15 +3660,13 @@ bool dlStreamToFile(const std::string& url, const std::vector<std::pair<std::str
 class PsramJsonAllocator final : public ArduinoJson::Allocator {
  public:
   void* allocate(size_t size) override {
-    void* p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    return p ? p : heap_caps_malloc(size, MALLOC_CAP_8BIT);
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   }
   void deallocate(void* ptr) override {
     if (ptr) heap_caps_free(ptr);
   }
   void* reallocate(void* ptr, size_t new_size) override {
-    void* p = heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    return p ? p : heap_caps_realloc(ptr, new_size, MALLOC_CAP_8BIT);
+    return heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   }
 };
 

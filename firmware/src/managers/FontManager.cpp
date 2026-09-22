@@ -832,13 +832,13 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
 
     // Budget follows the face role, never creation order (B6): whichever face
     // is created first must not steal the reader budget from the other. The
-    // reader face keeps 512 slots / 768KB for CJK-heavy pages; chrome faces
-    // (small/UI sizes) use 96 slots / 96KB.
+    // Reader and Chrome have separate bounded PSRAM reserves. Reader uses the
+    // build-selected fixed budget; Chrome stays small and stable across Home.
     const bool isChrome = (role == TtfFaceRole::Chrome);
     const uint16_t slots =
-        isChrome ? TtfEpdFont::kDefaultEmbeddedSlots : TtfEpdFont::kDefaultRuntimeSlots;
+        isChrome ? TtfEpdFont::kDefaultEmbeddedSlots : TtfEpdFont::kDefaultReaderRuntimeSlots;
     const size_t budget =
-        isChrome ? TtfEpdFont::kDefaultEmbeddedBudget : TtfEpdFont::kDefaultRuntimeBudget;
+        isChrome ? TtfEpdFont::kDefaultEmbeddedBudget : TtfEpdFont::kDefaultReaderRuntimeBudget;
     Serial.printf("[FontMgr] Runtime face role=%s slots=%u budget=%u\n", isChrome ? "chrome" : "reader",
                   static_cast<unsigned>(slots), static_cast<unsigned>(budget));
     TtfEpdFont* regular = new (std::nothrow) TtfEpdFont(fontPath, (uint16_t)fontSize, slots, budget);

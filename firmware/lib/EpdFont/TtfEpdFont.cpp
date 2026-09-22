@@ -278,10 +278,14 @@ bool probeCollection(SdTtfStream& stream, uint32_t& faceOffset,
 }
 
 void* ttfAlloc(size_t n) {
-#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
-  if (psramFound()) return ps_malloc(n);
-#endif
+#if defined(ESP32)
+  // Runtime TTF metadata and glyph bitmaps are optional app state. Never
+  // consume the contiguous internal heap as a silent fallback.
+  if (!psramFound()) return nullptr;
+  return ps_malloc(n);
+#else
   return malloc(n);
+#endif
 }
 
 void ttfFree(void* p) { free(p); }

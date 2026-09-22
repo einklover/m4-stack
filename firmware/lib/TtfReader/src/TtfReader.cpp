@@ -45,9 +45,7 @@ Pt applyXform(const Xform& m, float x, float y, bool on) {
 void* ttfAllocPsram(size_t n) {
   if (n == 0) return nullptr;
 #if defined(ARDUINO_ARCH_ESP32)
-  void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!p) p = heap_caps_malloc(n, MALLOC_CAP_8BIT);
-  return p;
+  return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
   return std::malloc(n);
 #endif
@@ -94,10 +92,7 @@ void* ttfReallocPsram(void* ptr, size_t n) {
     return nullptr;
   }
 #if defined(ARDUINO_ARCH_ESP32)
-  // heap_caps_realloc migrates the block if caps differ.
-  void* p = heap_caps_realloc(ptr, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!p) p = heap_caps_realloc(ptr, n, MALLOC_CAP_8BIT);
-  return p;
+  return heap_caps_realloc(ptr, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
   return std::realloc(ptr, n);
 #endif

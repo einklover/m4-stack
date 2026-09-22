@@ -16,8 +16,18 @@
 // remain PSRAM-first and shared by glyf/CFF1/CFF2 paths.
 class TtfEpdFont : public EpdFont {
  public:
-  static constexpr uint16_t kDefaultRuntimeSlots = 512;
-  static constexpr size_t kDefaultRuntimeBudget = 768 * 1024;
+#ifndef M4_READER_TTF_CACHE_SLOTS
+#define M4_READER_TTF_CACHE_SLOTS 1536
+#endif
+#ifndef M4_READER_TTF_CACHE_BUDGET
+#define M4_READER_TTF_CACHE_BUDGET (2 * 1024 * 1024)
+#endif
+  // One bounded PSRAM-backed reader cache. Build flags can vary the budget
+  // for the simulator sweep without changing ownership or eviction semantics.
+  static constexpr uint16_t kDefaultReaderRuntimeSlots = M4_READER_TTF_CACHE_SLOTS;
+  static constexpr size_t kDefaultReaderRuntimeBudget = M4_READER_TTF_CACHE_BUDGET;
+  static constexpr uint16_t kDefaultRuntimeSlots = kDefaultReaderRuntimeSlots;
+  static constexpr size_t kDefaultRuntimeBudget = kDefaultReaderRuntimeBudget;
   static constexpr uint16_t kDefaultEmbeddedSlots = 96;
   static constexpr size_t kDefaultEmbeddedBudget = 96 * 1024;
 

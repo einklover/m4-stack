@@ -487,8 +487,9 @@ bool PartFileSink::open(const std::string& finalAbsPath) {
   if (finalPath_.empty() || !ensureParentDirs(finalPath_)) return false;
 #if defined(ARDUINO_ARCH_ESP32)
   buffer_ = static_cast<uint8_t*>(heap_caps_malloc(kBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+  buffer_ = static_cast<uint8_t*>(std::malloc(kBufferBytes));
 #endif
-  if (!buffer_) buffer_ = static_cast<uint8_t*>(std::malloc(kBufferBytes));
   // Defer FatFS open until the first body byte. Holding an SD file open
   // across the TLS handshake races the shared SPI bus with e-ink.
   open_ = true;

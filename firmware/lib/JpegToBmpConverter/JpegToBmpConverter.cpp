@@ -7,8 +7,36 @@
 #include <cstdio>
 #include <cstring>
 
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_heap_caps.h>
+#endif
+
 #include "BitmapHelpers.h"
 #include "CoverDither.h"
+
+namespace {
+
+void* allocCoverWork(size_t bytes) {
+#if defined(ARDUINO_ARCH_ESP32)
+  // Cover conversion is optional application work; keep multi-KB image
+  // buffers out of the internal heap and fail the conversion cleanly if
+  // PSRAM is exhausted.
+  return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+  return malloc(bytes);
+#endif
+}
+
+void freeCoverWork(void* p) {
+  if (!p) return;
+#if defined(ARDUINO_ARCH_ESP32)
+  heap_caps_free(p);
+#else
+  free(p);
+#endif
+}
+
+}  // namespace
 
 // Context structure for picojpeg callback
 struct JpegReadContext {
@@ -343,7 +371,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     return false;
   }
 
-  auto* mcuRowBuffer = static_cast<uint8_t*>(malloc(mcuRowPixels));
+  auto* mcuRowBuffer = static_cast<uint8_t*>(allocCoverWork(mcuRowPixels));
   if (!mcuRowBuffer) {
     Serial.printf("[%lu] [JPG] Failed to allocate MCU row buffer (%d bytes)\n", millis(), mcuRowPixels);
     free(rowBuffer);
@@ -355,12 +383,12 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   uint8_t* coverSmooth = nullptr;
   if (oneBit && exactTarget) {
     const size_t coverPixels = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight);
-    coverGray = static_cast<uint8_t*>(malloc(coverPixels));
-    coverWork = static_cast<uint8_t*>(malloc(coverPixels));
-    coverSmooth = static_cast<uint8_t*>(malloc(coverPixels));
+    coverGray = static_cast<uint8_t*>(allocCoverWork(coverPixels));
+    coverWork = static_cast<uint8_t*>(allocCoverWork(coverPixels));
+    coverSmooth = static_cast<uint8_t*>(allocCoverWork(coverPixels));
     if (!coverGray || !coverWork || !coverSmooth) {
-      free(coverGray); free(coverWork); free(coverSmooth);
-      free(mcuRowBuffer); free(rowBuffer);
+      freeCoverWork(coverGray); freeCoverWork(coverWork); freeCoverWork(coverSmooth);
+      freeCoverWork(mcuRowBuffer); free(rowBuffer);
       return false;
     }
   }
@@ -413,10 +441,10 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
           Serial.printf("[%lu] [JPG] JPEG decode MCU failed at (%d, %d) with error code: %d\n", millis(), mcuX, mcuY,
                         mcuStatus);
         }
-        free(coverGray);
-        free(coverWork);
-        free(coverSmooth);
-        free(mcuRowBuffer);
+        freeCoverWork(coverGray);
+        freeCoverWork(coverWork);
+        freeCoverWork(coverSmooth);
+        freeCoverWork(mcuRowBuffer);
         free(rowBuffer);
         return false;
       }
@@ -632,10 +660,10 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
       coverProcessed = bmpOut.write(rowBuffer, bytesPerRow) == bytesPerRow;
     }
   }
-  free(coverGray);
-  free(coverWork);
-  free(coverSmooth);
-  free(mcuRowBuffer);
+  freeCoverWork(coverGray);
+  freeCoverWork(coverWork);
+  freeCoverWork(coverSmooth);
+  freeCoverWork(mcuRowBuffer);
   free(rowBuffer);
 
   if (!coverProcessed) return false;

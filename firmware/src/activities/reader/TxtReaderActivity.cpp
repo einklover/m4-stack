@@ -94,17 +94,26 @@ struct PsramVec {
     T* p = nullptr;
 #if defined(ARDUINO_ARCH_ESP32)
     p = static_cast<T*>(heap_caps_malloc(n * sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!p) p = static_cast<T*>(malloc(n * sizeof(T)));
 #else
     p = static_cast<T*>(malloc(n * sizeof(T)));
 #endif
     if (!p) return false;
+#if defined(ARDUINO_ARCH_ESP32)
+    if (data) heap_caps_free(data);
+#else
     free(data);
+#endif
     data = p;
     cap = n;
     return true;
   }
-  ~PsramVec() { free(data); }
+  ~PsramVec() {
+#if defined(ARDUINO_ARCH_ESP32)
+    if (data) heap_caps_free(data);
+#else
+    free(data);
+#endif
+  }
 };
 
 // PSRAM-first raw page-window buffer. The 8-48KB read window on internal RAM
@@ -114,11 +123,20 @@ struct PsramVec {
 inline uint8_t* PsramRawAlloc(size_t n) {
   if (n == 0) return nullptr;
 #if defined(ARDUINO_ARCH_ESP32)
-  uint8_t* p = static_cast<uint8_t*>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!p) p = static_cast<uint8_t*>(malloc(n));
-  return p;
+  // These windows are optional application working memory. Do not silently
+  // consume the fragmented internal heap when PSRAM is exhausted.
+  return static_cast<uint8_t*>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 #else
   return static_cast<uint8_t*>(malloc(n));
+#endif
+}
+
+inline void PsramRawFree(void* p) {
+  if (!p) return;
+#if defined(ARDUINO_ARCH_ESP32)
+  heap_caps_free(p);
+#else
+  free(p);
 #endif
 }
 
@@ -2785,14 +2803,14 @@ void TxtReaderActivity::buildPageIndex(size_t beginByte, size_t endByte) {
   
   // 章节小于 32KB 时一次性读入内存（ESP32-C3 有 320KB RAM）
   if (chapterSize > 0 && chapterSize <= 32 * 1024) {
-    chapterBuf = static_cast<uint8_t*>(malloc(chapterSize + 1));
+    chapterBuf = PsramRawAlloc(chapterSize + 1);
     if (chapterBuf) {
       if (txt->readContent(chapterBuf, beginByte, chapterSize, false)) {
         chapterBuf[chapterSize] = '\0';
         useChapterBuf = true;
         Serial.printf("[%lu] [TRS] Chapter loaded to RAM: %zu bytes\n", millis(), chapterSize);
       } else {
-        free(chapterBuf);
+        PsramRawFree(chapterBuf);
         chapterBuf = nullptr;
       }
     }
@@ -2836,7 +2854,7 @@ void TxtReaderActivity::buildPageIndex(size_t beginByte, size_t endByte) {
   
   // 释放预读 buffer
   if (chapterBuf) {
-    free(chapterBuf);
+    PsramRawFree(chapterBuf);
   }
   indexComplete_ = true;
   indexCursor_ = endByte + 1;
@@ -3169,7 +3187,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
       return false;
     }
     if (!txt->readContent(buffer, offset, chunkSize, false)) {
-      free(buffer);
+      PsramRawFree(buffer);
       logPageLoadFail("raw_read", offset, chunkSize);
       return false;
     }
@@ -3223,7 +3241,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
                     rawPayload, outCap, mapCap);
       logPageLoadFail("decode_alloc", offset, outCap);
       if (needFree) {
-        free(buffer);
+        PsramRawFree(buffer);
         needFree = false;
       }
       return false;
@@ -3259,7 +3277,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
       mappedExactNext = decodeWindowPos;
     }
     if (needFree) {
-      free(buffer);
+      PsramRawFree(buffer);
       needFree = false;
     }
     buffer = (decodedOwned.len == 0) ? nullptr : decodedOwned.data;
@@ -3657,7 +3675,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
   }
 
   if (abortRequested) {
-    if (needFree) free(buffer);
+    if (needFree) PsramRawFree(buffer);
     return false;
   }
 
@@ -3680,7 +3698,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, size_t endOffset, std::v
     nextOffset = endOffset;
   }
 
-  if (needFree) free(buffer);
+  if (needFree) PsramRawFree(buffer);
 
   // Hot indexing calls this hundreds of times; an SD append per call stalled
   // the very path being measured. Slow pages always log; fast pages at most

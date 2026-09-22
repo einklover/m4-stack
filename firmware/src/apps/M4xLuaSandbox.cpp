@@ -15,6 +15,8 @@ extern "C" {
 namespace M4xLuaSandbox {
 namespace {
 
+constexpr size_t kPsramOnlyLargeAllocation = 4u * 1024u;
+
 Budget* budgetFromState(lua_State* L) {
   lua_getfield(L, LUA_REGISTRYINDEX, "m4x_budget");
   Budget* b = static_cast<Budget*>(lua_touserdata(L, -1));
@@ -64,10 +66,23 @@ void* alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
   }
 
 #if defined(ARDUINO_ARCH_ESP32)
-  // Keep the Lua VM in PSRAM so mbedTLS retains contiguous internal memory.
-  // heap_caps_realloc can also migrate a prior fallback allocation.
-  void* p = heap_caps_realloc(ptr, nsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!p) p = heap_caps_realloc(ptr, nsize, MALLOC_CAP_8BIT);
+  // Keep large Lua state in PSRAM so mbedTLS retains contiguous internal
+  // memory. Small VM objects may still use the ordinary fallback because Lua
+  // creates many tiny allocations and forcing every one into PSRAM is slower.
+  void* p = nullptr;
+  if (nsize >= kPsramOnlyLargeAllocation) {
+    // Allocate/copy instead of asking heap_caps_realloc to migrate between
+    // heaps. A failed PSRAM allocation leaves the old Lua block untouched and
+    // cleanly reports lua_oom to the sandbox.
+    p = heap_caps_malloc(nsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p) {
+      if (ptr && osize) std::memcpy(p, ptr, osize < nsize ? osize : nsize);
+      if (ptr) heap_caps_free(ptr);
+    }
+  } else {
+    p = heap_caps_realloc(ptr, nsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = heap_caps_realloc(ptr, nsize, MALLOC_CAP_8BIT);
+  }
 #else
   void* p = realloc(ptr, nsize);
 #endif

@@ -107,6 +107,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include "apps/providers/M4NativeProviderBookDetailAsync.h"
 #include "apps/providers/M4NativeProviderCatalog.h"
 #include "apps/providers/M4NativeProviderDiscovery.h"
+#include "apps/providers/M4NativeProviderLogin.h"
 #include "apps/providers/M4NativeProviderManager.h"
 #include "activities/apps/AppRuntimeActivity.h"
 #include "activities/apps/NativeAppActivity.h"
@@ -450,10 +451,12 @@ static void releaseM4HomeBoundaryResources() {
   M4NativeProviderManager::cancelForeground();
   M4NativeProviderCatalog::cancel();
   M4NativeProviderBookDetailAsync::cancel();
+  M4NativeProviderLogin::cancel();
 
   const unsigned long deadline = millis() + 450;
   while ((M4NativeProviderCatalog::busy() || M4NativeProviderBookDetailAsync::busy() ||
-          M4NativeProviderDiscovery::busy() || M4NativeProviderManager::busy()) &&
+          M4NativeProviderDiscovery::busy() || M4NativeProviderManager::busy() ||
+          M4NativeProviderLogin::busy()) &&
          static_cast<long>(deadline - millis()) > 0) {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -461,7 +464,8 @@ static void releaseM4HomeBoundaryResources() {
   const bool providerBusy = M4NativeProviderCatalog::busy() ||
                             M4NativeProviderBookDetailAsync::busy() ||
                             M4NativeProviderDiscovery::busy() ||
-                            M4NativeProviderManager::busy();
+                            M4NativeProviderManager::busy() ||
+                            M4NativeProviderLogin::busy();
   if (!providerBusy) {
     M4HttpTransport::shutdown();
   } else {
