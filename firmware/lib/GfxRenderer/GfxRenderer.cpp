@@ -1,4 +1,6 @@
 #include "GfxRenderer.h"
+
+#include <M4MemoryManager.h>
 #include "GfxDisplayWindow.h"
 
 #include <Utf8.h>
@@ -1083,7 +1085,7 @@ void GfxRenderer::displayGrayBuffer() const { display.displayGrayBuffer(fadingFi
 void GfxRenderer::freeBwBufferChunks() {
   for (auto& bwBufferChunk : bwBufferChunks) {
     if (bwBufferChunk) {
-      free(bwBufferChunk);
+      M4Memory::free(bwBufferChunk);
       bwBufferChunk = nullptr;
     }
   }
@@ -1102,12 +1104,15 @@ bool GfxRenderer::storeBwBuffer() {
     if (bwBufferChunks[i]) {
       Serial.printf("[%lu] [GFX] !! BW buffer chunk %zu already stored - this is likely a bug, freeing chunk\n",
                     millis(), i);
-      free(bwBufferChunks[i]);
+      M4Memory::free(bwBufferChunks[i]);
       bwBufferChunks[i] = nullptr;
     }
 
     const size_t offset = i * BW_BUFFER_CHUNK_SIZE;
-    bwBufferChunks[i] = static_cast<uint8_t*>(malloc(BW_BUFFER_CHUNK_SIZE));
+    // This is a short-lived page/render snapshot. Keep it out of the
+    // fragmented internal heap; Scratch is reset only after the owning
+    // activity has been torn down at Home.
+    bwBufferChunks[i] = static_cast<uint8_t*>(M4Memory::allocScratch(BW_BUFFER_CHUNK_SIZE));
 
     if (!bwBufferChunks[i]) {
       Serial.printf("[%lu] [GFX] !! Failed to allocate BW buffer chunk %zu (%zu bytes)\n", millis(), i,

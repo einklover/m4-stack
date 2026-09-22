@@ -1,4 +1,5 @@
 #include "CffReader.h"
+#include <M4MemoryManager.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -7,22 +8,8 @@
 #include <esp_heap_caps.h>
 #endif
 namespace ttf { namespace {
-void* reallocPsramFirst(void* p,size_t n){if(!n)return nullptr;
-#if defined(ARDUINO_ARCH_ESP32)
-  void* q=heap_caps_realloc(p,n,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-  if(!q) q=heap_caps_realloc(p,n,MALLOC_CAP_8BIT);
-  return q;
-#else
-  return std::realloc(p,n);
-#endif
-}
-void freeMem(void* p){if(!p)return;
-#if defined(ARDUINO_ARCH_ESP32)
-  heap_caps_free(p);
-#else
-  std::free(p);
-#endif
-}
+void* reallocPsramFirst(void* p,size_t n){return M4Memory::reallocTtf(p,n);}
+void freeMem(void* p){M4Memory::free(p);}
 }
 CffFont::~CffFont(){
   clearScratch();

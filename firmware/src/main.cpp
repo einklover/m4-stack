@@ -92,6 +92,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include <esp32-hal.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <M4MemoryManager.h>
 #include "util/M4FrontlightPolicy.h"
 #include "util/M4FontDebugPolicy.h"
 #include "util/M4FontPolicy.h"
@@ -420,6 +421,9 @@ unsigned long t2 = 0;
 // to prevent use-after-free when exitActivity() is called from within the
 // activity's own call stack (e.g., reader back button callback chain).
 static Activity* deferredDeleteActivity = nullptr;
+#ifdef CROSSPOINT_MURPHY_M4
+static bool gM4PendingTransientReset = false;
+#endif
 
 void exitActivity() {
   if (currentActivity) {
@@ -444,28 +448,32 @@ void exitActivity() {
 }
 
 #ifdef CROSSPOINT_MURPHY_M4
+static bool m4HomeBoundaryWorkersBusy() {
+  return HomeActivity::backendBusy() ||
+         M4NativeProviderCatalog::busy() ||
+         M4NativeProviderBookDetailAsync::busy() ||
+         M4NativeProviderDiscovery::busy() ||
+         M4NativeProviderManager::busy() ||
+         M4NativeProviderLogin::busy();
+}
+
 static void releaseM4HomeBoundaryResources() {
   // Activities join their own workers in onExit(). These process-wide jobs can
   // outlive an activity, so cancel them before reclaiming the shared TLS
   // session. Never tear down the HTTP handle while one of them still owns it.
   M4NativeProviderManager::cancelForeground();
   M4NativeProviderCatalog::cancel();
+  M4NativeProviderDiscovery::cancel();
   M4NativeProviderBookDetailAsync::cancel();
   M4NativeProviderLogin::cancel();
 
   const unsigned long deadline = millis() + 450;
-  while ((M4NativeProviderCatalog::busy() || M4NativeProviderBookDetailAsync::busy() ||
-          M4NativeProviderDiscovery::busy() || M4NativeProviderManager::busy() ||
-          M4NativeProviderLogin::busy()) &&
+  while (m4HomeBoundaryWorkersBusy() &&
          static_cast<long>(deadline - millis()) > 0) {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 
-  const bool providerBusy = M4NativeProviderCatalog::busy() ||
-                            M4NativeProviderBookDetailAsync::busy() ||
-                            M4NativeProviderDiscovery::busy() ||
-                            M4NativeProviderManager::busy() ||
-                            M4NativeProviderLogin::busy();
+  const bool providerBusy = m4HomeBoundaryWorkersBusy();
   if (!providerBusy) {
     M4HttpTransport::shutdown();
   } else {
@@ -707,9 +715,17 @@ void onGoToBookmarkNotes() {
 }
 
 void onGoHomeAnimated(const bool animateEntry, const int animationDirection) {
+  // Home is an idempotent destination. Recreating it while its scene backend
+  // is still loading only creates another App-arena owner and defeats the
+  // teardown boundary below.
+  if (currentActivity && currentActivity->isHomeActivity()) return;
+  const bool hadActivityOwner = currentActivity != nullptr || deferredDeleteActivity != nullptr;
   exitActivity();
 #ifdef CROSSPOINT_MURPHY_M4
   releaseM4HomeBoundaryResources();
+  // The old Activity is still deferred here. Reset the application arenas only
+  // at the end of loop(), after that Activity is actually destroyed.
+  if (hadActivityOwner) gM4PendingTransientReset = true;
 #endif
   enterNewActivity(new HomeActivity(renderer, mappedInputManager,
                                     [](const std::string& path, const std::string& originalSourcePath) { onGoToReader(path, originalSourcePath); },
@@ -808,8 +824,30 @@ void setup() {
       Serial.printf("[%lu] [M4-PSRAM] free=%u total=%u\n", millis(),
                     static_cast<unsigned>(psramFree), static_cast<unsigned>(psramTotal));
       if (psramTotal == 0) {
-        Serial.printf("[%lu] [M4-PSRAM] WARNING: PSRAM not detected; continuing with internal RAM only\n",
+        Serial.printf("[%lu] [M4-PSRAM] WARNING: PSRAM not detected; app features may fail rather than consume protected internal RAM\n",
                       millis());
+      } else {
+        const bool arenasReady = M4Memory::begin();
+        const auto ttfArena = M4Memory::stats(M4Memory::Pool::Ttf);
+        const auto appArena = M4Memory::stats(M4Memory::Pool::App);
+        const auto scratchArena = M4Memory::stats(M4Memory::Pool::Scratch);
+        m4PsramOk = m4PsramOk && arenasReady;
+        Serial.printf("[%lu] [M4-PSRAM-ARENA] ready=%d reserve=%u ttf=%u app=%u scratch=%u raw_free=%u "
+                      "ttf_used=%u ttf_peak=%u ttf_fail=%u ttf_reset=%u "
+                      "app_used=%u app_peak=%u app_fail=%u app_reset=%u "
+                      "scratch_used=%u scratch_peak=%u scratch_fail=%u scratch_reset=%u\n",
+                      millis(), arenasReady ? 1 : 0,
+                      static_cast<unsigned>(M4Memory::reservedBytes()),
+                      static_cast<unsigned>(ttfArena.capacity),
+                      static_cast<unsigned>(appArena.capacity),
+                      static_cast<unsigned>(scratchArena.capacity),
+                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                      static_cast<unsigned>(ttfArena.used), static_cast<unsigned>(ttfArena.peak),
+                      static_cast<unsigned>(ttfArena.failures), static_cast<unsigned>(ttfArena.resets),
+                      static_cast<unsigned>(appArena.used), static_cast<unsigned>(appArena.peak),
+                      static_cast<unsigned>(appArena.failures), static_cast<unsigned>(appArena.resets),
+                      static_cast<unsigned>(scratchArena.used), static_cast<unsigned>(scratchArena.peak),
+                      static_cast<unsigned>(scratchArena.failures), static_cast<unsigned>(scratchArena.resets));
       }
     }
     frontlightManager.begin();
@@ -1654,6 +1692,35 @@ void loop() {
     delete deferredDeleteActivity;
     deferredDeleteActivity = nullptr;
   }
+
+#ifdef CROSSPOINT_MURPHY_M4
+  if (gM4PendingTransientReset && !deferredDeleteActivity) {
+    if (!m4HomeBoundaryWorkersBusy()) {
+      // The previous Activity and provider workers no longer own App/Scratch
+      // pointers. HTTP/TLS is closed before whole-pool reset.
+      M4HttpTransport::shutdown();
+      M4Memory::resetTransient();
+      const auto t = M4Memory::stats(M4Memory::Pool::Ttf);
+      const auto a = M4Memory::stats(M4Memory::Pool::App);
+      const auto s = M4Memory::stats(M4Memory::Pool::Scratch);
+      Serial.printf("[M4-PSRAM-RESET] ttf=%u/%u app=%u/%u scratch=%u/%u internal_free=%u internal_largest=%u raw_psram_free=%u "
+                    "ttf_peak=%u ttf_fail=%u ttf_reset=%u app_peak=%u app_fail=%u app_reset=%u "
+                    "scratch_peak=%u scratch_fail=%u scratch_reset=%u\n",
+                    static_cast<unsigned>(t.used), static_cast<unsigned>(t.capacity),
+                    static_cast<unsigned>(a.used), static_cast<unsigned>(a.capacity),
+                    static_cast<unsigned>(s.used), static_cast<unsigned>(s.capacity),
+                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                    static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                    static_cast<unsigned>(t.peak), static_cast<unsigned>(t.failures), static_cast<unsigned>(t.resets),
+                    static_cast<unsigned>(a.peak), static_cast<unsigned>(a.failures), static_cast<unsigned>(a.resets),
+                    static_cast<unsigned>(s.peak), static_cast<unsigned>(s.failures), static_cast<unsigned>(s.resets));
+      gM4PendingTransientReset = false;
+    } else {
+      Serial.println("[M4-PSRAM-RESET] skipped: provider worker still owns App arena");
+    }
+  }
+#endif
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {

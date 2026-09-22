@@ -51,7 +51,8 @@ add_executable(m4_ttf_reader_compound_tests
   ../firmware/lib/TtfReader/src/TtfReader.cpp
   ../firmware/lib/TtfReader/src/TtfReaderFace.cpp
 )
-target_include_directories(m4_ttf_reader_compound_tests PRIVATE ../firmware/lib/TtfReader/src)
+target_include_directories(m4_ttf_reader_compound_tests PRIVATE
+  ../firmware/lib/TtfReader/src ../firmware/lib/M4Memory)
 add_test(NAME m4_ttf_reader_compound_tests COMMAND m4_ttf_reader_compound_tests)
 add_executable(m4_cff_reader_tests
   tests/cff_reader.cpp
@@ -59,7 +60,8 @@ add_executable(m4_cff_reader_tests
   ../firmware/lib/TtfReader/src/CffType2.cpp
   ../firmware/lib/TtfReader/src/CffRaster.cpp
 )
-target_include_directories(m4_cff_reader_tests PRIVATE ../firmware/lib/TtfReader/src)
+target_include_directories(m4_cff_reader_tests PRIVATE
+  ../firmware/lib/TtfReader/src ../firmware/lib/M4Memory)
 add_test(NAME m4_cff_reader_tests COMMAND m4_cff_reader_tests)
 if(M4SIM_REAL_CJK_FONT)
   if(NOT EXISTS "${M4SIM_REAL_CJK_FONT}")
@@ -71,7 +73,8 @@ if(M4SIM_REAL_CJK_FONT)
     ../firmware/lib/TtfReader/src/CffType2.cpp
     ../firmware/lib/TtfReader/src/CffRaster.cpp
   )
-  target_include_directories(m4_cff_real_cjk_tests PRIVATE ../firmware/lib/TtfReader/src)
+  target_include_directories(m4_cff_real_cjk_tests PRIVATE
+    ../firmware/lib/TtfReader/src ../firmware/lib/M4Memory)
   # NotoSansCJK-Regular.ttc face 2 is the Simplified Chinese face on
   # Debian/Ubuntu packages. Keep the fixture outside the repository.
   add_test(NAME m4_cff_real_cjk_tests COMMAND m4_cff_real_cjk_tests "${M4SIM_REAL_CJK_FONT}" 2)
@@ -87,7 +90,8 @@ add_executable(m4_web_chinese_font_tests
   ../firmware/lib/TtfReader/src/CffType2.cpp
   ../firmware/lib/TtfReader/src/CffRaster.cpp
 )
-target_include_directories(m4_web_chinese_font_tests PRIVATE ../firmware/lib/TtfReader/src)
+target_include_directories(m4_web_chinese_font_tests PRIVATE
+  ../firmware/lib/TtfReader/src ../firmware/lib/M4Memory)
 # Uses the same reference-bbox scale policy as TtfEpdFont.  The Downloads
 # folder is intentionally an external fixture; pass M4_FONT_SAMPLE_DIR to
 # register this matrix as a CTest when it is available.
@@ -100,7 +104,7 @@ add_executable(m4_font_visual_normalization_tests
   ../firmware/lib/TtfReader/src/CffRaster.cpp
 )
 target_include_directories(m4_font_visual_normalization_tests PRIVATE
-  ../firmware/lib/TtfReader/src ../firmware/lib/EpdFont)
+  ../firmware/lib/TtfReader/src ../firmware/lib/EpdFont ../firmware/lib/M4Memory)
 if(M4_FONT_SAMPLE_DIR)
   add_test(NAME m4_font_visual_normalization_tests
            COMMAND m4_font_visual_normalization_tests "${M4_FONT_SAMPLE_DIR}")
@@ -126,7 +130,8 @@ target_include_directories(m4_runtime_ttf_switch_tests PRIVATE
   ../firmware/src
   ../firmware/lib/EpdFont
   ../firmware/lib/Utf8
-  ../firmware/lib/TtfReader/src)
+  ../firmware/lib/TtfReader/src
+  ../firmware/lib/M4Memory)
 if(M4_FONT_SAMPLE_DIR)
   add_test(NAME m4_runtime_ttf_switch_tests
            COMMAND m4_runtime_ttf_switch_tests

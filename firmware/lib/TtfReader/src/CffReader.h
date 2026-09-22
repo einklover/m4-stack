@@ -24,7 +24,7 @@ class CffFont {
   bool indexObject(Slice index,uint16_t item,Slice& object) const;
   // Debug/test outline path. Runtime rasterization bypasses this STL structure
   // and writes flattened edges directly to reusable PSRAM scratch.
-  bool collectGlyph(uint16_t gid,std::vector<Contour>& out) const;
+  bool collectGlyph(uint16_t gid,PsramVector<Contour>& out) const;
   bool findGlyph(uint32_t cp,uint16_t& gid) const;
   bool glyphHMetrics(uint16_t gid,int32_t& advUnits,int32_t& lsbUnits) const;
   void fontVMetrics(int32_t& ascUnits,int32_t& descUnits,int32_t& gapUnits) const;
@@ -60,7 +60,7 @@ class CffFont {
   bool readOffset(uint32_t absOff,uint8_t offSize,uint32_t& value) const;
   bool variationRegionCount(uint16_t vsIndex,uint16_t& count) const;
   bool ensureOperandScratch(uint32_t count) const;
-  bool executeType2(Slice code,std::vector<Contour>* debugOut,EdgeBuildState* edgeOut,int depth,float& x,float& y,uint32_t& stemCount) const;
+  bool executeType2(Slice code,PsramVector<Contour>* debugOut,EdgeBuildState* edgeOut,int depth,float& x,float& y,uint32_t& stemCount) const;
   bool collectEdges(uint16_t gid,EdgeBuildState& state) const;
   bool edgeMove(EdgeBuildState& state,float x,float y) const;
   bool edgeLine(EdgeBuildState& state,float x,float y) const;

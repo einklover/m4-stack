@@ -1,4 +1,5 @@
 #include "TtfGlyphSdCache.h"
+#include <M4MemoryManager.h>
 
 #if defined(ESP32)
 #include <Arduino.h>
@@ -45,12 +46,12 @@ uint32_t indexHash(const Key& k) {
 bool ensureIndexStorage() {
   if (gIndex && gHash) return true;
   auto* entries = static_cast<DiskEnt*>(
-      heap_caps_malloc(sizeof(DiskEnt) * kMaxIndex, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      M4Memory::allocTtf(sizeof(DiskEnt) * kMaxIndex));
   auto* hash = static_cast<int32_t*>(
-      heap_caps_malloc(sizeof(int32_t) * kHashSlots, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      M4Memory::allocTtf(sizeof(int32_t) * kHashSlots));
   if (!entries || !hash) {
-    if (entries) heap_caps_free(entries);
-    if (hash) heap_caps_free(hash);
+    if (entries) M4Memory::free(entries);
+    if (hash) M4Memory::free(hash);
     Serial.printf("[TTF-GLYPH] PSRAM index alloc failed; cache disabled this turn\n");
     return false;
   }

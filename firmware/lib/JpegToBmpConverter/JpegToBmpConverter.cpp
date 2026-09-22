@@ -1,4 +1,5 @@
 #include "JpegToBmpConverter.h"
+#include <M4MemoryManager.h>
 
 #include <HardwareSerial.h>
 #include <SdFat.h>
@@ -17,23 +18,11 @@
 namespace {
 
 void* allocCoverWork(size_t bytes) {
-#if defined(ARDUINO_ARCH_ESP32)
-  // Cover conversion is optional application work; keep multi-KB image
-  // buffers out of the internal heap and fail the conversion cleanly if
-  // PSRAM is exhausted.
-  return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-  return malloc(bytes);
-#endif
+  return M4Memory::allocScratch(bytes);
 }
 
 void freeCoverWork(void* p) {
-  if (!p) return;
-#if defined(ARDUINO_ARCH_ESP32)
-  heap_caps_free(p);
-#else
-  free(p);
-#endif
+  M4Memory::free(p);
 }
 
 }  // namespace

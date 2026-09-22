@@ -6,6 +6,7 @@
  */
 
 #include "XtcReaderActivity.h"
+#include <M4MemoryManager.h>
 
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -38,22 +39,13 @@ constexpr unsigned long goHomeMs = 1000;
 constexpr int loadedMaxPage_per= 500;//新增
 
 uint8_t* allocXtcPageBuffer(size_t bytes) {
-#if defined(ARDUINO_ARCH_ESP32)
-  // Pre-rendered page slices are optional application working memory. Keep
-  // them out of the internal heap; the caller already has a clean error page.
-  return static_cast<uint8_t*>(heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-#else
-  return static_cast<uint8_t*>(calloc(1, bytes));
-#endif
+  auto* p = static_cast<uint8_t*>(M4Memory::allocApp(bytes));
+  if (p) std::memset(p, 0, bytes);
+  return p;
 }
 
 void freeXtcPageBuffer(void* p) {
-  if (!p) return;
-#if defined(ARDUINO_ARCH_ESP32)
-  heap_caps_free(p);
-#else
-  free(p);
-#endif
+  M4Memory::free(p);
 }
 }  // namespace
 

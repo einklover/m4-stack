@@ -4,6 +4,7 @@
 // existing loca/glyf/cmap/hmtx reads can continue to use the original stream.
 
 #include "TtfReader.h"
+#include <M4MemoryManager.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -38,21 +39,11 @@ uint32_t rd32Face(const uint8_t* p) {
 }
 
 void* faceAllocPsram(size_t n) {
-  if (!n) return nullptr;
-#if defined(ARDUINO_ARCH_ESP32)
-  return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-  return std::malloc(n);
-#endif
+  return M4Memory::allocTtf(n);
 }
 
 void faceFree(void* p) {
-  if (!p) return;
-#if defined(ARDUINO_ARCH_ESP32)
-  heap_caps_free(p);
-#else
-  std::free(p);
-#endif
+  M4Memory::free(p);
 }
 
 }  // namespace

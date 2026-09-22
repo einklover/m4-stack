@@ -137,6 +137,7 @@ class HomeActivity final : public Activity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  static bool backendBusy();
   bool isHomeActivity() const override { return true; }
   bool showTouchNavigation() const override { return false; }
   uint8_t touchFooterButtonsMask() const override {

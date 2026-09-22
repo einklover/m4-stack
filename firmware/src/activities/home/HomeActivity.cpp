@@ -46,6 +46,8 @@
 
 namespace {
 
+std::atomic<uint32_t> gHomeSceneBackendCount{0};
+
 // Home owns the composition of the theme-owned cover and menu surfaces. Keep
 // their geometry in one place so visual composition and touch hit-testing do
 // not drift apart.
@@ -206,12 +208,18 @@ void HomeActivity::sceneBackendTaskTrampoline(void* param) {
     vTaskDelete(nullptr);
     for (;;) vTaskDelay(portMAX_DELAY);
   }
+  gHomeSceneBackendCount.fetch_add(1, std::memory_order_acq_rel);
   backendLoop(*ctx);
   ctx->exiting.store(true, std::memory_order_release);
   // FreeRTOS task deletion does not unwind C++ stack locals.
   ctx.reset();
+  gHomeSceneBackendCount.fetch_sub(1, std::memory_order_acq_rel);
   vTaskDelete(nullptr);
   for (;;) vTaskDelay(portMAX_DELAY);
+}
+
+bool HomeActivity::backendBusy() {
+  return gHomeSceneBackendCount.load(std::memory_order_acquire) != 0;
 }
 
 [[noreturn]] void HomeActivity::sceneBackendTaskLoop() {
@@ -226,17 +234,21 @@ void HomeActivity::backendLoop(BackendContext& ctx) {
 }
 
 void HomeActivity::loadRecentBooksInto(BackendContext& ctx, int maxBooks) {
+  if (ctx.cancelled.load(std::memory_order_acquire)) return;
   {
     std::vector<M4HomeBookDetailMeta::InstalledPlugin> plugins;
     const auto apps = M4xRegistry::load();
+    if (ctx.cancelled.load(std::memory_order_acquire)) return;
     plugins.reserve(apps.size());
     for (const auto& app : apps) plugins.push_back({app.id, app.name, app.provider});
     M4HomeBookDetailMeta::setInstalledPlugins(std::move(plugins));
   }
+  if (ctx.cancelled.load(std::memory_order_acquire)) return;
   ctx.recentBooks.clear();
   const auto& books = RECENT_BOOKS.getBooks();
   ctx.recentBooks.reserve(std::min(static_cast<int>(books.size()), maxBooks));
   for (RecentBook book : books) {
+    if (ctx.cancelled.load(std::memory_order_acquire)) return;
     if (static_cast<int>(ctx.recentBooks.size()) >= maxBooks) break;
     if (M4ContentProvider::isHistoryUri(book.path.c_str())) {
       if (book.coverBmpPath.empty()) {
@@ -245,12 +257,16 @@ void HomeActivity::loadRecentBooksInto(BackendContext& ctx, int maxBooks) {
           book.coverBmpPath = M4ProviderCoverCache::bmpTemplatePath(pid, bid);
         }
       }
+      if (ctx.cancelled.load(std::memory_order_acquire)) return;
       book.progress = loadBookProgress(book.originalSourcePath.empty() ? book.path : book.originalSourcePath);
+      if (ctx.cancelled.load(std::memory_order_acquire)) return;
       ctx.recentBooks.push_back(book);
       continue;
     }
     if (!SdMan.exists(book.path.c_str())) continue;
+    if (ctx.cancelled.load(std::memory_order_acquire)) return;
     book.progress = loadBookProgress(book.path);
+    if (ctx.cancelled.load(std::memory_order_acquire)) return;
     ctx.recentBooks.push_back(book);
   }
 }
@@ -1001,30 +1017,28 @@ void HomeActivity::onExit() {
   Activity::onExit();
 
 #ifdef CROSSPOINT_MURPHY_M4
-  // Lifetime-safe cooperative join: signal backend via its own context and wait boundedly.
+  // Lifetime-safe cooperative join: signal backend via its own context and
+  // wait until it has released every FsFile/Bitmap/Epub and App-arena pointer.
   // Backend owns its context via shared_ptr, so even if we return, it cannot touch `this`.
-  // We never delete a task while it holds FsFile/Bitmap/Epub destructors.
+  // We never delete a task while it holds FsFile/Bitmap/Epub destructors, and
+  // the main loop must never reset App/Scratch while this owner is alive.
   std::shared_ptr<BackendContext> ctx = backendCtx;
   if (ctx) {
     ctx->cancelled.store(true, std::memory_order_release);
     ctx->epoch.fetch_add(1, std::memory_order_acq_rel);
     if (sceneBackendTaskHandle) {
-      const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(250);
-      while (sceneBackendTaskHandle && !ctx->exiting.load(std::memory_order_acquire) && xTaskGetTickCount() < deadline) {
+      uint32_t waitedMs = 0;
+      while (!ctx->exiting.load(std::memory_order_acquire)) {
+        if ((waitedMs % 1000U) == 0U && waitedMs != 0U) {
+          Serial.printf("[%lu] [Home] waiting for backend teardown (%lu ms)\n", millis(),
+                        static_cast<unsigned long>(waitedMs));
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
+        waitedMs += 10;
       }
-      if (sceneBackendTaskHandle && !ctx->exiting.load(std::memory_order_acquire)) {
-        Serial.printf("[%lu] [Home] backend still alive after 250ms, not force-deleting (epoch blocked, ctx retained)\n", millis());
-        sceneBackendTaskHandle = nullptr;
-        // ctx stays alive via backend task's shared_ptr; our copy will be released below.
-      } else if (sceneBackendTaskHandle) {
-        // The backend task owns and deletes itself after setting exiting.
-        sceneBackendTaskHandle = nullptr;
-      }
+      // The backend task owns and deletes itself after setting exiting.
+      sceneBackendTaskHandle = nullptr;
     }
-    // Release our reference; backend's copy keeps PSRAM arena alive if still running.
-    // Any late publish will be ignored because epoch is bumped and cancelled is true,
-    // and HomeActivity no longer reads from this ctx after we clear backendCtx.
     backendCtx.reset();
   } else if (sceneBackendTaskHandle) {
     // No context but task handle exists (should not happen) — just clear.

@@ -3,6 +3,7 @@
 // bitmap conventions so host tests can cross-check against stb.
 
 #include "TtfReader.h"
+#include <M4MemoryManager.h>
 
 #include <algorithm>
 #include <cmath>
@@ -43,12 +44,7 @@ Pt applyXform(const Xform& m, float x, float y, bool on) {
 // Rasterizer scratch stays on internal RAM — it is touched per-pixel on the
 // render hot path and PSRAM cache access measurably slowed page rendering.
 void* ttfAllocPsram(size_t n) {
-  if (n == 0) return nullptr;
-#if defined(ARDUINO_ARCH_ESP32)
-  return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-  return std::malloc(n);
-#endif
+  return M4Memory::allocTtf(n);
 }
 
 void* ttfAlloc(size_t n) {
@@ -61,12 +57,7 @@ void* ttfAlloc(size_t n) {
 }
 
 void ttfFree(void* p) {
-  if (!p) return;
-#if defined(ARDUINO_ARCH_ESP32)
-  heap_caps_free(p);
-#else
-  std::free(p);
-#endif
+  M4Memory::free(p);
 }
 
 void* ttfRealloc(void* ptr, size_t n) {
@@ -87,15 +78,7 @@ void* ttfRealloc(void* ptr, size_t n) {
 // packed is the final 2-bit output — both are fine on PSRAM and it keeps them
 // out of the ~320KB internal heap (which must host mbedTLS/WiFi/reader).
 void* ttfReallocPsram(void* ptr, size_t n) {
-  if (n == 0) {
-    ttfFree(ptr);
-    return nullptr;
-  }
-#if defined(ARDUINO_ARCH_ESP32)
-  return heap_caps_realloc(ptr, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-  return std::realloc(ptr, n);
-#endif
+  return M4Memory::reallocTtf(ptr, n);
 }
 
 }  // namespace
@@ -492,7 +475,7 @@ struct Component {
   float a = 1, b = 0, c = 0, d = 1;
 };
 
-bool flattenedPointAt(const std::vector<Contour>& contours, size_t startContour,
+bool flattenedPointAt(const PsramVector<Contour>& contours, size_t startContour,
                       uint32_t pointIndex, Pt& out) {
   for (size_t i = startContour; i < contours.size(); ++i) {
     if (pointIndex < contours[i].pts.size()) {
@@ -504,7 +487,7 @@ bool flattenedPointAt(const std::vector<Contour>& contours, size_t startContour,
   return false;
 }
 
-void translateContours(std::vector<Contour>& contours, float dx, float dy) {
+void translateContours(PsramVector<Contour>& contours, float dx, float dy) {
   for (auto& contour : contours) {
     for (auto& p : contour.pts) {
       p.x += dx;
@@ -519,7 +502,7 @@ void translateContours(std::vector<Contour>& contours, float dx, float dy) {
 // Compound components are fully decoded BEFORE recursing so nested calls do not
 // clobber the shared glyf scratch buffer. Both XY-offset and point-index
 // component placement are supported.
-bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& out, int depth) const {
+bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, PsramVector<Contour>& out, int depth) const {
   if (depth > 8 || gid >= (uint16_t)numGlyphs_) return false;
 
   // loca[gid], loca[gid+1]
@@ -562,7 +545,7 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     const uint8_t* flagsPtr = endPts + (size_t)numContours * 2 + 2 + instLen;
     if (flagsPtr >= p + sliceLen) return false;
 
-    std::vector<uint8_t> flags;
+    PsramVector<uint8_t> flags;
     flags.reserve(pointCount);
     while (flags.size() < pointCount) {
       if (flagsPtr >= p + sliceLen) return false;
@@ -576,7 +559,7 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
       }
     }
 
-    std::vector<int16_t> xs(pointCount);
+    PsramVector<int16_t> xs(pointCount);
     int32_t x = 0;
     const uint8_t* xp = flagsPtr;
     for (uint32_t i = 0; i < pointCount; i++) {
@@ -593,7 +576,7 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
       xs[i] = (int16_t)x;
     }
 
-    std::vector<int16_t> ys(pointCount);
+    PsramVector<int16_t> ys(pointCount);
     int32_t y = 0;
     const uint8_t* yp = xp;
     for (uint32_t i = 0; i < pointCount; i++) {
@@ -628,7 +611,7 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
   // Compound glyph: decode every component first, then recurse. Point-index
   // attachments are resolved in final transformed coordinates, which keeps the
   // algorithm correct even when the containing compound itself is transformed.
-  std::vector<Component> comps;
+  PsramVector<Component> comps;
   uint32_t pos = 10;
   while (true) {
     if (pos > sliceLen || sliceLen - pos < 4) return false;
@@ -704,7 +687,7 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
     // form because there is no parent point to attach to yet.
     child.tx = xf.tx;
     child.ty = xf.ty;
-    std::vector<Contour> childContours;
+    PsramVector<Contour> childContours;
     if (!collectGlyph(c.gid, child, childContours, depth + 1)) return false;
 
     Pt parentAnchor{};
@@ -721,7 +704,7 @@ bool TtfFont::collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& 
 
 bool TtfFont::glyphPixelBox(uint16_t gid, uint16_t sizePx, int& x0, int& y0, int& x1, int& y1) const {
   x0 = y0 = x1 = y1 = 0;
-  std::vector<Contour> contours;
+  PsramVector<Contour> contours;
   if (!collectGlyph(gid, Xform{}, contours, 0)) return false;
   const float scale = (float)sizePx / (float)unitsPerEm_;
 
@@ -760,7 +743,7 @@ struct Seg {
 
 // Emit the quadratic p0-ctrl-end adaptively subdivided until the control-point
 // deviation from the chord is below ~0.5px.
-void emitQuad(const Pt& p0, const Pt& ctrl, const Pt& end, std::vector<Seg>& out) {
+void emitQuad(const Pt& p0, const Pt& ctrl, const Pt& end, PsramVector<Seg>& out) {
   const float dx = end.x - p0.x;
   const float dy = end.y - p0.y;
   const float chordLen = std::sqrt(dx * dx + dy * dy);
@@ -783,7 +766,7 @@ void emitQuad(const Pt& p0, const Pt& ctrl, const Pt& end, std::vector<Seg>& out
 // Tesselate one closed contour (points already in pixel space, y-down) into
 // line segments. Handles quadratic on/off-curve reconstruction per spec,
 // including all-off-curve and trailing-off-curve contours.
-void tesselateContour(const std::vector<Pt>& pts, std::vector<Seg>& out) {
+void tesselateContour(const PsramVector<Pt>& pts, PsramVector<Seg>& out) {
   const size_t n = pts.size();
   if (n < 2) return;
 
@@ -797,7 +780,7 @@ void tesselateContour(const std::vector<Pt>& pts, std::vector<Seg>& out) {
   }
   if (startIdx == n) {
     // All off-curve: emit implied midpoints between every consecutive pair.
-    std::vector<Pt> mids;
+    PsramVector<Pt> mids;
     mids.reserve(n);
     for (size_t i = 0; i < n; i++) {
       const Pt& a = pts[i];
@@ -813,7 +796,7 @@ void tesselateContour(const std::vector<Pt>& pts, std::vector<Seg>& out) {
   }
 
   // Rotate so seq[0] is on-curve.
-  std::vector<Pt> seq;
+  PsramVector<Pt> seq;
   seq.reserve(n);
   for (size_t i = 0; i < n; i++) seq.push_back(pts[(startIdx + i) % n]);
   const size_t m = seq.size();
@@ -860,7 +843,7 @@ bool TtfFont::rasterize(uint16_t gid, uint16_t sizePx, GlyphBitmap& out) {
   glyphHMetrics(gid, advUnits, lsbUnits);
   out.advance = (int16_t)std::lround(advUnits * scale);
 
-  std::vector<Contour> contours;
+  PsramVector<Contour> contours;
   if (!collectGlyph(gid, Xform{}, contours, 0)) return false;
 
   float minX = 0, maxX = 0, minY = 0, maxY = 0;
@@ -894,8 +877,8 @@ bool TtfFont::rasterize(uint16_t gid, uint16_t sizePx, GlyphBitmap& out) {
   }
 
   // Transform points into bitmap space (y-down), then tesselate to segments.
-  std::vector<Seg> segs;
-  std::vector<Pt> pxs;
+  PsramVector<Seg> segs;
+  PsramVector<Pt> pxs;
   for (const auto& c : contours) {
     if (c.pts.size() < 2) continue;
     pxs.clear();
@@ -909,7 +892,7 @@ bool TtfFont::rasterize(uint16_t gid, uint16_t sizePx, GlyphBitmap& out) {
 
   const uint32_t npix = (uint32_t)w * (uint32_t)h;
   if (npix > covScratchCap_) {
-    uint8_t* nb = (uint8_t*)ttfRealloc(covScratch_, npix);
+    uint8_t* nb = (uint8_t*)ttfReallocPsram(covScratch_, npix);
     if (!nb) return false;
     covScratch_ = nb;
     covScratchCap_ = npix;
@@ -920,8 +903,8 @@ bool TtfFont::rasterize(uint16_t gid, uint16_t sizePx, GlyphBitmap& out) {
   // the exact horizontal overlap of the inside spans with the pixel column,
   // stored at 4x fixed point (two sub-rows => cov4 in [0,8]); this preserves
   // thin diagonal strokes that point-sampling would miss.
-  std::vector<float> xs;
-  std::vector<int8_t> signs;
+  PsramVector<float> xs;
+  PsramVector<int8_t> signs;
   xs.reserve(segs.size());
   signs.reserve(segs.size());
   for (int py = 0; py < h; py++) {

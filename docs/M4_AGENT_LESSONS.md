@@ -693,3 +693,8 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - Runtime TTF metadata, cmap/index/hash state, glyph bitmaps, reader page/chapter windows, Lua large state, HTTP/JSON bodies, provider sink buffers, and cover conversion work buffers are application-owned and should use bounded PSRAM-only allocations where their callers already have a clean failure path. Do not silently fall back into the fragmented internal heap.
 - Keep the reader TTF cache bounded (validated at 1.5/2.0/2.5 MiB; 2 MiB was the useful fixed choice) and keep Chrome's smaller fixed cache stable. Do not add a general allocator or persistent arena until measurements require it.
 - Home cleanup must enumerate owned workers/resources. Provider login was a real leak boundary: cancelling and waiting for `M4NativeProviderLogin` restored the simulator's largest internal block from 38.9 KiB to a stable 90.1 KiB after Home. Never clear the global ESP heap; leave RTOS, Wi-Fi, TLS, DMA, display, and task-stack allocations alone.
+
+## 2026-09-22 — Host TTF tests must use the production PSRAM container type
+
+- When TTF contour/parser storage moves from `std::vector` to the fixed PSRAM-backed container, simulator Debug/ASan tests must construct that same container type. Release-only tests can hide the mismatch because assertions and the glyph call path may be compiled out.
+- Add the M4Memory include path to every host target that compiles `TtfReader.cpp`; otherwise a production-valid TTF change fails only in the simulator build.

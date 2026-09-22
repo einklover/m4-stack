@@ -1,4 +1,5 @@
 #include "TtfEpdFont.h"
+#include <M4MemoryManager.h>
 #include "TtfGlyphSdCache.h"
 
 #include <HardwareSerial.h>
@@ -278,17 +279,12 @@ bool probeCollection(SdTtfStream& stream, uint32_t& faceOffset,
 }
 
 void* ttfAlloc(size_t n) {
-#if defined(ESP32)
-  // Runtime TTF metadata and glyph bitmaps are optional app state. Never
-  // consume the contiguous internal heap as a silent fallback.
-  if (!psramFound()) return nullptr;
-  return ps_malloc(n);
-#else
-  return malloc(n);
-#endif
+  // Runtime TTF metadata and glyph bitmaps live in the boot-reserved TTF arena.
+  // Pool exhaustion is a font-cache OOM, never a reason to steal internal RAM.
+  return M4Memory::allocTtf(n);
 }
 
-void ttfFree(void* p) { free(p); }
+void ttfFree(void* p) { M4Memory::free(p); }
 
 int clampMetric(int value, int low, int high) {
   if (low > high) std::swap(low, high);

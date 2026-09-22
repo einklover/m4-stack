@@ -35,7 +35,10 @@ constexpr const char* kFanqieUa =
 std::mutex gMu;
 Snapshot gSnapshot;
 std::atomic<bool> gBusy{false};
+std::atomic<bool> gCancel{false};
 TaskHandle_t gTask = nullptr;
+
+bool cancelled() { return gCancel.load(std::memory_order_acquire); }
 
 void publish(Phase phase, size_t received = 0, size_t rows = 0, const std::string& error = {}) {
   std::lock_guard<std::mutex> lock(gMu);
@@ -445,13 +448,15 @@ void taskMain(void*) {
 
   DiscoverySpec spec = makeSpec(job.providerId, job.appId, job.category);
   bool wereadRenewed = false;
-  if (spec.authRequired && job.providerId == "weread") {
+  if (!cancelled() && spec.authRequired && job.providerId == "weread") {
     if (M4NativeProviderLogin::tryRenewSession(appRoot(job.appId))) {
       wereadRenewed = true;
       spec = makeSpec(job.providerId, job.appId, job.category);
     }
   }
-  if (spec.authRequired) {
+  if (cancelled()) {
+    publish(Phase::Error, 0, 0, "cancelled");
+  } else if (spec.authRequired) {
     publish(Phase::AuthRequired, 0, 0, spec.error);
   } else if (!spec.error.empty()) {
     publish(Phase::Error, 0, 0, spec.error);
@@ -469,7 +474,8 @@ void taskMain(void*) {
       M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
       const auto net = M4NativeProviderHttp::requestToSink(
           spec.request, jsonSink,
-          [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); });
+          [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); },
+          [&]() { return cancelled(); });
       M4NativeProviderHttp::releaseTlsSession();
       const bool finished = net.ok && rows.finish();
       const size_t rowCount = rewrite.written();
@@ -546,7 +552,7 @@ void taskMain(void*) {
                 }
               }
             },
-            [&]() { return rows.recordCount() >= spec.maxRows; });
+            [&]() { return cancelled() || rows.recordCount() >= spec.maxRows; });
         M4NativeProviderHttp::releaseTlsSession();
         const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
         const bool finished = net.ok && rows.finish();
@@ -615,6 +621,7 @@ bool startCategory(const std::string& providerId, const std::string& appId,
   }
   bool expected = false;
   if (!gBusy.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return false;
+  gCancel.store(false, std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(gMu);
     gSnapshot = {};
@@ -655,5 +662,7 @@ Snapshot snapshot() {
 }
 
 bool busy() { return gBusy.load(std::memory_order_acquire); }
+
+void cancel() { gCancel.store(true, std::memory_order_release); }
 
 }  // namespace M4NativeProviderDiscovery

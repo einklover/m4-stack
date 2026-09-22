@@ -5,17 +5,13 @@
 
 #include "apps/M4ContentProviderCatalog.h"
 #include "apps/M4xJsonStream.h"
+#include "M4MemoryManager.h"
 
 #include <Arduino.h>
 #include <SDCardManager.h>
 
-#if defined(ARDUINO_ARCH_ESP32)
-#include <esp_heap_caps.h>
-#endif
-
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -107,24 +103,18 @@ bool findAscii(const std::string& path, const std::string& needle, size_t start,
 struct GbkTable {
   uint8_t* p = nullptr;
   ~GbkTable() {
-    if (p) {
-#if defined(ARDUINO_ARCH_ESP32)
-      heap_caps_free(p);
-#else
-      std::free(p);
-#endif
-    }
+    M4Memory::free(p);
   }
   bool load(const std::string& appId) {
-#if defined(ARDUINO_ARCH_ESP32)
-    p = static_cast<uint8_t*>(heap_caps_malloc(kGbkTableBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-#endif
-    if (!p) p = static_cast<uint8_t*>(std::malloc(kGbkTableBytes));
+    M4Memory::free(p);
+    p = static_cast<uint8_t*>(M4Memory::allocApp(kGbkTableBytes));
     if (!p) return false;
     const std::string path = std::string("/apps/") + appId + "/gbk_table.bin";
     FsFile f;
     if (!SdMan.openFileForRead("JJ-GBK", path.c_str(), f) || f.fileSize() < kGbkTableBytes) {
       if (f.isOpen()) f.close();
+      M4Memory::free(p);
+      p = nullptr;
       return false;
     }
     size_t off = 0;
@@ -134,7 +124,12 @@ struct GbkTable {
       off += static_cast<size_t>(n);
     }
     f.close();
-    return off == kGbkTableBytes;
+    if (off != kGbkTableBytes) {
+      M4Memory::free(p);
+      p = nullptr;
+      return false;
+    }
+    return true;
   }
   uint16_t lookup(uint8_t lead, uint8_t trail) const {
     if (!p || lead < 0x81 || lead > 0xFE) return 0;

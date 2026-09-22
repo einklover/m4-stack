@@ -30,6 +30,7 @@
 #include "apps/M4xWifiConnect.h"
 #include "apps/M4WifiFailureTracker.h"
 #include "qemu/M4QemuNet.h"
+#include <M4MemoryManager.h>
 #include "util/M4FontDebugPolicy.h"
 
 namespace M4SerialDebug {
@@ -550,6 +551,29 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              st.sdOk ? "true" : "false", st.screenW, st.screenH,
              st.orientation, wifiConnected ? "true" : "false", static_cast<int>(WiFi.status()), wifiSsidSafe,
              wifiIpSafe, wifiRssi);
+    replyOk(reqId, out);
+    return;
+  }
+
+  // Read-only arena telemetry for bounded-memory simulator/device validation.
+  // This does not allocate or mutate any pool state.
+  if (strcmp(op, "memory") == 0) {
+    const auto t = M4Memory::stats(M4Memory::Pool::Ttf);
+    const auto a = M4Memory::stats(M4Memory::Pool::App);
+    const auto s = M4Memory::stats(M4Memory::Pool::Scratch);
+    char out[760];
+    snprintf(out, sizeof(out),
+             "{\"op\":\"memory\",\"raw_free_psram\":%u,"
+             "\"ttf\":{\"used\":%u,\"peak\":%u,\"largest_free\":%u,\"failures\":%u,\"resets\":%u},"
+             "\"app\":{\"used\":%u,\"peak\":%u,\"largest_free\":%u,\"failures\":%u,\"resets\":%u},"
+             "\"scratch\":{\"used\":%u,\"peak\":%u,\"largest_free\":%u,\"failures\":%u,\"resets\":%u}}",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+             static_cast<unsigned>(t.used), static_cast<unsigned>(t.peak), static_cast<unsigned>(t.largestFree),
+             static_cast<unsigned>(t.failures), static_cast<unsigned>(t.resets),
+             static_cast<unsigned>(a.used), static_cast<unsigned>(a.peak), static_cast<unsigned>(a.largestFree),
+             static_cast<unsigned>(a.failures), static_cast<unsigned>(a.resets),
+             static_cast<unsigned>(s.used), static_cast<unsigned>(s.peak), static_cast<unsigned>(s.largestFree),
+             static_cast<unsigned>(s.failures), static_cast<unsigned>(s.resets));
     replyOk(reqId, out);
     return;
   }

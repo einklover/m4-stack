@@ -1,4 +1,5 @@
 #include "TxtReaderActivity.h"
+#include <M4MemoryManager.h>
 
 #include <GfxRenderer.h>
 #include <EpdFontLoader.h>
@@ -91,28 +92,15 @@ struct PsramVec {
   size_t len = 0;
   bool resize(size_t n) {
     if (n <= cap) return true;
-    T* p = nullptr;
-#if defined(ARDUINO_ARCH_ESP32)
-    p = static_cast<T*>(heap_caps_malloc(n * sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-#else
-    p = static_cast<T*>(malloc(n * sizeof(T)));
-#endif
+    T* p = static_cast<T*>(M4Memory::allocApp(n * sizeof(T)));
     if (!p) return false;
-#if defined(ARDUINO_ARCH_ESP32)
-    if (data) heap_caps_free(data);
-#else
-    free(data);
-#endif
+    if (data) M4Memory::free(data);
     data = p;
     cap = n;
     return true;
   }
   ~PsramVec() {
-#if defined(ARDUINO_ARCH_ESP32)
-    if (data) heap_caps_free(data);
-#else
-    free(data);
-#endif
+    if (data) M4Memory::free(data);
   }
 };
 
@@ -121,23 +109,11 @@ struct PsramVec {
 // to return false and the physical refresh to be skipped (every-other-page
 // refresh). SDMMC DMA on ESP32-S3 reaches PSRAM, so direct reads are safe.
 inline uint8_t* PsramRawAlloc(size_t n) {
-  if (n == 0) return nullptr;
-#if defined(ARDUINO_ARCH_ESP32)
-  // These windows are optional application working memory. Do not silently
-  // consume the fragmented internal heap when PSRAM is exhausted.
-  return static_cast<uint8_t*>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-#else
-  return static_cast<uint8_t*>(malloc(n));
-#endif
+  return static_cast<uint8_t*>(M4Memory::allocApp(n));
 }
 
 inline void PsramRawFree(void* p) {
-  if (!p) return;
-#if defined(ARDUINO_ARCH_ESP32)
-  heap_caps_free(p);
-#else
-  free(p);
-#endif
+  M4Memory::free(p);
 }
 
 // Cache file magic and version
@@ -4028,7 +4004,7 @@ void TxtReaderActivity::finishPhysicalDisplay() {
     bool haveOld = false;
     if (newFrame != nullptr && prevShown != nullptr) {
       oldCopy = static_cast<uint8_t*>(
-          heap_caps_malloc(HalDisplay::BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+          M4Memory::allocScratch(HalDisplay::BUFFER_SIZE));
       if (oldCopy) {
         std::memcpy(oldCopy, prevShown, HalDisplay::BUFFER_SIZE);
         haveOld = true;
@@ -4038,7 +4014,7 @@ void TxtReaderActivity::finishPhysicalDisplay() {
       constexpr size_t chunkBytes = HalDisplay::BUFFER_SIZE / 12;
       constexpr size_t numChunks = 12;
       oldCopy = static_cast<uint8_t*>(
-          heap_caps_malloc(HalDisplay::BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+          M4Memory::allocScratch(HalDisplay::BUFFER_SIZE));
       if (oldCopy) {
         haveOld = true;
         for (size_t c = 0; c < numChunks; ++c) {
@@ -4088,7 +4064,7 @@ void TxtReaderActivity::finishPhysicalDisplay() {
         ms = M4WaveformLab::runAnimateMemWindow(oldCopy, newFrame, steps, mult, dir);
         played = (ms != 0);
       }
-      free(oldCopy);
+      M4Memory::free(oldCopy);
       oldCopy = nullptr;
       if (played) {
         Serial.printf("[%lu] [PTA] anim done ms=%u\n", millis(), (unsigned)ms);
@@ -4109,7 +4085,7 @@ void TxtReaderActivity::finishPhysicalDisplay() {
       }
       Serial.printf("[%lu] [PTA] anim failed — normal display\n", millis());
     } else {
-      if (oldCopy) free(oldCopy);
+      if (oldCopy) M4Memory::free(oldCopy);
       Serial.printf("[%lu] [PTA] no prev frame yet (first page)\n", millis());
     }
   }
