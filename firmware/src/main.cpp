@@ -417,33 +417,56 @@ EpdFontFamily ui12FontFamily(&bootCkFont, &bootCkFont);
 unsigned long t1 = 0;
 unsigned long t2 = 0;
 
-// Deferred delete: activity objects are not freed immediately in exitActivity()
-// to prevent use-after-free when exitActivity() is called from within the
-// activity's own call stack (e.g., reader back button callback chain).
-static Activity* deferredDeleteActivity = nullptr;
+// Retired activities can remain alive while a worker is quiescing. Reap only
+// after the activity's call stack has unwound and its background owners stop.
+static Activity* deferredActivities = nullptr;
 #ifdef CROSSPOINT_MURPHY_M4
 static bool gM4PendingTransientReset = false;
 #endif
 
 void exitActivity() {
   if (currentActivity) {
-#ifdef CROSSPOINT_MURPHY_M4
-    const bool leavingReader = currentActivity->isReaderActivity();
-#endif
     currentActivity->onExit();
-    // If there's a previously deferred activity, delete it now (it's no longer
-    // in any call stack since we've completed at least one full loop iteration).
-    if (deferredDeleteActivity) {
-      delete deferredDeleteActivity;
-    }
-    deferredDeleteActivity = currentActivity;
+    currentActivity->setDeferredNext(deferredActivities);
+    deferredActivities = currentActivity;
     currentActivity = nullptr;
+  }
+}
+
+static bool hasDeferredActivities() { return deferredActivities != nullptr; }
+
+static bool hasPendingReaderOwner() {
+  if (currentActivity &&
+      (currentActivity->isReaderActivity() || currentActivity->hasLiveReaderOwner())) {
+    return true;
+  }
+  for (Activity* activity = deferredActivities; activity; activity = activity->deferredNext()) {
+    if (activity->isReaderActivity() || activity->hasLiveReaderOwner()) return true;
+  }
+  return false;
+}
+
+static void reapDeferredActivities() {
+  Activity* previous = nullptr;
+  Activity* activity = deferredActivities;
+  while (activity) {
+    Activity* next = activity->deferredNext();
+    if (!activity->readyForDestruction()) {
+      previous = activity;
+      activity = next;
+      continue;
+    }
+    if (previous) previous->setDeferredNext(next);
+    else deferredActivities = next;
 #ifdef CROSSPOINT_MURPHY_M4
-    // Reader runtime TTF is transient. Release it at the generic activity
-    // boundary so Reader -> Library/Settings/Apps cannot carry a 768KB face
-    // and its internal raster scratch into the rest of the system.
-    if (leavingReader) EpdFontLoader::releaseRuntimeReaderFonts(renderer);
+    // Runtime TTF faces are global. Wait until every top-level or nested Reader
+    // display owner has stopped before removing the shared renderer aliases.
+    if (activity->isReaderActivity() && !hasPendingReaderOwner()) {
+      EpdFontLoader::releaseRuntimeReaderFonts(renderer);
+    }
 #endif
+    delete activity;
+    activity = next;
   }
 }
 
@@ -719,7 +742,7 @@ void onGoHomeAnimated(const bool animateEntry, const int animationDirection) {
   // is still loading only creates another App-arena owner and defeats the
   // teardown boundary below.
   if (currentActivity && currentActivity->isHomeActivity()) return;
-  const bool hadActivityOwner = currentActivity != nullptr || deferredDeleteActivity != nullptr;
+  const bool hadActivityOwner = currentActivity != nullptr || hasDeferredActivities();
   exitActivity();
 #ifdef CROSSPOINT_MURPHY_M4
   releaseM4HomeBoundaryResources();
@@ -1686,15 +1709,12 @@ void loop() {
   applyFrontlightSettings(false);
 #endif
 
-  // Process deferred activity deletion after loop() returns.
-  // At this point we're safely outside any activity's call stack.
-  if (deferredDeleteActivity) {
-    delete deferredDeleteActivity;
-    deferredDeleteActivity = nullptr;
-  }
+  // Process retired activities after loop() returns. An activity with a slow
+  // owner stays linked until it reports that destruction is safe.
+  reapDeferredActivities();
 
 #ifdef CROSSPOINT_MURPHY_M4
-  if (gM4PendingTransientReset && !deferredDeleteActivity) {
+  if (gM4PendingTransientReset && !hasDeferredActivities()) {
     if (!m4HomeBoundaryWorkersBusy()) {
       // The previous Activity and provider workers no longer own App/Scratch
       // pointers. HTTP/TLS is closed before whole-pool reset.

@@ -57,6 +57,8 @@ class TtfEpdFont : public EpdFont {
   void clearCaches();
   // Append dirty PSRAM glyphs to SD. Safe to call from the main idle loop.
   static int idleFlushDirty(int maxGlyphs);
+  // Low-overhead aggregate counters for cache lookup, raster, and SD flush cost.
+  static void logPerformanceStats(const char* stage);
   // Effective family key: path hash mixed with the font-file fingerprint, so
   // a replaced TTF under the same path stops matching stale SD records (B5).
   uint32_t familyKey() const { return famHash_; }
@@ -131,6 +133,15 @@ class TtfEpdFont : public EpdFont {
   mutable uint32_t accessCounter_ = 0;
   mutable uint8_t glyphDiagnosticsLogged_ = 0;
   mutable size_t cacheBytes_ = 0;
+  mutable uint32_t perfLookups_ = 0;
+  mutable uint32_t perfResidentHits_ = 0;
+  mutable uint32_t perfSdHits_ = 0;
+  mutable uint32_t perfRasterMisses_ = 0;
+  mutable uint32_t perfSlowLookups_ = 0;
+  mutable uint32_t perfMaxLookupUs_ = 0;
+  mutable uint64_t perfTotalLookupUs_ = 0;
+  mutable uint32_t perfFlushRounds_ = 0;
+  mutable uint64_t perfFlushUs_ = 0;
   // Advance-only cache: wrapping/index hit this and never touch glyf/CFF.
   static constexpr uint16_t kAdvanceCache = 256;
   mutable uint32_t advCp_[kAdvanceCache]{};

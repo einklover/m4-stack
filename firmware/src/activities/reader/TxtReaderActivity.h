@@ -6,6 +6,7 @@
 #include <freertos/task.h>
 
 #include <atomic>
+#include <array>
 #include <functional>
 #include <string>
 #include <vector>
@@ -80,6 +81,11 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
 
   void onEnter() override;
   void onExit() override;
+  ~TxtReaderActivity() override;
+  bool readyForDestruction() const override {
+    return displayTaskExited_.load(std::memory_order_acquire) &&
+           ActivityWithSubactivity::readyForDestruction();
+  }
   void loop() override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
@@ -97,7 +103,10 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
  private:
   std::shared_ptr<Txt> txt;
   TaskHandle_t displayTaskHandle = nullptr;
+  std::atomic<bool> stopTaskRequested_{false};
+  std::atomic<bool> displayTaskExited_{true};
   SemaphoreHandle_t renderingMutex = nullptr;
+  SemaphoreHandle_t progressWriterMutex_ = nullptr;
   int currentPage = 0;
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;
@@ -125,7 +134,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool dualNextLeft = true;
 
   static void taskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
+  void displayTaskLoop();
   void renderScreen();
   void renderDualPage();
   void renderPage(bool skipDisplay = false, int xOffset = 0, bool skipInvert = false);
@@ -148,6 +157,19 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   size_t chapterContentEnd() const;  // exclusive end for loadPageAtOffset
 
   void saveProgress() const;
+  struct ProgressSnapshot {
+    std::shared_ptr<Txt> owner;
+    std::string dir;
+    std::array<uint8_t, 20> data{};
+    uint32_t generation = 0;
+    int page = 0;
+    int totalPages = 0;
+    int chapter = 0;
+    bool valid = false;
+  };
+  bool captureProgressSnapshot(ProgressSnapshot& snapshot) const;
+  void persistProgressSnapshot(const ProgressSnapshot& snapshot) const;
+  std::atomic<uint32_t> progressGeneration_{1};
   void loadProgress();
   void persistOpenHistory();
   int chapternum = 0;
@@ -217,7 +239,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // --- Plugin session ---
   PluginSession pluginSession_{};
   // Set when plugin TOC selects another chapter; published in pluginProgressSnapshot.
-  int pluginSwitchChapterIndex_ = -1;
+  std::atomic<int> pluginSwitchChapterIndex_{-1};
 
   // bool-like close flag with one narrowly scoped side effect: if the provider
   // bridge has converted an empty-path next-chapter open into a list-style
@@ -228,9 +250,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   struct PluginCloseFlag {
     bool value = false;
     bool* pendingGoBack = nullptr;
-    int* switchChapterIndex = nullptr;
+    std::atomic<int>* switchChapterIndex = nullptr;
 
-    PluginCloseFlag(bool* goBack, int* switchIndex)
+    PluginCloseFlag(bool* goBack, std::atomic<int>* switchIndex)
         : value(false), pendingGoBack(goBack), switchChapterIndex(switchIndex) {}
 
     PluginCloseFlag& operator=(bool v) {

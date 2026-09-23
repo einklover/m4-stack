@@ -18,6 +18,16 @@ struct TestBackendContext {
   std::atomic<bool> updateRequired{false};
 };
 
+struct TestDisplayContext {
+  std::atomic<uint32_t> renderedFrames{0};
+};
+
+struct TestDisplayActivity {
+  std::shared_ptr<TestDisplayContext> context = std::make_shared<TestDisplayContext>();
+  std::atomic<bool> stopRequested{false};
+  std::atomic<bool> displayExited{true};
+};
+
 void testDelayedBackendCannotAccessDestroyedActivityAndNoPostExitPublish() {
   // Create ctx as HomeActivity would onEnter.
   auto ctx = std::make_shared<TestBackendContext>();
@@ -118,8 +128,46 @@ void testNoPostExitPublishEvenIfBackendTriesLate() {
   assert(snap.state == UiScene::DataState::Loading);
 }
 
+void testSlowDisplayTimeoutRetainsActivityAndContextUntilOwnerExits() {
+  auto activity = std::make_unique<TestDisplayActivity>();
+  TestDisplayActivity* const rawActivity = activity.get();
+  const auto context = activity->context;
+  std::atomic<bool> displayStarted{false};
+  rawActivity->displayExited.store(false, std::memory_order_release);
+
+  std::thread display([rawActivity, context, &displayStarted]() {
+    displayStarted.store(true, std::memory_order_release);
+    while (!rawActivity->stopRequested.load(std::memory_order_acquire)) {
+      context->renderedFrames.fetch_add(1, std::memory_order_relaxed);
+      // Model a renderer/e-ink submission that cannot be interrupted midway.
+      std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+    // Publish completion as the last access to the activity object.
+    rawActivity->displayExited.store(true, std::memory_order_release);
+  });
+
+  while (!displayStarted.load(std::memory_order_acquire)) std::this_thread::yield();
+  rawActivity->stopRequested.store(true, std::memory_order_release);
+
+  // Model a short bounded Home teardown wait expiring while one frame finishes.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
+  while (!rawActivity->displayExited.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  assert(!rawActivity->displayExited.load(std::memory_order_acquire));
+  assert(activity && activity->context == context);
+
+  display.join();
+  assert(rawActivity->displayExited.load(std::memory_order_acquire));
+  assert(context->renderedFrames.load(std::memory_order_relaxed) > 0);
+  activity.reset();
+  assert(context && "the test's context pin remains valid after activity destruction");
+}
+
 int main() {
   testDelayedBackendCannotAccessDestroyedActivityAndNoPostExitPublish();
   testNoPostExitPublishEvenIfBackendTriesLate();
+  testSlowDisplayTimeoutRetainsActivityAndContextUntilOwnerExits();
   return 0;
 }

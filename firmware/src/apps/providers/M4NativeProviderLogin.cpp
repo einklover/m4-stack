@@ -8,6 +8,7 @@
 #include "apps/providers/M4NativeWifi.h"
 #include "apps/M4OnlineClockSync.h"
 #include "util/M4WereadAuthPolicy.h"
+#include "util/M4RuntimeMemory.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -46,6 +47,11 @@ Snapshot gSnapshot;
 std::atomic<bool> gCancel{false};
 std::atomic<bool> gBusy{false};
 TaskHandle_t gTask = nullptr;
+
+void logLoginStage(const char* stage) {
+  m4LogRuntimeMemory(stage);
+  M4Psram::logAllocationStats(stage);
+}
 
 void publish(Phase phase, const char* status = nullptr, const char* error = nullptr,
              const std::string* qr = nullptr) {
@@ -88,9 +94,15 @@ SmallResponse smallRequest(const char* method, const std::string& url,
     out.error = "cancelled";
     return out;
   }
+  logLoginStage("provider-login-wifi-start");
+  const uint32_t wifiStartedMs = millis();
   const auto wifi = M4NativeWifi::ensureConnected(20000, [honorCancel] {
     return honorCancel && cancelled();
   });
+  Serial.printf("[WRPERF] stage=login_wifi ms=%lu ok=%d error=%s\n",
+                static_cast<unsigned long>(millis() - wifiStartedMs), wifi.ok ? 1 : 0,
+                wifi.error.c_str());
+  logLoginStage(wifi.ok ? "provider-login-wifi-ready" : "provider-login-wifi-failed");
   if (!wifi.ok) {
     out.error = wifi.error.empty() ? "wifi_connect_failed" : wifi.error;
     return out;
@@ -105,7 +117,11 @@ SmallResponse smallRequest(const char* method, const std::string& url,
   // this gate during its 2-second wait, so a login screen never monopolizes
   // the reader for 90-120 seconds. Chapter TLS/decode and login TLS therefore
   // cannot overlap their internal-RAM peaks.
+  const uint32_t gateStartedMs = millis();
   M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
+  Serial.printf("[WRPERF] stage=login_tls_gate_wait ms=%lu\n",
+                static_cast<unsigned long>(millis() - gateStartedMs));
+  logLoginStage("provider-login-tls-gate-acquired");
   if (honorCancel && cancelled()) {
     out.error = "cancelled";
     return out;
@@ -140,9 +156,14 @@ SmallResponse smallRequest(const char* method, const std::string& url,
   }
   if (!body.empty()) esp_http_client_set_post_field(h, body.data(), static_cast<int>(body.size()));
 
+  const uint32_t requestStartedMs = millis();
   const esp_err_t err = esp_http_client_perform(h);
   out.status = esp_http_client_get_status_code(h);
   esp_http_client_cleanup(h);
+  Serial.printf("[WRPERF] stage=login_tls_http ms=%lu status=%d err=%s\n",
+                static_cast<unsigned long>(millis() - requestStartedMs), out.status,
+                esp_err_to_name(err));
+  logLoginStage("provider-login-tls-http-done");
   out.body = std::move(ctx.body);
   out.setCookies = std::move(ctx.setCookies);
   if (ctx.overflow) {
@@ -356,6 +377,7 @@ bool jjwxcLogin(const std::string& root) {
 }
 
 void taskMain(void*) {
+  logLoginStage("provider-login-task-start");
   Snapshot initial;
   {
     std::lock_guard<std::mutex> lock(gMu);
@@ -366,6 +388,7 @@ void taskMain(void*) {
   else if (initial.providerId == "jjwxc") ok = jjwxcLogin(initial.appDataRoot);
   else publish(Phase::Error, nullptr, "login_not_supported");
   (void)ok;
+  logLoginStage("provider-login-task-end");
   gBusy.store(false, std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(gMu);
@@ -392,6 +415,7 @@ bool start(const std::string& providerId, const std::string& appDataRoot) {
     gSnapshot.updatedMs = gSnapshot.startedMs;
   }
   TaskHandle_t handle = nullptr;
+  logLoginStage("provider-login-task-create");
   // Stack in PSRAM (24KB) so login TLS leaves internal RAM for handshake.
   if (M4Psram::createTask(taskMain, "NativeLogin", 24u * 1024u, nullptr, 1, &handle) != pdPASS) {
     gBusy.store(false, std::memory_order_release);
@@ -402,6 +426,7 @@ bool start(const std::string& providerId, const std::string& appDataRoot) {
     std::lock_guard<std::mutex> lock(gMu);
     gTask = handle;
   }
+  logLoginStage("provider-login-task-created");
   return true;
 }
 

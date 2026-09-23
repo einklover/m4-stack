@@ -746,6 +746,7 @@ void TtfEpdFont::trimCache(int keepSlot) const {
 
 int TtfEpdFont::flushDirtySlots(int maxGlyphs) const {
   if (!entries_ || maxGlyphs <= 0) return 0;
+  const uint32_t startedUs = micros();
   int n = 0;
   for (uint16_t i = 0; i < maxSlots_ && n < maxGlyphs; ++i) {
     if (!entries_[i].dirty || entries_[i].cp == 0xffffffffu) continue;
@@ -787,6 +788,8 @@ int TtfEpdFont::flushDirtySlots(int maxGlyphs) const {
       break;
     }
   }
+  perfFlushUs_ += static_cast<uint32_t>(micros() - startedUs);
+  ++perfFlushRounds_;
   return n;
 }
 
@@ -816,6 +819,42 @@ int TtfEpdFont::idleFlushDirty(int maxGlyphs) {
   return n;
 }
 
+void TtfEpdFont::logPerformanceStats(const char* stage) {
+  uint32_t lookups = 0, residentHits = 0, sdHits = 0, rasterMisses = 0, slowLookups = 0;
+  uint32_t maxLookupUs = 0, flushRounds = 0, skipped = 0;
+  uint64_t totalLookupUs = 0, flushUs = 0;
+  for (int i = 0; i < kLiveMax; ++i) {
+    TtfEpdFont* f = gLive[i];
+    if (!f) continue;
+#if defined(ESP32)
+    if (f->mutex_ && xSemaphoreTake(f->mutex_, 0) != pdTRUE) {
+      ++skipped;
+      continue;
+    }
+#endif
+    lookups += f->perfLookups_;
+    residentHits += f->perfResidentHits_;
+    sdHits += f->perfSdHits_;
+    rasterMisses += f->perfRasterMisses_;
+    slowLookups += f->perfSlowLookups_;
+    if (f->perfMaxLookupUs_ > maxLookupUs) maxLookupUs = f->perfMaxLookupUs_;
+    totalLookupUs += f->perfTotalLookupUs_;
+    flushRounds += f->perfFlushRounds_;
+    flushUs += f->perfFlushUs_;
+#if defined(ESP32)
+    if (f->mutex_) xSemaphoreGive(f->mutex_);
+#endif
+  }
+  Serial.printf("[TTF-PERF] stage=%s lookups=%u resident=%u sd_hit=%u raster=%u slow_5ms=%u "
+                "total_us=%llu max_us=%u flush_rounds=%u flush_us=%llu skipped_faces=%u\n",
+                stage ? stage : "?", static_cast<unsigned>(lookups),
+                static_cast<unsigned>(residentHits), static_cast<unsigned>(sdHits),
+                static_cast<unsigned>(rasterMisses), static_cast<unsigned>(slowLookups),
+                static_cast<unsigned long long>(totalLookupUs), static_cast<unsigned>(maxLookupUs),
+                static_cast<unsigned>(flushRounds), static_cast<unsigned long long>(flushUs),
+                static_cast<unsigned>(skipped));
+}
+
 void TtfEpdFont::clearCaches() {
 #if defined(ESP32)
   if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
@@ -834,6 +873,7 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   for (uint16_t i = 0; i < maxSlots_; ++i) {
     if (entries_[i].cp == cp) {
       entries_[i].lastAccess = ++accessCounter_;
+      ++perfResidentHits_;
       return i;
     }
   }
@@ -862,6 +902,7 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   ck.cp = cp;
   TtfGlyphCache::Glyph cg;
   if (TtfGlyphCache::fileLookup(ck, cg)) {
+    ++perfSdHits_;
     const int slot = pickSlot();
     if (slot < 0) return -1;
     const uint32_t len = static_cast<uint32_t>(cg.bitmap.size());
@@ -885,6 +926,7 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
     m4AppendFontDiagnostic(line);
     if (gid == 0 || !backendRasterize(0, gb)) return -1;
   }
+  ++perfRasterMisses_;
   // Owner-loop TTF first-paint can take hundreds of ms per CJK glyph on QEMU.
   // Yield so m4adb tap/key is ACKed instead of looking frozen until the page
   // finishes. Weak no-op on host tests; firmware overrides on the main task.
@@ -919,10 +961,16 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
 const EpdGlyph* TtfEpdFont::getGlyph(uint32_t cp,
                                     const EpdFontStyles::Style style) const {
   (void)style;
+  const uint32_t startedUs = micros();
 #if defined(ESP32)
   if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
 #endif
   const int slot = ensureGlyph(cp);
+  const uint32_t elapsedUs = static_cast<uint32_t>(micros() - startedUs);
+  ++perfLookups_;
+  perfTotalLookupUs_ += elapsedUs;
+  if (elapsedUs > perfMaxLookupUs_) perfMaxLookupUs_ = elapsedUs;
+  if (elapsedUs >= 5000u) ++perfSlowLookups_;
 #if defined(ESP32)
   if (mutex_) xSemaphoreGive(mutex_);
 #endif

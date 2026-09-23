@@ -8,6 +8,7 @@
 #include "apps/providers/M4LegadoTocPolicy.h"
 #include "apps/providers/M4Psram.h"
 #include "util/M4PluginReaderBridge.h"
+#include "util/M4RuntimeMemory.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -337,6 +338,22 @@ void setPhase(const StoredBook& b, const M4ContentProvider::ChapterMeta& ch, int
 }
 
 void processWork(const M4ContentProvider::PrefetchWork& w) {
+  const uint32_t workStartedMs = millis();
+  struct WorkPerf {
+    const M4ContentProvider::PrefetchWork& work;
+    uint32_t startedMs;
+    ~WorkPerf() {
+      Serial.printf("[WRPERF] stage=provider_work_end provider=%s book=%s index=%d ms=%lu\n",
+                    work.providerId.c_str(), work.bookId.c_str(), work.index0,
+                    static_cast<unsigned long>(millis() - startedMs));
+      m4LogRuntimeMemory("provider-work-end");
+      M4Psram::logAllocationStats("provider-work-end");
+    }
+  } perf{w, workStartedMs};
+  Serial.printf("[WRPERF] stage=provider_work_start provider=%s book=%s index=%d\n",
+                w.providerId.c_str(), w.bookId.c_str(), w.index0);
+  m4LogRuntimeMemory("provider-work-start");
+  M4Psram::logAllocationStats("provider-work-start");
   // Keep breadcrumbs at the hand-off points, but let the provider/HTTP layer
   // turn a bad heap into a visible error. Returning here would leave the
   // native loading page spinning forever with no ChapterStatus update.
@@ -467,6 +484,10 @@ void processWork(const M4ContentProvider::PrefetchWork& w) {
 }
 
 void workerMain(void*) {
+  Serial.printf("[WRPERF] stage=provider-worker-start stack_hwm=%u\n",
+                static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+  m4LogRuntimeMemory("provider-worker-start");
+  M4Psram::logAllocationStats("provider-worker-start");
   uint32_t idleStarted = millis();
   while (true) {
     const auto w = M4ContentProviderSession::pollWork();
@@ -485,6 +506,10 @@ void workerMain(void*) {
     }
     vTaskDelay(pdMS_TO_TICKS(40));
   }
+  Serial.printf("[WRPERF] stage=provider-worker-exit stack_hwm=%u\n",
+                static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+  m4LogRuntimeMemory("provider-worker-exit");
+  M4Psram::logAllocationStats("provider-worker-exit");
   // Stack was allocated via M4Psram::createTask (PSRAM-first).
   M4Psram::deleteTask(nullptr);
 }

@@ -116,7 +116,6 @@ struct NetBodyBuf {
   char* data = nullptr;
   size_t len = 0;
   size_t cap = 0;
-  bool fromCaps = false;
 
   ~NetBodyBuf() { clear(); }
   void clear() {
@@ -125,20 +124,13 @@ struct NetBodyBuf {
       data = nullptr;
     }
     len = cap = 0;
-    fromCaps = false;
   }
   bool reserve(size_t n) {
     if (n <= cap) return true;
-    char* p = static_cast<char*>(M4Memory::allocApp(n));
-    bool caps = true;
+    char* p = static_cast<char*>(M4Memory::reallocApp(data, n));
     if (!p) return false;
-    if (data && len) std::memcpy(p, data, len);
-    const size_t oldLen = len;
-    if (data) M4Memory::free(data);
     data = p;
     cap = n;
-    len = oldLen;
-    fromCaps = caps;
     return true;
   }
   bool append(const char* src, size_t n, size_t maxTotal) {
@@ -224,6 +216,25 @@ static uint32_t httpNowMs() { return static_cast<uint32_t>(millis()); }
 static bool httpIsCancelled() {
   return gHost && gHost->isCancelRequested();
 }
+
+class NetBusyScope {
+ public:
+  explicit NetBusyScope(M4xLuaHost* host) : host_(host), startedMs_(millis()) {
+    if (host_) host_->setNetworkBusy(true);
+    Serial.printf("[M4xNet] busy=1 stage=request_begin\n");
+  }
+  ~NetBusyScope() {
+    if (host_) host_->setNetworkBusy(false);
+    Serial.printf("[WRPERF] stage=lua_net_request ms=%lu cancelled=%d\n",
+                  static_cast<unsigned long>(millis() - startedMs_),
+                  host_ && host_->isCancelRequested() ? 1 : 0);
+    Serial.printf("[M4xNet] busy=0 stage=request_end\n");
+  }
+
+ private:
+  M4xLuaHost* host_;
+  uint32_t startedMs_;
+};
 static bool headerIsChunked(const std::vector<M4xNetPolicy::ResponseHeader>& headers) {
   for (const auto& h : headers) {
     if (M4xNetPolicy::toLowerAscii(h.name) == "transfer-encoding") {
@@ -763,7 +774,16 @@ int l_sys_time(lua_State* L) {
 
 int l_sys_delay(lua_State* L) {
   const int ms = static_cast<int>(luaL_checknumber(L, 1));
-  if (ms > 0 && ms < 5000) delay(static_cast<uint32_t>(ms));
+  if (ms > 0 && ms < 5000) {
+    auto* h = hostFromLua(L);
+    uint32_t remaining = static_cast<uint32_t>(ms);
+    while (remaining) {
+      const uint32_t slice = std::min<uint32_t>(remaining, 25u);
+      delay(slice);
+      remaining -= slice;
+      if (h && h->isCancelRequested()) return luaL_error(L, "cancelled");
+    }
+  }
   return 0;
 }
 
@@ -2090,7 +2110,8 @@ int l_net_request(lua_State* L) {
   if (!method || !urlIn) return luaL_error(L, "method/url required");
 
   std::vector<std::pair<std::string, std::string>> headerList;
-  std::string body;
+  const char* bodyData = nullptr;
+  size_t bodyLen = 0;
   int timeoutMs = M4xNetPolicy::kDefaultTimeoutMs;
 
   if (lua_istable(L, 3)) {
@@ -2102,11 +2123,12 @@ int l_net_request(lua_State* L) {
 
     lua_getfield(L, 3, "body");
     if (lua_isstring(L, -1)) {
-      size_t blen = 0;
-      const char* b = lua_tolstring(L, -1, &blen);
-      if (b && blen) body.assign(b, blen);
+      bodyData = lua_tolstring(L, -1, &bodyLen);
+      // Keep the Lua string rooted on the stack until the synchronous request
+      // and any redirect hops have finished.
+    } else {
+      lua_pop(L, 1);
     }
-    lua_pop(L, 1);
 
     lua_getfield(L, 3, "headers");
     if (lua_istable(L, -1)) {
@@ -2156,6 +2178,9 @@ int l_net_request(lua_State* L) {
   if (methodStr != "GET" && methodStr != "POST") return fail("unsupported_method");
 
   if (!M4xNetPolicy::isAllowedUrl(url)) return fail("https_required");
+  if (h->isCancelRequested()) return fail("cancelled");
+
+  NetBusyScope busyScope(h);
 
   const size_t maxBody = netMaxBodyBytes();
   const uint32_t deadline = millis() + static_cast<uint32_t>(timeoutMs);
@@ -2174,6 +2199,10 @@ int l_net_request(lua_State* L) {
   };
 
   for (int hop = 0; hop <= M4xNetPolicy::kMaxRedirects; ++hop) {
+    if (h->isCancelRequested()) {
+      err = "cancelled";
+      break;
+    }
     if (static_cast<int32_t>(deadline - millis()) <= 0) {
       err = "timeout";
       break;
@@ -2193,6 +2222,10 @@ int l_net_request(lua_State* L) {
     bool insecureRetried = false;
 
   retry_tls:
+    if (h->isCancelRequested()) {
+      err = "cancelled";
+      break;
+    }
     std::unique_ptr<WiFiClient> client;
     {
       auto* secure = new WiFiClientSecure();
@@ -2224,7 +2257,7 @@ int l_net_request(lua_State* L) {
 
     // Do not log Cookie / Authorization values.
     Serial.printf("[M4xNet] %s %s body=%u hop=%d\n", methodStr.c_str(), url.c_str(),
-                  static_cast<unsigned>(body.size()), hop);
+                  static_cast<unsigned>(bodyLen), hop);
 
     // HTTPClient performs the verified TLS handshake and sends the request in
     // this bounded call. Pre-connecting separately would change reuse and
@@ -2236,9 +2269,14 @@ int l_net_request(lua_State* L) {
       if (!hasHeaderCI("Content-Type")) {
         http.addHeader("Content-Type", "application/json");
       }
-      code = http.POST(const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(body.data())), body.size());
+      code = http.POST(const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(bodyData)), bodyLen);
     }
-    if (code < 0 && allowInsecureRetry && !insecureRetried) {
+    if (h->isCancelRequested()) {
+      err = "cancelled";
+      http.end();
+      break;
+    }
+    if (code < 0 && allowInsecureRetry && !insecureRetried && !h->isCancelRequested()) {
       http.end();
       insecureRetried = true;
       goto retry_tls;
@@ -2294,7 +2332,8 @@ int l_net_request(lua_State* L) {
       if (code == 303 || code == 302 || code == 301) {
         if (methodStr == "POST") {
           methodStr = "GET";
-          body.clear();
+          bodyData = nullptr;
+          bodyLen = 0;
         }
       }
       url = next;
@@ -3890,8 +3929,8 @@ int l_dl_jsonGet(lua_State* L) {
     lua_pushstring(L, err);
     return 2;
   }
-  Serial.printf("[M4xNet] dl.jsonGet body bytes=%u psram=%d ok\n",
-                static_cast<unsigned>(body.len), body.fromCaps ? 1 : 0);
+  Serial.printf("[M4xNet] dl.jsonGet body bytes=%u pool=app ok\n",
+                static_cast<unsigned>(body.len));
   if (h) h->extendCallbackWallMs(4000);  // parse + table build may exceed the callback budget
 
   // Keep-alive / idle-EOF can leave a few trailing bytes past the JSON value.
@@ -4915,6 +4954,7 @@ bool M4xLuaHost::start(GfxRenderer& renderer, const M4xInstalledApp& app, std::s
   SdMan.mkdir(dataDir_.c_str(), true);
 
   clearCancel();
+  networkBusy_.store(false, std::memory_order_release);
   budget_ = M4xLuaSandbox::Budget{};
   budget_.memLimit = psramFound() ? M4xLuaSandbox::kPsramHeapLimit
                                   : M4xLuaSandbox::kDefaultHeapLimit;
@@ -5374,6 +5414,7 @@ void M4xLuaHost::stop() {
     L_ = nullptr;
   }
   if (gHost == this) gHost = nullptr;
+  networkBusy_.store(false, std::memory_order_release);
   renderer_ = nullptr;
   // Drop host-owned scene rows/file cursors with the Lua state.  Otherwise a
   // plugin error followed by a restart can retain a large SD-backed source

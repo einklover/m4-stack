@@ -414,6 +414,10 @@ void Bridge::handleLine(const char* line) {
   if (strcmp(kind, "chk") == 0) {
     // Chunk acks are cached by req id for lost-ack retries.
     if (tryIdemReplay(reqId)) return;
+    if (yieldContext_) {
+      replyErr(reqId, "busy", "渲染忙，请稍后重试");
+      return;
+    }
     if (!payload) {
       replyErr(reqId, "bad_chunk", "分片格式错误");
       return;
@@ -501,6 +505,11 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
   const char* op = doc["op"] | "";
   if (!op || !*op) {
     replyErr(reqId, "missing_op", "缺少 op 字段");
+    return;
+  }
+  const char* action = doc["action"] | "";
+  if (yieldContext_ && !M4SerialDebugPolicy::canExecuteDuringYield("req", op, action)) {
+    replyErr(reqId, "busy", "渲染忙，请稍后重试");
     return;
   }
 

@@ -5,12 +5,15 @@
 #include <SDCardManager.h>
 #include <SdFat.h>
 #include <picojpeg.h>
+#include <M4MemoryManager.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
 #include "DitherUtils.h"
 #include "PixelCache.h"
+#include "JpegImagePolicy.h"
 
 struct JpegContext {
   FsFile& file;
@@ -82,6 +85,13 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
     return false;
   }
 
+  if (!JpegImagePolicy::validSourceDimensions(imageInfo.m_width, imageInfo.m_height)) {
+    Serial.printf("[%lu] [JPG] source dimensions/pixels exceed decode policy: %ux%u\n", millis(),
+                  static_cast<unsigned>(imageInfo.m_width), static_cast<unsigned>(imageInfo.m_height));
+    file.close();
+    return false;
+  }
+
   if (!validateImageDimensions(imageInfo.m_width, imageInfo.m_height, "JPEG")) {
     file.close();
     return false;
@@ -113,6 +123,12 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
 
   Serial.printf("[%lu] [JPG] JPEG %dx%d -> %dx%d (scale %.2f), scan type: %d, MCU: %dx%d\n", millis(), imageInfo.m_width, imageInfo.m_height,
           destWidth, destHeight, scale, imageInfo.m_scanType, imageInfo.m_MCUWidth, imageInfo.m_MCUHeight);
+
+  if (!JpegImagePolicy::validDestinationDimensions(destWidth, destHeight)) {
+    Serial.printf("[%lu] [JPG] destination dimensions exceed decode policy: %dx%d\n", millis(), destWidth, destHeight);
+    file.close();
+    return false;
+  }
 
   if (!imageInfo.m_pMCUBufR || !imageInfo.m_pMCUBufG || !imageInfo.m_pMCUBufB) {
     Serial.printf("[%lu] [JPG] Null buffer pointers in imageInfo\n", millis());
@@ -336,28 +352,54 @@ size_t JpegToFramebufferConverter::decodeToPixelBuf(const std::string& imagePath
   int srcW = imageInfo.m_width;
   int srcH = imageInfo.m_height;
 
+  if (!rgbaBuf || !JpegImagePolicy::validSourceDimensions(srcW, srcH) ||
+      !JpegImagePolicy::validDestinationDimensions(bufW, bufH) ||
+      !imageInfo.m_pMCUBufR || !imageInfo.m_pMCUBufG || !imageInfo.m_pMCUBufB) {
+    Serial.printf("[%lu] [JPG-RGBA] rejected dimensions/buffer src=%dx%d dst=%dx%d\n",
+                  millis(), srcW, srcH, bufW, bufH);
+    file.close();
+    return 0;
+  }
+
   float scaleX = (float)bufW / srcW;
   float scaleY = (float)bufH / srcH;
   float scale = std::min(scaleX, scaleY);
   int dstW = (int)(srcW * scale);
   int dstH = (int)(srcH * scale);
 
-  const int mcuRowPixels = srcW * imageInfo.m_MCUHeight;
-  auto* imgBuf = (uint8_t*)malloc((size_t)srcW * srcH);
-  if (!imgBuf) {
+  size_t rowBytes = 0;
+  size_t rgbaBytes = 0;
+  if (!JpegImagePolicy::mcuRowBufferBytes(static_cast<uint32_t>(srcW),
+                                           static_cast<uint32_t>(imageInfo.m_MCUHeight), rowBytes) ||
+      !JpegImagePolicy::rgbaBufferBytes(bufW, bufH, rgbaBytes)) {
     file.close();
     return 0;
   }
-  memset(imgBuf, 255, (size_t)srcW * srcH);
+  auto* rowBuf = static_cast<uint8_t*>(M4Memory::allocScratch(rowBytes));
+  if (!rowBuf) {
+    Serial.printf("[%lu] [JPG-RGBA] scratch row allocation failed bytes=%u\n",
+                  millis(), static_cast<unsigned>(rowBytes));
+    file.close();
+    return 0;
+  }
 
   for (int mcuY = 0; mcuY < imageInfo.m_MCUSPerCol; mcuY++) {
+    const int srcStartY = mcuY * imageInfo.m_MCUHeight;
+    const int rowsInStrip = std::min(imageInfo.m_MCUHeight, srcH - srcStartY);
+    std::memset(rowBuf, 255, rowBytes);
     for (int mcuX = 0; mcuX < imageInfo.m_MCUSPerRow; mcuX++) {
-      if (pjpeg_decode_mcu() != 0) break;
+      const int decodeStatus = pjpeg_decode_mcu();
+      if (decodeStatus != 0) {
+        Serial.printf("[%lu] [JPG-RGBA] MCU decode failed status=%d row=%d col=%d\n",
+                      millis(), decodeStatus, mcuY, mcuX);
+        M4Memory::free(rowBuf);
+        file.close();
+        return 0;
+      }
       for (int by = 0; by < imageInfo.m_MCUHeight; by++) {
         for (int bx = 0; bx < imageInfo.m_MCUWidth; bx++) {
           int px = mcuX * imageInfo.m_MCUWidth + bx;
-          int py = mcuY * imageInfo.m_MCUHeight + by;
-          if (px >= srcW || py >= srcH) continue;
+          if (px >= srcW || by >= rowsInStrip) continue;
           uint8_t gray;
           if (imageInfo.m_comps == 1) {
             gray = imageInfo.m_pMCUBufR[by * 8 + bx];
@@ -366,32 +408,36 @@ size_t JpegToFramebufferConverter::decodeToPixelBuf(const std::string& imagePath
                      imageInfo.m_pMCUBufG[by * 8 + bx] * 50 +
                      imageInfo.m_pMCUBufB[by * 8 + bx] * 25) / 100;
           }
-          imgBuf[py * srcW + px] = gray;
+          rowBuf[static_cast<size_t>(by) * srcW + px] = gray;
+        }
+      }
+    }
+
+    for (int localY = 0; localY < rowsInStrip; ++localY) {
+      const int sy = srcStartY + localY;
+      const int firstDy = std::max(0, static_cast<int>(sy * scale) - 1);
+      const int afterLastDy = std::min(dstH, static_cast<int>((sy + 1) * scale) + 2);
+      for (int dy = firstDy; dy < afterLastDy; ++dy) {
+        if (static_cast<int>(dy / scale) != sy) continue;
+        int err = 0, sx = 0;
+        for (int dx = 0; dx < dstW; dx++) {
+          uint8_t gray = rowBuf[static_cast<size_t>(localY) * srcW + sx];
+          size_t idx = (static_cast<size_t>(dy) * bufW + dx) * 4;
+          if (gray >= 240) {
+            rgbaBuf[idx] = 255; rgbaBuf[idx + 1] = 255; rgbaBuf[idx + 2] = 255;
+          } else {
+            rgbaBuf[idx] = gray; rgbaBuf[idx + 1] = gray; rgbaBuf[idx + 2] = gray;
+          }
+          rgbaBuf[idx + 3] = 255;
+          err += srcW;
+          while (err >= dstW) { err -= dstW; sx++; }
         }
       }
     }
   }
 
-  // Scale and write RGBA
-  for (int dy = 0; dy < dstH; dy++) {
-    int sy = (int)(dy / scale);
-    if (sy >= srcH) sy = srcH - 1;
-    int err = 0, sx = 0;
-    for (int dx = 0; dx < dstW; dx++) {
-      uint8_t gray = imgBuf[sy * srcW + sx];
-      size_t idx = (dy * bufW + dx) * 4;
-      if (gray >= 240) {
-        rgbaBuf[idx] = 255; rgbaBuf[idx + 1] = 255; rgbaBuf[idx + 2] = 255;
-      } else {
-        rgbaBuf[idx] = gray; rgbaBuf[idx + 1] = gray; rgbaBuf[idx + 2] = gray;
-      }
-      rgbaBuf[idx + 3] = 255;
-      err += srcW;
-      while (err >= dstW) { err -= dstW; sx++; }
-    }
-  }
-
-  free(imgBuf);
+  (void)rgbaBytes;
+  M4Memory::free(rowBuf);
   file.close();
   outW = dstW;
   outH = dstH;

@@ -22,10 +22,7 @@
 #include "util/M4RenderGuard.h"
 #include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
-
-#if defined(ARDUINO_ARCH_ESP32)
-#include <esp_heap_caps.h>
-#endif
+#include "apps/providers/M4Psram.h"
 
 // Process-wide render-submit mutex owned by main.cpp.
 extern SemaphoreHandle_t gM4RenderMutex;
@@ -41,18 +38,11 @@ extern SemaphoreHandle_t gM4RenderMutex;
 namespace {
 
 void* uiAlloc(size_t n) {
-#if defined(ARDUINO_ARCH_ESP32)
-  if (n) {
-    void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (p) return p;
-  }
-#endif
-  return std::malloc(n);
+  return M4Psram::mallocPrefer(n, "native-ui-document");
 }
 
 void uiFree(void* p) {
-  if (!p) return;
-  std::free(p);
+  M4Psram::freePrefer(p);
 }
 
 std::string jsonEscape(const std::string& s) {

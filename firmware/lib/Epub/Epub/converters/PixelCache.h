@@ -2,6 +2,7 @@
 
 #include <SDCardManager.h>
 #include <HardwareSerial.h>
+#include <M4MemoryManager.h>
 #include <stdint.h>
 
 #include <cstring>
@@ -35,7 +36,7 @@ struct PixelCache {
                     MAX_CACHE_BYTES);
       return false;
     }
-    buffer = (uint8_t*)malloc(bufferSize);
+    buffer = static_cast<uint8_t*>(M4Memory::allocScratch(bufferSize));
     if (buffer) {
       memset(buffer, 0, bufferSize);
       Serial.printf("[%lu] [IMG] Allocated cache buffer: %d bytes for %dx%d\n", millis(), bufferSize, w, h);
@@ -76,7 +77,7 @@ struct PixelCache {
 
   ~PixelCache() {
     if (buffer) {
-      free(buffer);
+      M4Memory::free(buffer);
       buffer = nullptr;
     }
   }

@@ -18,7 +18,9 @@
 #include "util/M4PluginTocList.h"
 #include "apps/M4ContentProviderSession.h"
 #include "apps/M4PluginReaderSession.h"
+#include "apps/providers/M4Psram.h"
 #include "RecentBooksStore.h"
+#include "util/M4RuntimeMemory.h"
 
 #include <cstring>
 #include <memory>
@@ -35,12 +37,30 @@ constexpr uint32_t kIdleDrawMs = 2000;
 // quickly so uncached chapter hops do not sit idle 2s between UI updates.
 constexpr uint32_t kPumpIdleDrawMs = 50;
 constexpr uint32_t kRecvTimeoutMs = 30;
-constexpr uint32_t kJoinWarnMs = 5000;
+constexpr uint32_t kJoinDeadlineMs = 1500;
 }  // namespace
 
 AppRuntimeActivity::AppRuntimeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, M4xInstalledApp app,
                                        const std::function<void()>& onExitApp)
     : ActivityWithSubactivity("AppRuntime", renderer, mappedInput), app_(std::move(app)), onExitApp_(onExitApp) {}
+
+AppRuntimeActivity::~AppRuntimeActivity() {
+  // The activity reaper calls this only after readyForDestruction(), so both
+  // the Lua owner and nested reader owners are gone. Destroy nested readers
+  // first because their final persistence may consult provider session data.
+  subActivity.reset();
+  reapRetiredSubActivities();
+  M4PluginReaderSession::clearForApp(app_.id);
+  M4ContentProviderSession::clearForApp(app_.id);
+  if (eventQueue_) {
+    vQueueDelete(eventQueue_);
+    eventQueue_ = nullptr;
+  }
+  if (errorMutex_) {
+    vSemaphoreDelete(errorMutex_);
+    errorMutex_ = nullptr;
+  }
+}
 
 void AppRuntimeActivity::taskTrampoline(void* param) {
   static_cast<AppRuntimeActivity*>(param)->runtimeTaskMain();
@@ -75,6 +95,7 @@ void AppRuntimeActivity::copyError(std::string& out) {
 
 void AppRuntimeActivity::handleEventOnOwner(const M4xRuntime::Event& e) {
   using M4xRuntime::EventType;
+  if (hasPendingSubActivityRetirements() && e.type != EventType::Stop) return;
   std::string err;
 
   if (life_.shouldDrop(e.type)) return;
@@ -330,6 +351,8 @@ void AppRuntimeActivity::handleEventOnOwner(const M4xRuntime::Event& e) {
 
 void AppRuntimeActivity::runtimeTaskMain() {
   // Sole task allowed to enter host_/lua_State.
+  m4LogRuntimeMemory("lua-runtime-task-start");
+  M4Psram::logAllocationStats("lua-runtime-task-start");
   renderStartupPage();
   handleEventOnOwner(M4xRuntime::Event::makeStart());
 
@@ -380,8 +403,13 @@ void AppRuntimeActivity::runtimeTaskMain() {
     life_.hostStopped = true;
   }
   ready_.store(false, std::memory_order_relaxed);
+  Serial.printf("[WRPERF] stage=lua-runtime-task-exit stack_hwm=%u network_busy=%d app=%s\n",
+                static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+                host_.isNetworkBusy() ? 1 : 0, app_.id.c_str());
+  m4LogRuntimeMemory("lua-runtime-task-exit");
+  M4Psram::logAllocationStats("lua-runtime-task-exit");
   life_.publishDone();
-  vTaskDelete(nullptr);
+  M4Psram::deleteTask(nullptr);
 }
 
 void AppRuntimeActivity::renderStartupPage() {
@@ -417,21 +445,37 @@ void AppRuntimeActivity::requestStopAndJoin() {
   }
 
   const uint32_t start = millis();
-  bool warned = false;
-  while (!life_.isDone()) {
+  const uint32_t deadline = start + kJoinDeadlineMs;
+  while (!life_.isDone() && static_cast<int32_t>(deadline - millis()) > 0) {
     vTaskDelay(pdMS_TO_TICKS(10));
-    if (!warned && (millis() - start) > kJoinWarnMs) {
-      warned = true;
-      Serial.printf("[M4xRuntime] waiting for ownerDone (cancel in flight)...\n");
-    }
   }
 
+  if (!life_.isDone()) {
+    Serial.printf("[M4xRuntime] stop timeout owner=lua-runtime network_busy=%d app=%s waited_ms=%lu; retaining queue/mutex/host\n",
+                  host_.isNetworkBusy() ? 1 : 0, app_.id.c_str(),
+                  static_cast<unsigned long>(millis() - start));
+    M4Psram::logAllocationStats("lua-runtime-stop-timeout");
+    return;
+  }
   runtimeTask_ = nullptr;
   ownerTaskStarted_ = false;
 }
 
+void AppRuntimeActivity::onExit() {
+  // Keep nested readers owned until their display task also exits. The base
+  // class calls child onExit but does not destroy a timed-out child.
+  m4LogRuntimeMemory("lua-runtime-exit-begin");
+  M4Psram::logAllocationStats("lua-runtime-exit-begin");
+  ActivityWithSubactivity::onExit();
+  requestStopAndJoin();
+  m4LogRuntimeMemory("lua-runtime-exit-end");
+  M4Psram::logAllocationStats("lua-runtime-exit-end");
+}
+
 void AppRuntimeActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
+  m4LogRuntimeMemory("lua-runtime-enter");
+  M4Psram::logAllocationStats("lua-runtime-enter");
   life_.reset();
   failed_.store(false, std::memory_order_relaxed);
   exitRequested_.store(false, std::memory_order_relaxed);
@@ -461,8 +505,8 @@ void AppRuntimeActivity::onEnter() {
     return;
   }
 
-  const BaseType_t ok =
-      xTaskCreate(&AppRuntimeActivity::taskTrampoline, "M4xRuntime", 12288, this, 1, &runtimeTask_);
+  const BaseType_t ok = M4Psram::createTask(&AppRuntimeActivity::taskTrampoline,
+                                             "M4xRuntime", 12288, this, 1, &runtimeTask_);
   if (ok != pdPASS) {
     runtimeTask_ = nullptr;
     ownerTaskStarted_ = false;
@@ -476,23 +520,6 @@ void AppRuntimeActivity::onEnter() {
     return;
   }
   ownerTaskStarted_ = true;
-}
-
-void AppRuntimeActivity::onExit() {
-  // Tear down child first (parent frame, not from child callback).
-  exitActivity();
-  ActivityWithSubactivity::onExit();
-  M4PluginReaderSession::clearForApp(app_.id);
-  M4ContentProviderSession::clearForApp(app_.id);
-  requestStopAndJoin();
-  if (eventQueue_) {
-    vQueueDelete(eventQueue_);
-    eventQueue_ = nullptr;
-  }
-  if (errorMutex_) {
-    vSemaphoreDelete(errorMutex_);
-    errorMutex_ = nullptr;
-  }
 }
 
 void AppRuntimeActivity::tryLaunchPluginReader() {
@@ -717,6 +744,9 @@ void AppRuntimeActivity::tryLaunchPluginToc() {
 }
 
 void AppRuntimeActivity::loop() {
+  const bool hadRetiredChild = hasPendingSubActivityRetirements();
+  reapRetiredSubActivities();
+  activatePendingSubActivity();
   // Native reader / TOC as sub-activity: two-phase close.
   if (subActivity) {
     pumpSubActivityFrame();
@@ -790,6 +820,11 @@ void AppRuntimeActivity::loop() {
     return;
   }
 
+  if (hasPendingSubActivityRetirements()) return;
+  if (hadRetiredChild && !subActivity && ready_.load(std::memory_order_relaxed)) {
+    postEvent(M4xRuntime::Event::makeDraw());
+  }
+
   if (!ready_.load(std::memory_order_relaxed) || life_.isStopRequested()) return;
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -838,6 +873,8 @@ std::string AppRuntimeActivity::debugUiJson() {
   out += failed_.load(std::memory_order_relaxed) ? "true" : "false";
   out += ",\"ready\":";
   out += ready_.load(std::memory_order_relaxed) ? "true" : "false";
+  out += ",\"network_busy\":";
+  out += host_.isNetworkBusy() ? "true" : "false";
   out += ",\"error\":\"";
   for (unsigned char c : err) {
     if (c == '"' || c == '\\') {

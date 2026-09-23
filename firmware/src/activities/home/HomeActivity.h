@@ -19,6 +19,8 @@ struct Rect;
 
 class HomeActivity final : public Activity {
   TaskHandle_t displayTaskHandle = nullptr;
+  std::atomic<bool> displayStopRequested{false};
+  std::atomic<bool> displayTaskExited{true};
 #ifdef CROSSPOINT_MURPHY_M4
   struct BackendContext {
     HomeScene::HomeSceneModel model;
@@ -28,6 +30,10 @@ class HomeActivity final : public Activity {
     std::atomic<bool> exiting{false};
     std::atomic<bool> updateRequired{false};
     BackendContext() = default;
+  };
+  struct DisplayTaskArgs {
+    HomeActivity* activity;
+    std::shared_ptr<BackendContext> context;
   };
   TaskHandle_t sceneBackendTaskHandle = nullptr;
   std::shared_ptr<BackendContext> backendCtx;
@@ -72,8 +78,9 @@ class HomeActivity final : public Activity {
 
 
   static void taskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
 #ifdef CROSSPOINT_MURPHY_M4
+  void displayTaskLoop(const std::shared_ptr<BackendContext>& ctx);
+  void render(const std::shared_ptr<BackendContext>& ctx);
   static void sceneBackendTaskTrampoline(void* param);
   // Lifetime-safe backend: owns its own context, never touches raw HomeActivity `this`.
   static void backendLoop(BackendContext& ctx);
@@ -96,9 +103,11 @@ class HomeActivity final : public Activity {
   bool dispatchHomeSceneAction(const UiScene::UiSceneAction& action);
   void dispatchHomeSceneActions();
   void handleSnapshotInput();
-  void renderSnapshotScene();
-#endif
+  void renderSnapshotScene(const std::shared_ptr<BackendContext>& ctx);
+#else
+  [[noreturn]] void displayTaskLoop();
   void render();
+#endif
   int getMenuItemCount() const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
@@ -136,6 +145,10 @@ class HomeActivity final : public Activity {
         onOpenNativeApp(onOpenNativeApp) {}
   void onEnter() override;
   void onExit() override;
+  ~HomeActivity() override;
+  bool readyForDestruction() const override {
+    return displayTaskExited.load(std::memory_order_acquire);
+  }
   void loop() override;
   static bool backendBusy();
   bool isHomeActivity() const override { return true; }

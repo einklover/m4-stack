@@ -25,6 +25,8 @@
 #include "../../util/ImageCache.h"
 // PNG 编码（用于透明壁纸叠加合成）
 #include "../../../lib/miniz/miniz.h"
+#include "apps/providers/M4Psram.h"
+#include "../../lib/Epub/Epub/converters/JpegImagePolicy.h"
 
 
 namespace {
@@ -1516,6 +1518,10 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
 
   const int srcW = dims.width;
   const int srcH = dims.height;
+  if (!JpegImagePolicy::validSourceDimensions(srcW, srcH)) {
+    Serial.printf("[壁纸] 图片超过解码尺寸/像素上限: %dx%d\n", srcW, srcH);
+    return false;
+  }
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
 
@@ -1527,6 +1533,10 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
 
   const int dstW = (int)(srcW * scale);
   const int dstH = (int)(srcH * scale);
+  if (!JpegImagePolicy::validDestinationDimensions(dstW, dstH)) {
+    Serial.printf("[壁纸] 输出尺寸无效: %dx%d\n", dstW, dstH);
+    return false;
+  }
 
   Serial.printf("[壁纸] 生成缓存: %s (%dx%d -> %dx%d)\n", imagePath.c_str(), srcW, srcH, dstW, dstH);
 
@@ -1545,7 +1555,7 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
 
   // 分配行缓冲（2-bit packed，每行 (width+3)/4 字节）
   const int bytesPerRow = (dstW + 3) / 4;
-  uint8_t* rowBuffer = (uint8_t*)malloc(bytesPerRow);
+  uint8_t* rowBuffer = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(bytesPerRow), "wallpaper-row"));
   if (!rowBuffer) {
     Serial.printf("[壁纸] 无法分配行缓冲\n");
     cacheFile.close();
@@ -1554,11 +1564,18 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
   }
 
   // 分配 RGBA 缓冲区用于解码
-  const int rgbaBufSize = dstW * dstH * 4;
-  uint8_t* rgbaBuf = (uint8_t*)malloc(rgbaBufSize);
+  size_t rgbaBufSize = 0;
+  if (!JpegImagePolicy::rgbaBufferBytes(dstW, dstH, rgbaBufSize)) {
+    Serial.printf("[壁纸] RGBA 缓冲区尺寸溢出: %dx%d\n", dstW, dstH);
+    M4Psram::freePrefer(rowBuffer);
+    cacheFile.close();
+    SdMan.remove(pxcPath.c_str());
+    return false;
+  }
+  uint8_t* rgbaBuf = static_cast<uint8_t*>(M4Psram::mallocPrefer(rgbaBufSize, "wallpaper-preview-rgba"));
   if (!rgbaBuf) {
     Serial.printf("[壁纸] 无法分配 RGBA 缓冲区\n");
-    free(rowBuffer);
+    M4Psram::freePrefer(rowBuffer);
     cacheFile.close();
     SdMan.remove(pxcPath.c_str());
     return false;
@@ -1570,8 +1587,8 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
 
   if (pixelsWritten == 0) {
     Serial.printf("[壁纸] 解码失败\n");
-    free(rgbaBuf);
-    free(rowBuffer);
+    M4Psram::freePrefer(rgbaBuf);
+    M4Psram::freePrefer(rowBuffer);
     cacheFile.close();
     SdMan.remove(pxcPath.c_str());
     return false;
@@ -1597,8 +1614,8 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
     cacheFile.write(rowBuffer, bytesPerRow);
   }
 
-  free(rgbaBuf);
-  free(rowBuffer);
+  M4Psram::freePrefer(rgbaBuf);
+  M4Psram::freePrefer(rowBuffer);
   cacheFile.close();
 
   Serial.printf("[壁纸] 缓存生成完成: %s (%dx%d, %d bytes)\n", pxcPath.c_str(), dstW, dstH, 4 + bytesPerRow * dstH);

@@ -9,6 +9,7 @@
 #include <Xtc.h>
 
 #include <cstring>
+#include <new>
 #include <string>
 
 #include <esp_heap_caps.h>
@@ -43,6 +44,8 @@
 #include "qemu/M4QemuNet.h"
 #include "apps/providers/M4NativeProviderBookDetail.h"
 #include "apps/providers/M4LegadoBridge.h"
+#include "apps/providers/M4Psram.h"
+#include "util/M4RuntimeMemory.h"
 
 namespace {
 
@@ -205,16 +208,18 @@ void HomeActivity::sceneBackendTaskTrampoline(void* param) {
   holder.reset();
   if (!ctx) {
     Serial.printf("[%lu] [Home] backend task missing context\n", millis());
-    vTaskDelete(nullptr);
+    M4Psram::deleteTask(nullptr);
     for (;;) vTaskDelay(portMAX_DELAY);
   }
   gHomeSceneBackendCount.fetch_add(1, std::memory_order_acq_rel);
   backendLoop(*ctx);
   ctx->exiting.store(true, std::memory_order_release);
+  Serial.printf("[WRPERF] stage=home-backend-task-exit stack_hwm=%u\n",
+                static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   // FreeRTOS task deletion does not unwind C++ stack locals.
   ctx.reset();
   gHomeSceneBackendCount.fetch_sub(1, std::memory_order_acq_rel);
-  vTaskDelete(nullptr);
+  M4Psram::deleteTask(nullptr);
   for (;;) vTaskDelay(portMAX_DELAY);
 }
 
@@ -287,6 +292,7 @@ bool HomeActivity::tryEnsureCoverThumbInCtx(BackendContext& ctx, const std::stri
     if (StringUtils::checkFileExtension(b.path, ".epub")) {
       Epub epub(b.path, "/.crosspoint");
       epub.load(false, true);
+      if (cancelled && cancelled()) return false;
       if (epub.generateThumbBmp(w, h)) return true;
     }
     break;
@@ -653,15 +659,15 @@ void HomeActivity::handleSnapshotInput() {
   }
 }
 
-void HomeActivity::renderSnapshotScene() {
-  if (!backendCtx) {
+void HomeActivity::renderSnapshotScene(const std::shared_ptr<BackendContext>& ctx) {
+  if (!ctx) {
     renderer.clearScreen();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     return;
   }
   // Pin a stable publication generation for the entire render + displayBuffer submission.
   // This keeps asset arena pointers valid for the whole frame even if backend publishes next frame.
-  auto pinned = backendCtx->model.acquirePublication();
+  auto pinned = ctx->model.acquirePublication();
   if (!pinned.valid()) {
     return;
   }
@@ -684,8 +690,24 @@ void HomeActivity::renderSnapshotScene() {
 #endif
 
 void HomeActivity::taskTrampoline(void* param) {
+#ifdef CROSSPOINT_MURPHY_M4
+  std::unique_ptr<DisplayTaskArgs> args(static_cast<DisplayTaskArgs*>(param));
+  HomeActivity* self = args ? args->activity : nullptr;
+  std::shared_ptr<BackendContext> ctx = args ? std::move(args->context) : nullptr;
+  args.reset();
+  if (self) {
+    self->displayTaskLoop(ctx);
+    Serial.printf("[WRPERF] stage=home-display-task-exit stack_hwm=%u\n",
+                  static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+    ctx.reset();
+    self->displayTaskExited.store(true, std::memory_order_release);
+  }
+  M4Psram::deleteTask(nullptr);
+  for (;;) vTaskDelay(portMAX_DELAY);
+#else
   auto* self = static_cast<HomeActivity*>(param);
   self->displayTaskLoop();
+#endif
 }
 
 int HomeActivity::getMenuItemCount() const {
@@ -926,6 +948,10 @@ void HomeActivity::loadRecentCovers(int coverWidth, int coverHeight) {
 
 void HomeActivity::onEnter() {
   Activity::onEnter();
+#ifdef CROSSPOINT_MURPHY_M4
+  m4LogRuntimeMemory("home-enter");
+  M4Psram::logAllocationStats("home-enter");
+#endif
 
   // 强制竖屏（防止阅读器横屏后未正常退出导致首页横屏）
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
@@ -997,15 +1023,31 @@ void HomeActivity::onEnter() {
   updateRequired.store(true, std::memory_order_release);
 #endif
 
-  if (xTaskCreate(&HomeActivity::taskTrampoline, "HomeActivityTask",
-                  8192, this, 1, &displayTaskHandle) != pdPASS) {
+  displayTaskExited.store(false, std::memory_order_release);
+#ifdef CROSSPOINT_MURPHY_M4
+  auto* displayArgs = new (std::nothrow) DisplayTaskArgs{this, backendCtx};
+  const BaseType_t displayCreated = displayArgs
+      ? M4Psram::createTask(&HomeActivity::taskTrampoline, "HomeActivityTask",
+                            8192, displayArgs, 1, &displayTaskHandle)
+      : pdFAIL;
+  if (displayCreated != pdPASS) {
+    delete displayArgs;
+    displayTaskExited.store(true, std::memory_order_release);
     displayTaskHandle = nullptr;
     Serial.printf("[%lu] [Home] failed to create display task\n", millis());
   }
+#else
+  if (xTaskCreate(&HomeActivity::taskTrampoline, "HomeActivityTask",
+                  8192, this, 1, &displayTaskHandle) != pdPASS) {
+    displayTaskHandle = nullptr;
+    displayTaskExited.store(true, std::memory_order_release);
+    Serial.printf("[%lu] [Home] failed to create display task\n", millis());
+  }
+#endif
 #ifdef CROSSPOINT_MURPHY_M4
-  if (xTaskCreate(&HomeActivity::sceneBackendTaskTrampoline, "HomeSceneBackend",
-                  kHomeSceneBackendStackBytes, backendHolder, 1,
-                  &sceneBackendTaskHandle) != pdPASS) {
+  if (M4Psram::createTask(&HomeActivity::sceneBackendTaskTrampoline, "HomeSceneBackend",
+                          kHomeSceneBackendStackBytes, backendHolder, 1,
+                          &sceneBackendTaskHandle) != pdPASS) {
     delete backendHolder;
     sceneBackendTaskHandle = nullptr;
     Serial.printf("[%lu] [Home] failed to create backend task\n", millis());
@@ -1017,46 +1059,59 @@ void HomeActivity::onExit() {
   Activity::onExit();
 
 #ifdef CROSSPOINT_MURPHY_M4
-  // Lifetime-safe cooperative join: signal backend via its own context and
-  // wait until it has released every FsFile/Bitmap/Epub and App-arena pointer.
-  // Backend owns its context via shared_ptr, so even if we return, it cannot touch `this`.
-  // We never delete a task while it holds FsFile/Bitmap/Epub destructors, and
-  // the main loop must never reset App/Scratch while this owner is alive.
+  m4LogRuntimeMemory("home-exit-begin");
+  M4Psram::logAllocationStats("home-exit-begin");
   std::shared_ptr<BackendContext> ctx = backendCtx;
   if (ctx) {
     ctx->cancelled.store(true, std::memory_order_release);
     ctx->epoch.fetch_add(1, std::memory_order_acq_rel);
-    if (sceneBackendTaskHandle) {
-      uint32_t waitedMs = 0;
-      while (!ctx->exiting.load(std::memory_order_acquire)) {
-        if ((waitedMs % 1000U) == 0U && waitedMs != 0U) {
-          Serial.printf("[%lu] [Home] waiting for backend teardown (%lu ms)\n", millis(),
-                        static_cast<unsigned long>(waitedMs));
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-        waitedMs += 10;
-      }
-      // The backend task owns and deletes itself after setting exiting.
-      sceneBackendTaskHandle = nullptr;
-    }
-    backendCtx.reset();
-  } else if (sceneBackendTaskHandle) {
-    // No context but task handle exists (should not happen) — just clear.
-    vTaskDelete(sceneBackendTaskHandle);
-    sceneBackendTaskHandle = nullptr;
   }
-#endif
-
-  // Wait until not rendering to delete task to avoid killing mid-instruction to EPD
+  displayStopRequested.store(true, std::memory_order_release);
+  constexpr uint32_t kExitWaitMs = 800;
+  const uint32_t started = millis();
+  const uint32_t deadline = started + kExitWaitMs;
+  while (static_cast<int32_t>(deadline - millis()) > 0) {
+    const bool displayDone = displayTaskExited.load(std::memory_order_acquire);
+    const bool backendDone = !sceneBackendTaskHandle || !ctx ||
+        ctx->exiting.load(std::memory_order_acquire);
+    if (displayDone && backendDone) break;
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  const bool displayDone = displayTaskExited.load(std::memory_order_acquire);
+  const bool backendDone = !sceneBackendTaskHandle || !ctx ||
+      ctx->exiting.load(std::memory_order_acquire);
+  if (!displayDone || !backendDone) {
+    Serial.printf("[%lu] [Home] bounded teardown timeout owner=%s display_done=%d backend_done=%d waited_ms=%lu\n",
+                  millis(), !displayDone ? "display-task" : "scene-backend",
+                  displayDone ? 1 : 0, backendDone ? 1 : 0,
+                  static_cast<unsigned long>(millis() - started));
+    M4Psram::logAllocationStats("home-exit-timeout");
+  }
+  if (displayDone) displayTaskHandle = nullptr;
+  if (backendDone) sceneBackendTaskHandle = nullptr;
+  m4LogRuntimeMemory("home-exit-end");
+  M4Psram::logAllocationStats("home-exit-end");
+#else
+  displayStopRequested.store(true, std::memory_order_release);
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
   if (displayTaskHandle) {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
   }
+  displayTaskExited.store(true, std::memory_order_release);
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
+#endif
+}
 
-  // Free the stored cover buffer if any
+HomeActivity::~HomeActivity() {
+#ifdef CROSSPOINT_MURPHY_M4
+  backendCtx.reset();
+#endif
+  if (renderingMutex) {
+    vSemaphoreDelete(renderingMutex);
+    renderingMutex = nullptr;
+  }
   freeCoverBuffer();
 }
 
@@ -1414,27 +1469,34 @@ void HomeActivity::loop() {
 #endif
 }
 
-void HomeActivity::displayTaskLoop() {
-  while (true) {
 #ifdef CROSSPOINT_MURPHY_M4
+void HomeActivity::displayTaskLoop(const std::shared_ptr<BackendContext>& ctx) {
+  while (!displayStopRequested.load(std::memory_order_acquire)) {
     bool need = false;
-    if (backendCtx && backendCtx->updateRequired.exchange(false, std::memory_order_acq_rel)) need = true;
+    if (ctx && ctx->updateRequired.exchange(false, std::memory_order_acq_rel)) need = true;
     if (updateRequired.exchange(false, std::memory_order_acq_rel)) need = true;
     if (need) {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      render();
-      xSemaphoreGive(renderingMutex);
+      if (displayStopRequested.load(std::memory_order_acquire)) break;
+      if (xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (!displayStopRequested.load(std::memory_order_acquire)) render(ctx);
+        xSemaphoreGive(renderingMutex);
+      }
     }
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
 #else
+[[noreturn]] void HomeActivity::displayTaskLoop() {
+  while (true) {
     if (updateRequired.exchange(false, std::memory_order_acq_rel)) {
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       render();
       xSemaphoreGive(renderingMutex);
     }
-#endif
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
 }
+#endif
 
 void HomeActivity::renderMemWarning() {
   renderer.clearScreen();
@@ -1492,7 +1554,11 @@ void HomeActivity::renderMemWarning() {
   renderer.displayBuffer();
 }
 
+#ifdef CROSSPOINT_MURPHY_M4
+void HomeActivity::render(const std::shared_ptr<BackendContext>& ctx) {
+#else
 void HomeActivity::render() {
+#endif
   // Show memory warning dialog if triggered
   if (showMemWarning) {
     renderMemWarning();
@@ -1500,7 +1566,7 @@ void HomeActivity::render() {
   }
 
 #ifdef CROSSPOINT_MURPHY_M4
-  renderSnapshotScene();
+  renderSnapshotScene(ctx);
   return;
 #else
   auto metrics = UITheme::getInstance().getMetrics();

@@ -25,6 +25,21 @@ int main() {
   CHECK(!opCanEnableAuthorization("ping"));
   CHECK(!opCanEnableAuthorization("install_begin"));
 
+  CHECK(canExecuteDuringYield("req", "ping", ""));
+  CHECK(canExecuteDuringYield("req", "status", ""));
+  CHECK(canExecuteDuringYield("req", "memory", ""));
+  CHECK(canExecuteDuringYield("req", "ui", ""));
+  CHECK(canExecuteDuringYield("req", "wifi_status", ""));
+  CHECK(canExecuteDuringYield("req", "font", "list"));
+  CHECK(canExecuteDuringYield("req", "font", "get"));
+  CHECK(!canExecuteDuringYield("req", "font", "set"));
+  CHECK(!canExecuteDuringYield("req", "home", ""));
+  CHECK(!canExecuteDuringYield("req", "launch", ""));
+  CHECK(!canExecuteDuringYield("req", "wifi_prepare", ""));
+  CHECK(!canExecuteDuringYield("req", "screenshot", ""));
+  CHECK(!canExecuteDuringYield("req", "install_begin", ""));
+  CHECK(!canExecuteDuringYield("chk", "", ""));
+
   CHECK(!M4UsbSerialResetPolicy::kApplyOnThisBuild);
   CHECK(M4UsbSerialResetPolicy::kUsbSerialResetDisableMask == ((1u << 18) | (1u << 17)));
   M4UsbSerialResetPolicy::applyBeforeSerialBegin();

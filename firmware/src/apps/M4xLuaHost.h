@@ -53,6 +53,8 @@ class M4xLuaHost {
   void requestCancel() { cancelRequested_.store(true, std::memory_order_relaxed); }
   void clearCancel() { cancelRequested_.store(false, std::memory_order_relaxed); }
   bool isCancelRequested() const { return cancelRequested_.load(std::memory_order_relaxed); }
+  bool isNetworkBusy() const { return networkBusy_.load(std::memory_order_acquire); }
+  void setNetworkBusy(bool busy) { networkBusy_.store(busy, std::memory_order_release); }
 
   // Owner-task only.
   void stop();
@@ -182,6 +184,7 @@ class M4xLuaHost {
   void* L_ = nullptr;  // lua_State*
   bool exitRequested_ = false;
   std::atomic<bool> cancelRequested_{false};
+  std::atomic<bool> networkBusy_{false};
   M4xLuaSandbox::Budget budget_{};
   UiListScene uiScene_{};
 };

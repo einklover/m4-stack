@@ -22,7 +22,7 @@ class StringSink final : public M4xJsonStream::Sink {
   explicit StringSink(size_t cap) : cap_(cap) {
     const size_t initial = std::min<size_t>(cap_, 4096u);
     if (initial == 0) return;
-    buf_ = static_cast<char*>(M4Psram::mallocPrefer(initial));
+    buf_ = static_cast<char*>(M4Psram::mallocPrefer(initial, "http-small-response"));
     if (buf_) capacity_ = initial;
   }
 
@@ -36,10 +36,8 @@ class StringSink final : public M4xJsonStream::Sink {
       while (next < size_ + len && next < cap_) next *= 2u;
       next = std::min(next, cap_);
       if (next < size_ + len) return false;
-      char* nb = static_cast<char*>(M4Psram::mallocPrefer(next));
+      char* nb = static_cast<char*>(M4Psram::reallocPrefer(buf_, capacity_, next, "http-small-response"));
       if (!nb) return false;
-      if (size_) std::memcpy(nb, buf_, size_);
-      M4Psram::freePrefer(buf_);
       buf_ = nb;
       capacity_ = next;
     }
@@ -152,7 +150,11 @@ Result perform(const Request& req, M4xJsonStream::Sink& sink,
   // shared transport intentionally owns only HTTP/TLS and heavy-resource
   // serialization, so this thin adapter is the single compatibility boundary
   // for JJWXC/Fanqie discovery, catalog and chapter callers.
+  const uint32_t wifiStartedMs = millis();
   const auto wifi = M4NativeWifi::ensureConnected(std::min<uint32_t>(req.timeoutMs, 20000u), cancelled);
+  Serial.printf("[WRPERF] stage=provider_wifi ms=%lu ok=%d error=%s\n",
+                static_cast<unsigned long>(millis() - wifiStartedMs), wifi.ok ? 1 : 0,
+                wifi.error.c_str());
   if (!wifi.ok) {
     out.error = wifi.error.empty() ? "wifi_not_connected" : wifi.error;
     return out;

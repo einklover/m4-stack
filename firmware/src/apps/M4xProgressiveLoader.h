@@ -6,10 +6,6 @@
 #undef nullptr
 #endif
 
-#if defined(ARDUINO_ARCH_ESP32)
-#include <esp_heap_caps.h>
-#endif
-
 // Owner-task progressive loader: stream network → SD, early openText/openToc.
 // HTTP session stays open across pump() slices so the UI task can launch the
 // native reader while the remainder of the body is still downloading.
@@ -17,6 +13,7 @@
 #include "apps/M4PluginReaderSession.h"
 #include "apps/M4xJsonStream.h"
 #include "apps/M4xProgressiveHttpState.h"
+#include "apps/providers/M4Psram.h"
 #include "util/M4PluginReaderBridge.h"
 
 #include <cstddef>
@@ -106,14 +103,10 @@ struct TocSpec {
 class FileSink final : public M4xJsonStream::Sink {
  public:
   explicit FileSink(FsFile& f) : f_(f) {
-#if defined(ARDUINO_ARCH_ESP32)
-    buffer_ = static_cast<uint8_t*>(heap_caps_malloc(kBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-#endif
+    buffer_ = static_cast<uint8_t*>(M4Psram::mallocPrefer(kBufferBytes, "plugin-reader-file-sink"));
   }
   ~FileSink() override {
-#if defined(ARDUINO_ARCH_ESP32)
-    if (buffer_) heap_caps_free(buffer_);
-#endif
+    M4Psram::freePrefer(buffer_);
   }
   bool write(const uint8_t* data, size_t len) override {
     if (!data || !len) return true;

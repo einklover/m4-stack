@@ -9,6 +9,7 @@
 #include "apps/M4xPsvtsExtract.h"
 #include "apps/weread/WereadCrypto.h"
 #include "util/M4WereadAuthPolicy.h"
+#include "util/M4RuntimeMemory.h"
 
 // Single-flight HTTP/TLS substrate (agent A, branch m4-http-transport-core).
 // B uses it when present and falls back to the std::function-based native
@@ -182,7 +183,11 @@ NetResult netRequest(const NetReq& r, M4xJsonStream::Sink& sink,
   // Same STA bring-up as Fanqie/JJWXC (M4NativeProviderHttp). WeRead used
   // M4HttpTransport directly and skipped this, so a cached-chapter open with
   // Wi-Fi down queued idle prefetch TLS and panicked in lwIP getaddrinfo.
+  const uint32_t wifiStartedMs = millis();
   const auto wifi = M4NativeWifi::ensureConnected(std::min<uint32_t>(r.timeoutMs, 20000u), cancelled);
+  Serial.printf("[WRPERF] stage=weread_wifi ms=%lu ok=%d error=%s\n",
+                static_cast<unsigned long>(millis() - wifiStartedMs), wifi.ok ? 1 : 0,
+                wifi.error.c_str());
   if (!wifi.ok) {
     NetResult out;
     out.error = wifi.error.empty() ? "wifi_not_connected" : wifi.error;
@@ -409,7 +414,7 @@ bool appendCheckedShard(FsFile& combined, const std::string& shardPath, std::str
   // the single-shot path; stream larger ones.
   constexpr size_t kOneShotMax = 256u * 1024u;
   if (bodyLen <= kOneShotMax) {
-    uint8_t* body = static_cast<uint8_t*>(M4Psram::mallocPrefer(bodyLen));
+    uint8_t* body = static_cast<uint8_t*>(M4Psram::mallocPrefer(bodyLen, "weread-shard-body"));
     if (!body) {
       in.close();
       err = "shard_oom";
@@ -457,7 +462,7 @@ bool appendCheckedShard(FsFile& combined, const std::string& shardPath, std::str
     return false;
   }
   constexpr size_t kShardBuf = 4096;
-  uint8_t* buf = static_cast<uint8_t*>(M4Psram::mallocPrefer(kShardBuf));
+  uint8_t* buf = static_cast<uint8_t*>(M4Psram::mallocPrefer(kShardBuf, "weread-shard-decode"));
   if (!buf) {
     mbedtls_md5_free(&ctx);
     in.close();
@@ -625,8 +630,8 @@ bool decodeBase64File(const std::string& combinedPath, bool stripXhtml,
   // Streaming windows in PSRAM — never on the worker stack / internal heap.
   constexpr size_t kInBytes = 4096;
   constexpr size_t kOutBytes = 3072;
-  uint8_t* input = static_cast<uint8_t*>(M4Psram::mallocPrefer(kInBytes));
-  uint8_t* output = static_cast<uint8_t*>(M4Psram::mallocPrefer(kOutBytes + 8));
+  uint8_t* input = static_cast<uint8_t*>(M4Psram::mallocPrefer(kInBytes, "weread-zlib-input"));
+  uint8_t* output = static_cast<uint8_t*>(M4Psram::mallocPrefer(kOutBytes + 8, "weread-zlib-output"));
   if (!input || !output) {
     M4Psram::freePrefer(input);
     M4Psram::freePrefer(output);
@@ -755,12 +760,28 @@ class WereadProvider final : public M4NativeProvider::Adapter {
   M4NativeProvider::FetchResult fetchChapter(const M4NativeProvider::ChapterRequest& req,
                                              const M4NativeProvider::ProgressFn& progress,
                                              const M4NativeProvider::CancelFn& cancelled) override {
-    if (!M4NativeProviderHeavyGate::heapHealthy(0x200)) {
-      M4NativeProvider::FetchResult bad;
-      bad.error = "heap_corrupt";
-      return bad;
-    }
+    const uint32_t fetchStartedMs = millis();
     M4NativeProvider::FetchResult out;
+    struct FetchPerf {
+      const M4NativeProvider::ChapterRequest& request;
+      M4NativeProvider::FetchResult& result;
+      uint32_t startedMs;
+      ~FetchPerf() {
+        Serial.printf("[WRPERF] stage=weread_fetch_end chapter=%s ms=%lu ok=%d bytes=%u err=%s\n",
+                      request.chapter.uid.c_str(), static_cast<unsigned long>(millis() - startedMs),
+                      result.ok ? 1 : 0, static_cast<unsigned>(result.bytes),
+                      result.error.empty() ? "-" : result.error.c_str());
+        m4LogRuntimeMemory("weread-fetch-end");
+        M4Psram::logAllocationStats("weread-fetch-end");
+      }
+    } perf{req, out, fetchStartedMs};
+    Serial.printf("[WRPERF] stage=weread_fetch_start chapter=%s\n", req.chapter.uid.c_str());
+    m4LogRuntimeMemory("weread-fetch-start");
+    M4Psram::logAllocationStats("weread-fetch-start");
+    if (!M4NativeProviderHeavyGate::heapHealthy(0x200)) {
+      out.error = "heap_corrupt";
+      return out;
+    }
     const std::string logApp =
         req.book.appId.empty() ? std::string("com.weread.client") : req.book.appId;
     struct ChapterHttpLog {

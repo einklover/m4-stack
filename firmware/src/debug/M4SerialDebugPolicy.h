@@ -445,6 +445,19 @@ struct AuthorizationState {
   }
 };
 
+// m4YieldToDebugBridge() may run while rendering/font locks are held. Only
+// lightweight read-only requests may execute in that re-entry window.
+inline bool canExecuteDuringYield(const char* kind, const char* op, const char* action) {
+  if (!kind || std::strcmp(kind, "req") != 0 || !op) return false;
+  if (std::strcmp(op, "ping") == 0 || std::strcmp(op, "status") == 0 ||
+      std::strcmp(op, "memory") == 0 || std::strcmp(op, "ui") == 0 ||
+      std::strcmp(op, "wifi_status") == 0) {
+    return true;
+  }
+  return std::strcmp(op, "font") == 0 && action &&
+         (std::strcmp(action, "list") == 0 || std::strcmp(action, "get") == 0);
+}
+
 // Serial ops that must never change authorization (defense in depth for tests).
 inline bool opCanEnableAuthorization(const char* op) {
   (void)op;

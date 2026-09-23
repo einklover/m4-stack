@@ -698,3 +698,8 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 
 - When TTF contour/parser storage moves from `std::vector` to the fixed PSRAM-backed container, simulator Debug/ASan tests must construct that same container type. Release-only tests can hide the mismatch because assertions and the glyph call path may be compiled out.
 - Add the M4Memory include path to every host target that compiles `TtfReader.cpp`; otherwise a production-valid TTF change fails only in the simulator build.
+
+## 2026-09-23 — Reap shared Reader fonts only after every Reader owner stops
+
+- Symptom: repeated Reader exit/reentry can leave an older display task waiting past its bounded join while a newer Reader also exits. Releasing global runtime TTF faces as soon as the newer Reader is reaped can invalidate fonts still used by the older task.
+- Fix/check: include active, deferred, and nested Reader owners in the font release guard. A Reader's own destruction readiness is necessary, and font release remains blocked while any other Reader owner is still live.

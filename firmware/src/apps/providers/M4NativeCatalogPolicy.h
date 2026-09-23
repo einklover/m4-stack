@@ -9,6 +9,9 @@ namespace M4NativeCatalogPolicy {
 // external-RAM stack can overflow. Match the already-stable native provider
 // workers.
 inline constexpr size_t kTaskStackBytes = 72u * 1024u;
+// Keep the no-SD catalog assembly phase bounded; larger normalized catalogs
+// switch to the existing buffered SD writer while the JSON stream continues.
+inline constexpr size_t kPsramAssemblyMaxBytes = 2u * 1024u * 1024u;
 
 // Fanqie long catalogs can contain thousands of chapters. Do not duplicate the
 // whole TSV in PSRAM after the first-window open; stream it to the buffered SD

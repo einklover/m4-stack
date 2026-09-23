@@ -3,6 +3,7 @@
 
 #include <GfxRenderer.h>
 #include <EpdFontLoader.h>
+#include <TtfEpdFont.h>
 #include <BluetoothHIDManager.h>
 #include <SDCardManager.h>
 #include <Serialization.h>
@@ -38,6 +39,7 @@
 #include "util/M4ProviderCoverCache.h"
 #include "apps/providers/M4NativeWifi.h"
 #include "RecentBooksStore.h"
+#include "apps/providers/M4Psram.h"
 
 #ifdef CROSSPOINT_X3
 #include "TiltPageTurnDetector.h"
@@ -321,6 +323,15 @@ bool resolvePluginTitle(const TxtReaderActivity::PluginSession& session, int ind
 void TxtReaderActivity::taskTrampoline(void* param) {
   auto* self = static_cast<TxtReaderActivity*>(param);
   self->displayTaskLoop();
+  Serial.printf("[WRPERF] stage=reader-display-task-exit stack_hwm=%u gen=%u\n",
+                static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+                static_cast<unsigned>(self->pluginSession_.generation));
+#if defined(ESP32)
+  (void)esp_task_wdt_delete(nullptr);
+#endif
+  self->displayTaskExited_.store(true, std::memory_order_release);
+  M4Psram::deleteTask(nullptr);
+  for (;;) vTaskDelay(portMAX_DELAY);
 }
 
 void TxtReaderActivity::onEnter() {
@@ -335,6 +346,8 @@ void TxtReaderActivity::onEnter() {
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
   renderingMutex = xSemaphoreCreateMutex();
+  progressWriterMutex_ = xSemaphoreCreateMutex();
+  progressGeneration_.fetch_add(1, std::memory_order_acq_rel);
 
   txt->setupCacheDir();
   largeTxtFastOpen_ = !pluginSession_.active && txt->getFileSize() >= kLargeTxtDirectThreshold;
@@ -440,53 +453,83 @@ void TxtReaderActivity::onEnter() {
     SETTINGS.saveToFile();
   }
 
-  xTaskCreate(&TxtReaderActivity::taskTrampoline, "TxtReaderActivityTask",
-              8192,               // Stack size (increased for font loading + page indexing)
-              this,               // Parameters
-              1,                  // Priority
-              &displayTaskHandle  // Task handle
-  );
+  if (!renderingMutex || !progressWriterMutex_) {
+    pendingGoBack = true;
+    Serial.printf("[%lu] [TRS] reader synchronization allocation failed; returning to caller\n", millis());
+  } else {
+    stopTaskRequested_.store(false, std::memory_order_release);
+    displayTaskExited_.store(false, std::memory_order_release);
+    if (M4Psram::createTask(&TxtReaderActivity::taskTrampoline, "TxtReaderActivityTask",
+                            8192, this, 1, &displayTaskHandle) != pdPASS) {
+      displayTaskHandle = nullptr;
+      displayTaskExited_.store(true, std::memory_order_release);
+      pendingGoBack = true;
+      Serial.printf("[%lu] [TRS] reader display task creation failed; returning to caller\n", millis());
+    }
+  }
 }
 
 void TxtReaderActivity::persistOpenHistory() {
-  if (!openHistorySavePending_ || !txt) return;
-
-  if (!pluginSession_.active || !pluginSession_.suppressOpenEpubPath) {
-    APP_STATE.saveToFile();
+  PluginSession session;
+  std::string filePath;
+  uint32_t generation = 0;
+  bool saveOpenPath = false;
+  bool addRecentBook = false;
+  if (!lockState(pdMS_TO_TICKS(250))) {
+    Serial.printf("[%lu] [TRS] history snapshot lock busy\n", millis());
+    return;
   }
-  if (!pluginSession_.active || !pluginSession_.suppressRecentBooks) {
-    const auto filePath = txt->getPath();
+  if (!openHistorySavePending_ || !txt) {
+    unlockState();
+    return;
+  }
+  session = pluginSession_;
+  filePath = txt->getPath();
+  generation = progressGeneration_.load(std::memory_order_acquire);
+  saveOpenPath = !session.active || !session.suppressOpenEpubPath;
+  addRecentBook = !session.active || !session.suppressRecentBooks;
+  unlockState();
+
+  if (!progressWriterMutex_ || xSemaphoreTake(progressWriterMutex_, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    Serial.printf("[%lu] [TRS] history write lock timeout gen=%u\n", millis(),
+                  static_cast<unsigned>(generation));
+    return;
+  }
+  struct HistoryUnlock {
+    SemaphoreHandle_t mutex;
+    ~HistoryUnlock() { if (mutex) xSemaphoreGive(mutex); }
+  } historyUnlock{progressWriterMutex_};
+  if (generation != progressGeneration_.load(std::memory_order_acquire)) {
+    Serial.printf("[%lu] [TRS] stale history snapshot skipped gen=%u\n", millis(),
+                  static_cast<unsigned>(generation));
+    return;
+  }
+
+  if (saveOpenPath) APP_STATE.saveToFile();
+  if (addRecentBook) {
     const auto fileName = filePath.substr(filePath.rfind('/') + 1);
     // Provider books use stable history URI so reopen bypasses plugin shelf.
-    if (pluginSession_.providerManaged && !pluginSession_.providerId.empty()) {
-      const std::string uri = M4ContentProvider::makeHistoryUri(pluginSession_.providerId.c_str(),
-                                                                pluginSession_.bookId.c_str());
-      // New provider history stores the human author. App identity is recovered
-      // from the URI/registry; old rows still reopen through the legacy fallback.
+    if (session.providerManaged && !session.providerId.empty()) {
+      const std::string uri = M4ContentProvider::makeHistoryUri(session.providerId.c_str(),
+                                                                session.bookId.c_str());
       std::string appId;
-      if (!M4HistoryReopen::resolveHistoryAppId(pluginSession_.appId, pluginSession_.appDataRoot, filePath,
-                                                appId)) {
+      if (!M4HistoryReopen::resolveHistoryAppId(session.appId, session.appDataRoot, filePath, appId)) {
         Serial.printf("[WRCP] history_skip_uri no_appId provider=%s book=%s\n",
-                      pluginSession_.providerId.c_str(), pluginSession_.bookId.c_str());
+                      session.providerId.c_str(), session.bookId.c_str());
         RECENT_BOOKS.addBook(filePath, fileName, "", "");
       } else if (!uri.empty()) {
-        // Metadata contract: provider title wins over chapter/cache filenames.
         const auto providerHistory =
-            M4ContentProviderSession::makeHistorySnapshot(pluginSession_.providerId, pluginSession_.bookId);
+            M4ContentProviderSession::makeHistorySnapshot(session.providerId, session.bookId);
         const std::string historyTitle = !providerHistory.title.empty()
                                              ? providerHistory.title
-                                             : (pluginSession_.titleOverride.empty() ? fileName
-                                                                                       : pluginSession_.titleOverride);
-        // Heal missing cover path for early reader race: if detail cover not yet
-        // bound, store the deterministic template so Home can retry ensureSized
-        // without reopening detail (bug A). Home's healing also covers old rows.
-        std::string coverForRecents = pluginSession_.providerCoverBmpPath;
+                                             : (session.titleOverride.empty() ? fileName
+                                                                              : session.titleOverride);
+        std::string coverForRecents = session.providerCoverBmpPath;
         if (coverForRecents.empty()) {
-          coverForRecents = M4ProviderCoverCache::bmpTemplatePath(pluginSession_.providerId, pluginSession_.bookId);
+          coverForRecents = M4ProviderCoverCache::bmpTemplatePath(session.providerId, session.bookId);
         }
-        RECENT_BOOKS.addBook(uri, historyTitle, pluginSession_.providerAuthor,
-                             coverForRecents, filePath);
-        M4ContentProviderSession::markHistoryRegistered(pluginSession_.providerId, pluginSession_.bookId);
+        RECENT_BOOKS.addBook(uri, historyTitle, session.providerAuthor, coverForRecents, filePath);
+        M4ContentProviderSession::markHistoryRegistered(session.providerId, session.bookId);
         Serial.printf("[WRCP] history_uri=%s appId=%s cache=%s\n", uri.c_str(), appId.c_str(), filePath.c_str());
       } else {
         RECENT_BOOKS.addBook(filePath, fileName, "", "");
@@ -495,7 +538,14 @@ void TxtReaderActivity::persistOpenHistory() {
       RECENT_BOOKS.addBook(filePath, fileName, "", "");
     }
   }
-  openHistorySavePending_ = false;
+
+  if (generation == progressGeneration_.load(std::memory_order_acquire) && lockState(pdMS_TO_TICKS(250))) {
+    if (generation == progressGeneration_.load(std::memory_order_relaxed)) openHistorySavePending_ = false;
+    unlockState();
+  } else {
+    Serial.printf("[%lu] [TRS] history completion deferred gen=%u\n", millis(),
+                  static_cast<unsigned>(generation));
+  }
 }
 
 void TxtReaderActivity::waitPhysicalEpdIdle(uint32_t maxMs) {
@@ -518,60 +568,62 @@ void TxtReaderActivity::cancelPendingPageTurnForChild() {
 
 void TxtReaderActivity::onExit() {
   ActivityWithSubactivity::onExit();
-
-  // 结束阅读统计会话并保存
   READING_STATS.endSession();
 
-  // Stop display task from starting another AA/e-ink pass, then wait so we do
-  // not vTaskDelete mid-displayGrayBuffer (left panel in gray → Home cleanup flash).
-  // Chapter switch: Lua paints loading next — short wait so UI feels responsive.
-  suppressDisplay_ = true;
+  // Stop new frames and let any active layout / physical refresh finish. The
+  // global activity retirement queue retains this object and its TXT/mutex
+  // state if an owner misses the bounded deadline.
+  suppressDisplay_.store(true, std::memory_order_release);
+  stopTaskRequested_.store(true, std::memory_order_release);
   updateRequired = false;
   cancelPendingPageTurnForChild();
-  const uint32_t epdWaitMs =
-      (pluginSession_.active && pluginSwitchChapterIndex_ >= 0) ? 400u : 2500u;
-  waitPhysicalEpdIdle(epdWaitMs);
 
-  // Serialize all SD-backed persistence with the display/index task.  The
-  // latter can still be inside loadPageAtOffset() after suppressDisplay_ is
-  // set; writing recent/progress files before taking this lock races the SD
-  // controller and can strand Home in an SDMMC timeout.
-  if (renderingMutex) {
-    xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  constexpr uint32_t kExitWaitMs = 3000;
+  const uint32_t started = millis();
+  const uint32_t deadline = started + kExitWaitMs;
+  while (static_cast<int32_t>(deadline - millis()) > 0) {
+    const bool taskDone = displayTaskExited_.load(std::memory_order_acquire);
+    const bool epdIdle = !physicalEpdBusy_.load(std::memory_order_acquire);
+    if (taskDone && epdIdle) break;
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
+  const bool taskDone = displayTaskExited_.load(std::memory_order_acquire);
+  const bool epdIdle = !physicalEpdBusy_.load(std::memory_order_acquire);
+  if (!taskDone || !epdIdle) {
+    Serial.printf("[%lu] [TRS] bounded exit timeout owner=%s task_done=%d epd_idle=%d waited_ms=%lu gen=%u\n",
+                  millis(), !taskDone ? "reader-display-task" : "physical-epd",
+                  taskDone ? 1 : 0, epdIdle ? 1 : 0,
+                  static_cast<unsigned long>(millis() - started),
+                  static_cast<unsigned>(pluginSession_.generation));
+    M4Psram::logAllocationStats("reader-exit-timeout");
+  }
+  if (taskDone && epdIdle) TtfEpdFont::logPerformanceStats("reader-exit");
+  if (taskDone) displayTaskHandle = nullptr;
+}
 
-  // If the reader is closed before its first physical page, preserve the
-  // existing history semantics before tearing down the TXT object.
-  persistOpenHistory();
-
-  // Persist page/chapter while txt is still alive.
-  saveProgress();
-
-  // Reset orientation back to portrait for the rest of the UI
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
-  // Normalize to BW mode so Home FAST does not flash residual AA red plane.
-  renderer.setRenderMode(GfxRenderer::BW);
-
-  // The display task is quiescent while renderingMutex is held.
-  if (displayTaskHandle) {
-#if defined(ESP32)
-    // displayTaskLoop subscribes this transient task to TWDT.  Remove that
-    // subscription before deleting it so the next reader cycle can reuse the
-    // task slot without an "already subscribed" error.
-    (void)esp_task_wdt_delete(displayTaskHandle);
-#endif
-    vTaskDelete(displayTaskHandle);
-    displayTaskHandle = nullptr;
+TxtReaderActivity::~TxtReaderActivity() {
+  // The reaper calls the destructor only after the display owner has exited.
+  // Snapshot first, then perform all history/progress SD writes with no render
+  // lock held.
+  if (displayTaskExited_.load(std::memory_order_acquire)) {
+    persistOpenHistory();
+    saveProgress();
+    renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+    renderer.setRenderMode(GfxRenderer::BW);
+    pageOffsets.clear();
+    currentPageLines.clear();
+    if (APP_STATE.readerActivityLoadCount > 0) APP_STATE.readerActivityLoadCount = 0;
+    APP_STATE.saveToFile();
+    txt.reset();
+  }
+  if (progressWriterMutex_) {
+    vSemaphoreDelete(progressWriterMutex_);
+    progressWriterMutex_ = nullptr;
   }
   if (renderingMutex) {
     vSemaphoreDelete(renderingMutex);
     renderingMutex = nullptr;
   }
-  pageOffsets.clear();
-  currentPageLines.clear();
-  APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
-  txt.reset();
 }
 
 void TxtReaderActivity::requestPluginClose() {
@@ -588,14 +640,14 @@ void TxtReaderActivity::unlockState() const {
 }
 
 bool TxtReaderActivity::pluginFirstPageReady() const {
-  if (!lockState(portMAX_DELAY)) return false;
+  if (!lockState(pdMS_TO_TICKS(400))) return false;
   const bool v = firstPageReady_;
   unlockState();
   return v;
 }
 
 bool TxtReaderActivity::pluginIndexComplete() const {
-  if (!lockState(portMAX_DELAY)) return false;
+  if (!lockState(pdMS_TO_TICKS(400))) return false;
   const bool v = indexComplete_;
   unlockState();
   return v;
@@ -604,36 +656,42 @@ bool TxtReaderActivity::pluginIndexComplete() const {
 TxtReaderActivity::PluginProgress TxtReaderActivity::pluginProgressSnapshot() const {
   PluginProgress p;
   p.valid = false;
+  const int switchChapter = pluginSwitchChapterIndex_.load(std::memory_order_acquire);
+  p.switchChapterIndex = switchChapter;
+  // Session identity and generation do not change during a reader lifetime.
   p.bookId = pluginSession_.bookId;
+  p.generation = pluginSession_.generation;
+  // Chapter switch must not hang forever on display-task lock — deliver switch
+  // intent even if page snapshot is incomplete (Lua will reopen the new chapter).
+  if (!lockState(pdMS_TO_TICKS(400))) {
+    if (switchChapter >= 0) {
+      p.valid = true;
+      p.page = 0;
+      p.total = -1;
+      p.byteOffset = 0;
+      p.indexComplete = false;
+    }
+    return p;
+  }
   p.chapterUid = pluginSession_.chapterUid;
   p.progressKey = pluginSession_.progressKey;
   p.generation = pluginSession_.generation;
-  p.switchChapterIndex = pluginSwitchChapterIndex_;
-  // Chapter switch must not hang forever on display-task lock — deliver switch
-  // intent even if page snapshot is incomplete (Lua will reopen the new chapter).
-  const TickType_t lockWait =
-      (pluginSwitchChapterIndex_ >= 0) ? pdMS_TO_TICKS(400) : portMAX_DELAY;
-  if (!lockState(lockWait)) {
-    if (pluginSwitchChapterIndex_ >= 0) {
-      p.valid = true;
-      p.page = 0;
-      p.total = -1;
-      p.byteOffset = 0;
-      p.indexComplete = false;
+  p.switchChapterIndex = pluginSwitchChapterIndex_.load(std::memory_order_acquire);
+  const bool haveIndex = !pageOffsets.empty();
+  if (haveIndex) {
+    p.valid = true;
+    p.page = currentPage >= 0 ? currentPage : 0;
+    if (p.page >= static_cast<int>(pageOffsets.size())) {
+      p.page = static_cast<int>(pageOffsets.size()) - 1;
     }
-    return p;
+    p.total = indexComplete_ ? totalPages : -1;
+    p.indexComplete = indexComplete_;
+    p.byteOffset = pageOffsets[static_cast<size_t>(p.page)];
   }
-  M4PluginReaderStatePolicy::IndexState s;
-  s.pageOffsets = pageOffsets;
-  s.currentPage = currentPage;
-  s.totalPages = totalPages;
-  s.indexComplete = indexComplete_;
-  s.generation = pluginSession_.generation;
-  const auto snap = M4PluginReaderStatePolicy::makeProgressSnapshot(s);
   unlockState();
-  if (!snap.valid) {
+  if (!p.valid) {
     // Still deliver switch-chapter intent even if page snapshot is incomplete.
-    if (pluginSwitchChapterIndex_ >= 0) {
+    if (p.switchChapterIndex >= 0) {
       p.valid = true;
       p.page = 0;
       p.total = -1;
@@ -642,12 +700,6 @@ TxtReaderActivity::PluginProgress TxtReaderActivity::pluginProgressSnapshot() co
     }
     return p;
   }
-  p.valid = true;
-  p.page = snap.page;
-  p.total = snap.total;
-  p.byteOffset = snap.byteOffset;
-  p.indexComplete = snap.indexComplete;
-  p.generation = snap.generation;
   return p;
 }
 
@@ -730,16 +782,22 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
   // Persist outgoing chapter progress while old txt is still valid.
   saveProgress();
 
+  std::string resolvedTitle = title;
+  if (resolvedTitle.empty()) {
+    (void)resolvePluginTitle(pluginSession_, index0, resolvedTitle);
+  }
+  if (!lockState(pdMS_TO_TICKS(500))) {
+    Serial.printf("[%lu] [TRS] chapter switch state lock busy idx=%d\n", millis(), index0);
+    return false;
+  }
+
+  progressGeneration_.fetch_add(1, std::memory_order_acq_rel);
   txt = std::move(nextTxt);
   pluginSession_.chapterIndex = index0;
   pluginSession_.chapterUid = chapterUid;
   pluginSession_.cacheRelPath = cacheRelPath;
   // Seamless next-chapter open passes no title; resolve it from the plugin
   // TOC so the status bar below the text shows the new chapter, not the old.
-  std::string resolvedTitle = title;
-  if (resolvedTitle.empty()) {
-    (void)resolvePluginTitle(pluginSession_, index0, resolvedTitle);
-  }
   if (!resolvedTitle.empty()) pluginSession_.titleOverride = resolvedTitle;
   pluginSession_.progressKey =
       pluginSession_.providerId + ":" + pluginSession_.bookId + ":" + chapterUid;
@@ -772,6 +830,7 @@ bool TxtReaderActivity::switchToProviderChapter(const std::string& cacheRelPath,
   providerOverlayState_ = M4ContentProvider::ChapterReady::Ready;
   providerPrefetchRequested_ = false;
   armEntryWhiteSeed(EntryPlaceholderKind::NextChapter);
+  unlockState();
 
   M4ContentProviderSession::noteOpen(pluginSession_.providerId, pluginSession_.bookId, index0, 0);
   M4ContentProvider::ChapterStatus ready;
@@ -829,11 +888,7 @@ void TxtReaderActivity::applyPluginTocSelection(int newChapterNum) {
     const auto st = M4ContentProviderSession::chapterAt(pluginSession_.providerId, pluginSession_.bookId,
                                                         newChapterNum);
     if (st.state == M4ContentProvider::ChapterReady::Ready && !st.cacheRelPath.empty()) {
-      bool switched = false;
-      if (lockState(pdMS_TO_TICKS(500))) {
-        switched = switchToProviderChapter(st.cacheRelPath, newChapterNum, st.chapterUid, "");
-        unlockState();
-      }
+      const bool switched = switchToProviderChapter(st.cacheRelPath, newChapterNum, st.chapterUid, "");
       if (switched) {
         requestExitSubActivity();
         updateRequired = true;
@@ -998,7 +1053,7 @@ void TxtReaderActivity::pageTurnLocked(int delta) {
       currentPage >= totalPages - 1) {
     unlockState();
     if (tryProviderNextChapterAdvance()) return;
-    if (!lockState(portMAX_DELAY)) return;
+    if (!lockState(pdMS_TO_TICKS(400))) return;
   }
   // Library chapter boundaries (prev/next chapter) — only when not plugin.
   // Never advance while progressive index is still growing (would skip tail pages).
@@ -1105,6 +1160,15 @@ void TxtReaderActivity::applyDeferredMenuClose() {
 }
 
 void TxtReaderActivity::loop() {
+  reapRetiredSubActivities();
+  activatePendingSubActivity();
+  auto drawPopupBounded = [this](const char* message, bool fast = false) {
+    if (!lockState(pdMS_TO_TICKS(200))) return false;
+    GUI.drawPopup(renderer, message);
+    renderer.displayBuffer(fast ? HalDisplay::FAST_REFRESH : HalDisplay::UI_FAST_REFRESH);
+    unlockState();
+    return true;
+  };
   // Nested menu / settings child: two-phase close only after child.loop returns.
   if (subActivity) {
     const bool closed = pumpSubActivityFrame();
@@ -1120,7 +1184,8 @@ void TxtReaderActivity::loop() {
           waitPhysicalEpdIdle(400);
         }
         Serial.printf("[%lu] [TRS] child replace → keep suppress (sub=%d switch=%d close=%d)\n",
-                      millis(), subActivity ? 1 : 0, pluginSwitchChapterIndex_,
+                      millis(), subActivity ? 1 : 0,
+                      pluginSwitchChapterIndex_.load(std::memory_order_acquire),
                       pluginCloseRequested_ ? 1 : 0);
       } else {
         // Resume reader paints only after returning to the reader itself.
@@ -1226,7 +1291,7 @@ void TxtReaderActivity::loop() {
       // 横屏双页模式：绕过卷帘机制，左右交替接收新页
       if (isLandscapeDualPage() && rollingMode) {
         rollingHalfTurned = false;
-        if (lockState(portMAX_DELAY)) {
+        if (lockState(pdMS_TO_TICKS(400))) {
           if (dualNextLeft) {
             int newLeft = dualRightPage + 1;
             if (dualRightPage >= 0 && newLeft < totalPages) {
@@ -1295,10 +1360,7 @@ void TxtReaderActivity::loop() {
         globalNextPageMode = !globalNextPageMode;
         SETTINGS.globalNextPageModeEnabled = globalNextPageMode ? 1 : 0;
         SETTINGS.saveToFile();
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        GUI.drawPopup(renderer, globalNextPageMode ? L(Str::kGlobalNextPageModeOn) : L(Str::kGlobalNextPageModeOff));
-        renderer.displayBuffer();
-        xSemaphoreGive(renderingMutex);
+        drawPopupBounded(globalNextPageMode ? L(Str::kGlobalNextPageModeOn) : L(Str::kGlobalNextPageModeOff));
       } else if (action == 1) {
         // 切换蓝牙
         try {
@@ -1307,13 +1369,9 @@ void TxtReaderActivity::loop() {
             btMgr.disable();
             SETTINGS.bluetoothEnabled = 0;
             SETTINGS.saveToFile();
-            xSemaphoreTake(renderingMutex, portMAX_DELAY);
-            GUI.drawPopup(renderer, L(Str::kBTClosed));
-            renderer.displayBuffer();
-            xSemaphoreGive(renderingMutex);
+            drawPopupBounded(L(Str::kBTClosed));
           } else {
-            GUI.drawPopup(renderer, L(Str::kBTConnectingEllipsis));
-            renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+            drawPopupBounded(L(Str::kBTConnectingEllipsis), true);
             SETTINGS.bluetoothEnabled = 1;
             SETTINGS.saveToFile();
             bool connected = false;
@@ -1330,40 +1388,25 @@ void TxtReaderActivity::loop() {
               btMgr.stopScan();
               if (!connected) { btMgr.disable(); SETTINGS.bluetoothEnabled = 0; SETTINGS.saveToFile(); }
             } else { SETTINGS.bluetoothEnabled = 0; SETTINGS.saveToFile(); }
-            xSemaphoreTake(renderingMutex, portMAX_DELAY);
-            GUI.drawPopup(renderer, connected ? L(Str::kBTConnected) : L(Str::kBTConnectFailed));
-            renderer.displayBuffer();
-            xSemaphoreGive(renderingMutex);
+            drawPopupBounded(connected ? L(Str::kBTConnected) : L(Str::kBTConnectFailed));
           }
         } catch (...) {
-          xSemaphoreTake(renderingMutex, portMAX_DELAY);
-          GUI.drawPopup(renderer, L(Str::kBTError));
-          renderer.displayBuffer();
-          xSemaphoreGive(renderingMutex);
+          drawPopupBounded(L(Str::kBTError));
         }
       } else if (action == 2) {
         SETTINGS.autoPageTurnEnabled = SETTINGS.autoPageTurnEnabled ? 0 : 1;
         SETTINGS.saveToFile();
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        GUI.drawPopup(renderer, SETTINGS.autoPageTurnEnabled ? L(Str::kAutoPageTurnOn) : L(Str::kAutoPageTurnOff));
-        renderer.displayBuffer();
-        xSemaphoreGive(renderingMutex);
+        drawPopupBounded(SETTINGS.autoPageTurnEnabled ? L(Str::kAutoPageTurnOn) : L(Str::kAutoPageTurnOff));
         if (SETTINGS.autoPageTurnEnabled) applyAutoPageTurnSettings();
       } else if (action == 3) {
         SETTINGS.textAntiAliasing = SETTINGS.textAntiAliasing ? 0 : 1;
         SETTINGS.saveToFile();
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        GUI.drawPopup(renderer, SETTINGS.textAntiAliasing ? L(Str::kAntiAliasingOn) : L(Str::kAntiAliasingOff));
-        renderer.displayBuffer();
-        xSemaphoreGive(renderingMutex);
+        drawPopupBounded(SETTINGS.textAntiAliasing ? L(Str::kAntiAliasingOn) : L(Str::kAntiAliasingOff));
         updateRequired = true;
       } else if (action == 4) {
         SETTINGS.epubDarkMode = SETTINGS.epubDarkMode ? 0 : 1;
         SETTINGS.saveToFile();
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        GUI.drawPopup(renderer, SETTINGS.epubDarkMode ? L(Str::kDarkModeOn) : L(Str::kDarkModeOff));
-        renderer.displayBuffer();
-        xSemaphoreGive(renderingMutex);
+        drawPopupBounded(SETTINGS.epubDarkMode ? L(Str::kDarkModeOn) : L(Str::kDarkModeOff));
         updateRequired = true;
       }
     }
@@ -1538,7 +1581,7 @@ void TxtReaderActivity::openMenu(EpubReaderMenuActivity::MenuLayer layer) {
   int pageDisp = 1;
   int totalDisp = 1;
   std::string title = displayTitle();
-  if (lockState(portMAX_DELAY)) {
+  if (lockState(pdMS_TO_TICKS(400))) {
     // Coherent snapshot of progressive fields (short critical section).
     if (!pageOffsets.empty()) {
       int p0 = currentPage >= 0 ? currentPage : 0;
@@ -1669,7 +1712,7 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
     }
     case EpubReaderMenuActivity::MenuAction::GO_TO_PERCENT: {
       int bookProgressPercent = 0;
-      if (lockState(portMAX_DELAY)) {
+      if (lockState(pdMS_TO_TICKS(400))) {
         const size_t fs = txt ? txt->getFileSize() : 0;
         if (fs > 0 && currentPage >= 0 && currentPage < (int)pageOffsets.size()) {
           bookProgressPercent = static_cast<int>(
@@ -1767,7 +1810,7 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
     case EpubReaderMenuActivity::MenuAction::DELETE_CACHE: {
       // Cache files are consumed by the display task, so deletion must remain
       // serialized with rendering/indexing even though SD removal can be slow.
-      if (lockState(portMAX_DELAY)) {
+      if (lockState(pdMS_TO_TICKS(400))) {
         const int backupChapter = chapternum;
         const int backupPage = currentPage;
         const std::string cachePath = txt ? txt->getCachePath() : "";
@@ -1798,7 +1841,7 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
       int chapterSnap = chapternum;
       std::string bookPath;
       std::string bookTitle;
-      if (lockState(portMAX_DELAY)) {
+      if (lockState(pdMS_TO_TICKS(400))) {
         page0 = currentPage >= 0 ? currentPage : 0;
         if (!pageOffsets.empty() && page0 >= (int)pageOffsets.size()) {
           page0 = (int)pageOffsets.size() - 1;
@@ -1867,7 +1910,7 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
       const std::string bookMd5 = BookmarkStore::calculateBookMd5(bookPath);
       BookmarkStore::addBookmark(bookMd5, bm);
 
-      if (lockState(portMAX_DELAY)) {
+      if (lockState(pdMS_TO_TICKS(400))) {
         // GUI drawing and e-paper transfer share renderer buffers with the
         // display task; keep the lock through displayBuffer().
         GUI.drawPopup(renderer, L(Str::kBookmarkAdded));
@@ -1902,10 +1945,11 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
     }
     case EpubReaderMenuActivity::MenuAction::SYNC:
     case EpubReaderMenuActivity::MenuAction::SYNCY: {
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      GUI.drawPopup(renderer, L(Str::kTxtSyncNotSupported));
-      renderer.displayBuffer();
-      xSemaphoreGive(renderingMutex);
+      if (lockState(pdMS_TO_TICKS(200))) {
+        GUI.drawPopup(renderer, L(Str::kTxtSyncNotSupported));
+        renderer.displayBuffer();
+        unlockState();
+      }
       break;
     }
     default:
@@ -1915,7 +1959,10 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
 
 void TxtReaderActivity::onSettingsChanged() {
   // Rebuild under state lock so progressive index cannot race the clear.
-  const bool locked = lockState(portMAX_DELAY);
+  if (!lockState(pdMS_TO_TICKS(250))) {
+    Serial.printf("[%lu] [TRS] settings rebuild skipped: reader state busy\n", millis());
+    return;
+  }
   // Preserve raw-byte position across font/layout rebuild (plugin + library).
   size_t keepByte = 0;
   bool haveByte = false;
@@ -1955,14 +2002,14 @@ void TxtReaderActivity::onSettingsChanged() {
                        SETTINGS.screenMargin_Right + SETTINGS.screenMargin_Bottom;
 
   updateRequired = true;
-  if (locked) unlockState();
+  unlockState();
 }
 
 void TxtReaderActivity::goToPercent(int percent) {
   // UI/menu site: take the non-recursive state lock, then jump.
   // Never call this while renderingMutex is already held (deadlock).
   if (!txt) return;
-  if (!lockState(portMAX_DELAY)) return;
+  if (!lockState(pdMS_TO_TICKS(250))) return;
   goToPercentAlreadyLocked(percent);
   unlockState();
 }
@@ -2082,7 +2129,7 @@ void TxtReaderActivity::displayTaskLoop() {
   (void)esp_task_wdt_add(nullptr);
 #endif
   bool loggedFirstPhysical = false;
-  while (true) {
+  while (!stopTaskRequested_.load(std::memory_order_acquire)) {
     // Menu / settings / chapter list own the panel — do not race e-ink SPI.
     if (suppressDisplay_ || subActivity) {
       vTaskDelay(20 / portTICK_PERIOD_MS);
@@ -2190,7 +2237,7 @@ void TxtReaderActivity::displayTaskLoop() {
       bool firstLibraryFrame = false;
       bool firstFrameJustReady = false;
       bool firstFrameHasLines = false;
-      if (lockState(portMAX_DELAY)) {
+      if (lockState(pdMS_TO_TICKS(400))) {
         // Always defer e-ink + AA out of the state lock — plugin AND library.
         // finishPhysicalDisplay (PTA loops / HALF-BUSY / gray passes) owns the
         // panel for ~1s; running it under the lock froze keys/touch. The white
@@ -2333,10 +2380,12 @@ void TxtReaderActivity::displayTaskLoop() {
       bool doIndex = false;
       bool needSave = false;
       bool wantRedraw = false;
+      bool persistPendingProgress = false;
+      ProgressSnapshot pendingProgress;
       if (lockState(0)) {
-        if (progressSavePending_) {
-          saveProgress();
+        if (progressSavePending_ && captureProgressSnapshot(pendingProgress)) {
           progressSavePending_ = false;
+          persistPendingProgress = true;
         }
         doIndex = !indexComplete_;
         if (doIndex) {
@@ -2360,6 +2409,7 @@ void TxtReaderActivity::displayTaskLoop() {
         }
         unlockState();
       }
+      if (persistPendingProgress) persistProgressSnapshot(pendingProgress);
       if (wantRedraw) updateRequired = true;
       // Save completed index once (re-take lock; never recursive from inside lock).
       if (needSave && lockState(pdMS_TO_TICKS(200))) {
@@ -2487,32 +2537,19 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
       Serial.printf("[%lu] [TRS] Plugin tidx loaded: %d pages page=%d\n", millis(), totalPages, currentPage);
       return;
     }
-    if (pluginSession_.progressiveIndex) {
-      // First page only — render ASAP; rest continues in displayTaskLoop.
-      // Do NOT block first-page rendering by indexing from zero to a far offset.
-      const uint32_t tIdx0 = millis();
-      Serial.printf("[WR05] t=%lu first_page_index_begin size=%u\n", static_cast<unsigned long>(tIdx0),
-                    static_cast<unsigned>(fileSize));
-      buildPageIndexFirstPage(0, fileSize);
-      firstPageReady_ = !pageOffsets.empty();
-      // May apply immediately if target is still on page 0 / first slice.
-      applyPendingRestoreIfReady();
-      chapter_initialized = true;
-      Serial.printf("[WR05] t=%lu first_page_index_end ms=%lu pages=%d complete=%d restore=%d\n",
-                    static_cast<unsigned long>(millis()), static_cast<unsigned long>(millis() - tIdx0), totalPages,
-                    (int)indexComplete_, (int)hasPendingRestore_);
-      return;
-    }
-    // Non-progressive plugin: full index of whole file (no 100KB chapter cap).
-    buildPageIndex(0, fileSize > 0 ? fileSize - 1 : 0);
-    indexComplete_ = true;
-    firstPageReady_ = true;
+    // First page only — render ASAP; rest continues in displayTaskLoop.
+    // Do NOT block first-page rendering by indexing from zero to a far offset.
+    const uint32_t tIdx0 = millis();
+    Serial.printf("[WR05] t=%lu first_page_index_begin size=%u\n", static_cast<unsigned long>(tIdx0),
+                  static_cast<unsigned>(fileSize));
+    buildPageIndexFirstPage(0, fileSize);
+    firstPageReady_ = !pageOffsets.empty();
+    // May apply immediately if target is still on page 0 / first slice.
     applyPendingRestoreIfReady();
-    if (!tidxSaved_) {
-      savePluginTidx();
-      tidxSaved_ = true;
-    }
     chapter_initialized = true;
+    Serial.printf("[WR05] t=%lu first_page_index_end ms=%lu pages=%d complete=%d restore=%d\n",
+                  static_cast<unsigned long>(millis()), static_cast<unsigned long>(millis() - tIdx0), totalPages,
+                  (int)indexComplete_, (int)hasPendingRestore_);
     return;
   }
 
@@ -2657,7 +2694,7 @@ void TxtReaderActivity::chapter_initializeReader(int chapter_num) {
       if (!txt->isChapterExist(chapter_num)) {
         tryLoadChapterMeta(chapter_num, /*allowScan=*/true);
       }
-      saveProgress();
+      progressSavePending_ = true;
       Serial.printf("[%lu] [TRS] repaired progress → chapter %d page 0\n", millis(), chapternum);
     } else {
       const size_t fs = txt->getFileSize();
@@ -4604,39 +4641,25 @@ void TxtReaderActivity::renderStatusBar(const int orientedMarginRight, const int
   }
 }
 
-void TxtReaderActivity::saveProgress() const {
-  // Plugin sessions keep Lua progress.json authoritative for resume, but the
-  // per-chapter progress.dat also feeds Home reading-history percentages
-  // (loadBookProgress on the last chapter cache). Write it for plugin
-  // chapters too, so Home 阅读历史 updates as pages turn / chapters switch.
-  if (!txt) return;
-
-  txt->setupCacheDir();
-
-  const std::string dir = txt->getCachePath();
-  // Use progress.dat — serial showed progress.bin can be written as tmp but
-  // never replaced (stuck node / bad rename target). New name avoids that trap.
-  const std::string path = dir + "/progress.dat";
-  const std::string legacy = dir + "/progress.bin";
-  const std::string tmp = dir + "/progress.tmp";
-
-  uint8_t data[kProgressDataBytes] = {0};
-  int page = currentPage;
-  const int chRaw = M4ContentProvider::resolveProgressChapterIndex(
-      pluginSession_.active, pluginSession_.chapterIndex, chapternum);
-  int ch = chRaw;
-  if (page < 0) page = 0;
-  if (page > 65535) page = 65535;
-  if (ch < 0) ch = 0;
-  if (ch > 65535) ch = 65535;
-  data[0] = static_cast<uint8_t>(page & 0xFF);
-  data[1] = static_cast<uint8_t>((page >> 8) & 0xFF);
-  data[4] = static_cast<uint8_t>(ch & 0xFF);
-  data[5] = static_cast<uint8_t>((ch >> 8) & 0xFF);
-
+bool TxtReaderActivity::captureProgressSnapshot(ProgressSnapshot& snapshot) const {
+  snapshot = {};
+  if (!txt) return false;
+  snapshot.owner = txt;
+  snapshot.dir = txt->getCachePath();
+  snapshot.generation = progressGeneration_.load(std::memory_order_acquire);
+  snapshot.page = std::clamp(currentPage, 0, 65535);
+  snapshot.totalPages = totalPages;
+  snapshot.chapter = std::clamp(M4ContentProvider::resolveProgressChapterIndex(
+                                    pluginSession_.active, pluginSession_.chapterIndex, chapternum),
+                                0, 65535);
   auto progressOffset = [](size_t offset) -> uint32_t {
     return offset > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<uint32_t>(offset);
   };
+  auto& data = snapshot.data;
+  data[0] = static_cast<uint8_t>(snapshot.page & 0xFF);
+  data[1] = static_cast<uint8_t>((snapshot.page >> 8) & 0xFF);
+  data[4] = static_cast<uint8_t>(snapshot.chapter & 0xFF);
+  data[5] = static_cast<uint8_t>((snapshot.chapter >> 8) & 0xFF);
   size_t resumeByte = 0;
   if (currentPage >= 0 && currentPage < static_cast<int>(pageOffsets.size())) {
     resumeByte = pageOffsets[static_cast<size_t>(currentPage)];
@@ -4646,10 +4669,38 @@ void TxtReaderActivity::saveProgress() const {
   const uint32_t resumeByte32 = progressOffset(resumeByte);
   const uint32_t rangeBegin32 = progressOffset(activeChapterBegin_);
   const uint32_t rangeEnd32 = progressOffset(activeChapterEnd_ > 0 ? activeChapterEnd_ : txt->getFileSize());
-  std::memcpy(data + 8, &resumeByte32, sizeof(resumeByte32));
-  std::memcpy(data + 12, &rangeBegin32, sizeof(rangeBegin32));
-  std::memcpy(data + 16, &rangeEnd32, sizeof(rangeEnd32));
+  std::memcpy(data.data() + 8, &resumeByte32, sizeof(resumeByte32));
+  std::memcpy(data.data() + 12, &rangeBegin32, sizeof(rangeBegin32));
+  std::memcpy(data.data() + 16, &rangeEnd32, sizeof(rangeEnd32));
+  snapshot.valid = true;
+  return true;
+}
 
+void TxtReaderActivity::persistProgressSnapshot(const ProgressSnapshot& snapshot) const {
+  if (!snapshot.valid || !snapshot.owner) return;
+  if (!progressWriterMutex_ || xSemaphoreTake(progressWriterMutex_, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    Serial.printf("[%lu] [TRS] progress write lock timeout gen=%u\n", millis(),
+                  static_cast<unsigned>(snapshot.generation));
+    return;
+  }
+  struct WriterUnlock {
+    SemaphoreHandle_t mutex;
+    ~WriterUnlock() { if (mutex) xSemaphoreGive(mutex); }
+  } writerUnlock{progressWriterMutex_};
+  if (snapshot.generation != progressGeneration_.load(std::memory_order_acquire)) {
+    Serial.printf("[%lu] [TRS] stale progress snapshot skipped gen=%u current=%u\n", millis(),
+                  static_cast<unsigned>(snapshot.generation),
+                  static_cast<unsigned>(progressGeneration_.load(std::memory_order_relaxed)));
+    return;
+  }
+
+  snapshot.owner->setupCacheDir();
+  const std::string dir = snapshot.dir;
+  // Use progress.dat — the old progress.bin path could be written as tmp but
+  // never replaced on some SD states.
+  const std::string path = dir + "/progress.dat";
+  const std::string legacy = dir + "/progress.bin";
+  const std::string tmp = dir + "/progress.tmp";
   auto forceRemove = [](const char* p) {
     if (!SdMan.exists(p)) return;
     if (SdMan.remove(p)) return;
@@ -4663,35 +4714,65 @@ void TxtReaderActivity::saveProgress() const {
     forceRemove(p);
     FsFile f;
     if (!SdMan.openFileForWrite("TRS", p, f)) return false;
-    const size_t n = f.write(data, sizeof(data));
+    const size_t n = f.write(snapshot.data.data(), snapshot.data.size());
     f.sync();
     f.close();
-    return n == sizeof(data);
+    return n == snapshot.data.size();
   };
 
   forceRemove(tmp.c_str());
   if (!tryWrite(tmp.c_str())) {
-    Serial.printf("[%lu] [TRS] progress tmp WRITE FAIL ch=%d page=%d dir=%s\n", millis(), ch, page,
+    Serial.printf("[%lu] [TRS] progress tmp WRITE FAIL ch=%d page=%d dir=%s\n", millis(), snapshot.chapter,
+                  snapshot.page,
                   dir.c_str());
     // Direct to progress.dat
+    if (snapshot.generation != progressGeneration_.load(std::memory_order_acquire)) {
+      forceRemove(tmp.c_str());
+      return;
+    }
     if (!tryWrite(path.c_str())) {
-      Serial.printf("[%lu] [TRS] progress.dat WRITE FAIL ch=%d page=%d\n", millis(), ch, page);
+      Serial.printf("[%lu] [TRS] progress.dat WRITE FAIL ch=%d page=%d\n", millis(), snapshot.chapter,
+                    snapshot.page);
       return;
     }
   } else {
+    if (snapshot.generation != progressGeneration_.load(std::memory_order_acquire)) {
+      forceRemove(tmp.c_str());
+      Serial.printf("[%lu] [TRS] stale progress temp discarded gen=%u\n", millis(),
+                    static_cast<unsigned>(snapshot.generation));
+      return;
+    }
     forceRemove(path.c_str());
     if (!SdMan.rename(tmp.c_str(), path.c_str())) {
       forceRemove(path.c_str());
       if (!tryWrite(path.c_str())) {
-        Serial.printf("[%lu] [TRS] progress.dat RENAME/WRITE FAIL ch=%d page=%d\n", millis(), ch, page);
+        Serial.printf("[%lu] [TRS] progress.dat RENAME/WRITE FAIL ch=%d page=%d\n", millis(), snapshot.chapter,
+                      snapshot.page);
         return;
       }
     }
   }
   // Drop legacy stuck progress.bin so load is not confused.
   forceRemove(legacy.c_str());
-  Serial.printf("[%lu] [TRS] saved progress: page %d/%d chapter %d → %s\n", millis(), page, totalPages, ch,
-                path.c_str());
+  Serial.printf("[%lu] [TRS] saved progress: page %d/%d chapter %d → %s\n", millis(), snapshot.page,
+                snapshot.totalPages, snapshot.chapter, path.c_str());
+}
+
+void TxtReaderActivity::saveProgress() const {
+  ProgressSnapshot snapshot;
+  bool locked = false;
+  if (renderingMutex) {
+    if (!lockState(pdMS_TO_TICKS(250))) {
+      Serial.printf("[%lu] [TRS] progress snapshot lock busy\n", millis());
+      return;
+    }
+    locked = true;
+  } else if (!displayTaskExited_.load(std::memory_order_acquire)) {
+    return;
+  }
+  const bool captured = captureProgressSnapshot(snapshot);
+  if (locked) unlockState();
+  if (captured) persistProgressSnapshot(snapshot);
 }
 
 void TxtReaderActivity::loadProgress() {
