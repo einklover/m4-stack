@@ -703,3 +703,13 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 
 - Symptom: repeated Reader exit/reentry can leave an older display task waiting past its bounded join while a newer Reader also exits. Releasing global runtime TTF faces as soon as the newer Reader is reaped can invalidate fonts still used by the older task.
 - Fix/check: include active, deferred, and nested Reader owners in the font release guard. A Reader's own destruction readiness is necessary, and font release remains blocked while any other Reader owner is still live.
+
+## 2026-09-24 — Provider chapter prefetch must leave reader and TLS headroom
+
+- Symptom: rapid page turns reproduced a task-watchdog reset with provider work active. The crash breadcrumb was written immediately before one-shot HTTP cleanup and internal largest-free-block had fallen to about 32 KiB; the captured idle-task stack did not identify which task exhausted its CPU budget.
+- Fix/check: enqueue background chapter prefetch only after a 5-second page-turn quiet period and with at least 64 KiB both free and contiguous in internal RAM; yield around synchronous HTTP client cleanup and record a post-cleanup breadcrumb. Keep user-requested chapter advance on the foreground loading path. Verify the pure resource policy at its thresholds and compile the production M4 profile.
+
+## 2026-09-24 — AppList display stack should be PSRAM-first
+
+- Symptom/evidence: the device reported `activity=AppList` while the captured framebuffer still showed Home; at that time internal free heap was about 54 KiB, largest block about 24 KiB, and minimum free heap about 4.5 KiB, with over 1.8 MiB PSRAM free. A later reopen rendered normally. The saved panic had PC 0 and only FreeRTOS interrupt/critical-section frames, so it does not prove the AppList task was the panicking task.
+- Cause/fix: AppList created its 8 KiB display task with unchecked `xTaskCreate`, unlike Home's PSRAM-first task helper. Use `M4Psram::createTask`/`deleteTask`, check creation failure, and record display-task stack high-water on exit. This removes avoidable internal-stack pressure and makes allocation failure visible; repeat the hardware capture under low-memory conditions before treating it as a confirmed explanation for the panic.

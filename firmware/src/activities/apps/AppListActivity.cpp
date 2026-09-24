@@ -12,6 +12,7 @@
 #include "activities/home/HomeSceneAssetDecoder.h"
 #include "apps/M4HomeDock.h"
 #include "apps/M4xInstaller.h"
+#include "apps/providers/M4Psram.h"
 #include "components/icons/book.h"
 #include "components/icons/cog.h"
 #include "components/icons/folder.h"
@@ -242,7 +243,10 @@ void AppListActivity::displayTaskLoop() {
       // process-wide guard is never left owned by a deleted task.
       displayTaskHandle_ = nullptr;
       displayTaskExited_.store(true, std::memory_order_release);
-      vTaskDelete(nullptr);
+      Serial.printf("[WRPERF] stage=applist-display-task-exit stack_hwm=%u\n",
+                    static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+      M4Psram::deleteTask(nullptr);
+      for (;;) vTaskDelay(portMAX_DELAY);
     }
     if (childScreenOwned_.load(std::memory_order_acquire)) {
       vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -490,7 +494,12 @@ void AppListActivity::onEnter() {
     verifyDrawerCache_ = false;
   }
   updateRequired_ = true;
-  xTaskCreate(&AppListActivity::taskTrampoline, "AppList", 8192, this, 1, &displayTaskHandle_);
+  if (M4Psram::createTask(&AppListActivity::taskTrampoline, "AppList", 8192, this, 1,
+                          &displayTaskHandle_) != pdPASS) {
+    displayTaskHandle_ = nullptr;
+    displayTaskExited_.store(true, std::memory_order_release);
+    Serial.printf("[%lu] [AppList] failed to create display task\n", millis());
+  }
 }
 
 void AppListActivity::onExit() {
@@ -509,7 +518,7 @@ void AppListActivity::onExit() {
     const bool exitLocked = (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE);
     if (displayTaskHandle_) {
       // Deadline overrun: last resort (may strand an in-flight submit).
-      vTaskDelete(displayTaskHandle_);
+      M4Psram::deleteTask(displayTaskHandle_);
       displayTaskHandle_ = nullptr;
     }
     if (exitLocked) xSemaphoreGive(renderingMutex_);

@@ -320,6 +320,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // providerOverlayMsg_ in memory without a full-frame differential.
   M4ContentProvider::ChapterReady providerOverlayState_ = M4ContentProvider::ChapterReady::Ready;
   bool providerPrefetchRequested_ = false;
+  uint32_t providerPrefetchGateCheckMs_ = 0;
   bool tryProviderNextChapterAdvance();  // last-page next / seamless open
   void providerIdlePrefetchNext();
   bool switchToProviderChapter(const std::string& cacheRelPath, int index0, const std::string& chapterUid,
@@ -352,7 +353,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // straight to the target, intermediate pages skipped). No debounce — a slow
   // tap (panel idle) starts the animation immediately.
   bool quickMode_ = false;
-  uint32_t lastPageTurnMs_ = 0;
+  std::atomic<uint32_t> lastPageTurnMs_{0};
   // Taps that arrived while the display task holds the state lock. Applied on
   // the next unlocked UI tick so poll() never waits on TTF layout.
   std::atomic<int> pendingTurnDelta_{0};

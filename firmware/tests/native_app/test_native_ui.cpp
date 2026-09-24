@@ -287,6 +287,15 @@ void providerContract() {
   assert(decision.action == M4ContentProvider::NextChapterDecision::Action::RequestAndWait);
   assert(decision.shouldRequestPrefetch);
   assert(M4ContentProvider::shouldIdlePrefetchNext(next));
+  constexpr auto prefetchReserve = M4ContentProvider::kIdlePrefetchMinInternalBytes;
+  assert(!M4ContentProvider::idlePrefetchResourcesAvailable(
+      M4ContentProvider::kIdlePrefetchQuietPeriodMs - 1, prefetchReserve, prefetchReserve));
+  assert(!M4ContentProvider::idlePrefetchResourcesAvailable(
+      M4ContentProvider::kIdlePrefetchQuietPeriodMs, prefetchReserve - 1, prefetchReserve));
+  assert(!M4ContentProvider::idlePrefetchResourcesAvailable(
+      M4ContentProvider::kIdlePrefetchQuietPeriodMs, prefetchReserve, prefetchReserve - 1));
+  assert(M4ContentProvider::idlePrefetchResourcesAvailable(
+      M4ContentProvider::kIdlePrefetchQuietPeriodMs, prefetchReserve, prefetchReserve));
 
   next.state = M4ContentProvider::ChapterReady::Fetching;
   decision = M4ContentProvider::decideNextChapter(next, true);

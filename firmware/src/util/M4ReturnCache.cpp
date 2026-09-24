@@ -110,7 +110,7 @@ HomeScene::HomeScenePublication* homeSlot() {
     void* memory = M4Psram::mallocPrefer(sizeof(HomeScene::HomeScenePublication), "home-return");
     if (!memory) return nullptr;
     gHome = static_cast<HomeScene::HomeScenePublication*>(memory);
-    *gHome = HomeScene::HomeScenePublication{};
+    std::memset(gHome, 0, sizeof(*gHome));
   }
   return gHome;
 }
@@ -134,13 +134,9 @@ void rememberIconsLocked(const std::vector<M4xInstalledApp>& apps, const std::ve
 }  // namespace
 
 bool seedHome(HomeScene::HomeSceneModel& model) {
-  HomeScene::HomeScenePublication copy{};
-  {
-    std::lock_guard<std::mutex> lock(gHomeMu);
-    if (!gHomeValid || !gHome) return false;
-    copy = *gHome;
-  }
-  return model.publishWithAssets(copy);
+  std::lock_guard<std::mutex> lock(gHomeMu);
+  if (!gHomeValid || !gHome) return false;
+  return model.publishExisting(*gHome);
 }
 
 void rememberHome(const HomeScene::HomeScenePublication& publication) {

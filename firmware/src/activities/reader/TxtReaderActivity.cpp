@@ -416,6 +416,7 @@ void TxtReaderActivity::onEnter() {
   providerOverlayMsg_.clear();
   providerOverlayState_ = M4ContentProvider::ChapterReady::Ready;
   providerPrefetchRequested_ = false;
+  providerPrefetchGateCheckMs_ = 0;
   entryPlaceholderKind_ = EntryPlaceholderKind::None;
   // White seed replaces plugin half-flush handoff: wipe residual UI to pure
   // white, then first content page animates/FASTs from that white baseline.
@@ -559,7 +560,7 @@ void TxtReaderActivity::cancelPendingPageTurnForChild() {
   const int pending = pendingTurnDelta_.exchange(0, std::memory_order_relaxed);
   const bool wasQuick = quickMode_;
   quickMode_ = false;
-  lastPageTurnMs_ = 0;
+  lastPageTurnMs_.store(0, std::memory_order_relaxed);
   if (pending != 0 || wasQuick) {
     Serial.printf("[TRS] child handoff cleared page-turn delta=%d quick=%d\n", pending,
                   wasQuick ? 1 : 0);
@@ -754,6 +755,28 @@ void TxtReaderActivity::providerIdlePrefetchNext() {
   if (st.state == M4ContentProvider::ChapterReady::Error) return;
   if (!M4ContentProvider::shouldIdlePrefetchNext(st)) return;
   if (providerPrefetchRequested_) return;
+  if (M4NativeProviderManager::busy()) return;
+
+  const uint32_t now = millis();
+  const uint32_t lastTurn = lastPageTurnMs_.load(std::memory_order_relaxed);
+  const uint32_t quietMs = lastTurn == 0 ? M4ContentProvider::kIdlePrefetchQuietPeriodMs
+                                         : now - lastTurn;
+  if (quietMs < M4ContentProvider::kIdlePrefetchQuietPeriodMs ||
+      (providerPrefetchGateCheckMs_ != 0 && now - providerPrefetchGateCheckMs_ < 1000)) {
+    return;
+  }
+  providerPrefetchGateCheckMs_ = now;
+  const size_t freeInternal =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  // Avoid repeatedly walking the internal heap while it is already below the
+  // reserve needed to run the TLS handshake beside the reader.
+  if (freeInternal < M4ContentProvider::kIdlePrefetchMinInternalBytes) return;
+  const size_t largestInternalBlock =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!M4ContentProvider::idlePrefetchResourcesAvailable(quietMs, freeInternal,
+                                                          largestInternalBlock)) {
+    return;
+  }
   if (M4NativeProviderManager::requestChapter(pluginSession_.providerId, pluginSession_.bookId, next,
                                                M4NativeProviderManager::LoadIntent::Prefetch)) {
     providerPrefetchRequested_ = true;
@@ -1010,9 +1033,10 @@ void TxtReaderActivity::pageTurnLocked(int delta) {
     // click gets lost (first tap builds page2, a second tap would be needed to
     // "wake" the chase).
     const uint32_t nowMs = millis();
-    const bool quickTap = (lastPageTurnMs_ != 0 && (nowMs - lastPageTurnMs_ < 400)) ||
+    const uint32_t previousTurn = lastPageTurnMs_.load(std::memory_order_relaxed);
+    const bool quickTap = (previousTurn != 0 && (nowMs - previousTurn < 400)) ||
                           physicalEpdBusy_.load();
-    lastPageTurnMs_ = nowMs;
+    lastPageTurnMs_.store(nowMs, std::memory_order_relaxed);
     if (quickTap) {
       quickMode_ = true;
     } else {
@@ -1040,7 +1064,7 @@ void TxtReaderActivity::pageTurnLocked(int delta) {
     dualNextLeft = true;
     quickMode_ = true;
     updateRequired = true;
-    lastPageTurnMs_ = millis();
+    lastPageTurnMs_.store(millis(), std::memory_order_relaxed);
     unlockState();
     return;
   }
@@ -1061,9 +1085,10 @@ void TxtReaderActivity::pageTurnLocked(int delta) {
     // Rapid taps / panel busy: cross-chapter only advances the target; the
     // display task re-inits the new chapter when it catches up.
     const uint32_t nowMs2 = millis();
-    const bool quickTap2 = (lastPageTurnMs_ != 0 && (nowMs2 - lastPageTurnMs_ < 400)) ||
+    const uint32_t previousTurn = lastPageTurnMs_.load(std::memory_order_relaxed);
+    const bool quickTap2 = (previousTurn != 0 && (nowMs2 - previousTurn < 400)) ||
                            physicalEpdBusy_.load();
-    lastPageTurnMs_ = nowMs2;
+    lastPageTurnMs_.store(nowMs2, std::memory_order_relaxed);
     if (totalDelta < 0 && currentPage <= 0 && chapternum > 0) {
       libraryPrefetchReset();  // drop in-flight next-chapter index work
       chapternum--;

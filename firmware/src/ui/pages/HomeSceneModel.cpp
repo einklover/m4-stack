@@ -256,19 +256,21 @@ uint32_t HomeSceneModel::latestRevision() const {
   return copyLatest(snapshot) ? snapshot.revision : 0;
 }
 
-bool HomeSceneModel::publishWithAssets(const HomeScenePublication& pub) {
-  HomeScenePublication copy = pub;
-  copy.snapshot.revision = nextRevision_++;
-  // Keep draft_ in sync for legacy copyLatest fallback
-  draft_ = copy.snapshot;
-  *draftPubPtr_ = copy;
-  bool pubOk = pubStore_.tryPublish(copy);
+bool HomeSceneModel::publishExisting(const HomeScenePublication& pub) {
+  *draftPubPtr_ = pub;
+  draftPubPtr_->snapshot.revision = nextRevision_++;
+  draft_ = draftPubPtr_->snapshot;
+  bool pubOk = pubStore_.tryPublish(*draftPubPtr_);
   if (!pubOk) return false;
   pubPublished_.store(true, std::memory_order_release);
-  bool snapOk = store_.tryPublish(copy.snapshot);
+  bool snapOk = store_.tryPublish(draft_);
   if (snapOk) published_.store(true, std::memory_order_release);
   else published_.store(true, std::memory_order_release);
   return true;
+}
+
+bool HomeSceneModel::publishWithAssets(const HomeScenePublication& pub) {
+  return publishExisting(pub);
 }
 
 bool HomeSceneModel::copyLatestPublication(HomeScenePublication& out) const {

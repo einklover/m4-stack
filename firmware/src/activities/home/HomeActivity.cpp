@@ -248,13 +248,13 @@ const std::vector<M4xInstalledApp>& HomeActivity::cachedInstalledApps(BackendCon
 }
 
 void HomeActivity::notePublishedHome(BackendContext& ctx) {
-  HomeScene::HomeScenePublication published{};
-  if (!ctx.model.copyLatestPublication(published)) {
+  auto published = ctx.model.acquirePublication();
+  if (!published.valid()) {
     ctx.updateRequired.store(true, std::memory_order_release);
     return;
   }
-  const bool changed = !M4ReturnCache::homeMatches(published);
-  M4ReturnCache::rememberHome(published);
+  const bool changed = !M4ReturnCache::homeMatches(published.value());
+  M4ReturnCache::rememberHome(published.value());
   if (changed) ctx.updateRequired.store(true, std::memory_order_release);
 }
 

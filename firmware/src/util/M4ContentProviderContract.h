@@ -390,4 +390,14 @@ inline bool shouldIdlePrefetchNext(const ChapterStatus& next) {
   return next.state == ChapterReady::Missing;
 }
 
+inline constexpr uint32_t kIdlePrefetchQuietPeriodMs = 5000;
+inline constexpr size_t kIdlePrefetchMinInternalBytes = 64u * 1024u;
+
+inline bool idlePrefetchResourcesAvailable(uint32_t quietMs, size_t freeInternal,
+                                           size_t largestInternalBlock) {
+  return quietMs >= kIdlePrefetchQuietPeriodMs &&
+         freeInternal >= kIdlePrefetchMinInternalBytes &&
+         largestInternalBlock >= kIdlePrefetchMinInternalBytes;
+}
+
 }  // namespace M4ContentProvider

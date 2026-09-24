@@ -257,6 +257,8 @@ class HomeSceneModel final {
 
   // Paired publication (snapshot + fixed asset arena) — renderer pins this for the full frame.
   bool publishWithAssets(const HomeScenePublication& pub);
+  // Copies into the heap draft, then publishes. Safe on the 8–16KB loop stack.
+  bool publishExisting(const HomeScenePublication& pub);
   bool copyLatestPublication(HomeScenePublication& out) const;
   UiStateStore<HomeScenePublication>::Snapshot acquirePublication();
   bool addPublicationAsset(const UiScene::AssetKey& key, const uint8_t* data,

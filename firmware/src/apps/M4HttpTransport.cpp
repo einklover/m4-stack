@@ -267,6 +267,15 @@ Result perform(esp_http_client_handle_t h, const Request& req, RxCtx& ctx, const
   return out;
 }
 
+void cleanupClientCooperatively(esp_http_client_handle_t h) {
+  if (!h) return;
+  // TLS transport teardown is synchronous. Give idle/display tasks a scheduler
+  // tick after the body transfer and another after releasing the client.
+  delay(1);
+  esp_http_client_cleanup(h);
+  delay(1);
+}
+
 }  // namespace
 
 MemSnap memSnap() {
@@ -325,7 +334,7 @@ Result requestToSink(const Request& req, M4xJsonStream::Sink& sink, ProgressFn p
     // often free TLS buffers only after cleanup.
     if (gSession) {
       sessionFreeHeaders();
-      esp_http_client_cleanup(gSession);
+      cleanupClientCooperatively(gSession);
       gSession = nullptr;
     }
     if (!M4NativeProviderHeavyGate::tlsBlockAvailable()) {
@@ -353,7 +362,8 @@ Result requestToSink(const Request& req, M4xJsonStream::Sink& sink, ProgressFn p
   }
   out = perform(h, req, ctx, "oneshot");
   M4NativeProviderHeavyGate::diagnosticStage() = 0x422;
-  esp_http_client_cleanup(h);
+  cleanupClientCooperatively(h);
+  M4NativeProviderHeavyGate::diagnosticStage() = 0x423;
   if (debugActive()) {
     MemSnap m = memSnap();
     logStep("oneshot_exit", out.ok ? "ok" : out.error, &m);
@@ -444,7 +454,7 @@ void sessionEnd() {
       logStep("session_end_pre", "", &m);
     }
     sessionFreeHeaders();
-    esp_http_client_cleanup(gSession);
+    cleanupClientCooperatively(gSession);
     gSession = nullptr;
     if (debugActive()) {
       MemSnap m = memSnap();
