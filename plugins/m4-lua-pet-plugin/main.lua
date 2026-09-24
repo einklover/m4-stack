@@ -1,367 +1,53 @@
--- pet plugin single-file entry (ASCII header)
--- Host callbacks: init draw onKey onTouch
+-- com.m4.pet — silhouette pet for 480x800 touch e-ink.
+-- Host: init/draw/onTouch, gui.drawBmp when present, fs state.csv.
+-- Refresh: paint only when the visible signature changes. Idle ticks skip.
 
--- Tamagotchi-style pet rules. No gui/sys; host tests can dofile() this file.
--- Rules follow ReKindle pet.html (hearts 0-4, feed/play/meds/bath, egg→child→teen→adult→dead)
--- with Tamagotchi Pi-style hunger/happy decay on real elapsed time (e-ink: tick on open/key).
+sys.load("game.lua")
 
-Pet = Pet or {}
+state = nil
+screen = "home"
+msg = ""
+painted = ""
+frame_changed = true
+flash = ""
+flash_held = false
 
-Pet.MAX = 4
-Pet.EGG_S = 60
-Pet.CHILD_S = 300
-Pet.TEEN_S = 600
-Pet.HUNGER_S = 1800
-Pet.HAPPY_S = 1800
-Pet.POOP_S = 900
-Pet.AGE_S = 60
-Pet.DEATH_S = 120
-
-function Pet.new(now)
-  now = now or 0
-  return {
-    stage = "EGG",
-    hunger = Pet.MAX,
-    happy = Pet.MAX,
-    poops = 0,
-    sick = 0,
-    age = 0,
-    weight = 5,
-    born = now,
-    last = now,
-    stage_start = now,
-    age_update = now,
-    hunger_t = now,
-    happy_t = now,
-    poop_t = now,
-  }
-end
-
-function Pet.clone(s)
-  local o = {}
-  for k, v in pairs(s) do o[k] = v end
-  return o
-end
-
-local function clamp(v, lo, hi)
-  if v < lo then return lo end
-  if v > hi then return hi end
-  return v
-end
-
-function Pet.attention(s)
-  return s.stage ~= "EGG" and s.stage ~= "DEAD"
-    and (s.hunger == 0 or s.happy == 0 or s.sick == 1 or s.poops > 0)
-end
-
-function Pet.sprite_key(s)
-  if s.stage == "EGG" then return "egg" end
-  if s.stage == "DEAD" then return "grave" end
-  if s.sick == 1 then return "pet_sick" end
-  return "pet"
-end
-
-local function evolve(s, now)
-  if s.stage == "EGG" then
-    if now - s.born >= Pet.EGG_S then
-      s.stage = "CHILD"
-      s.stage_start = now
-    end
-  elseif s.stage == "CHILD" then
-    if now - s.stage_start >= Pet.CHILD_S then
-      s.stage = "TEEN"
-      s.stage_start = now
-    end
-  elseif s.stage == "TEEN" then
-    if now - s.stage_start >= Pet.TEEN_S then
-      s.stage = "ADULT"
-      s.stage_start = now
-    end
-  end
-end
-
--- Count elapsed periods in O(1). A while-step catchup over Unix-scale
--- clocks (RTC 0 → time()) exceeds the Lua instruction budget.
-local function catchup(t, period, now)
-  if not t or not period or period <= 0 then return 0, now end
-  if t > now then return 0, now end
-  local n = math.floor((now - t) / period)
-  if n < 0 then n = 0 end
-  return n, t + n * period
-end
-
-function Pet.apply_time(s, now)
-  if not now or now < s.last then now = s.last end
-  if s.stage == "DEAD" then
-    s.last = now
-    return s
-  end
-  evolve(s, now)
-  if s.stage ~= "EGG" then
-    local n
-    n, s.hunger_t = catchup(s.hunger_t, Pet.HUNGER_S, now)
-    if n > 0 then s.hunger = clamp(s.hunger - n, 0, Pet.MAX) end
-    n, s.happy_t = catchup(s.happy_t, Pet.HAPPY_S, now)
-    if n > 0 then s.happy = clamp(s.happy - n, 0, Pet.MAX) end
-    n, s.poop_t = catchup(s.poop_t, Pet.POOP_S, now)
-    if n > 0 and s.hunger > 0 then s.poops = clamp(s.poops + n, 0, Pet.MAX) end
-    n, s.age_update = catchup(s.age_update, Pet.AGE_S, now)
-    if n > 0 then s.age = s.age + n end
-    if s.poops >= 3 or s.hunger == 0 or s.happy == 0 then
-      s.sick = 1
-    end
-    if s.sick == 1 and s.hunger == 0 and now - s.last >= Pet.DEATH_S then
-      -- death checked against last care; use hunger_t as last neglected
-      if now - s.hunger_t >= Pet.DEATH_S then
-        s.stage = "DEAD"
-      end
-    end
-  end
-  s.last = now
-  return s
-end
-
-function Pet.feed(s, kind)
-  if s.stage == "EGG" or s.stage == "DEAD" then return false end
-  if kind == "snack" then
-    if s.happy >= Pet.MAX then return false end
-    s.happy = s.happy + 1
-    s.weight = s.weight + 2
-    return true
-  end
-  if s.hunger >= Pet.MAX then return false end
-  s.hunger = s.hunger + 1
-  s.weight = s.weight + 1
-  return true
-end
-
-function Pet.play(s)
-  if s.stage == "EGG" or s.stage == "DEAD" then return false end
-  if s.happy >= Pet.MAX then return false end
-  s.happy = s.happy + 1
-  s.weight = math.max(1, s.weight - 1)
-  return true
-end
-
-function Pet.meds(s)
-  if s.stage == "EGG" or s.stage == "DEAD" then return false end
-  if s.sick ~= 1 then return false end
-  s.sick = 0
-  return true
-end
-
-function Pet.bath(s)
-  if s.stage == "EGG" or s.stage == "DEAD" then return false end
-  if s.poops <= 0 then return false end
-  s.poops = 0
-  return true
-end
-
-function Pet.restart(now)
-  return Pet.new(now)
-end
-
-function Pet.serialize(s)
-  local keys = {
-    "stage", "hunger", "happy", "poops", "sick", "age", "weight",
-    "born", "last", "stage_start", "age_update", "hunger_t", "happy_t", "poop_t",
-  }
-  local parts = {}
-  for i = 1, #keys do
-    parts[i] = keys[i] .. "=" .. tostring(s[keys[i]])
-  end
-  return table.concat(parts, ",")
-end
-
-function Pet.deserialize(str)
-  if type(str) ~= "string" or str == "" then return nil end
-  local s = Pet.new(0)
-  for pair in string.gmatch(str, "[^,]+") do
-    local k, v = pair:match("^([^=]+)=(.*)$")
-    if k and v then
-      if k == "stage" then
-        s.stage = v
-      else
-        s[k] = tonumber(v) or 0
-      end
-    end
-  end
-  if s.stage ~= "EGG" and s.stage ~= "CHILD" and s.stage ~= "TEEN"
-      and s.stage ~= "ADULT" and s.stage ~= "DEAD" then
-    return nil
-  end
-  return s
-end
-
--- 1-bit sprites packed as row strings (24x24). Generated from e-ink art.
-Sprites = Sprites or {}
-Sprites.SIZE = 24
-Sprites.DATA = {
-  egg = {
-    "000000000000000000000000",
-    "000000000000000000000000",
-    "000000000001100000000000",
-    "000000000110111000000000",
-    "000000001001100100000000",
-    "000000010001000010000000",
-    "000000110011000011000000",
-    "000000100001100001000000",
-    "000001100000110001100000",
-    "000001000001000000100000",
-    "000001000011000000100000",
-    "000011000001000000110000",
-    "000010000000110000010000",
-    "000010000000110000110000",
-    "000010000000100000010000",
-    "000010100001000000010000",
-    "000011100011000000110000",
-    "000001000000100000100000",
-    "000001100000110011100000",
-    "000000110000100011000000",
-    "000000011101001110000000",
-    "000000000111111000000000",
-    "000000000000000000000000",
-    "000000000000000000000000",
-  },
-  pet = {
-    "000000000000000000000000",
-    "000110000000000000011000",
-    "000111000111111000111100",
-    "000100111100001111001100",
-    "001101110000000011101100",
-    "000111000000000000111000",
-    "000110001000000100011000",
-    "000100011100000110001000",
-    "001100101100001011001100",
-    "001100111100001111001100",
-    "001000111100001111000100",
-    "001000111100001111000100",
-    "001000011000000110000100",
-    "001000000000000000000100",
-    "001000000100001000000100",
-    "001100000111111000001100",
-    "001100000011110000001100",
-    "000110000000000000011000",
-    "000011110000000001110000",
-    "000000110111111001000000",
-    "000000110110011001000000",
-    "000000111110011111000000",
-    "000000011100001110000000",
-    "000000000000000000000000",
-  },
-  pet_eat = {
-    "000000000000000000000000",
-    "000110000000000000011000",
-    "000111000111111000111100",
-    "000100111100001111001100",
-    "000101110000000011101100",
-    "000111000000000000111000",
-    "000110001000000100011000",
-    "000100011000000110001000",
-    "000100101100001011001100",
-    "000100111100001111001100",
-    "001000111100001111000100",
-    "001000111100001111000100",
-    "001000011000000110000100",
-    "001000000001100000000100",
-    "001000000001100000000100",
-    "001100000110011000001100",
-    "001100000000001000001100",
-    "000110000001110000011000",
-    "000011110000000011110000",
-    "000000110111111011000000",
-    "000000110110011011000000",
-    "000000111110011111000000",
-    "000000011100001110000000",
-    "000000000000000000000000",
-  },
-  pet_sick = {
-    "000000000000000000000000",
-    "000110000000000000011000",
-    "000111000111111000111100",
-    "000100111100001111001100",
-    "001101110000000011101100",
-    "000111000000000000111000",
-    "000110000000000000011000",
-    "000100000000000000001000",
-    "001100110100001011001100",
-    "001100011000000110001100",
-    "001000011100000110000100",
-    "001000100100001001000100",
-    "001000000000000000000100",
-    "001000000000000000000100",
-    "001000000011110000000100",
-    "001100000110011000001100",
-    "001100000100001000001100",
-    "000110000000000000011000",
-    "000011110000000001110000",
-    "000000110111111001000000",
-    "000000110110011001000000",
-    "000000111110011111000000",
-    "000000011100001110000000",
-    "000000000000000000000000",
-  },
-  grave = {
-    "000000000000000000000000",
-    "000000000000000000000000",
-    "000000000000000000000000",
-    "000000000000000000000000",
-    "000000000000000010000000",
-    "000000000000010001000000",
-    "000000000000010000000000",
-    "000000000000010001000000",
-    "000000000000000000000000",
-    "000000000100011000000000",
-    "000000001000011100000000",
-    "000000001101100100000000",
-    "000000000000001000000000",
-    "000000000000001100000000",
-    "000000000000001100000000",
-    "000000000000001100000000",
-    "000000000000001000000000",
-    "000000000100000100000000",
-    "000000011111111110000000",
-    "000000111111111111000000",
-    "000000000000000000000000",
-    "000000000000000000000000",
-    "000000000000000000000000",
-    "000000000000000000000000",
-  },
+local STAGE = {
+  EGG = "蛋",
+  BABY = "幼体",
+  CHILD = "幼年",
+  TEEN = "少年",
+  GUARD = "守护",
+  DEAD = "离开",
 }
 
-function Sprites.runs(row)
-  local segs, x, n = {}, 1, #row
-  while x <= n do
-    if row:sub(x, x) == '1' then
-      local x0 = x
-      while x <= n and row:sub(x, x) == '1' do x = x + 1 end
-      segs[#segs + 1] = { x0, x - x0 }
-    else
-      x = x + 1
-    end
-  end
-  return segs
-end
+local LINE = {
+  idle = "它看着你",
+  happy = "它很开心",
+  hungry = "它饿了",
+  sad = "它有点闷",
+  sick = "它不舒服",
+  eat = "要吃什么？",
+  play = "它在玩",
+  power = "它提起了劲",
+  sleep = "它在睡觉",
+  egg = "还要再等一等",
+  grave = "它离开了",
+}
 
-frame_changed = true
-screen = "main"
-menu_i = 1
-stats_page = 0
-feed_kind = 1 -- 1 meal, 2 snack
-msg = ""
+-- Missing stage poses fall back to that stage's idle, then the child pose.
+local ART = {
+  egg = "egg",
+  grave = "grave",
+  BABY = { idle = "baby_idle", eat = "baby_eat", happy = "baby_happy", sleep = "baby_sleep", sad = "baby_sad", hungry = "baby_sad", sick = "baby_sad", play = "baby_happy", power = "baby_happy" },
+  CHILD = { idle = "child_idle", eat = "child_eat", happy = "child_happy", sleep = "child_sleep", sad = "child_sad", hungry = "child_sad", sick = "child_sad", play = "child_play", power = "child_power" },
+  TEEN = { idle = "teen_idle", eat = "teen_eat", happy = "teen_idle", sleep = "teen_sleep", sad = "teen_sad", hungry = "teen_sad", sick = "teen_sad", play = "teen_idle", power = "teen_idle" },
+  GUARD = { idle = "guard_idle", eat = "guard_idle", happy = "guard_idle", sleep = "guard_sleep", sad = "guard_idle", hungry = "guard_idle", sick = "guard_idle", play = "guard_idle", power = "guard_power" },
+}
 
-local ACTIONS = { "feed", "play", "meds", "bath", "stats", "reset" }
-local LABELS = { "喂食", "玩耍", "吃药", "打扫", "状态", "新蛋" }
-
-local W, H = 480, 800
-local SCALE = 8
-
-local function now_s()
+local function now()
   if type(sys) == "table" and type(sys.time) == "function" then
-    return math.floor(sys.time())
-  end
-  if type(sys) == "table" and type(sys.millis) == "function" then
-    return math.floor(sys.millis() / 1000)
+    return sys.time()
   end
   return 0
 end
@@ -373,246 +59,296 @@ local function persist()
   end)
 end
 
-local function try_restore()
-  if type(fs) ~= "table" or type(fs.readFile) ~= "function" then return false end
+local function restore()
+  if type(fs) ~= "table" or type(fs.readFile) ~= "function" then return nil end
   local ok, data = pcall(function() return fs.readFile("state.csv") end)
-  if not ok or type(data) ~= "string" or data == "" then return false end
-  local st = Pet.deserialize(data)
-  if not st then return false end
-  state = st
-  Pet.apply_time(state, now_s())
-  return true
-end
-
-local function bump()
-  Pet.apply_time(state, now_s())
-  persist()
-  frame_changed = true
+  if not ok or type(data) ~= "string" then return nil end
+  return Pet.deserialize(data)
 end
 
 function init()
-  state = Pet.new(now_s())
-  if not try_restore() then
+  state = restore()
+  if not state then
+    state = Pet.new(now())
     persist()
   end
-  frame_changed = true
-end
-
-local function draw_sprite(key, ox, oy, scale)
-  local rows = Sprites.DATA[key]
-  if not rows then return end
-  scale = scale or SCALE
-  for y = 1, #rows do
-    local segs = Sprites.runs(rows[y])
-    for i = 1, #segs do
-      local x0, w = segs[i][1], segs[i][2]
-      gui.fillRect(ox + (x0 - 1) * scale, oy + (y - 1) * scale, w * scale, scale)
-    end
-  end
-end
-
-local function draw_hearts(n, x, y)
-  for i = 0, 3 do
-    local hx = x + i * 36
-    gui.drawRect(hx, y, 28, 24)
-    if i < n then
-      gui.fillRect(hx + 4, y + 4, 20, 16)
-    end
-  end
-end
-
-local BTN = {}
-local function layout_btns()
-  local bw, bh, gap = 140, 56, 12
-  local x0, y0 = 24, 520
-  for i = 1, 6 do
-    local col = (i - 1) % 3
-    local row = math.floor((i - 1) / 3)
-    BTN[i] = { x = x0 + col * (bw + gap), y = y0 + row * (bh + gap), w = bw, h = bh }
-  end
-end
-layout_btns()
-
-local function hit(b, x, y)
-  return x >= b.x and x < b.x + b.w and y >= b.y and y < b.y + b.h
-end
-
-local function draw_box(b, lab)
-  gui.drawRect(b.x, b.y, b.w, b.h)
-  local tw = gui.textWidth(16, lab)
-  gui.drawText(16, b.x + math.floor((b.w - tw) / 2), b.y + math.floor((b.h - 22) / 2), lab)
-end
-
-local function draw_btn(i)
-  draw_box(BTN[i], LABELS[i])
-end
-
-local FEED_HIT = {
-  { x = 40, y = 340, w = 400, h = 56, kind = "food", lab = "正餐" },
-  { x = 40, y = 408, w = 400, h = 56, kind = "snack", lab = "点心" },
-}
-local CONF_HIT = {
-  { x = 40, y = 400, w = 180, h = 56, act = "cancel", lab = "取消" },
-  { x = 260, y = 400, w = 180, h = 56, act = "ok", lab = "确定" },
-}
-local STATS_HIT = { x = 40, y = 340, w = 400, h = 150 }
-
-local function do_action(i)
-  Pet.apply_time(state, now_s())
-  local act = ACTIONS[i]
+  screen = "home"
   msg = ""
-  if act == "feed" then
-    screen = "feed"
-  elseif act == "play" then
-    if Pet.play(state) then msg = "玩耍" else msg = "不想玩" end
-    screen = "main"
-  elseif act == "meds" then
-    if Pet.meds(state) then msg = "吃药" else msg = "没病" end
-    screen = "main"
-  elseif act == "bath" then
-    if Pet.bath(state) then msg = "打扫" else msg = "很干净" end
-    screen = "main"
-  elseif act == "stats" then
-    if screen == "stats" then
-      stats_page = stats_page + 1
-      if stats_page > 2 then
-        stats_page = 0
-        screen = "main"
-      end
-    else
-      screen = "stats"
-      stats_page = 0
-    end
-  elseif act == "reset" then
-    if state.stage == "DEAD" or screen == "confirm_reset" then
-      state = Pet.restart(now_s())
-      screen = "main"
-      msg = "新蛋"
-    else
-      screen = "confirm_reset"
-    end
-  end
-  persist()
+  flash = ""
+  flash_held = false
+  painted = ""
   frame_changed = true
 end
 
-local function do_feed(kind)
-  Pet.apply_time(state, now_s())
-  if Pet.feed(state, kind) then
-    msg = (kind == "snack") and "点心" or "正餐"
-    screen = "main"
-  else
-    msg = "吃不下"
+local function hit(px, py, x, y, w, h)
+  return px >= x and py >= y and px < x + w and py < y + h
+end
+
+local function note(text)
+  msg = text
+end
+
+local function care_fail(kind)
+  if state.stage == "EGG" then
+    note("它还在蛋里")
+    return
   end
-  persist()
-  frame_changed = true
+  if state.stage == "DEAD" then
+    note("它已经离开了")
+    return
+  end
+  if kind == "meal" then note("它还不饿")
+  elseif kind == "snack" then note("现在不想吃")
+  elseif kind == "play" then note("它已经很开心")
+  elseif kind == "meds" then note("它没生病")
+  elseif kind == "bath" then note("已经很干净")
+  end
+end
+
+local function note_evolve(prev)
+  if state.stage ~= prev and state.stage ~= "DEAD" and state.stage ~= "EGG" then
+    flash = "power"
+    flash_held = false
+  end
+end
+
+local function do_action(kind)
+  local ok = false
+  if kind == "meal" or kind == "snack" then
+    ok = Pet.feed(state, kind)
+  elseif kind == "play" then
+    ok = Pet.play(state)
+  elseif kind == "meds" then
+    ok = Pet.meds(state)
+  elseif kind == "bath" then
+    ok = Pet.bath(state)
+  end
+  if ok then
+    msg = ""
+    if kind == "meal" or kind == "snack" then screen = "home" end
+    if kind == "play" then
+      flash = "play"
+      flash_held = false
+    elseif kind == "meds" then
+      flash = "power"
+      flash_held = false
+    end
+    persist()
+  else
+    care_fail(kind)
+  end
+end
+
+function onTouch(x, y, kind)
+  if kind ~= "tap" and kind ~= "up" and kind ~= "press" then return end
+  if not state then return end
+  x = x or 0
+  y = y or 0
+  local t = now()
+  local prev = state.stage
+  Pet.apply_time(state, t)
+  note_evolve(prev)
+
+  if screen == "confirm" then
+    if hit(x, y, 22, 360, 436, 72) then
+      state = Pet.restart(t)
+      screen = "home"
+      msg = ""
+      flash = ""
+      flash_held = false
+      persist()
+    elseif hit(x, y, 22, 452, 436, 72) then
+      screen = "home"
+      msg = ""
+    end
+    return
+  end
+
+  if screen == "feed" then
+    if hit(x, y, 22, 520, 436, 72) then do_action("meal")
+    elseif hit(x, y, 22, 612, 436, 72) then do_action("snack")
+    elseif hit(x, y, 22, 704, 436, 72) then
+      screen = "home"
+      msg = ""
+    end
+    return
+  end
+
+  if state.stage == "DEAD" then
+    if hit(x, y, 22, 616, 436, 88) then
+      screen = "confirm"
+      msg = ""
+    end
+    return
+  end
+
+  if hit(x, y, 150, 548, 180, 36) then
+    screen = "confirm"
+    msg = ""
+    return
+  end
+
+  if state.stage == "EGG" then
+    note("还要再等一等")
+    return
+  end
+
+  local bw, bh, gap = 210, 72, 16
+  local x0, y0 = 22, 616
+  if hit(x, y, x0, y0, bw, bh) then
+    screen = "feed"
+    msg = ""
+  elseif hit(x, y, x0 + bw + gap, y0, bw, bh) then
+    do_action("play")
+  elseif hit(x, y, x0, y0 + bh + gap, bw, bh) then
+    do_action("bath")
+  elseif hit(x, y, x0 + bw + gap, y0 + bh + gap, bw, bh) then
+    do_action("meds")
+  end
+end
+
+function onKey()
+end
+
+local function text_w(s, size)
+  if type(gui.textWidth) == "function" then
+    return gui.textWidth(size, s)
+  end
+  return #s * 8
+end
+
+local function center_text(s, cx, y, size)
+  local w = text_w(s, size)
+  gui.drawText(size, cx - math.floor(w / 2), y, s)
+end
+
+local function button(x, y, w, h, label)
+  gui.drawRect(x, y, w, h)
+  center_text(label, x + math.floor(w / 2), y + math.floor((h - 16) / 2), 16)
+end
+
+local function meter(x, y, label, filled)
+  gui.drawText(10, x, y, label)
+  local bx = x + 52
+  for i = 0, Pet.MAX - 1 do
+    local rx = bx + i * 22
+    if i < filled then
+      gui.fillRect(rx, y, 16, 14)
+    else
+      gui.drawRect(rx, y, 16, 14)
+    end
+  end
+end
+
+local function disc_fallback(x, y, w)
+  local r = math.floor(w / 2)
+  local cx = x + r
+  local cy = y + r
+  local step = 4
+  for row = 0, w - 1, step do
+    local dy = row + step / 2 - r
+    local span = r * r - dy * dy
+    if span > 0 then
+      local half = math.floor(math.sqrt(span))
+      gui.fillRect(cx - half, y + row, half * 2, step)
+    end
+  end
+end
+
+local function blit_pet(pose, x, y)
+  local name
+  if pose == "egg" or pose == "grave" then
+    name = ART[pose]
+  else
+    local row = ART[state.stage] or ART.CHILD
+    name = row[pose] or row.idle or "child_idle"
+  end
+  local rel = "art/" .. name .. ".bmp"
+  if type(gui.drawBmp) == "function" and gui.drawBmp(rel, x, y) then
+    return
+  end
+  disc_fallback(x, y, 160)
+end
+
+local function status_line(pose)
+  if msg ~= "" then return msg end
+  if pose == "sick" and state.hunger == 0 then return "它又饿又难受" end
+  return LINE[pose] or ""
+end
+
+local function signature()
+  return Pet.serialize(state) .. "|" .. screen .. "|" .. msg .. "|" .. flash
 end
 
 function draw()
-  Pet.apply_time(state, now_s())
+  if not state then return end
+  if flash_held then
+    flash = ""
+    flash_held = false
+  end
+  local before = Pet.serialize(state)
+  local prev = state.stage
+  Pet.apply_time(state, now())
+  note_evolve(prev)
+  local after = Pet.serialize(state)
+  if after ~= before then persist() end
+
+  local pending = frame_changed and true or false
+  local sig = signature()
+  if sig == painted then
+    frame_changed = false
+    return
+  end
+
   gui.clear()
-  gui.drawText(16, 16, 12, "电子宠物")
-  local age_s = "岁 " .. tostring(state.age)
-  gui.drawText(12, W - 16 - gui.textWidth(12, age_s), 16, age_s)
-  gui.drawLine(16, 48, W - 16, 48)
+  local pose = Pet.pose(state, screen, now(), flash)
+  local stage = STAGE[state.stage] or state.stage
+  gui.drawText(16, 16, 16, "电子宠物")
+  gui.drawText(16, 280, 20, stage)
+  gui.drawText(10, 380, 22, tostring(state.age or 0))
 
-  if Pet.attention(state) then
-    gui.drawText(12, 16, 58, "需要照顾")
-  elseif state.stage == "EGG" then
-    gui.drawText(12, 16, 58, "蛋在孵化")
-  elseif state.stage == "DEAD" then
-    gui.drawText(12, 16, 58, "确认开始新蛋")
-  else
-    gui.drawText(12, 16, 58, state.stage)
+  if state.stage ~= "EGG" and state.stage ~= "DEAD" then
+    meter(16, 56, "饥饿", state.hunger)
+    meter(16, 80, "心情", state.happy)
+    meter(16, 104, "清洁", Pet.MAX - (state.poops or 0))
   end
 
-  local key = Pet.sprite_key(state)
-  if screen == "feed" and state.stage ~= "EGG" and state.stage ~= "DEAD" then
-    key = "pet_eat"
-  end
-  local sw = Sprites.SIZE * SCALE
-  draw_sprite(key, math.floor((W - sw) / 2), 96, SCALE)
-
-  if state.poops > 0 and state.stage ~= "DEAD" then
-    gui.fillRect(40, 320, 24, 16)
-    if state.poops > 1 then gui.fillRect(W - 64, 320, 24, 16) end
-    if state.poops > 2 then gui.fillRect(56, 300, 20, 14) end
-  end
-
-  if screen == "stats" then
-    gui.drawRect(40, 340, 400, 150)
-    if stats_page == 0 then
-      gui.drawText(16, 60, 370, "年龄 " .. tostring(state.age))
-      gui.drawText(16, 60, 410, "体重 " .. tostring(state.weight))
-      gui.drawText(12, 60, 450, "阶段 " .. state.stage)
-    elseif stats_page == 1 then
-      gui.drawText(16, 60, 370, "饥饿")
-      draw_hearts(state.hunger, 60, 410)
-    else
-      gui.drawText(16, 60, 370, "心情")
-      draw_hearts(state.happy, 60, 410)
+  blit_pet(pose, 160, 168)
+  if (state.poops or 0) > 0 and state.stage ~= "EGG" and state.stage ~= "DEAD" then
+    local n = state.poops
+    if n > 4 then n = 4 end
+    for i = 1, n do
+      gui.fillRect(340, 220 + (i - 1) * 22, 14, 10)
     end
+  end
+
+  if screen ~= "confirm" then
+    center_text(status_line(pose), 240, 400, 16)
+  end
+
+  if screen == "confirm" then
+    center_text("重新养一只？", 240, 280, 16)
+    button(22, 360, 436, 72, "确定")
+    button(22, 452, 436, 72, "返回")
   elseif screen == "feed" then
-    for i = 1, #FEED_HIT do
-      draw_box(FEED_HIT[i], FEED_HIT[i].lab)
-    end
-  elseif screen == "confirm_reset" then
-    gui.drawText(16, 40, 360, "丢掉现在的宠物？")
-    for i = 1, #CONF_HIT do
-      draw_box(CONF_HIT[i], CONF_HIT[i].lab)
-    end
+    button(22, 520, 436, 72, "正餐")
+    button(22, 612, 436, 72, "点心")
+    button(22, 704, 436, 72, "返回")
+  elseif state.stage == "DEAD" then
+    button(22, 616, 436, 88, "再养一只")
+  elseif state.stage == "EGG" then
+    center_text("新蛋", 240, 556, 10)
+  else
+    center_text("新蛋", 240, 556, 10)
+    local bw, bh, gap = 210, 72, 16
+    local x0, y0 = 22, 616
+    button(x0, y0, bw, bh, "喂食")
+    button(x0 + bw + gap, y0, bw, bh, "玩耍")
+    button(x0, y0 + bh + gap, bw, bh, "清洁")
+    button(x0 + bw + gap, y0 + bh + gap, bw, bh, "治疗")
   end
 
-  if msg ~= "" then
-    gui.drawText(12, 16, 490, msg)
-  end
-
-  for i = 1, 6 do draw_btn(i) end
-  gui.drawText(10, 20, 770, "点按按钮")
-end
-
-function onKey(_key)
-end
-
-function onTouch(x, y, phase)
-  if phase and phase ~= "tap" and phase ~= "up" and phase ~= "press" then
-    return
-  end
-  if screen == "feed" then
-    for i = 1, #FEED_HIT do
-      if hit(FEED_HIT[i], x, y) then
-        do_feed(FEED_HIT[i].kind)
-        return
-      end
-    end
-  end
-  if screen == "confirm_reset" then
-    for i = 1, #CONF_HIT do
-      if hit(CONF_HIT[i], x, y) then
-        if CONF_HIT[i].act == "ok" then
-          Pet.apply_time(state, now_s())
-          state = Pet.restart(now_s())
-          screen = "main"
-          msg = "新蛋"
-          persist()
-          frame_changed = true
-        else
-          screen = "main"
-          msg = ""
-          frame_changed = true
-        end
-        return
-      end
-    end
-  end
-  if screen == "stats" and hit(STATS_HIT, x, y) then
-    do_action(5)
-    return
-  end
-  for i = 1, 6 do
-    if hit(BTN[i], x, y) then
-      do_action(i)
-      return
-    end
-  end
+  painted = sig
+  frame_changed = not pending
+  if flash ~= "" then flash_held = true end
 end

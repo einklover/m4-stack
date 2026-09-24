@@ -14,16 +14,29 @@ do
   Pet.apply_time(s, Pet.EGG_S - 1)
   eq(s.stage, "EGG", "still egg")
   Pet.apply_time(s, Pet.EGG_S)
-  eq(s.stage, "CHILD", "hatch")
+  eq(s.stage, "BABY", "hatch")
 end
 
 do
   local s = Pet.new(0)
-  Pet.apply_time(s, Pet.EGG_S)
-  Pet.apply_time(s, Pet.EGG_S + Pet.CHILD_S)
+  local t = Pet.EGG_S
+  Pet.apply_time(s, t)
+  eq(s.stage, "BABY", "egg to baby")
+  t = Pet.EGG_S + Pet.BABY_S
+  Pet.apply_time(s, t)
+  eq(s.stage, "CHILD", "baby to child")
+  t = t + Pet.CHILD_S
+  Pet.apply_time(s, t)
   eq(s.stage, "TEEN", "child to teen")
-  Pet.apply_time(s, Pet.EGG_S + Pet.CHILD_S + Pet.TEEN_S)
-  eq(s.stage, "ADULT", "teen to adult")
+  t = t + Pet.TEEN_S
+  Pet.apply_time(s, t)
+  eq(s.stage, "GUARD", "teen to guard")
+end
+
+do
+  local s = Pet.new(0)
+  Pet.apply_time(s, Pet.EGG_S + Pet.BABY_S + Pet.CHILD_S + Pet.TEEN_S)
+  eq(s.stage, "GUARD", "one jump walks the line")
 end
 
 do
@@ -58,6 +71,18 @@ do
   local t0 = s.last
   Pet.apply_time(s, t0 + Pet.HUNGER_S * 2)
   eq(s.hunger, Pet.MAX - 2, "hunger decay 2")
+  local night = 14 * 3600
+  s.hunger = Pet.MAX
+  s.hunger_t = night
+  s.happy_t = night
+  s.poop_t = night
+  s.age_update = night
+  s.last = night
+  s.stage_start = night + Pet.HUNGER_S * 2
+  s.stage = "BABY"
+  Pet.apply_time(s, night + Pet.HUNGER_S * 2)
+  eq(s.hunger, Pet.MAX - 1, "night hunger half rate")
+  eq(s.stage, "BABY", "night does not skip stage")
 end
 
 do
@@ -79,6 +104,8 @@ do
   eq(d.hunger, 1, "roundtrip hunger")
   eq(d.stage, "CHILD", "roundtrip stage")
   eq(d.born, 100, "roundtrip born")
+  local old = Pet.deserialize("stage=ADULT,hunger=2")
+  eq(old.stage, "GUARD", "adult save becomes guard")
 end
 
 do
@@ -96,6 +123,34 @@ do
     fails = fails + 1
     print("FAIL unix jump age got=" .. tostring(s.age))
   end
+end
+
+do
+  local s = Pet.new(0)
+  eq(Pet.pose(s, "home"), "egg", "egg pose")
+  eq(Pet.pose(s, "feed"), "egg", "egg ignores feed")
+  Pet.apply_time(s, Pet.EGG_S)
+  eq(s.stage, "BABY", "pose hatch baby")
+  eq(Pet.pose(s, "home", s.last), "happy", "fresh baby happy")
+  eq(Pet.pose(s, "feed", s.last), "eat", "feed pose")
+  eq(Pet.pose(s, "play", s.last), "play", "play pose")
+  eq(Pet.pose(s, "home", s.last, "power"), "power", "power flash")
+  local night = 14 * 3600
+  eq(Pet.sleeping(night), true, "22:00 sleeps")
+  eq(Pet.pose(s, "home", night), "sleep", "sleep before hunger")
+  s.hunger = 0
+  s.sick = 1
+  eq(Pet.pose(s, "home"), "hungry", "hunger before sick")
+  s.hunger = 2
+  s.happy = 0
+  eq(Pet.pose(s, "home"), "sad", "happy 0")
+  s.happy = 2
+  s.sick = 1
+  eq(Pet.pose(s, "home"), "sick", "fed but sick")
+  s.sick = 0
+  eq(Pet.pose(s, "home"), "idle", "mid idle")
+  s.stage = "DEAD"
+  eq(Pet.pose(s, "feed"), "grave", "dead wins")
 end
 
 if fails > 0 then

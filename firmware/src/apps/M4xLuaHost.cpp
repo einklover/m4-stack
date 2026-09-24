@@ -24,6 +24,8 @@
 #include "util/M4ContentProviderContract.h"
 #include "util/M4xUiListPolicy.h"
 #include "util/M4xJsonScan.h"
+#include "activities/home/HomeSceneAssetDecoder.h"
+#include "apps/providers/M4Psram.h"
 #include "apps/M4xWifiConnect.h"
 #include "apps/M4WifiFailureTracker.h"
 #include "apps/weread/WereadCrypto.h"
@@ -69,6 +71,7 @@ extern "C" {
 #include <time.h>
 
 #include <cctype>
+#include <climits>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -716,6 +719,35 @@ int l_gui_refresh(lua_State* L) {
   auto* h = hostFromLua(L);
   if (h && h->renderer_) h->renderer_->displayBuffer();
   return 0;
+}
+
+// gui.drawBmp(rel, x, y [, scale]) -> bool
+// Opaque white plate plus black runs. scale is an integer 1..4.
+int l_gui_drawBmp(lua_State* L) {
+  auto* h = hostFromLua(L);
+  if (!h || !h->renderer_) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  const char* rel = luaL_checkstring(L, 1);
+  const int x = static_cast<int>(luaL_checknumber(L, 2));
+  const int y = static_cast<int>(luaL_checknumber(L, 3));
+  const int scale = static_cast<int>(luaL_optnumber(L, 4, 1));
+  lua_pushboolean(L, h->drawInstallBmp(rel, x, y, scale) ? 1 : 0);
+  return 1;
+}
+
+// gui.bmpSize(rel) -> w, h | nothing
+int l_gui_bmpSize(lua_State* L) {
+  auto* h = hostFromLua(L);
+  if (!h) return 0;
+  const char* rel = luaL_checkstring(L, 1);
+  int w = 0;
+  int hgt = 0;
+  if (!h->installBmpSize(rel, w, hgt)) return 0;
+  lua_pushnumber(L, w);
+  lua_pushnumber(L, hgt);
+  return 2;
 }
 
 // ---- sys ----
@@ -4999,6 +5031,8 @@ bool M4xLuaHost::start(GfxRenderer& renderer, const M4xInstalledApp& app, std::s
       {"drawQR", l_gui_drawQR},
       {"qrSize", l_gui_qrSize},
       {"refresh", l_gui_refresh},
+      {"drawBmp", l_gui_drawBmp},
+      {"bmpSize", l_gui_bmpSize},
       {nullptr, nullptr},
   };
   registerModule(L, "gui", guiRegs);
@@ -5403,6 +5437,184 @@ std::string M4xLuaHost::debugUiJson() const {
   return out;
 }
 
+namespace {
+
+constexpr size_t kMaxBmpFileBytes = 64 * 1024;
+constexpr int kMaxBmpEdge = 192;
+constexpr size_t kMaxBmpDecoded = 8192;
+
+uint32_t readU32LE(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+bool peekBmpSize(const uint8_t* p, size_t n, uint16_t& w, uint16_t& h) {
+  if (!p || n < 26 || p[0] != 'B' || p[1] != 'M') return false;
+  const int32_t iw = static_cast<int32_t>(readU32LE(p + 18));
+  const int32_t ih = static_cast<int32_t>(readU32LE(p + 22));
+  if (iw <= 0 || iw == INT32_MIN || ih == 0 || ih == INT32_MIN) return false;
+  const int32_t ah = ih < 0 ? -ih : ih;
+  if (iw > 65535 || ah > 65535) return false;
+  w = static_cast<uint16_t>(iw);
+  h = static_cast<uint16_t>(ah);
+  return true;
+}
+
+}  // namespace
+
+void M4xLuaHost::clearBmpCache() {
+  for (BmpCacheSlot& slot : bmpCache_) {
+    M4Psram::freePrefer(slot.bits);
+    slot = BmpCacheSlot{};
+  }
+  bmpStamp_ = 1;
+}
+
+bool M4xLuaHost::fillBmpSlot(BmpCacheSlot& slot) {
+  slot.failed = false;
+  slot.bits = nullptr;
+  slot.w = 0;
+  slot.h = 0;
+  slot.stride = 0;
+  std::string path;
+  if (!sandboxInstallPath(this, slot.rel.c_str(), path)) {
+    slot.failed = true;
+    return false;
+  }
+  if (isCancelRequested()) return false;
+  FsFile file;
+  if (!SdMan.openFileForRead("M4xBmp", path.c_str(), file)) {
+    Serial.printf("[M4xBmp] missing %s\n", slot.rel.c_str());
+    slot.failed = true;
+    return false;
+  }
+  const size_t n = file.fileSize();
+  if (n < 54 || n > kMaxBmpFileBytes) {
+    file.close();
+    Serial.printf("[M4xBmp] size %u rel=%s\n", static_cast<unsigned>(n), slot.rel.c_str());
+    slot.failed = true;
+    return false;
+  }
+  uint8_t* raw = static_cast<uint8_t*>(M4Psram::mallocPrefer(n, "lua-bmp"));
+  if (!raw) {
+    file.close();
+    return false;
+  }
+  FsFileCtx ctx{&file};
+  const bool got = M4xLuaSandbox::readExact(fsReadChunk, &ctx, raw, n);
+  file.close();
+  if (!got || isCancelRequested()) {
+    M4Psram::freePrefer(raw);
+    return false;
+  }
+  uint16_t w = 0;
+  uint16_t h = 0;
+  if (!peekBmpSize(raw, n, w, h) || w == 0 || h == 0 || w > kMaxBmpEdge || h > kMaxBmpEdge) {
+    M4Psram::freePrefer(raw);
+    Serial.printf("[M4xBmp] edge rel=%s\n", slot.rel.c_str());
+    slot.failed = true;
+    return false;
+  }
+  const uint16_t stride = static_cast<uint16_t>((w + 7) / 8);
+  const size_t decoded = static_cast<size_t>(stride) * h;
+  if (decoded == 0 || decoded > kMaxBmpDecoded) {
+    M4Psram::freePrefer(raw);
+    slot.failed = true;
+    return false;
+  }
+  uint8_t* bits = static_cast<uint8_t*>(M4Psram::mallocPrefer(decoded, "lua-bmp-bits"));
+  if (!bits) {
+    M4Psram::freePrefer(raw);
+    return false;
+  }
+  const bool ok = HomeSceneAssetDecoder::decodeBmpBytesTo1Bit(
+      raw, n, bits, w, h, stride, [this]() { return isCancelRequested(); });
+  M4Psram::freePrefer(raw);
+  if (!ok) {
+    M4Psram::freePrefer(bits);
+    if (isCancelRequested()) return false;
+    Serial.printf("[M4xBmp] decode rel=%s\n", slot.rel.c_str());
+    slot.failed = true;
+    return false;
+  }
+  slot.w = w;
+  slot.h = h;
+  slot.stride = stride;
+  slot.bits = bits;
+  slot.failed = false;
+  return true;
+}
+
+M4xLuaHost::BmpCacheSlot* M4xLuaHost::bmpCacheSlot(const char* rel) {
+  if (!rel || rel[0] == '\0') return nullptr;
+  BmpCacheSlot* empty = nullptr;
+  BmpCacheSlot* oldest = &bmpCache_[0];
+  for (int i = 0; i < kBmpCacheSlots; ++i) {
+    BmpCacheSlot& slot = bmpCache_[i];
+    if (slot.rel == rel) {
+      slot.stamp = bmpStamp_++;
+      if (bmpStamp_ == 0) bmpStamp_ = 1;
+      return &slot;
+    }
+    if (slot.rel.empty() && !empty) empty = &slot;
+    if (slot.stamp < oldest->stamp) oldest = &slot;
+  }
+  BmpCacheSlot* slot = empty ? empty : oldest;
+  M4Psram::freePrefer(slot->bits);
+  *slot = BmpCacheSlot{};
+  slot->rel = rel;
+  slot->stamp = bmpStamp_++;
+  if (bmpStamp_ == 0) bmpStamp_ = 1;
+  if (!fillBmpSlot(*slot)) {
+    if (!slot->failed) {
+      M4Psram::freePrefer(slot->bits);
+      *slot = BmpCacheSlot{};
+      return nullptr;
+    }
+  }
+  return slot;
+}
+
+bool M4xLuaHost::installBmpSize(const char* rel, int& outW, int& outH) {
+  BmpCacheSlot* slot = bmpCacheSlot(rel);
+  if (!slot || slot->failed || !slot->bits) return false;
+  outW = slot->w;
+  outH = slot->h;
+  return true;
+}
+
+bool M4xLuaHost::drawInstallBmp(const char* rel, int x, int y, int scale) {
+  if (!renderer_ || scale < 1 || scale > 4) return false;
+  if (x < -1024 || y < -1024 || x > 2048 || y > 2048) return false;
+  BmpCacheSlot* slot = bmpCacheSlot(rel);
+  if (!slot || slot->failed || !slot->bits || slot->w == 0 || slot->h == 0) return false;
+  const int dw = static_cast<int>(slot->w) * scale;
+  const int dh = static_cast<int>(slot->h) * scale;
+  // White plate, then black horizontal runs. 1 in the cache is black ink.
+  renderer_->fillRect(x, y, dw, dh, false);
+  const int w = slot->w;
+  const int h = slot->h;
+  const int stride = slot->stride;
+  const uint8_t* bits = slot->bits;
+  for (int row = 0; row < h; ++row) {
+    const uint8_t* src = bits + static_cast<size_t>(row) * static_cast<size_t>(stride);
+    int run = -1;
+    for (int col = 0; col < w; ++col) {
+      const bool black = (src[col >> 3] & static_cast<uint8_t>(0x80 >> (col & 7))) != 0;
+      if (black) {
+        if (run < 0) run = col;
+      } else if (run >= 0) {
+        renderer_->fillRect(x + run * scale, y + row * scale, (col - run) * scale, scale, true);
+        run = -1;
+      }
+    }
+    if (run >= 0) {
+      renderer_->fillRect(x + run * scale, y + row * scale, (w - run) * scale, scale, true);
+    }
+  }
+  return true;
+}
+
 void M4xLuaHost::stop() {
   // AppRuntimeActivity is intentionally deferred for one event-loop turn, so
   // do not leave the plugin's keep-alive HTTP/TLS objects alive until that
@@ -5416,6 +5628,7 @@ void M4xLuaHost::stop() {
   if (gHost == this) gHost = nullptr;
   networkBusy_.store(false, std::memory_order_release);
   renderer_ = nullptr;
+  clearBmpCache();
   // Drop host-owned scene rows/file cursors with the Lua state.  Otherwise a
   // plugin error followed by a restart can retain a large SD-backed source
   // and leave the next app with a stale active scene.

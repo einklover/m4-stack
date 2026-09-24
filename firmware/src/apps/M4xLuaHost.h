@@ -6,6 +6,7 @@
 #include "apps/M4xRegistry.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -97,6 +98,11 @@ class M4xLuaHost {
   std::string dataDir_;   // /apps_data/<id>
   std::string installDir_;  // /apps/<id>
 
+  // Opaque 1-bit BMP from the install directory. scale is 1..4.
+  // False when the path, file, or decode is unusable.
+  bool drawInstallBmp(const char* rel, int x, int y, int scale);
+  bool installBmpSize(const char* rel, int& outW, int& outH);
+
   // One keep-alive TLS connection reused by dl.jsonGet (and later dl.*).
   // A fresh handshake per request fragments internal RAM with mbedTLS session
   // buffers, and the 40KB jsonGet gate then blocks later fetches (jjwxc
@@ -181,6 +187,22 @@ class M4xLuaHost {
   bool uiCallGlobal(const char* fn, std::string& errorOut, int nargs);
 
  private:
+  struct BmpCacheSlot {
+    std::string rel;
+    uint16_t w = 0;
+    uint16_t h = 0;
+    uint16_t stride = 0;
+    uint8_t* bits = nullptr;  // 1 = black, MSB first
+    uint32_t stamp = 0;
+    bool failed = false;
+  };
+  static constexpr int kBmpCacheSlots = 8;
+  BmpCacheSlot bmpCache_[kBmpCacheSlots];
+  uint32_t bmpStamp_ = 1;
+  void clearBmpCache();
+  BmpCacheSlot* bmpCacheSlot(const char* rel);
+  bool fillBmpSlot(BmpCacheSlot& slot);
+
   void* L_ = nullptr;  // lua_State*
   bool exitRequested_ = false;
   std::atomic<bool> cancelRequested_{false};

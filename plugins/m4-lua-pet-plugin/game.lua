@@ -1,18 +1,20 @@
--- Tamagotchi-style pet rules. No gui/sys; host tests can dofile() this file.
--- Rules follow ReKindle pet.html (hearts 0-4, feed/play/meds/bath, egg→child→teen→adult→dead)
--- with Tamagotchi Pi-style hunger/happy decay on real elapsed time (e-ink: tick on open/key).
+-- Care rules for the pebble pet. No gui/sys; host tests can dofile() this file.
+-- Hearts 0-4. One line: egg → baby → child → teen → guard. Dead is separate.
+-- Hunger and happy decay on real elapsed time. Night hours count half speed.
 
 Pet = Pet or {}
 
 Pet.MAX = 4
 Pet.EGG_S = 60
-Pet.CHILD_S = 300
-Pet.TEEN_S = 600
+Pet.BABY_S = 300
+Pet.CHILD_S = 900
+Pet.TEEN_S = 1800
 Pet.HUNGER_S = 1800
 Pet.HAPPY_S = 1800
 Pet.POOP_S = 900
 Pet.AGE_S = 60
 Pet.DEATH_S = 120
+Pet.TZ_S = 8 * 3600
 
 function Pet.new(now)
   now = now or 0
@@ -58,21 +60,51 @@ function Pet.sprite_key(s)
   return "pet"
 end
 
+-- Local hour without os.date. 22:00–07:00 is sleep; 07:00 is awake.
+function Pet.sleeping(now)
+  if not now or now <= 0 then return false end
+  local hour = math.floor((now + Pet.TZ_S) / 3600) % 24
+  return hour >= 22 or hour < 7
+end
+
+-- Hunger 0 and happy 0 also set the sick flag, so those faces are chosen
+-- before the sick face. flash is "play" or "power" for one painted frame.
+function Pet.pose(s, screen, now, flash)
+  if s.stage == "DEAD" then return "grave" end
+  if s.stage == "EGG" then return "egg" end
+  if screen == "feed" then return "eat" end
+  if flash == "play" or screen == "play" then return "play" end
+  if flash == "power" then return "power" end
+  if Pet.sleeping(now) then return "sleep" end
+  if s.hunger == 0 then return "hungry" end
+  if s.happy == 0 then return "sad" end
+  if s.sick == 1 then return "sick" end
+  if s.happy >= 3 and s.hunger >= 3 then return "happy" end
+  return "idle"
+end
+
+local NEXT = {
+  EGG = { "BABY", "EGG_S", "born" },
+  BABY = { "CHILD", "BABY_S", "stage_start" },
+  CHILD = { "TEEN", "CHILD_S", "stage_start" },
+  TEEN = { "GUARD", "TEEN_S", "stage_start" },
+}
+
 local function evolve(s, now)
-  if s.stage == "EGG" then
-    if now - s.born >= Pet.EGG_S then
-      s.stage = "CHILD"
-      s.stage_start = now
-    end
-  elseif s.stage == "CHILD" then
-    if now - s.stage_start >= Pet.CHILD_S then
-      s.stage = "TEEN"
-      s.stage_start = now
-    end
-  elseif s.stage == "TEEN" then
-    if now - s.stage_start >= Pet.TEEN_S then
-      s.stage = "ADULT"
-      s.stage_start = now
+  for _ = 1, 4 do
+    local step = NEXT[s.stage]
+    if not step then return end
+    local origin = s[step[3]]
+    local due = origin + Pet[step[2]]
+    if now < due then return end
+    local from_egg = s.stage == "EGG"
+    s.stage = step[1]
+    s.stage_start = due
+    if from_egg then
+      s.hunger_t = due
+      s.happy_t = due
+      s.poop_t = due
+      s.age_update = due
     end
   end
 end
@@ -96,9 +128,15 @@ function Pet.apply_time(s, now)
   evolve(s, now)
   if s.stage ~= "EGG" then
     local n
-    n, s.hunger_t = catchup(s.hunger_t, Pet.HUNGER_S, now)
+    local hunger_s = Pet.HUNGER_S
+    local happy_s = Pet.HAPPY_S
+    if Pet.sleeping(now) then
+      hunger_s = hunger_s * 2
+      happy_s = happy_s * 2
+    end
+    n, s.hunger_t = catchup(s.hunger_t, hunger_s, now)
     if n > 0 then s.hunger = clamp(s.hunger - n, 0, Pet.MAX) end
-    n, s.happy_t = catchup(s.happy_t, Pet.HAPPY_S, now)
+    n, s.happy_t = catchup(s.happy_t, happy_s, now)
     if n > 0 then s.happy = clamp(s.happy - n, 0, Pet.MAX) end
     n, s.poop_t = catchup(s.poop_t, Pet.POOP_S, now)
     if n > 0 and s.hunger > 0 then s.poops = clamp(s.poops + n, 0, Pet.MAX) end
@@ -183,8 +221,9 @@ function Pet.deserialize(str)
       end
     end
   end
-  if s.stage ~= "EGG" and s.stage ~= "CHILD" and s.stage ~= "TEEN"
-      and s.stage ~= "ADULT" and s.stage ~= "DEAD" then
+  if s.stage == "ADULT" then s.stage = "GUARD" end
+  if s.stage ~= "EGG" and s.stage ~= "BABY" and s.stage ~= "CHILD"
+      and s.stage ~= "TEEN" and s.stage ~= "GUARD" and s.stage ~= "DEAD" then
     return nil
   end
   return s

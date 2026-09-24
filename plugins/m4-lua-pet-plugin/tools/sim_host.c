@@ -16,6 +16,33 @@ static const char *reason;
 static char persist_buf[4096];
 static int persist_len;
 static lua_Number fake_time = 1700000000.0;
+static char script_dir[512] = ".";
+
+static int l_sys_load(lua_State *L) {
+  const char *rel = luaL_checkstring(L, 1);
+  if (!rel[0] || rel[0] == '/' || strstr(rel, "..")) {
+    return luaL_error(L, "bad path");
+  }
+  char path[768];
+  snprintf(path, sizeof(path), "%s/%s", script_dir, rel);
+  if (luaL_loadfile(L, path) != LUA_OK) return lua_error(L);
+  lua_call(L, 0, 0);
+  return 0;
+}
+
+static int l_draw_bmp(lua_State *L) {
+  const char *rel = luaL_checkstring(L, 1);
+  char path[768];
+  snprintf(path, sizeof(path), "%s/%s", script_dir, rel);
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  fclose(f);
+  lua_pushboolean(L, 1);
+  return 1;
+}
 
 static void count_hook(lua_State *L, lua_Debug *ar) {
   (void)ar;
@@ -102,6 +129,8 @@ static void open_stubs(lua_State *L) {
   lua_setfield(L, -2, "drawLine");
   lua_pushcfunction(L, l_nop);
   lua_setfield(L, -2, "refresh");
+  lua_pushcfunction(L, l_draw_bmp);
+  lua_setfield(L, -2, "drawBmp");
   lua_setglobal(L, "gui");
 
   lua_newtable(L);
@@ -109,6 +138,8 @@ static void open_stubs(lua_State *L) {
   lua_setfield(L, -2, "time");
   lua_pushcfunction(L, l_sys_millis);
   lua_setfield(L, -2, "millis");
+  lua_pushcfunction(L, l_sys_load);
+  lua_setfield(L, -2, "load");
   lua_setglobal(L, "sys");
 
   lua_newtable(L);
@@ -143,6 +174,11 @@ static int call_named(lua_State *L, const char *name) {
 
 int main(int argc, char **argv) {
   const char *path = argc > 1 ? argv[1] : "main.lua";
+  const char *slash = strrchr(path, '/');
+  if (slash && (size_t)(slash - path) < sizeof(script_dir)) {
+    memcpy(script_dir, path, (size_t)(slash - path));
+    script_dir[slash - path] = 0;
+  }
   if (argc > 2) fake_time = atof(argv[2]);
   if (argc > 3) {
     strncpy(persist_buf, argv[3], sizeof(persist_buf) - 1);
