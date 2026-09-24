@@ -6,6 +6,7 @@ import math, struct
 ROOT = Path(__file__).resolve().parents[1]
 ART = ROOT / 'art'
 W, H = 140, 240
+BMP_W, BMP_H = 112, 192
 CARDS = [
  ('fool','0'),('magician','I'),('priestess','II'),('empress','III'),('emperor','IV'),('hierophant','V'),('lovers','VI'),('chariot','VII'),('strength','VIII'),('hermit','IX'),('wheel','X'),('justice','XI'),('hanged','XII'),('death','XIII'),('temperance','XIV'),('devil','XV'),('tower','XVI'),('star','XVII'),('moon','XVIII'),('sun','XIX'),('judgement','XX'),('world','XXI')
 ]
@@ -20,6 +21,9 @@ def bits_from(im):
     g = im.convert('L')
     p = g.load()
     return [[1 if p[x,y] < 128 else 0 for x in range(g.width)] for y in range(g.height)]
+
+def runtime_bits(im):
+    return bits_from(im.resize((BMP_W, BMP_H), Image.Resampling.LANCZOS))
 
 def write_bmp(path, bits, invert=False):
     h, w = len(bits), len(bits[0])
@@ -153,9 +157,9 @@ def make_icon(back):
 def main():
     ART.mkdir(parents=True,exist_ok=True)
     ims=[]
-    back=make_back(); write_bmp(ART/'card_back.bmp',bits_from(back))
+    back=make_back(); write_bmp(ART/'card_back.bmp',runtime_bits(back))
     for idx,(key,roman) in enumerate(CARDS):
-        im=make_card(idx,key,roman); write_bmp(ART/f'{idx:02d}_{key}.bmp',bits_from(im)); ims.append((f'{idx:02d} {key}',im))
+        im=make_card(idx,key,roman); write_bmp(ART/f'{idx:02d}_{key}.bmp',runtime_bits(im)); ims.append((f'{idx:02d} {key}',im))
     icon=make_icon(back); write_bmp(ROOT/'icon_home.bmp',bits_from(icon),invert=True)
     # One review sheet contains the app icon, card back, and all 22 actual card faces.
     icon_cell=Image.new('L',(W,H),255); scaled=icon.resize((124,128),Image.Resampling.NEAREST); icon_cell.paste(scaled,((W-124)//2,50))
@@ -171,7 +175,7 @@ def main():
     print('generated',len(CARDS),'cards + back + icon')
     for p in sorted(ART.glob('*.bmp')):
         data=p.read_bytes(); assert data[:2]==b'BM'; assert struct.unpack_from('<H',data,28)[0]==1
-        assert struct.unpack_from('<i',data,18)[0]==W and struct.unpack_from('<i',data,22)[0]==H
+        assert struct.unpack_from('<i',data,18)[0]==BMP_W and struct.unpack_from('<i',data,22)[0]==BMP_H
     print('asset validation OK')
 
 if __name__=='__main__': main()

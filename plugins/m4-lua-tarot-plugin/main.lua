@@ -2,7 +2,8 @@
 -- Entertainment/reflection tool only. Redraw only when visible state changes.
 sys.load("game.lua")
 
-local CARD_W, CARD_H = 140, 240
+local CARD_W, CARD_H = 112, 192
+local CARD_X = 184
 local screen = "home"
 local readings = {}
 local selected = 1
@@ -81,7 +82,7 @@ local function draw_card(reading, x, y)
   if rel and type(gui.drawBmp) == "function" and gui.drawBmp(rel, x, y) then return end
   gui.drawRect(x,y,CARD_W,CARD_H)
   local c = Tarot.card(reading.index)
-  if c then center(tostring(c.id), x+70, y+100, 16) end
+  if c then center(tostring(c.id), x+math.floor(CARD_W/2), y+math.floor(CARD_H/2)-8, 16) end
 end
 
 local function draw_back(x,y)
@@ -104,7 +105,7 @@ local function home_screen()
   gui.drawText(16,18,16,"塔 罗 牌")
   gui.drawText(10,328,22,"大 阿 尔 卡 那")
   gui.drawLine(16,52,464,52)
-  draw_back(170,96)
+  draw_back(CARD_X,120)
   center("把 问 题 留 在 心 里",240,370,16)
   center("抽 牌 只 作 为 自 我 反 思 与 娱 乐",240,408,10)
   button(BTN.daily,"今 日 一 牌")
@@ -119,13 +120,13 @@ local function single_screen()
   local c = r and Tarot.card(r.index)
   gui.drawText(16,18,16,"一 张 牌")
   gui.drawLine(16,52,464,52)
-  draw_card(r,170,72)
+  draw_card(r,CARD_X,72)
   if c then
-    center(string.format("%02d  %s",c.id,c.name),240,330,16)
-    center(orientation(r),240,365,12)
-    gui.drawText(12,28,410,"关 键 词")
-    gui.drawLine(28,434,452,434)
-    center(Tarot.meaning(r),240,452,12)
+    center(string.format("%02d  %s",c.id,c.name),240,282,16)
+    center(orientation(r),240,312,12)
+    gui.drawText(12,28,348,"关 键 词")
+    gui.drawLine(28,372,452,372)
+    center(Tarot.meaning(r),240,390,12)
   end
   button({22,600,210,62},"再 抽 一 张")
   button({248,600,210,62},"返 回")
@@ -137,15 +138,15 @@ local POS = {"过 去","现 在","未 来"}
 local function three_screen()
   gui.drawText(16,18,16,"三 牌 阵")
   gui.drawLine(16,52,464,52)
-  local xs={15,170,325}
+  local xs={16,184,352}
   for i=1,3 do
     local r=readings[i]
     draw_card(r,xs[i],86)
-    center(POS[i],xs[i]+70,338,12)
-    center(orientation(r),xs[i]+70,366,10)
+    center(POS[i],xs[i]+math.floor(CARD_W/2),286,12)
+    center(orientation(r),xs[i]+math.floor(CARD_W/2),314,10)
   end
-  gui.drawLine(16,402,464,402)
-  center("轻 触 任 意 一 张 牌 查 看 详 情",240,430,12)
+  gui.drawLine(16,350,464,350)
+  center("轻 触 任 意 一 张 牌 查 看 详 情",240,376,12)
   button({22,620,210,62},"重 新 抽 牌")
   button({248,620,210,62},"返 回")
 end
@@ -155,11 +156,11 @@ local function detail_screen()
   local c = r and Tarot.card(r.index)
   gui.drawText(16,18,16,POS[selected] or "牌 意")
   gui.drawLine(16,52,464,52)
-  draw_card(r,170,72)
+  draw_card(r,CARD_X,72)
   if c then
-    center(string.format("%02d  %s",c.id,c.name),240,330,16)
-    center(orientation(r),240,364,12)
-    center(Tarot.meaning(r),240,418,12)
+    center(string.format("%02d  %s",c.id,c.name),240,282,16)
+    center(orientation(r),240,312,12)
+    center(Tarot.meaning(r),240,366,12)
   end
   button({22,606,210,62},"上 一 张")
   button({248,606,210,62},"下 一 张")
@@ -272,8 +273,8 @@ function onTouch(x,y,phase)
     if hit({22,600,210,62},x,y) then draw_single()
     elseif hit({248,600,210,62},x,y) then screen="home"; frame_changed=true end
   elseif screen=="three" then
-    if y>=86 and y<386 then
-      if x<160 then selected=1 elseif x<315 then selected=2 else selected=3 end
+    if y>=86 and y<342 then
+      if x<156 then selected=1 elseif x<324 then selected=2 else selected=3 end
       screen="detail"; frame_changed=true
     elseif hit({22,620,210,62},x,y) then draw_three()
     elseif hit({248,620,210,62},x,y) then screen="home"; frame_changed=true end
