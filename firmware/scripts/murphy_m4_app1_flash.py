@@ -9,8 +9,9 @@ What this tool does (when not --dry-run):
   1. Resolve and validate esptool + otatool BEFORE any flash write.
   2. Preflight: read partition table @ 0x8000 and verify factory dual-OTA shape.
   3. Optionally back up current APP1 and otadata.
-  4. Write firmware.bin only at absolute offset 0x6e0000 (APP1)
-     with --after no-reset (do not pass --baud on USB-Serial/JTAG).
+  4. Write firmware.bin only at absolute offset 0x6e0000 (APP1).
+     Preflight already entered the bootloader; the payload uses --before no-reset
+     so it is not reset out of that session. Do not pass --baud on USB-Serial/JTAG.
   5. Select OTA slot 1 via PlatformIO python + otatool; fail if switch fails.
 
 Rollback to factory APP0:
@@ -127,8 +128,13 @@ def run(cmd: list[str], dry_run: bool, env: dict[str, str] | None = None) -> Non
         raise FlashError(f"command failed ({e.returncode}): {' '.join(cmd)}") from e
 
 
-def esptool_serial_args(esptool: str, port: str, baud: int | None) -> list[str]:
-    # no-reset: skip RTS between preflight read and the APP1 write.
+def esptool_serial_args(
+    esptool: str, port: str, baud: int | None, before: str = "default-reset"
+) -> list[str]:
+    # USB-Serial/JTAG rev v0.2 drops a long write about 28% in when --before
+    # default-reset yanks the chip out of the bootloader the preflight just
+    # entered. The payload write stays in that bootloader (no-reset), which is
+    # the same state as the retry that actually finishes.
     args = [
         esptool,
         "--chip",
@@ -136,7 +142,7 @@ def esptool_serial_args(esptool: str, port: str, baud: int | None) -> list[str]:
         "--port",
         port,
         "--before",
-        "default-reset",
+        before,
         "--after",
         "no-reset",
     ]
@@ -159,7 +165,7 @@ def write_flash(
     esptool: str, port: str, offset: int, image: Path, dry_run: bool, baud: int | None
 ) -> None:
     run(
-        esptool_serial_args(esptool, port, baud)
+        esptool_serial_args(esptool, port, baud, before="no-reset")
         + [
             "write_flash",
             "--flash_mode",
