@@ -5440,7 +5440,7 @@ std::string M4xLuaHost::debugUiJson() const {
 namespace {
 
 constexpr size_t kMaxBmpFileBytes = 64 * 1024;
-constexpr int kMaxBmpEdge = 192;
+constexpr int kMaxBmpEdge = 240;
 constexpr size_t kMaxBmpDecoded = 8192;
 
 uint32_t readU32LE(const uint8_t* p) {
