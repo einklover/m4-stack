@@ -40,6 +40,7 @@
 #include "generated/murphy_default_m4theme.h"
 #include "components/themes/fengyan/FengyanTheme.h"
 #include "activities/home/HomeSceneAssetDecoder.h"
+#include "util/M4ReturnCache.h"
 #include "util/M4ProviderCoverCache.h"
 #include "qemu/M4QemuNet.h"
 #include "apps/providers/M4NativeProviderBookDetail.h"
@@ -238,11 +239,30 @@ void HomeActivity::backendLoop(BackendContext& ctx) {
   publishHomeSceneFromBackendCtx(ctx);
 }
 
+const std::vector<M4xInstalledApp>& HomeActivity::cachedInstalledApps(BackendContext& ctx) {
+  if (!ctx.appsLoaded) {
+    ctx.installedApps = M4xRegistry::load();
+    ctx.appsLoaded = true;
+  }
+  return ctx.installedApps;
+}
+
+void HomeActivity::notePublishedHome(BackendContext& ctx) {
+  HomeScene::HomeScenePublication published{};
+  if (!ctx.model.copyLatestPublication(published)) {
+    ctx.updateRequired.store(true, std::memory_order_release);
+    return;
+  }
+  const bool changed = !M4ReturnCache::homeMatches(published);
+  M4ReturnCache::rememberHome(published);
+  if (changed) ctx.updateRequired.store(true, std::memory_order_release);
+}
+
 void HomeActivity::loadRecentBooksInto(BackendContext& ctx, int maxBooks) {
   if (ctx.cancelled.load(std::memory_order_acquire)) return;
   {
     std::vector<M4HomeBookDetailMeta::InstalledPlugin> plugins;
-    const auto apps = M4xRegistry::load();
+    const auto& apps = cachedInstalledApps(ctx);
     if (ctx.cancelled.load(std::memory_order_acquire)) return;
     plugins.reserve(apps.size());
     for (const auto& app : apps) plugins.push_back({app.id, app.name, app.provider});
@@ -335,7 +355,7 @@ bool HomeActivity::publishHomeSceneWithAssetsFastCtx(BackendContext& ctx) {
     (void)tryDecodeCoverThumbIfExists(ctx, b.coverBmpPath, HomeScene::kHomeRecentCoverW,
                                       HomeScene::kHomeRecentCoverH, key, isCancelled);
   }
-  const auto apps = M4HomeDock::orderedApps(M4xRegistry::load());
+  const auto apps = M4HomeDock::orderedApps(cachedInstalledApps(ctx));
   for (size_t i = 0; i < apps.size() && i < 4; ++i) {
     if (isCancelled()) return false;
     const auto& app = apps[i];
@@ -345,7 +365,7 @@ bool HomeActivity::publishHomeSceneWithAssetsFastCtx(BackendContext& ctx) {
   }
   if (isCancelled()) return false;
   if (ctx.model.publish()) {
-    ctx.updateRequired.store(true, std::memory_order_release);
+    notePublishedHome(ctx);
     return true;
   }
   return false;
@@ -413,7 +433,7 @@ void HomeActivity::refreshMissingCoversInCtx(BackendContext& ctx) {
     trySlot(ctx.recentBooks[i], HomeScene::kHomeRecentCoverW, HomeScene::kHomeRecentCoverH, key);
   }
   if (anyDecoded && !isCancelled() && ctx.model.publish()) {
-    ctx.updateRequired.store(true, std::memory_order_release);
+    notePublishedHome(ctx);
   }
 }
 
@@ -449,7 +469,7 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     }
     if (isCancelled()) return false;
   }
-  const auto apps = M4HomeDock::orderedApps(M4xRegistry::load());
+  const auto apps = M4HomeDock::orderedApps(cachedInstalledApps(ctx));
   for (size_t i = 0; i < apps.size() && i < 4; ++i) {
     if (isCancelled()) return false;
     const auto& app = apps[i];
@@ -460,7 +480,7 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
   if (isCancelled()) return false;
   if (isCancelled()) return false;
   if (ctx.model.publish()) {
-    ctx.updateRequired.store(true, std::memory_order_release);
+    notePublishedHome(ctx);
     return true;
   }
   return false;
@@ -493,7 +513,7 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
       ctx.model.setRecentPaths(recentIndex++, book.path.c_str(), book.originalSourcePath.c_str());
     }
   }
-  const auto apps = M4HomeDock::orderedApps(M4xRegistry::load());
+  const auto apps = M4HomeDock::orderedApps(cachedInstalledApps(ctx));
   bool hasApps = false;
   for (const auto& app : apps) {
     if (isCancelled()) return;
@@ -508,8 +528,6 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
   if (ctx.recentBooks.empty() && !hasApps) ctx.model.begin(UiScene::DataState::Empty);
   if (isCancelled()) return;
   (void)publishHomeSceneWithAssetsFastCtx(ctx);
-  if (isCancelled()) return;
-  vTaskDelay(pdMS_TO_TICKS(80));
   if (isCancelled()) return;
   refreshMissingCoversInCtx(ctx);
 }
@@ -1006,10 +1024,15 @@ void HomeActivity::onEnter() {
   backendCtx->cancelled.store(false, std::memory_order_release);
   backendCtx->exiting.store(false, std::memory_order_release);
   backendCtx->updateRequired.store(false, std::memory_order_release);
-  // Publish initial Loading via the context's model (PSRAM-backed arena).
-  backendCtx->model.publishLoading();
+  // A previous visit's publication is already in PSRAM. Paint that before the
+  // backend touches the card; an unchanged reload must not submit a second frame.
   updateRequired.store(false, std::memory_order_release);
-  backendCtx->updateRequired.store(false, std::memory_order_release);
+  if (M4ReturnCache::seedHome(backendCtx->model)) {
+    backendCtx->updateRequired.store(true, std::memory_order_release);
+  } else {
+    backendCtx->model.publishLoading();
+    backendCtx->updateRequired.store(false, std::memory_order_release);
+  }
 #else
   auto metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);

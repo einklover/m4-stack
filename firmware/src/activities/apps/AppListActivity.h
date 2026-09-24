@@ -101,6 +101,13 @@ class AppListActivity final : public ActivityWithSubactivity {
   // Set before installing a child so the display task never has to inspect
   // ActivityWithSubactivity::subActivity across task boundaries.
   std::atomic<bool> childScreenOwned_{false};
+  // Return visits paint the PSRAM inventory first. The display task reloads
+  // afterwards and submits another frame only when the list changed.
+  bool verifyDrawerCache_ = false;
+  bool reloadChanged_ = false;
+  bool reloadPreserveDialog_ = false;
+  bool showedDrawer_ = false;
+  SemaphoreHandle_t reloadLock_ = nullptr;
   // Staged submit input: written by the display task under the local mutex,
   // read by render() under the global guard. Single writer/reader (the display
   // task), so the handoff itself needs no further locking.
@@ -109,6 +116,9 @@ class AppListActivity final : public ActivityWithSubactivity {
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
   void reload();
+  bool applyCachedDrawer();
+  static bool sameDrawer(const std::vector<M4xInstalledApp>& appsA, const std::vector<DrawerItem>& itemsA,
+                         const std::vector<M4xInstalledApp>& appsB, const std::vector<DrawerItem>& itemsB);
   void render() const;
   void openSelected();
   void openInstall();

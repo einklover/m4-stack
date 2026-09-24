@@ -12,6 +12,7 @@
 #include "../Activity.h"
 #include "./MyLibraryActivity.h"
 #include "../../RecentBooksStore.h"
+#include "apps/M4xRegistry.h"
 #include "ui/pages/HomeSceneModel.h"
 #include "ui/scene/UiSceneAssets.h"
 
@@ -25,6 +26,8 @@ class HomeActivity final : public Activity {
   struct BackendContext {
     HomeScene::HomeSceneModel model;
     std::vector<RecentBook> recentBooks;
+    std::vector<M4xInstalledApp> installedApps;
+    bool appsLoaded = false;
     std::atomic<bool> cancelled{false};
     std::atomic<uint32_t> epoch{0};
     std::atomic<bool> exiting{false};
@@ -85,6 +88,8 @@ class HomeActivity final : public Activity {
   // Lifetime-safe backend: owns its own context, never touches raw HomeActivity `this`.
   static void backendLoop(BackendContext& ctx);
   static void loadRecentBooksInto(BackendContext& ctx, int maxBooks);
+  static const std::vector<M4xInstalledApp>& cachedInstalledApps(BackendContext& ctx);
+  static void notePublishedHome(BackendContext& ctx);
   static bool tryEnsureCoverThumbInCtx(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
                                        const std::function<bool()>& cancelled = {});
   static bool tryDecodeCoverThumbIfExists(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
