@@ -1630,16 +1630,29 @@ void TxtReaderActivity::openMenu(EpubReaderMenuActivity::MenuLayer layer) {
   }
   unlockState();
 
+  // Keep the settings snapshot from menu entry: getReaderFontId() may return
+  // the *old* runtime face for an as-yet-unloaded new pixel size.
+  const uint8_t originalReaderPx = SETTINGS.getReaderPixelSize();
+  const auto originalFontMode = SETTINGS.fontFamily;
+  const std::string originalCustomFamily = SETTINGS.customFontFamily;
+
   // Do not hold the state lock across child enter/destroy.
   exitActivity();
   enterNewActivity(new EpubReaderMenuActivity(
       this->renderer, this->mappedInput, title, pageDisp, totalDisp, bookProgressPercent,
       SETTINGS.orientation,
       // onBack: request deferred close; apply orientation after child loop returns.
-      [this](uint8_t newOrientation) {
+      [this, originalReaderPx, originalFontMode, originalCustomFamily](uint8_t newOrientation) {
         deferredMenuOrientation_ = newOrientation;
         deferredMenuNeedRebuild_ = false;
         if (newOrientation != SETTINGS.orientation) deferredMenuNeedRebuild_ = true;
+        // Comparing font IDs alone misses an unloaded size: getBestFontId()
+        // deliberately falls back to the current old-size runtime face.
+        if (SETTINGS.getReaderPixelSize() != originalReaderPx ||
+            SETTINGS.fontFamily != originalFontMode ||
+            originalCustomFamily != SETTINGS.customFontFamily) {
+          deferredMenuNeedRebuild_ = true;
+        }
         if (cachedFontId != SETTINGS.getReaderFontId() ||
             cachedParagraphAlignment != SETTINGS.paragraphAlignment ||
             wordSpacing != SETTINGS.wordSpacing || needIndent != SETTINGS.firstlineintented) {

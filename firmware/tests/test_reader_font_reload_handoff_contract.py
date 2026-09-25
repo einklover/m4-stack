@@ -38,4 +38,12 @@ assert "if (needRebuild) {\n    EpdFontLoader::loadFontsFromSd(renderer);" in de
     "parent Reader must reload fonts once, after the child menu has exited"
 )
 
+open_menu = body(reader_cpp, "void TxtReaderActivity::openMenu(")
+assert "const uint8_t originalReaderPx = SETTINGS.getReaderPixelSize();" in open_menu
+assert "SETTINGS.getReaderPixelSize() != originalReaderPx" in open_menu, (
+    "font-size changes must not be inferred from fallback font IDs"
+)
+assert "SETTINGS.fontFamily != originalFontMode" in open_menu
+assert "originalCustomFamily != SETTINGS.customFontFamily" in open_menu
+
 print("Reader font reload handoff contract: PASS")
