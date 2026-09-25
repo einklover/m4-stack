@@ -17,7 +17,7 @@ inline constexpr size_t kMaxFileBytes = 512 * 1024;
 // Never used to raise the 512 KiB full-file read/write caps above.
 inline constexpr size_t kMaxReadRangeBytes = 16 * 1024;
 inline constexpr size_t kMaxTotalExtractBytes = 2 * 1024 * 1024;
-inline constexpr size_t kMaxPackageFiles = 64;  // entry + icon + files[] (not counting manifest)
+inline constexpr size_t kMaxPackageFiles = 160;  // entry + icon + files[] (not counting manifest)
 inline constexpr size_t kMaxIdLen = 64;
 
 // Validate a package-relative path that will be written under /apps/<id>/.

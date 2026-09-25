@@ -713,3 +713,8 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 
 - Symptom/evidence: the device reported `activity=AppList` while the captured framebuffer still showed Home; at that time internal free heap was about 54 KiB, largest block about 24 KiB, and minimum free heap about 4.5 KiB, with over 1.8 MiB PSRAM free. A later reopen rendered normally. The saved panic had PC 0 and only FreeRTOS interrupt/critical-section frames, so it does not prove the AppList task was the panicking task.
 - Cause/fix: AppList created its 8 KiB display task with unchecked `xTaskCreate`, unlike Home's PSRAM-first task helper. Use `M4Psram::createTask`/`deleteTask`, check creation failure, and record display-task stack high-water on exit. This removes avoidable internal-stack pressure and makes allocation failure visible; repeat the hardware capture under low-memory conditions before treating it as a confirmed explanation for the panic.
+
+## 2026-09-25 — Large Lua card art can use bounded BMP tiles
+
+- Symptom: the M4 Lua `gui.drawBmp` path rejects one bitmap whose edge exceeds 192 px, limiting a portrait card to a small preview.
+- Fix/check: resize and threshold the complete artwork once, then split it into 176×185 1-bit BMP tiles and draw the 2×3 pieces at adjacent coordinates. QEMU rendered a 352×555 tarot card without visible seams using the existing GUI API; keep this in the plugin and do not widen the firmware decoder limit for card art.

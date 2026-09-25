@@ -2,8 +2,10 @@
 -- Entertainment/reflection tool only. Redraw only when visible state changes.
 sys.load("game.lua")
 
-local CARD_W, CARD_H = 112, 192
-local CARD_X = 184
+local CARD_W, CARD_H = 122, 192
+local DETAIL_X, DETAIL_Y = 64, 58
+local DETAIL_W, DETAIL_H = 352, 555
+local DETAIL_PART_W, DETAIL_PART_H = 176, 185
 local screen = "home"
 local readings = {}
 local selected = 1
@@ -18,6 +20,11 @@ local BTN = {
   deck = {22, 732, 210, 54},
   last = {248, 732, 210, 54},
 }
+local SINGLE_REDRAW_HIT = {16, 704, 216, 78}
+local SINGLE_HOME_HIT = {248, 704, 216, 78}
+local DETAIL_PREV_HIT = {16, 692, 216, 58}
+local DETAIL_NEXT_HIT = {248, 692, 216, 58}
+local DETAIL_BACK_HIT = {16, 750, 448, 50}
 
 local function now()
   if type(sys) == "table" and type(sys.time) == "function" then return sys.time() end
@@ -64,10 +71,11 @@ local function center(s, cx, y, size)
   gui.drawText(size, cx - math.floor(text_w(s,size)/2), y, s)
 end
 
-local function button(b, label)
+local function button(b, label, size)
   gui.drawRect(b[1],b[2],b[3],b[4])
-  local h = type(gui.lineHeight) == "function" and gui.lineHeight(16) or 18
-  center(label, b[1]+math.floor(b[3]/2), b[2]+math.floor((b[4]-h)/2), 16)
+  size = size or 16
+  local h = type(gui.lineHeight) == "function" and gui.lineHeight(size) or size+2
+  center(label, b[1]+math.floor(b[3]/2), b[2]+math.floor((b[4]-h)/2), size)
 end
 
 local function card_file(index)
@@ -83,6 +91,24 @@ local function draw_card(reading, x, y)
   gui.drawRect(x,y,CARD_W,CARD_H)
   local c = Tarot.card(reading.index)
   if c then center(tostring(c.id), x+math.floor(CARD_W/2), y+math.floor(CARD_H/2)-8, 16) end
+end
+
+local function draw_large_card(reading, x, y)
+  if not reading then return end
+  local c = Tarot.card(reading.index)
+  if not c or type(gui.drawBmp) ~= "function" then
+    gui.drawRect(x,y,DETAIL_W,DETAIL_H)
+    if c then center(tostring(c.id),x+DETAIL_W/2,y+DETAIL_H/2-8,16) end
+    return
+  end
+  for part=0,5 do
+    local col=part%2
+    local row=math.floor(part/2)
+    local rel=string.format("art/detail/%02d_%s_%d.bmp",c.id,c.key,part)
+    if not gui.drawBmp(rel,x+col*DETAIL_PART_W,y+row*DETAIL_PART_H) then
+      gui.drawRect(x+col*DETAIL_PART_W,y+row*DETAIL_PART_H,DETAIL_PART_W,DETAIL_PART_H)
+    end
+  end
 end
 
 local function draw_back(x,y)
@@ -105,7 +131,7 @@ local function home_screen()
   gui.drawText(16,18,16,"塔 罗 牌")
   gui.drawText(10,328,22,"大 阿 尔 卡 那")
   gui.drawLine(16,52,464,52)
-  draw_back(CARD_X,120)
+  draw_back(179,120)
   center("把 问 题 留 在 心 里",240,370,16)
   center("抽 牌 只 作 为 自 我 反 思 与 娱 乐",240,408,10)
   button(BTN.daily,"今 日 一 牌")
@@ -120,30 +146,26 @@ local function single_screen()
   local c = r and Tarot.card(r.index)
   gui.drawText(16,18,16,"一 张 牌")
   gui.drawLine(16,52,464,52)
-  draw_card(r,CARD_X,72)
+  draw_large_card(r,DETAIL_X,DETAIL_Y)
   if c then
-    center(string.format("%02d  %s",c.id,c.name),240,282,16)
-    center(orientation(r),240,312,12)
-    gui.drawText(12,28,348,"关 键 词")
-    gui.drawLine(28,372,452,372)
-    center(Tarot.meaning(r),240,390,12)
+    center(string.format("%02d  %s",c.id,c.name),240,620,16)
+    center(orientation(r),240,644,12)
+    center(Tarot.meaning(r),240,669,12)
   end
-  button({22,600,210,62},"再 抽 一 张")
-  button({248,600,210,62},"返 回")
-  gui.drawText(10,30,688,"提 示：先 看 画 面，再 看 关 键 词。")
-  gui.drawText(10,30,716,"把 它 当 作 一 个 新 的 观 察 角 度。")
+  button({22,716,210,46},"再 抽 一 张",14)
+  button({248,716,210,46},"返 回",14)
 end
 
 local POS = {"过 去","现 在","未 来"}
 local function three_screen()
   gui.drawText(16,18,16,"三 牌 阵")
   gui.drawLine(16,52,464,52)
-  local xs={16,184,352}
+  local xs={12,179,346}
   for i=1,3 do
     local r=readings[i]
     draw_card(r,xs[i],86)
-    center(POS[i],xs[i]+math.floor(CARD_W/2),286,12)
-    center(orientation(r),xs[i]+math.floor(CARD_W/2),314,10)
+    center(POS[i],xs[i]+math.floor(CARD_W/2),296,12)
+    center(orientation(r),xs[i]+math.floor(CARD_W/2),320,10)
   end
   gui.drawLine(16,350,464,350)
   center("轻 触 任 意 一 张 牌 查 看 详 情",240,376,12)
@@ -156,15 +178,15 @@ local function detail_screen()
   local c = r and Tarot.card(r.index)
   gui.drawText(16,18,16,POS[selected] or "牌 意")
   gui.drawLine(16,52,464,52)
-  draw_card(r,CARD_X,72)
+  draw_large_card(r,DETAIL_X,DETAIL_Y)
   if c then
-    center(string.format("%02d  %s",c.id,c.name),240,282,16)
-    center(orientation(r),240,312,12)
-    center(Tarot.meaning(r),240,366,12)
+    center(string.format("%02d  %s",c.id,c.name),240,620,16)
+    center(orientation(r),240,644,12)
+    center(Tarot.meaning(r),240,669,12)
   end
-  button({22,606,210,62},"上 一 张")
-  button({248,606,210,62},"下 一 张")
-  button({22,690,436,62},"返 回 牌 阵")
+  button({22,698,210,46},"上 一 张",14)
+  button({248,698,210,46},"下 一 张",14)
+  button({16,752,448,46},"返 回 牌 阵",14)
 end
 
 local function deck_screen()
@@ -270,8 +292,8 @@ function onTouch(x,y,phase)
     elseif hit(BTN.deck,x,y) then screen="deck"; frame_changed=true
     elseif hit(BTN.last,x,y) and #readings>0 then screen=(#readings>=3) and "three" or "single"; frame_changed=true end
   elseif screen=="single" then
-    if hit({22,600,210,62},x,y) then draw_single()
-    elseif hit({248,600,210,62},x,y) then screen="home"; frame_changed=true end
+    if hit(SINGLE_REDRAW_HIT,x,y) then draw_single()
+    elseif hit(SINGLE_HOME_HIT,x,y) then screen="home"; frame_changed=true end
   elseif screen=="three" then
     if y>=86 and y<342 then
       if x<156 then selected=1 elseif x<324 then selected=2 else selected=3 end
@@ -279,9 +301,9 @@ function onTouch(x,y,phase)
     elseif hit({22,620,210,62},x,y) then draw_three()
     elseif hit({248,620,210,62},x,y) then screen="home"; frame_changed=true end
   elseif screen=="detail" then
-    if hit({22,606,210,62},x,y) then selected=((selected+1)%3)+1; frame_changed=true
-    elseif hit({248,606,210,62},x,y) then selected=(selected%3)+1; frame_changed=true
-    elseif hit({22,690,436,62},x,y) then screen="three"; frame_changed=true end
+    if hit(DETAIL_PREV_HIT,x,y) then selected=((selected+1)%3)+1; frame_changed=true
+    elseif hit(DETAIL_NEXT_HIT,x,y) then selected=(selected%3)+1; frame_changed=true
+    elseif hit(DETAIL_BACK_HIT,x,y) then screen="three"; frame_changed=true end
   elseif screen=="deck" then
     if hit({22,650,136,58},x,y) then deck_page=math.max(1,deck_page-1); frame_changed=true
     elseif hit({172,650,136,58},x,y) then deck_page=math.min(2,deck_page+1); frame_changed=true
