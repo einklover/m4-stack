@@ -1,21 +1,49 @@
 #include "TtfGlyphSdCache.h"
+
 #include <M4MemoryManager.h>
 
-#if defined(ESP32)
+#if defined(ESP32) && M4_SD_GLYPH_CACHE_ENABLED
 #include <Arduino.h>
 #include <SDCardManager.h>
 #include <esp_heap_caps.h>
 #include <vector>
+#include <atomic>
 #endif
 
 namespace TtfGlyphCache {
 namespace {
 
-#if defined(ESP32)
+#if defined(ESP32) && M4_SD_GLYPH_CACHE_ENABLED
 constexpr const char* kDir = "/apps_data/m4_font";
 constexpr const char* kPath = "/apps_data/m4_font/ttf_glyphs.bin";
 constexpr uint64_t kMaxFileBytes = 4u * 1024u * 1024u;
 constexpr int kMaxIndex = 8192;
+
+// All faces share this on-disk index. Face-local locks cannot protect it.
+std::atomic<SemaphoreHandle_t> gSdMutex{nullptr};
+class ScopedSdCacheLock {
+ public:
+  ScopedSdCacheLock();
+  ~ScopedSdCacheLock() { if (held_) xSemaphoreGive(mutex_); }
+  bool acquired() const { return held_; }
+ private:
+  SemaphoreHandle_t mutex_ = nullptr;
+  bool held_ = false;
+};
+
+
+ScopedSdCacheLock::ScopedSdCacheLock() {
+  mutex_ = gSdMutex.load(std::memory_order_acquire);
+  if (!mutex_) {
+    SemaphoreHandle_t created = xSemaphoreCreateMutex();
+    if (!created) return;
+    SemaphoreHandle_t expected = nullptr;
+    if (gSdMutex.compare_exchange_strong(expected, created,
+                                         std::memory_order_acq_rel)) mutex_ = created;
+    else { vSemaphoreDelete(created); mutex_ = expected; }
+  }
+  held_ = mutex_ && xSemaphoreTake(mutex_, pdMS_TO_TICKS(1200)) == pdTRUE;
+}
 
 struct DiskEnt {
   Key key;
@@ -219,7 +247,9 @@ bool writeFileHeader(FsFile& f) {
 }  // namespace
 
 bool fileLookup(const Key& k, Glyph& out) {
-#if defined(ESP32)
+#if defined(ESP32) && M4_SD_GLYPH_CACHE_ENABLED
+  ScopedSdCacheLock lock;
+  if (!lock.acquired()) return false;
   if (!ensureIndexStorage()) return false;
   if (!gIndexed && rebuildIndex() == RebuildResult::IoError) return false;
   const int i = findIndex(k);
@@ -278,7 +308,9 @@ bool fileLookup(const Key& k, Glyph& out) {
 }
 
 AppendResult fileAppend(const Key& k, const Glyph& g) {
-#if defined(ESP32)
+#if defined(ESP32) && M4_SD_GLYPH_CACHE_ENABLED
+  ScopedSdCacheLock lock;
+  if (!lock.acquired()) return AppendResult::TransientFail;
   if (!SdMan.ready() || !ensureIndexStorage()) return AppendResult::TransientFail;
   if (g.bitmap.size() > kMaxBitmap) {
     if (!sLoggedOversize) {
@@ -385,7 +417,9 @@ AppendResult fileAppend(const Key& k, const Glyph& g) {
 }
 
 void fileResetForTests() {
-#if defined(ESP32)
+#if defined(ESP32) && M4_SD_GLYPH_CACHE_ENABLED
+  ScopedSdCacheLock lock;
+  if (!lock.acquired()) return;
   resetIndex();
   gIndexed = false;
 #endif

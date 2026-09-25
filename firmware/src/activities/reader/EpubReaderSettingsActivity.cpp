@@ -96,7 +96,7 @@ void EpubReaderSettingsActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
     SETTINGS.saveToFile();
-    EpdFontLoader::loadFontsFromSd(renderer);
+    // Parent reloads after this settings display task has exited.
     onGoBack();
     return;
   }

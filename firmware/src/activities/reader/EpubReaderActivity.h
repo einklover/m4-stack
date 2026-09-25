@@ -4,6 +4,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <atomic>
 #include <string>
 
 #include "EpubReaderMenuActivity.h"
@@ -38,6 +39,8 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   // Normalized 0.0-1.0 progress within the target spine item, computed from book percentage.
   float pendingSpineProgress = 0.0f;
   bool updateRequired = false;
+  std::atomic<bool> pendingMenuClose_{false};  // Finish font reload after menu display task exits
+  uint8_t pendingMenuOrientation_ = 0;
   bool pendingSubactivityExit = false;  // Defer subactivity exit to avoid use-after-free
   bool pendingGoBack = false;           // Defer go back to avoid use-after-free
   bool pendingGoHome = false;           // Defer go home to avoid race condition with display task

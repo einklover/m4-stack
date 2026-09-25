@@ -722,7 +722,7 @@ bool TtfEpdFont::publishGlyph(int slot, uint32_t cp, uint8_t w, uint8_t h, uint8
   entries_[slot].glyph.dataOffset = cp;
   entries_[slot].bitmap = bitmap;
   entries_[slot].bitmapSize = len;
-  entries_[slot].dirty = !fromSd;
+  entries_[slot].dirty = M4_SD_GLYPH_CACHE_ENABLED && !fromSd;
   entries_[slot].fromSd = fromSd;
   cacheBytes_ += len;
   return true;
@@ -803,6 +803,10 @@ bool TtfEpdFont::flushBackedOff() const {
 }
 
 int TtfEpdFont::idleFlushDirty(int maxGlyphs) {
+#if !M4_SD_GLYPH_CACHE_ENABLED
+  (void)maxGlyphs;
+  return 0;
+#endif
   if (maxGlyphs <= 0) return 0;
   int n = 0;
   for (int i = 0; i < kLiveMax && n < maxGlyphs; ++i) {

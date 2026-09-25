@@ -1,5 +1,11 @@
 #pragma once
 
+// Trial builds can bypass SD glyph persistence without disabling PSRAM TTF
+// glyph caches or the independent system/UI TTF.
+#ifndef M4_SD_GLYPH_CACHE_ENABLED
+#define M4_SD_GLYPH_CACHE_ENABLED 1
+#endif
+
 #include <cstdint>
 #include <cstring>
 #include <map>
