@@ -306,7 +306,7 @@ std::string EpubReaderMenuActivity::styleValueFor(InternalAction action) const {
   }
 }
 
-void EpubReaderMenuActivity::notifyParentStyleChanged() {
+void EpubReaderMenuActivity::notifyParentStyleChanged(bool reloadFonts) {
   m4ReaderLayoutPanelClosed(layoutPreview_);
   const bool styleDirty = layoutPreview_.bookReflowPending;
   const bool fontDirty = readerFontDirty_;
@@ -314,7 +314,7 @@ void EpubReaderMenuActivity::notifyParentStyleChanged() {
   if (!styleDirty) return;
   m4ReaderLayoutConsumeReflow(layoutPreview_);
 
-  if (fontDirty) {
+  if (reloadFonts && fontDirty) {
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     EpdFontLoader::loadFontsFromSd(renderer);
     xSemaphoreGive(renderingMutex);
@@ -353,7 +353,8 @@ const char* EpubReaderMenuActivity::moreSectionTitle() const {
 
 void EpubReaderMenuActivity::closeToReader() {
   onBack(pendingOrientation);
-  notifyParentStyleChanged();
+  // TxtReaderActivity performs the single font reload after this child exits.
+  notifyParentStyleChanged(false);
 }
 
 void EpubReaderMenuActivity::loop() {

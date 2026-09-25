@@ -1599,31 +1599,36 @@ void TxtReaderActivity::openMenu(EpubReaderMenuActivity::MenuLayer layer) {
   updateRequired = false;
   cancelPendingPageTurnForChild();
   waitPhysicalEpdIdle(2500);
-  renderer.setRenderMode(GfxRenderer::BW);
 
   // Short coherent snapshot under the state lock; enter child unlocked.
   int bookProgressPercent = 0;
   int pageDisp = 1;
   int totalDisp = 1;
   std::string title = displayTitle();
-  if (lockState(pdMS_TO_TICKS(400))) {
-    // Coherent snapshot of progressive fields (short critical section).
-    if (!pageOffsets.empty()) {
-      int p0 = currentPage >= 0 ? currentPage : 0;
-      if (p0 >= (int)pageOffsets.size()) p0 = (int)pageOffsets.size() - 1;
-      const size_t off = pageOffsets[static_cast<size_t>(p0)];
-      const size_t fs = txt ? txt->getFileSize() : 0;
-      if (fs > 0) {
-        bookProgressPercent =
-            static_cast<int>(static_cast<float>(off) * 100.0f / static_cast<float>(fs) + 0.5f);
-        if (bookProgressPercent > 100) bookProgressPercent = 100;
-        if (bookProgressPercent < 0) bookProgressPercent = 0;
-      }
-      pageDisp = M4PluginReaderStatePolicy::page0ToLua1(p0);
-      totalDisp = totalPages > 0 ? totalPages : 1;
-    }
-    unlockState();
+  if (!lockState(pdMS_TO_TICKS(400))) {
+    // A live TTF layout owns pointers into FontManager. Never let a menu reload
+    // or release those faces while that render is still inside the state lock.
+    suppressDisplay_ = false;
+    updateRequired = true;
+    return;
   }
+  renderer.setRenderMode(GfxRenderer::BW);
+  // Coherent snapshot of progressive fields (short critical section).
+  if (!pageOffsets.empty()) {
+    int p0 = currentPage >= 0 ? currentPage : 0;
+    if (p0 >= (int)pageOffsets.size()) p0 = (int)pageOffsets.size() - 1;
+    const size_t off = pageOffsets[static_cast<size_t>(p0)];
+    const size_t fs = txt ? txt->getFileSize() : 0;
+    if (fs > 0) {
+      bookProgressPercent =
+          static_cast<int>(static_cast<float>(off) * 100.0f / static_cast<float>(fs) + 0.5f);
+      if (bookProgressPercent > 100) bookProgressPercent = 100;
+      if (bookProgressPercent < 0) bookProgressPercent = 0;
+    }
+    pageDisp = M4PluginReaderStatePolicy::page0ToLua1(p0);
+    totalDisp = totalPages > 0 ? totalPages : 1;
+  }
+  unlockState();
 
   // Do not hold the state lock across child enter/destroy.
   exitActivity();
@@ -2155,6 +2160,9 @@ void TxtReaderActivity::displayTaskLoop() {
 #endif
   bool loggedFirstPhysical = false;
   while (!stopTaskRequested_.load(std::memory_order_acquire)) {
+#if defined(ESP32)
+    (void)esp_task_wdt_reset();
+#endif
     // Menu / settings / chapter list own the panel — do not race e-ink SPI.
     if (suppressDisplay_ || subActivity) {
       vTaskDelay(20 / portTICK_PERIOD_MS);
@@ -2177,6 +2185,10 @@ void TxtReaderActivity::displayTaskLoop() {
         // COVERS the target, then the next idle tick renders+animates straight
         // to it (one burst, not one slow slice per loop pass).
         if (lockState(0)) {
+          if (suppressDisplay_ || subActivity) {
+            unlockState();
+            continue;
+          }
           const uint32_t tIdx = millis();
           int guard = 0;
           while (currentPage >= static_cast<int>(pageOffsets.size()) && !indexComplete_ &&
@@ -2263,6 +2275,10 @@ void TxtReaderActivity::displayTaskLoop() {
       bool firstFrameJustReady = false;
       bool firstFrameHasLines = false;
       if (lockState(pdMS_TO_TICKS(400))) {
+        if (suppressDisplay_ || subActivity) {
+          unlockState();
+          continue;
+        }
         // Always defer e-ink + AA out of the state lock — plugin AND library.
         // finishPhysicalDisplay (PTA loops / HALF-BUSY / gray passes) owns the
         // panel for ~1s; running it under the lock froze keys/touch. The white
@@ -2408,6 +2424,10 @@ void TxtReaderActivity::displayTaskLoop() {
       bool persistPendingProgress = false;
       ProgressSnapshot pendingProgress;
       if (lockState(0)) {
+        if (suppressDisplay_ || subActivity) {
+          unlockState();
+          continue;
+        }
         if (progressSavePending_ && captureProgressSnapshot(pendingProgress)) {
           progressSavePending_ = false;
           persistPendingProgress = true;
