@@ -55,6 +55,7 @@ class FontManager {
 
   // 清除已加载字体的内存缓存（切换字体时调用，迫使重新加载并写入 flash）
   void clearLoadedFonts();
+  void clearLoadedReaderFonts();
 
   // Runtime TTF objects own their stream/cmap/scratch/PSRAM cache metadata.
   // Once GfxRenderer aliases have been removed, they can and should be fully

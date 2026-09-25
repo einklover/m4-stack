@@ -198,6 +198,18 @@ void FontManager::clearLoadedFonts() {
   loadedFonts.clear();
 }
 
+void FontManager::clearLoadedReaderFonts() {
+  for (auto f = loadedFonts.begin(); f != loadedFonts.end();) {
+    auto& sizes = f->second;
+    for (auto it = sizes.begin(); it != sizes.end();) {
+      if (it->first.role == 0) it = sizes.erase(it);
+      else ++it;
+    }
+    if (sizes.empty()) f = loadedFonts.erase(f);
+    else ++f;
+  }
+}
+
 void FontManager::releaseRuntimeTtfFaces() {
   for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
     auto& sizes = familyIt->second;

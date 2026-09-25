@@ -376,8 +376,8 @@ bool EpdFontLoader::loadFontsFromSd(GfxRenderer& renderer) {
     logFontMap(renderer, "before_reader_release", oldReaderId);
 #endif
     for (int id : previousCustomIds) renderer.removeFont(id);
-    FontManager::getInstance().releaseRuntimeTtfFaces();
-    FontManager::getInstance().clearLoadedFonts();
+    FontManager::getInstance().releaseRuntimeTtfFaces(FontManager::TtfFaceRole::Reader);
+    FontManager::getInstance().clearLoadedReaderFonts();
     activeRuntimeTtfFamily.clear();
     activeRuntimeTtfSize = -1;
     logFontHeap("after_release");
