@@ -90,7 +90,13 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
   bool readerMenuSyncSupported() const override { return false; }
-  void onReaderMenuStyleChanged() override { onSettingsChanged(); }
+  void onReaderMenuStyleChanged() override {
+    if (subActivity) {
+      deferredMenuNeedRebuild_ = true;
+    } else {
+      onSettingsChanged();
+    }
+  }
 
   // Parent observes after child loop returns (do not delete from onGoBack).
   bool pluginCloseRequested() const { return pluginCloseRequested_; }
@@ -378,6 +384,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool deferredMenuApply_ = false;
   uint8_t deferredMenuOrientation_ = 0;
   bool deferredMenuNeedRebuild_ = false;
+  bool pendingSettingsRebuild_ = false;
   std::function<void()> deferredChildTransition_;
   // Chapter picker selected while state lock was busy (never block forever).
   bool hasDeferredChapterSwitch_ = false;

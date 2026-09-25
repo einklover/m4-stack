@@ -192,6 +192,10 @@ void EpubReaderActivity::onEnter() {
     return;
   }
 
+  // The global font loader frees Reader-role TTF after the previous activity
+  // retires. Rehydrate the saved custom face before spawning the display task.
+  EpdFontLoader::ensureFontsFromSd(renderer);
+
   // Configure screen orientation based on settings
   // NOTE: This affects layout math and must be applied before any render calls.
   applyReaderOrientation(renderer, SETTINGS.orientation);
@@ -1876,7 +1880,7 @@ void EpubReaderActivity::renderScreen() {
                   viewportWidth, viewportHeight, renderer.getScreenWidth(), renderer.getScreenHeight(),
                   orientedMarginLeft, orientedMarginRight, orientedMarginTop, orientedMarginBottom);
 
-    if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+    if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderPixelSize(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                   viewportHeight, SETTINGS.hyphenationEnabled,SETTINGS.wordSpacing,SETTINGS.firstlineintented, SETTINGS.embeddedStyle,
                                   static_cast<bool>(SETTINGS.chinesePunctWidth), static_cast<bool>(SETTINGS.epubShowImages))) {
@@ -1884,7 +1888,7 @@ void EpubReaderActivity::renderScreen() {
 
       const auto popupFn = [this]() { GUI.drawPopup(renderer, "加载章节中..."); };
 
-      if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+      if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderPixelSize(), SETTINGS.getReaderLineCompression(),
                                       SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                       viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.wordSpacing, SETTINGS.firstlineintented, SETTINGS.embeddedStyle,
                                       static_cast<bool>(SETTINGS.chinesePunctWidth), static_cast<bool>(SETTINGS.epubShowImages), popupFn)) {

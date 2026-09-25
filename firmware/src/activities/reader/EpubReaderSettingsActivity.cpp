@@ -203,7 +203,7 @@ void EpubReaderSettingsActivity::toggleCurrentSetting() {
     enterNewActivity(new FontSelectionActivity(renderer, mappedInput, [this](bool) {
       exitActivity();
       updateRequired = true;
-    }));
+    }, FontSelectionActivity::Target::Reader, true));
     xSemaphoreGive(renderingMutex);
     return;
   }

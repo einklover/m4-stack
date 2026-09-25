@@ -309,7 +309,12 @@ void EpdFontLoader::releaseRuntimeReaderFonts(GfxRenderer& renderer) {
 }
 
 void EpdFontLoader::ensureFontsFromSd(GfxRenderer& renderer) {
-  if (sdFontsLoaded_) {
+  // A failed custom load leaves the settings intact and the system fallback
+  // active. Retry on the next reader entry rather than freezing that fallback
+  // for the rest of the session (e.g. if SD was temporarily unavailable).
+  if (sdFontsLoaded_ &&
+      (SETTINGS.fontFamily != CrossPointSettings::FONT_CUSTOM ||
+       getBestFontId(SETTINGS.customFontFamily, SETTINGS.getReaderPixelSize()) != -1)) {
     return;
   }
   Serial.printf("[M4-FONT] ensureFontsFromSd: first load this session\n");

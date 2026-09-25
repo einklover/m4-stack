@@ -601,7 +601,7 @@ void EpubReaderMenuActivity::loop() {
         }
         forceHalfRefresh_ = true;
         updateRequired = true;
-      }));
+      }, FontSelectionActivity::Target::Reader, true));
       xSemaphoreGive(renderingMutex);
       return;
     }

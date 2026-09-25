@@ -110,6 +110,9 @@ class EpubReaderActivity final : public ActivityWithSubactivity {
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
   void onReaderMenuStyleChanged() override {
+    // The menu owns its renderer until pumpSubActivityFrame tears it down.
+    // onReaderMenuBack already schedules reflow after that teardown.
+    if (subActivity) return;
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     section.reset();
     updateRequired = true;

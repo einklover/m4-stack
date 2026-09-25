@@ -62,8 +62,10 @@ FontGridLayout makeFontGridLayout(int screenWidth, int screenHeight, int headerH
 }  // namespace
 
 FontSelectionActivity::FontSelectionActivity(GfxRenderer& renderer, MappedInputManager& inputManager,
-                                             std::function<void(bool)> onClose, Target target)
-    : Activity("Font Selection", renderer, inputManager), onClose(onClose), target_(target) {}
+                                             std::function<void(bool)> onClose, Target target,
+                                             bool deferReaderLoad)
+    : Activity("Font Selection", renderer, inputManager), onClose(onClose), target_(target),
+      deferReaderLoad_(deferReaderLoad) {}
 
 FontSelectionActivity::~FontSelectionActivity() {}
 
@@ -239,6 +241,18 @@ void FontSelectionActivity::saveAndExit() {
     // Keep the old settings persisted until the new face has actually loaded.
     // The loader may tear down the old renderer aliases, so restore and reload
     // the previous selection if the candidate fails.
+    if (deferReaderLoad_) {
+      // A Reader menu owns a live display task. It must not remove the old
+      // TTF or load another face until every nested picker/menu has exited.
+      // Parent reader performs the actual load in its deferred-close path.
+      strncpy(SETTINGS.customFontFamily, fontFamilies[selectedIndex].c_str(), sizeof(SETTINGS.customFontFamily) - 1);
+      SETTINGS.customFontFamily[sizeof(SETTINGS.customFontFamily) - 1] = '\0';
+      SETTINGS.fontFamily = CrossPointSettings::FONT_CUSTOM;
+      SETTINGS.saveToFile();
+      onClose(true);
+      return;
+    }
+
     Serial.printf("[FSA] Trying font: %s\n", fontFamilies[selectedIndex].c_str());
     GUI.drawPopup(renderer, L(Str::kLoadingFontPleaseWait));
     strncpy(SETTINGS.customFontFamily, fontFamilies[selectedIndex].c_str(), sizeof(SETTINGS.customFontFamily) - 1);

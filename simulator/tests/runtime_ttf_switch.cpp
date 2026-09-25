@@ -20,6 +20,7 @@ void m4AppendFontDiagnostic(const char*) {}
 namespace {
 
 constexpr uint16_t kSizePx = 20;
+constexpr uint16_t kLargerSizePx = 32;
 constexpr char32_t kSentence[] = U"中文字体切换测试";
 
 std::vector<uint8_t> readFile(const char* path) {
@@ -43,14 +44,14 @@ struct RenderResult {
   size_t overdrawPixels = 0;
 };
 
-RenderResult renderSentence(TtfEpdFont& font, const char* label) {
+RenderResult renderSentence(TtfEpdFont& font, const char* label, int expectedSizePx) {
   assert(font.valid());
-  assert(font.sizePx() == kSizePx);
-  assert(font.rasterSizePx() == kSizePx);
+  assert(font.sizePx() == expectedSizePx);
+  assert(font.rasterSizePx() == expectedSizePx);
 
   const EpdFontData* data = font.getData();
   assert(data);
-  assert(data->advanceY >= kSizePx && data->advanceY <= kSizePx * 3 / 2);
+  assert(data->advanceY >= expectedSizePx && data->advanceY <= expectedSizePx * 3 / 2);
   assert(data->ascender > 0);
   assert(data->descender <= 0);
   assert(data->advanceY >= data->ascender - data->descender);
@@ -80,10 +81,10 @@ RenderResult renderSentence(TtfEpdFont& font, const char* label) {
     const uint8_t* bitmap = font.loadGlyphBitmap(glyph, nullptr);
 
     assert(bitmap);
-    assert(width > 0 && width <= kSizePx * 2);
-    assert(height > 0 && height <= kSizePx * 2);
-    assert(advance > 0 && advance <= kSizePx * 2);
-    assert(left >= -static_cast<int>(kSizePx) / 4 && left <= kSizePx);
+    assert(width > 0 && width <= expectedSizePx * 2);
+    assert(height > 0 && height <= expectedSizePx * 2);
+    assert(advance > 0 && advance <= expectedSizePx * 2);
+    assert(left >= -static_cast<int>(expectedSizePx) / 4 && left <= expectedSizePx);
     if (previousPenX >= 0) assert(penX > previousPenX);
 
     const int inkLeft = penX + left;
@@ -138,15 +139,15 @@ int main(int argc, char** argv) {
   };
 
   auto first = std::make_unique<TtfEpdFont>(firstBytes.data(), firstBytes.size(), kSizePx, 64, 256 * 1024);
-  const auto firstResult = renderSentence(*first, "before-switch");
+  const auto firstResult = renderSentence(*first, "before-switch", kSizePx);
 
-  auto second = std::make_unique<TtfEpdFont>(secondBytes.data(), secondBytes.size(), kSizePx, 64, 256 * 1024);
+  auto second = std::make_unique<TtfEpdFont>(secondBytes.data(), secondBytes.size(), kLargerSizePx, 64, 256 * 1024);
   assert(second.get() != first.get());
   const TtfEpdFont* oldReaderPointer = first.get();
   first.swap(second);
   second.reset();
   assert(first.get() != oldReaderPointer);
-  const auto secondResult = renderSentence(*first, "after-switch");
+  const auto secondResult = renderSentence(*first, "after-switch", kLargerSizePx);
 
   const std::map<int, const EpdFont*> chromeAfter = chromeBefore;
   assert(chromeAfter == chromeBefore);
@@ -154,6 +155,8 @@ int main(int argc, char** argv) {
   assert(chromeAfter.at(UI_10_FONT_ID) == &chromeFont);
   assert(chromeAfter.at(UI_12_FONT_ID) == &chromeFont);
   assert(firstResult.finalX > 4 && secondResult.finalX > 4);
+  // A changed TTF pixel size must change the rendered line metrics.
+  assert(secondResult.lineHeight > firstResult.lineHeight);
 
   std::cout << "runtime TTF switch render: PASS; chrome IDs=" << SMALL_FONT_ID << ','
             << UI_10_FONT_ID << ',' << UI_12_FONT_ID << '\n';

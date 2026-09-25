@@ -120,9 +120,9 @@ inline void PsramRawFree(void* p) {
 
 // Cache file magic and version
 constexpr uint32_t CACHE_MAGIC = 0x54585449;  // "TXTI"
-// v10: raw-source encoding-aware page offsets + encodingType header field.
-// Rebuilds any v9-or-earlier caches (may have mixed utf8-cache offsets).
-constexpr uint8_t CACHE_VERSION = 10;
+// v11: include actual reader pixel size; prevent stale system-font pagination.
+// v10 introduced raw-source encoding-aware offsets and encodingType.
+constexpr uint8_t CACHE_VERSION = 11;
 
 // ── Clock display helpers ───────────────────────────────────────────────────
 constexpr time_t VALID_TIME_THRESHOLD = 1704067200;  // 2024-01-01 00:00:00 UTC
@@ -341,6 +341,10 @@ void TxtReaderActivity::onEnter() {
   if (!txt) {
     return;
   }
+
+  // Leaving the previous Reader releases its runtime TTF. Restore the saved
+  // face before this Reader's first layout/render (also when reopening a book).
+  EpdFontLoader::ensureFontsFromSd(renderer);
 
   // TXT阅读器始终使用竖屏模式
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
@@ -1187,6 +1191,15 @@ void TxtReaderActivity::applyDeferredMenuClose() {
 void TxtReaderActivity::loop() {
   reapRetiredSubActivities();
   activatePendingSubActivity();
+  if (!subActivity && pendingSettingsRebuild_) {
+    onSettingsChanged();
+    if (pendingSettingsRebuild_) return;
+    // Keep reader rendering suppressed until the requested font/layout
+    // reflow actually succeeds. Otherwise it may show the old glyph size.
+    suppressDisplay_ = false;
+    armOverlayReturnFlush();
+    updateRequired = true;
+  }
   auto drawPopupBounded = [this](const char* message, bool fast = false) {
     if (!lockState(pdMS_TO_TICKS(200))) return false;
     GUI.drawPopup(renderer, message);
@@ -1212,10 +1225,12 @@ void TxtReaderActivity::loop() {
                       millis(), subActivity ? 1 : 0,
                       pluginSwitchChapterIndex_.load(std::memory_order_acquire),
                       pluginCloseRequested_ ? 1 : 0);
+      } else if (pendingSettingsRebuild_) {
+        // Font reload succeeded but a busy state lock delayed re-pagination.
+        suppressDisplay_ = true;
+        updateRequired = false;
       } else {
         // Resume reader paints only after returning to the reader itself.
-        // Overlay was FAST-composited on the body; return with FAST so the
-        // bars vanish without a HALF/FULL invert flash.
         suppressDisplay_ = false;
         armOverlayReturnFlush();
         updateRequired = true;
@@ -1594,6 +1609,9 @@ void TxtReaderActivity::loop() {
 
 
 void TxtReaderActivity::openMenu(EpubReaderMenuActivity::MenuLayer layer) {
+  // Reset the deferred reflow only at menu entry. A menu style callback may
+  // arrive before its onBack callback or while navigating nested panels.
+  deferredMenuNeedRebuild_ = false;
   // Do not let reader AA/e-ink race menu/settings paints (residual overlay).
   suppressDisplay_ = true;
   updateRequired = false;
@@ -1644,7 +1662,6 @@ void TxtReaderActivity::openMenu(EpubReaderMenuActivity::MenuLayer layer) {
       // onBack: request deferred close; apply orientation after child loop returns.
       [this, originalReaderPx, originalFontMode, originalCustomFamily](uint8_t newOrientation) {
         deferredMenuOrientation_ = newOrientation;
-        deferredMenuNeedRebuild_ = false;
         if (newOrientation != SETTINGS.orientation) deferredMenuNeedRebuild_ = true;
         // Comparing font IDs alone misses an unloaded size: getBestFontId()
         // deliberately falls back to the current old-size runtime face.
@@ -2001,9 +2018,11 @@ void TxtReaderActivity::handleMenuAction(EpubReaderMenuActivity::MenuAction acti
 }
 
 void TxtReaderActivity::onSettingsChanged() {
-  // Rebuild under state lock so progressive index cannot race the clear.
+  // A TTF/index worker can hold this lock longer than 250ms. Do not silently
+  // drop an A+/A- change: retry in loop after the child display task exits.
   if (!lockState(pdMS_TO_TICKS(250))) {
-    Serial.printf("[%lu] [TRS] settings rebuild skipped: reader state busy\n", millis());
+    pendingSettingsRebuild_ = true;
+    Serial.printf("[%lu] [TRS] settings rebuild deferred: reader state busy\n", millis());
     return;
   }
   // Preserve raw-byte position across font/layout rebuild (plugin + library).
@@ -2044,6 +2063,7 @@ void TxtReaderActivity::onSettingsChanged() {
   cachedScreenMargin = SETTINGS.screenMargin_Top + SETTINGS.screenMargin_Left +
                        SETTINGS.screenMargin_Right + SETTINGS.screenMargin_Bottom;
 
+  pendingSettingsRebuild_ = false;
   updateRequired = true;
   unlockState();
 }
@@ -5004,6 +5024,7 @@ void TxtReaderActivity::chapter_savePageIndexCacheOffsets(int ch,
   serialization::writePod(f, static_cast<int32_t>(viewportWidth));
   serialization::writePod(f, static_cast<int32_t>(linesPerPage));
   serialization::writePod(f, static_cast<int32_t>(cachedFontId));
+  serialization::writePod(f, SETTINGS.getReaderPixelSize());
   serialization::writePod(f, wordSpacing);
   serialization::writePod(f, SETTINGS.customLineSpacing);
   serialization::writePod(f, SETTINGS.firstlineintented);
@@ -5330,7 +5351,7 @@ bool TxtReaderActivity::chapter_loadPageIndexCache(int chapternum) {
   // Cache file format (using serialization module):
   // - uint32_t: magic "TXTI"
   // - uint8_t: cache version
-  // Header (v10): magic, version, encodingType, fileSize, viewport, lines, fontId,
+  // Header (v11): magic, version, encodingType, fileSize, viewport, lines, fontId, readerPx,
   // word/line/indent, margin, alignment, punctWidth, numPages, offsets...
   // Offsets are raw original-file bytes for the detected encoding.
 
@@ -5393,6 +5414,14 @@ bool TxtReaderActivity::chapter_loadPageIndexCache(int chapternum) {
 
   int32_t fontId;
   serialization::readPod(f, fontId);
+  uint8_t cachedReaderPx = 0;
+  serialization::readPod(f, cachedReaderPx);
+  if (cachedReaderPx != SETTINGS.getReaderPixelSize()) {
+    Serial.printf("[%lu] [TRS] Cache reader size mismatch (%u != %u), rebuilding\n", millis(),
+                  static_cast<unsigned>(cachedReaderPx), static_cast<unsigned>(SETTINGS.getReaderPixelSize()));
+    f.close();
+    return false;
+  }
   if (fontId != cachedFontId) {
     Serial.printf("[%lu] [TRS] Cache font ID mismatch (%d != %d), rebuilding\n", millis(), fontId, cachedFontId);
     f.close();
@@ -5477,7 +5506,7 @@ void TxtReaderActivity::chapter_savePageIndexCache(int chapternum) const {
     return;
   }
 
-  // Write header using serialization module (v10: encodingType after version)
+  // Write header using serialization module (v11: encodingType and readerPx)
   serialization::writePod(f, CACHE_MAGIC);
   serialization::writePod(f, CACHE_VERSION);
   serialization::writePod(f, static_cast<uint8_t>(txt->getEncodingType()));
@@ -5485,6 +5514,7 @@ void TxtReaderActivity::chapter_savePageIndexCache(int chapternum) const {
   serialization::writePod(f, static_cast<int32_t>(viewportWidth));
   serialization::writePod(f, static_cast<int32_t>(linesPerPage));
   serialization::writePod(f, static_cast<int32_t>(cachedFontId));
+  serialization::writePod(f, SETTINGS.getReaderPixelSize());
   //把字距行间距首行缩进记录进去
   serialization::writePod(f, wordSpacing);
   serialization::writePod(f, SETTINGS.customLineSpacing);
