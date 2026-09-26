@@ -51,7 +51,7 @@ def main():
         version = info["version"]
         if app_id in catalog or not re.fullmatch(r"[a-zA-Z0-9.]+", app_id):
             raise ValueError(f"Duplicate or invalid plugin ID: {app_id}")
-        if not re.fullmatch(r"\\d+\\.\\d+\\.\\d+", version):
+        if not re.fullmatch(r"\d+\.\d+\.\d+", version):
             raise ValueError(f"Invalid version: {app_id}")
         filename = f"{app_id}-v{version}.m4x"
         dest = packages / filename
@@ -80,7 +80,7 @@ def main():
                 raise ValueError(f"Package manifest mismatch: {app_id}")
         if dest.stat().st_size > MAX_PACKAGE:
             raise ValueError(f"Download exceeds firmware cap: {app_id}")
-        description = re.sub(r"\\s+", " ", info.get("description", "")).strip()
+        description = re.sub(r"\s+", " ", info.get("description", "")).strip()
         while len(description.encode("utf-8")) > 220:
             description = description[:-1]
         category = ("reading" if info.get("runtime") == "native" and app_id != "com.m4screenbridge.client"
@@ -103,7 +103,7 @@ def main():
         raise ValueError("Missing or unexpected catalog entry")
     output = {"schemaVersion": 1, "apps": [catalog[app_id] for app_id in ORDER]}
     (out / "index.json").write_text(
-        json.dumps(output, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8"
+        json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(f"CATALOG_OK {len(catalog)} apps {sum(f.stat().st_size for f in packages.glob('*.m4x'))} package bytes")
 

@@ -1,8 +1,8 @@
 {
   "id": "com.weread.client",
   "name": "微信读书",
-  "version": "1.7.6",
-  "versionCode": 35,
+  "version": "1.7.7",
+  "versionCode": 36,
   "runtime": "native",
   "entry": "main.xml",
   "provider": "weread",

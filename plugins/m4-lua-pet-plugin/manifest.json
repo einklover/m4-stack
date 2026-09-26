@@ -1,8 +1,8 @@
 {
   "id": "com.m4.pet",
   "name": "电子宠物",
-  "version": "0.3.3",
-  "versionCode": 9,
+  "version": "0.3.4",
+  "versionCode": 10,
   "runtime": "lua",
   "entry": "main.lua",
   "author": "m4",
