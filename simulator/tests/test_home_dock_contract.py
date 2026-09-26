@@ -50,6 +50,25 @@ class FirstBootAndStoreContracts(unittest.TestCase):
         self.assertIn("M4xInstaller::probe", store)
         self.assertIn("new AppInstallActivity", store)
 
+    def test_store_has_visible_wifi_refresh_and_pagination_touch_controls(self):
+        store = src("firmware/src/activities/apps/AppStoreActivity.cpp")
+        header = src("firmware/src/activities/apps/AppStoreActivity.h")
+        main = src("firmware/src/main.cpp")
+        self.assertIn("onWifiOpen_", header)
+        self.assertIn("onGoToAppStoreWifi", main)
+        self.assertIn("M4WifiSelectionPurpose::SystemNetworking", main)
+        self.assertIn("kToolbarTop", store)
+        self.assertIn('"Wi-Fi 设置"', store)
+        self.assertIn('"刷新目录"', store)
+        self.assertIn('"上一页"', store)
+        self.assertIn('"下一页 "', store)
+        self.assertIn('y >= kToolbarTop && y < kToolbarTop + kToolbarHeight', store)
+        self.assertIn("shown_.size()", store)
+        self.assertIn('"刷新失败：" + error', store)
+        # Toolbar is outside of the non-empty-list branch: no network still offers Wi-Fi.
+        self.assertLess(store.index('renderer.drawRoundedRect(18,kToolbarTop'),
+                        store.index('if (shown_.empty()) {', store.index('void AppStoreActivity::render()')))
+
     def test_catalog_manifest_contract(self):
         catalog = json.loads(src("docs/appstore/index.json"))
         self.assertEqual(catalog["schemaVersion"], 1)
