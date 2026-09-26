@@ -647,9 +647,20 @@ void onGoToSettings() {
   enterNewActivity(new SettingsActivity(renderer, mappedInputManager, onGoHome));
 }
 
+void onGoToAppStore();
+
+void onGoToAppStoreWifi() {
+  // Return to the store after Wi-Fi setup so its onEnter always fetches again.
+  exitActivity();
+  enterNewActivity(new WifiSelectionActivity(
+      renderer, mappedInputManager, [](bool) { onGoToAppStore(); },
+      M4WifiSelectionPurpose::SystemNetworking));
+}
+
 void onGoToAppStore() {
   exitActivity();
-  enterNewActivity(new AppStoreActivity(renderer, mappedInputManager, onGoHome));
+  enterNewActivity(new AppStoreActivity(renderer, mappedInputManager, onGoHome,
+                                        onGoToAppStoreWifi));
 }
 
 void onGoToMyLibrary();
