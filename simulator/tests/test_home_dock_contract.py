@@ -1,47 +1,66 @@
+"""First-boot Home + native App Store source contracts (no hardware needed)."""
+import json
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MODEL_H = ROOT / "firmware/src/ui/pages/HomeSceneModel.h"
-HOME_CPP = ROOT / "firmware/src/activities/home/HomeActivity.cpp"
-DECODER_H = ROOT / "firmware/src/activities/home/HomeSceneAssetDecoder.h"
-DECODER_CPP = ROOT / "firmware/src/activities/home/HomeSceneAssetDecoder.cpp"
+src = lambda name: (ROOT / name).read_text(encoding="utf-8")
 
-class HomeDockContracts(unittest.TestCase):
-    def test_kMaxAppItems_is_4(self):
-        txt = MODEL_H.read_text(encoding="utf-8")
-        self.assertIn("kMaxAppItems = 4", txt, "kMaxAppItems must remain 4 (dock has 4 slots) — locked")
 
-    def test_home_activity_publishes_builtin_files_first(self):
-        # Prefer behavior check via stable API names, not polarity of if-condition
-        src = HOME_CPP.read_text(encoding="utf-8")
-        self.assertIn("builtin.files", src,
-                      "HomeActivity.cpp must publish builtin.files as first dock app "
-                      "(canonical 'builtin.files'). Expected RED until Lane A lands. "
-                      "Equivalents like builtin_files may be accepted but test enforces canonical.")
+class FirstBootAndStoreContracts(unittest.TestCase):
+    def test_four_real_builtin_defaults_honor_saved_pins(self):
+        dock = src("firmware/src/apps/M4HomeDock.h")
+        for app in ("builtin.files", "builtin.transfer", "builtin.store", "builtin.settings"):
+            self.assertIn(f'"{app}"', dock)
+        self.assertIn("Honor exact pinned positions", dock)
+        self.assertIn("place(i, pinned[", dock)
+        self.assertIn("kSlotCount = 4", dock)
 
-    def test_home_activity_references_preferred_plugins_in_order(self):
-        src = HOME_CPP.read_text(encoding="utf-8")
-        i_weread = src.find("com.weread.client")
-        i_fanqie = src.find("com.fanqie.client")
-        i_jjwxc = src.find("com.jjwxc.client")
-        self.assertNotEqual(i_weread, -1, "must reference weread for dock ordering")
-        self.assertNotEqual(i_fanqie, -1, "must reference fanqie")
-        self.assertNotEqual(i_jjwxc, -1, "must reference jjwxc")
-        self.assertTrue(i_weread < i_fanqie < i_jjwxc,
-                        "preferred dock order must be weread, fanqie, jjwxc in that order in source (not fanqie before weread)")
+    def test_placeholder_covers_exist_without_inventing_recent_files(self):
+        home = src("firmware/src/activities/home/HomeActivity.cpp")
+        self.assertIn("if (ctx.recentBooks.empty())", home)
+        self.assertIn("addFirstBootArtwork(ctx.model.draftPublication())", home)
+        self.assertIn('ctx.model.addRecent("导入书籍"', home)
+        self.assertIn("if (path.empty()) onMyLibraryOpen()", home)
+        self.assertNotIn("RecentBooksStore::save", home)
+        self.assertIn("HomeScene::homeAddAssetToPublication", home)
 
-    def test_home_activity_uses_addApp_for_dock(self):
-        src = HOME_CPP.read_text(encoding="utf-8")
-        self.assertIn("addApp", src, "dock must use HomeSceneModel::addApp")
+    def test_both_store_navigation_surfaces_are_wired(self):
+        home = src("firmware/src/activities/home/HomeActivity.cpp")
+        drawer = src("firmware/src/activities/apps/AppListActivity.cpp")
+        main = src("firmware/src/main.cpp")
+        self.assertIn('id == "builtin.store"', home)
+        self.assertIn("BuiltinAction::AppStore", drawer)
+        self.assertIn("callbacks.onAppStoreOpen", main)
+        self.assertIn("new AppStoreActivity", main)
 
-    def test_decoder_has_resolvePath_and_builtin_handling(self):
-        # Decoder must handle builtin files icon without traversal — generic pipeline suffices.
-        txt = DECODER_H.read_text(encoding="utf-8") + DECODER_CPP.read_text(encoding="utf-8")
-        self.assertIn("resolveAppIconPath", txt)
-        self.assertIn("decodeAppIconForPublication", txt)
-        # Ensure 62x64 handling exists (already true, but locks)
-        self.assertTrue("kHomeAppIconW" in txt or "62" in txt, "decoder should handle 62x64 icon size")
+    def test_store_has_bounded_catalog_and_sha_verified_packages(self):
+        store = src("firmware/src/activities/apps/AppStoreActivity.cpp")
+        self.assertIn("kMaxCatalogBytes", store)
+        self.assertIn("kMaxPackageBytes", store)
+        self.assertIn("M4HttpTransport::requestToSink", store)
+        self.assertIn("M4NativeWifi::ensureConnected", store)
+        self.assertIn("readCache", store)
+        self.assertIn("mbedtls_sha256_update(", store)
+        self.assertIn("digest == app.sha256", store)
+        self.assertIn("probe.manifest.id != app.id", store)
+        self.assertIn("probe.manifest.versionCode != app.versionCode", store)
+        self.assertIn("M4xInstaller::probe", store)
+        self.assertIn("new AppInstallActivity", store)
+
+    def test_catalog_manifest_contract(self):
+        catalog = json.loads(src("docs/appstore/index.json"))
+        self.assertEqual(catalog["schemaVersion"], 1)
+        ids = set()
+        for app in catalog["apps"]:
+            self.assertNotIn(app["id"], ids)
+            ids.add(app["id"])
+            self.assertGreater(app["versionCode"], 0)
+            self.assertRegex(app["sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(app["packageUrl"].startswith(
+                "https://github.com/einklover/m4-stack/releases/download/"))
+            self.assertTrue(app["sourceUrl"].startswith("https://github.com/einklover/m4-stack/"))
+
 
 if __name__ == "__main__":
     unittest.main()
