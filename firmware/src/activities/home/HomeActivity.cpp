@@ -112,7 +112,28 @@ void addDockArtwork(HomeScene::HomeScenePublication& pub, const M4xInstalledApp&
   }
   const char* id = app.id.c_str();
   if (app.id == "builtin.transfer") id = "builtin.network";
-  if (app.id == "builtin.store") id = "builtin.bookmarks";
+  if (app.id == "builtin.store") {
+    // Dedicated 1-bit shopping-bag icon, not a misleading bookmark fallback.
+    static const std::array<uint8_t, HomeScene::kHomeAppIconBytes> bag = [] {
+      std::array<uint8_t, HomeScene::kHomeAppIconBytes> bits{};
+      auto dot = [&](int x,int y) {
+        if(x>=0 && x<62 && y>=0 && y<64)
+          bits[static_cast<size_t>(y)*8+(x>>3)] |= static_cast<uint8_t>(0x80u>>(x&7));
+      };
+      for (int thick=0;thick<2;++thick) {
+        for (int x=10+thick;x<52-thick;++x) {dot(x,25+thick);dot(x,56-thick);}
+        for (int y=25+thick;y<57-thick;++y) {dot(10+thick,y);dot(51-thick,y);}
+        for (int y=12+thick;y<31;++y) {dot(23+thick,y);dot(38-thick,y);}
+        for (int x=23+thick;x<=38-thick;++x)dot(x,12+thick);
+      }
+      for(int y=37;y<45;++y)for(int x=25;x<37;++x)
+        if(x==25||x==36||y==37||y==44) dot(x,y);
+      return bits;
+    }();
+    (void)HomeScene::homeAddAssetToPublication(pub,key,bag.data(),
+        HomeScene::kHomeAppIconW,HomeScene::kHomeAppIconH,HomeScene::kHomeAppIconStride);
+    return;
+  }
   const uint8_t* icon = HomeSceneAssetDecoder::builtinSheetIcon(id);
   if (icon) (void)HomeScene::homeAddAssetToPublication(pub,key,icon,
        HomeScene::kHomeAppIconW,HomeScene::kHomeAppIconH,HomeScene::kHomeAppIconStride);
