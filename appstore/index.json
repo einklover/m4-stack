@@ -2,48 +2,169 @@
   "schemaVersion": 1,
   "apps": [
     {
-      "id": "com.m4.game2048",
-      "name": "数字合成",
-      "version": "0.1.1",
-      "versionCode": 2,
-      "description": "V1 Lua 2048 for 480x800 e-ink: slide, merge, score, restart.",
-      "category": "games",
-      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/2048.m4x",
-      "sha256": "5f2adbadd2f4f88ea12cc208247410bc1a3ff6fb20e5b4f4c409d413fdc1c39d",
-      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/lua-2048-plugin/plugins/m4-lua-2048-plugin"
+      "id": "com.weread.client",
+      "name": "微信读书",
+      "version": "1.7.7",
+      "versionCode": 36,
+      "description": "1.7.1 Native：WAP 风格继续阅读/搜索 UI + 原生微信读书 Provider；登录、分片校验解码、缓存与阅读不启动 Lua",
+      "category": "reading",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.weread.client-v1.7.7.m4x",
+      "sha256": "5f5b70c14f18c020479dfdc8bfa576610474dfb9667a722c940140445acc015f",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-weread-plugin"
     },
     {
-      "id": "com.m4.tetris",
-      "name": "叠方块",
-      "version": "0.1.1",
-      "versionCode": 2,
-      "description": "V1 Lua Tetris vs ReKindle Blocks: 12x20, ILJOTSZ, 1s gravity.",
-      "category": "games",
-      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/tetris.m4x",
-      "sha256": "76270f512edfcabebe55ead96bce620eff91e3c2b1dfce5369383a83ca7f0063",
-      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/lua-2048-plugin/plugins/m4-lua-tetris-plugin"
+      "id": "com.fanqie.client",
+      "name": "番茄小说",
+      "version": "1.3.5",
+      "versionCode": 37,
+      "description": "1.3.2 Native：WAP 风格书架/发现/排行 UI + 原生番茄 Provider；章节直连 :8043+nt；阅读、章节网络、缓存与预取不启动 Lua",
+      "category": "reading",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.fanqie.client-v1.3.5.m4x",
+      "sha256": "5c4ff6c8dc23b7c92eec830f82e5bad2c27415e5ccbca6aff61d4632364d3558",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-fanqie-plugin"
+    },
+    {
+      "id": "com.jjwxc.client",
+      "name": "晋江文学",
+      "version": "1.2.5",
+      "versionCode": 28,
+      "description": "1.2.2 Native：主页支持可操作的分类推荐；VIP GB18030 映射表随包发布，正文网络、缓存与阅读不启动 Lua",
+      "category": "reading",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.jjwxc.client-v1.2.5.m4x",
+      "sha256": "3ac140b9023953c70d3f9068536bd338017dcd13e45c85242aa3d8cc620db5bb",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-jjwxc-plugin"
+    },
+    {
+      "id": "com.legado.client",
+      "name": "开源阅读",
+      "version": "1.1.1",
+      "versionCode": 3,
+      "description": "1.1.1 Native：Legado 开源阅读书源，复用系统 provider（分类/热推/目录/正文），测试端点 192.168.0.118:1122",
+      "category": "reading",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.legado.client-v1.1.1.m4x",
+      "sha256": "1d7c28b3a3f9fe810ef22659aef492a00b5431b7f144ad90f6286f3b394b5e1f",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-legado-plugin"
     },
     {
       "id": "com.m4.tarot",
-      "name": "塔 罗 牌",
-      "version": "0.1.2",
-      "versionCode": 3,
+      "name": "塔罗牌",
+      "version": "0.1.3",
+      "versionCode": 4,
       "description": "Major Arcana tarot for 480x800 e-ink: daily draw, one-card draw, three-card spread and card library.",
       "category": "lifestyle",
-      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/tarot.m4x",
-      "sha256": "ca42d2ea0a38e0e7b59eefa5714e0f9c038afca1219dabcb67c9998fb3f1b63e",
-      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/lua-2048-plugin/plugins/m4-lua-tarot-plugin"
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.tarot-v0.1.3.m4x",
+      "sha256": "f85957341fc48a9b150706521bc22a24aab877dc4fdb8ede89494dbfb30ac4bd",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-tarot-plugin"
     },
     {
       "id": "com.m4.pet",
       "name": "电子宠物",
-      "version": "0.3.3",
-      "versionCode": 9,
+      "version": "0.3.4",
+      "versionCode": 10,
       "description": "Pebble pet for 480x800 e-ink: five stages, feed, play, bath, meds, night sleep.",
       "category": "games",
-      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/pet.m4x",
-      "sha256": "1e48fa638f18f59255d67f2748ea75cb9e237a10476af007a5bc6c722363e7cf",
-      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/lua-2048-plugin/plugins/m4-lua-pet-plugin"
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.pet-v0.3.4.m4x",
+      "sha256": "a6c72b63f69b3602ef81f3109bc08630315a7be0b679e7926d0c4ce096928f24",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-pet-plugin"
+    },
+    {
+      "id": "com.m4.game2048",
+      "name": "数字合成",
+      "version": "0.1.2",
+      "versionCode": 3,
+      "description": "V1 Lua 2048 for 480x800 e-ink: slide, merge, score, restart.",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.game2048-v0.1.2.m4x",
+      "sha256": "f425af2c8b7c813a0896df0d4d1d5b389e4a61ea93918e1b99ea5dbaa99d094b",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-2048-plugin"
+    },
+    {
+      "id": "com.m4.tetris",
+      "name": "叠方块",
+      "version": "0.1.2",
+      "versionCode": 3,
+      "description": "V1 Lua Tetris vs ReKindle Blocks: 12x20, ILJOTSZ, 1s gravity.",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.tetris-v0.1.2.m4x",
+      "sha256": "72abdd8e3b352d8695a550db7e8ae1d817fca072b57c6537cb6eef20778374eb",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-tetris-plugin"
+    },
+    {
+      "id": "com.m4.minesweeper",
+      "name": "扫雷",
+      "version": "0.1.9",
+      "versionCode": 10,
+      "description": "V1 Lua Minesweeper (ReKindle: easy/medium/hard, first-click safe, flag/dig).",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.minesweeper-v0.1.9.m4x",
+      "sha256": "1025c4e0fd5175be62b51647b0465488dbbe2ea5184470a634726cc16e4a6e87",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-minesweeper-plugin"
+    },
+    {
+      "id": "com.m4.sudoku",
+      "name": "数独",
+      "version": "0.1.3",
+      "versionCode": 4,
+      "description": "V1 Lua Sudoku (ReKindle: 9x9, easy/medium/hard, check/solve).",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.sudoku-v0.1.3.m4x",
+      "sha256": "0251b48e9ed48bf05efc6e341397dbecb0b64f4cc416c023d7c4512c72880f70",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-sudoku-plugin"
+    },
+    {
+      "id": "com.m4.gomoku",
+      "name": "五子棋",
+      "version": "0.1.3",
+      "versionCode": 4,
+      "description": "V1 Lua 五子棋 15x15 vs CPU (freestyle five-in-a-row).",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.gomoku-v0.1.3.m4x",
+      "sha256": "2e672d6e2291e03b4fdabada229b7df85bd454b5cdb9603100cb04a87bf2c664",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-gomoku-plugin"
+    },
+    {
+      "id": "com.m4.huarong",
+      "name": "华容道",
+      "version": "0.1.2",
+      "versionCode": 3,
+      "description": "V1 Lua 华容道 (classic 横刀立马, Cao Cao 2x2 exits bottom).",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.huarong-v0.1.2.m4x",
+      "sha256": "637794588ac711a2f99982a0bbb22d9fd31ebdaffae6f4993ab4e9f2f4c2631e",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-huarong-plugin"
+    },
+    {
+      "id": "com.m4.hanoi",
+      "name": "汉诺塔",
+      "version": "0.1.2",
+      "versionCode": 3,
+      "description": "V1 Lua Tower of Hanoi (ReKindle: 3-7 disks, min moves 2^n-1).",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.hanoi-v0.1.2.m4x",
+      "sha256": "2f3a6535c17c6894a034543f3a165c39c9c155c5116f08d1787b5fbec9cd8516",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-hanoi-plugin"
+    },
+    {
+      "id": "com.m4.tictactoe",
+      "name": "井字棋",
+      "version": "0.1.2",
+      "versionCode": 3,
+      "description": "V1 Lua Tic-Tac-Toe vs CPU (ReKindle classic: X/O, easy/hard minimax).",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.tictactoe-v0.1.2.m4x",
+      "sha256": "d7e724214ee7a42af09be8c6c7acab6ace979e96635a72ab7335c21e1ee5ed33",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-lua-tictactoe-plugin"
+    },
+    {
+      "id": "com.m4screenbridge.client",
+      "name": "屏幕桥",
+      "version": "1.2.1",
+      "versionCode": 4,
+      "description": "1.2.1 Native：手机应用目录与小红书图文笔记、正文、评论阅读",
+      "category": "tools",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4screenbridge.client-v1.2.1.m4x",
+      "sha256": "10b10bdf4fc22c7649e652aeb584f45afcb2e56593b5663b6aa4fbcdaf50618b",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-screen-bridge-plugin"
     }
   ]
 }
