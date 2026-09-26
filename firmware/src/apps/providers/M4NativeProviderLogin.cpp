@@ -376,7 +376,7 @@ bool jjwxcLogin(const std::string& root) {
   return false;
 }
 
-void taskMain(void*) {
+void runJob() {
   logLoginStage("provider-login-task-start");
   Snapshot initial;
   {
@@ -389,11 +389,16 @@ void taskMain(void*) {
   else publish(Phase::Error, nullptr, "login_not_supported");
   (void)ok;
   logLoginStage("provider-login-task-end");
-  gBusy.store(false, std::memory_order_release);
+}
+
+void taskMain(void*) {
+  // Return through C++ frames before self-delete (FreeRTOS does not unwind).
+  runJob();
   {
     std::lock_guard<std::mutex> lock(gMu);
     gTask = nullptr;
   }
+  gBusy.store(false, std::memory_order_release);
   M4Psram::deleteTask(nullptr);
 }
 

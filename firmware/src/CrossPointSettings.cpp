@@ -269,8 +269,10 @@ bool CrossPointSettings::saveToFile() const {
   doc["zlibEmail"]                 = zlibEmail;
   doc["zlibPassword"]              = zlibPassword;
 
+  const size_t expected = measureJson(doc);
   const size_t written = serializeJson(doc, outputFile);
-  const bool synced = written > 0 && !doc.overflowed() && outputFile.sync();
+  const bool synced = expected > 0 && written == expected && !doc.overflowed() &&
+                      !outputFile.getWriteError() && outputFile.sync();
   outputFile.close();
   if (!synced) {
     SdMan.remove(SETTINGS_JSON_TMP);

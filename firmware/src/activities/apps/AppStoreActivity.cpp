@@ -159,6 +159,8 @@ struct AppStoreActivity::Job {
 void AppStoreActivity::taskEntry(void* arg) {
   std::unique_ptr<Job> job(static_cast<Job*>(arg));
   auto s = job->state;  // Shared ownership; never dereference the Activity from this task.
+  {
+  auto run = [&] {
   if (!job->download) {
     std::string body;
     std::vector<App> parsed;
@@ -227,8 +229,6 @@ void AppStoreActivity::taskEntry(void* arg) {
         if (!s->cancel.load()) s->publish(std::move(parsed), "刷新失败：" + error, true);
       } else if (!s->cancel.load()) s->publish({}, error, true);
     }
-    s->busy.store(false, std::memory_order_release);
-    M4Psram::deleteTask(nullptr);
     return;
   }
 
@@ -277,7 +277,12 @@ void AppStoreActivity::taskEntry(void* arg) {
     } else messageText = "SD 卡无法写入";
   } else messageText = "请先连接 Wi-Fi";
   s->finishDownload(ok, dest, messageText);
+  };
+  run();  // All HTTP, JSON, strings and vectors destruct on both branches.
+  }
+  job.reset();
   s->busy.store(false, std::memory_order_release);
+  s.reset();  // FreeRTOS self-delete does not unwind local smart pointers.
   M4Psram::deleteTask(nullptr);
 }
 

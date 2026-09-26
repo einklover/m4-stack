@@ -437,7 +437,7 @@ bool commitShelfGeneration(AtomicRowsSink& file, const std::string& providerId,
   return committed;
 }
 
-void taskMain(void*) {
+void runJob() {
   Snapshot job;
   {
     std::lock_guard<std::mutex> lock(gMu);
@@ -602,11 +602,16 @@ void taskMain(void*) {
     }
   }
 
-  gBusy.store(false, std::memory_order_release);
+}
+
+void taskMain(void*) {
+  // Return through C++ frames before self-delete (FreeRTOS does not unwind).
+  runJob();
   {
     std::lock_guard<std::mutex> lock(gMu);
     gTask = nullptr;
   }
+  gBusy.store(false, std::memory_order_release);
   M4Psram::deleteTask(nullptr);
 }
 

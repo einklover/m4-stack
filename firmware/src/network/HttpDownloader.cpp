@@ -12,9 +12,18 @@
 
 #include "CrossPointSettings.h"
 #include "M4HttpDownloadPolicy.h"
+#include "M4DeadlineClient.h"
 #include "util/UrlUtils.h"
 
 namespace {
+void startBody(WiFiClient& client, bool secure, uint32_t totalMs) {
+  if (secure) static_cast<M4DeadlineClient<WiFiClientSecure>&>(client).startBody(totalMs);
+  else static_cast<M4DeadlineClient<WiFiClient>&>(client).startBody(totalMs);
+}
+bool bodyExpired(WiFiClient& client, bool secure) {
+  return secure ? static_cast<M4DeadlineClient<WiFiClientSecure>&>(client).expired()
+                : static_cast<M4DeadlineClient<WiFiClient>&>(client).expired();
+}
 class BoundedWriteStream final : public Stream {
  public:
   BoundedWriteStream(Stream& target, WiFiClient& client, size_t limit)
@@ -61,11 +70,11 @@ bool HttpDownloader::fetchUrlBounded(const std::string& url, Stream& outContent,
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
-    auto* secureClient = new WiFiClientSecure();
+    auto* secureClient = new M4DeadlineClient<WiFiClientSecure>();
     secureClient->setInsecure();
     client.reset(secureClient);
   } else {
-    client.reset(new WiFiClient());
+    client.reset(new M4DeadlineClient<WiFiClient>());
   }
   HTTPClient http;
 
@@ -102,10 +111,11 @@ bool HttpDownloader::fetchUrlBounded(const std::string& url, Stream& outContent,
   }
   // HTTPClient decodes chunked transfer framing here. The wrapper caps the
   // decoded body and stops a stalled or overly long identity stream.
+  startBody(*client, UrlUtils::isHttpsUrl(url), M4HttpDownloadPolicy::kTextTotalTimeoutMs);
   BoundedWriteStream bounded(outContent, *source, maxBytes);
   const int copied = http.writeToStream(&bounded);
   http.end();
-  if (copied < 0 || bounded.failed() || static_cast<size_t>(copied) != bounded.written() ||
+  if (bodyExpired(*client, UrlUtils::isHttpsUrl(url)) || copied < 0 || bounded.failed() || static_cast<size_t>(copied) != bounded.written() ||
       (length >= 0 && bounded.written() != static_cast<size_t>(length))) return false;
   Serial.printf("[%lu] [HTTP] Fetch success bytes=%zu\n", millis(), bounded.written());
   return true;
@@ -132,11 +142,11 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::s
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
-    auto* secureClient = new WiFiClientSecure();
+    auto* secureClient = new M4DeadlineClient<WiFiClientSecure>();
     secureClient->setInsecure();
     client.reset(secureClient);
   } else {
-    client.reset(new WiFiClient());
+    client.reset(new M4DeadlineClient<WiFiClient>());
   }
   HTTPClient http;
 
@@ -265,11 +275,11 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_jg(const std::strin
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
-    auto* secureClient = new WiFiClientSecure();
+    auto* secureClient = new M4DeadlineClient<WiFiClientSecure>();
     secureClient->setInsecure();
     client.reset(secureClient);
   } else {
-    client.reset(new WiFiClient());
+    client.reset(new M4DeadlineClient<WiFiClient>());
   }
   HTTPClient http;
 
@@ -396,11 +406,11 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_dc(const std::strin
                                                              ProgressCallback progress) {
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
-    auto* secureClient = new WiFiClientSecure();
+    auto* secureClient = new M4DeadlineClient<WiFiClientSecure>();
     secureClient->setInsecure();
     client.reset(secureClient);
   } else {
-    client.reset(new WiFiClient());
+    client.reset(new M4DeadlineClient<WiFiClient>());
   }
   HTTPClient http;
 

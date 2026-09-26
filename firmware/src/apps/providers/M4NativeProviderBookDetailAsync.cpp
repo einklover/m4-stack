@@ -42,7 +42,7 @@ void publish(Phase phase, M4NativeProviderBookDetail::Result result = {}, std::s
   gSnapshot.updatedMs = millis();
 }
 
-void taskMain(void*) {
+void runJob() {
   M4NativeProviderBookDetail::Request request;
   int coverWidth = 0;
   int coverHeight = 0;
@@ -63,6 +63,11 @@ void taskMain(void*) {
     if (!cancelled()) coverBmpPath = cover.coverBmpPath;
   }
   publish(result.ok ? Phase::Ready : Phase::Error, std::move(result), std::move(coverBmpPath));
+}
+
+void taskMain(void*) {
+  // Return through C++ frames before self-delete (FreeRTOS does not unwind).
+  runJob();
   gBusy.store(false, std::memory_order_release);
   M4Psram::deleteTask(nullptr);
 }
