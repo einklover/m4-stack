@@ -81,6 +81,8 @@ def main():
         if dest.stat().st_size > MAX_PACKAGE:
             raise ValueError(f"Download exceeds firmware cap: {app_id}")
         description = re.sub(r"\s+", " ", info.get("description", "")).strip()
+        if app_id == "com.legado.client":
+            description = "开源阅读书源，需自行配置 Legado 服务端地址。"
         while len(description.encode("utf-8")) > 220:
             description = description[:-1]
         category = ("reading" if info.get("runtime") == "native" and app_id != "com.m4screenbridge.client"
