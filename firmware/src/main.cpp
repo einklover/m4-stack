@@ -69,6 +69,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include "activities/reader/ReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/apps/AppListActivity.h"
+#include "activities/apps/AppStoreActivity.h"
 #include "activities/apps/AppInstallActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
 #include "apps/M4xInstaller.h"
@@ -646,6 +647,11 @@ void onGoToSettings() {
   enterNewActivity(new SettingsActivity(renderer, mappedInputManager, onGoHome));
 }
 
+void onGoToAppStore() {
+  exitActivity();
+  enterNewActivity(new AppStoreActivity(renderer, mappedInputManager, onGoHome));
+}
+
 void onGoToMyLibrary();
 void onGoToRecentBooks();
 void onGoToBrowser();
@@ -665,6 +671,7 @@ void onGoToApps() {
   callbacks.onBookmarkNotesOpen = onGoToBookmarkNotes;
   callbacks.onNetworkOpen = onGoToNetwork;
   callbacks.onFileTransferOpen = onGoToFileTransfer;
+  callbacks.onAppStoreOpen = onGoToAppStore;
   enterNewActivity(new AppListActivity(renderer, mappedInputManager, onGoHome, std::move(callbacks)));
 }
 
@@ -755,7 +762,7 @@ void onGoHomeAnimated(const bool animateEntry, const int animationDirection) {
                                     onGoToMyLibrary, onGoToRecentBooks,
                                     onGoToSettings, onGoToFileTransfer, onGoToBrowser, onGoToJianGuoYun,
                                     onGoToDataCapsule, onGoToBookmarkNotes, onGoToApps,
-                                    animateEntry, animationDirection, onGoToNativeApp));
+                                    onGoToAppStore, animateEntry, animationDirection, onGoToNativeApp));
 #ifdef CROSSPOINT_MURPHY_M4
   gDebugActiveAppId.clear();
 #endif
