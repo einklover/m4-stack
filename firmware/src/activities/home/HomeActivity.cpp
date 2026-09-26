@@ -9,6 +9,7 @@
 #include <Xtc.h>
 
 #include <cstring>
+#include <array>
 #include <new>
 #include <string>
 
@@ -51,6 +52,72 @@
 namespace {
 
 std::atomic<uint32_t> gHomeSceneBackendCount{0};
+
+// Render first-boot covers entirely from compiled geometry. No fake history
+// entries are written to RecentBooksStore, and none of these paths are books.
+void addFirstBootCover(HomeScene::HomeScenePublication& pub,
+                       const UiScene::AssetKey& key, int motif) {
+  size_t offset = 0, bytes = 0;
+  uint16_t w = 0, h = 0, stride = 0;
+  if (!HomeScene::homePublicationSlotForKey(key, &offset, &w, &h, &stride, &bytes)) return;
+  std::array<uint8_t, HomeScene::kHomeCurrentCoverBytes> bits{};
+  auto dot = [&](int x, int y) {
+    if (x >= 0 && y >= 0 && x < w && y < h)
+      bits[static_cast<size_t>(y) * stride + (x >> 3)] |= static_cast<uint8_t>(0x80u >> (x & 7));
+  };
+  auto line = [&](int x0, int y0, int x1, int y1) {
+    const int dx = std::abs(x1-x0), sx = x0<x1 ? 1 : -1;
+    const int dy = -std::abs(y1-y0), sy = y0<y1 ? 1 : -1;
+    int err = dx + dy;
+    while (true) {
+      dot(x0,y0); if(x0==x1 && y0==y1) break;
+      int e=2*err; if(e>=dy){err+=dy;x0+=sx;} if(e<=dx){err+=dx;y0+=sy;}
+    }
+  };
+  for (int i=0;i<2;++i) {
+    line(5+i,5+i,w-6-i,5+i); line(w-6-i,5+i,w-6-i,h-6-i);
+    line(w-6-i,h-6-i,5+i,h-6-i); line(5+i,h-6-i,5+i,5+i);
+  }
+  const int cx=w/2, cy=h/2;
+  if (motif==0) { // open-book mark
+    line(cx,cy-29,cx,cy+26);
+    line(cx-33,cy-22,cx-2,cy-16); line(cx-33,cy+18,cx-2,cy+24);
+    line(cx+2,cy-16,cx+33,cy-22); line(cx+2,cy+24,cx+33,cy+18);
+    line(cx-33,cy-22,cx-33,cy+18); line(cx+33,cy-22,cx+33,cy+18);
+  } else if (motif==1) { // understated bookmark
+    line(cx-18,cy-25,cx+18,cy-25); line(cx-18,cy-25,cx-18,cy+25);
+    line(cx+18,cy-25,cx+18,cy+25); line(cx-18,cy+25,cx,cy+8);
+    line(cx+18,cy+25,cx,cy+8);
+  } else if (motif==2) { // reading lines
+    for (int i=0;i<5;++i) line(cx-24,cy-23+i*11,cx+24-(i%2)*13,cy-23+i*11);
+  } else { // open an empty shelf
+    for(int i=0;i<3;++i){int x=cx-28+i*20;line(x,cy-23,x,cy+24);line(x+13,cy-23,x+13,cy+24);}
+    line(cx-34,cy+26,cx+34,cy+26);
+  }
+  (void)HomeScene::homeAddAssetToPublication(pub,key,bits.data(),w,h,stride);
+}
+
+void addFirstBootArtwork(HomeScene::HomeScenePublication& pub) {
+  addFirstBootCover(pub,{HomeScene::kBindingCurrentCover, UiScene::kInvalidBindingId,
+                         UiScene::kInvalidAssetItemIndex},0);
+  for(uint8_t i=0;i<3;++i)
+    addFirstBootCover(pub,{HomeScene::kBindingItemCover,HomeScene::kBindingRecent,i},i+1);
+}
+
+void addDockArtwork(HomeScene::HomeScenePublication& pub, const M4xInstalledApp& app,
+                    const UiScene::AssetKey& key, const std::function<bool()>& cancelled) {
+  if (!M4HomeDock::isBuiltin(app.id)) {
+    (void)HomeSceneAssetDecoder::decodeAppIconForPublication(pub, app.path, app.icon, key, cancelled);
+    return;
+  }
+  const char* id = app.id.c_str();
+  if (app.id == "builtin.transfer") id = "builtin.network";
+  if (app.id == "builtin.store") id = "builtin.bookmarks";
+  const uint8_t* icon = HomeSceneAssetDecoder::builtinSheetIcon(id);
+  if (icon) (void)HomeScene::homeAddAssetToPublication(pub,key,icon,
+       HomeScene::kHomeAppIconW,HomeScene::kHomeAppIconH,HomeScene::kHomeAppIconStride);
+}
+
 
 // Home owns the composition of the theme-owned cover and menu surfaces. Keep
 // their geometry in one place so visual composition and touch hit-testing do
@@ -360,8 +427,7 @@ bool HomeActivity::publishHomeSceneWithAssetsFastCtx(BackendContext& ctx) {
     if (isCancelled()) return false;
     const auto& app = apps[i];
     UiScene::AssetKey key{HomeScene::kBindingItemIcon, HomeScene::kBindingApps, static_cast<uint8_t>(i)};
-    (void)HomeSceneAssetDecoder::decodeAppIconForPublication(ctx.model.draftPublication(), app.path, app.icon, key,
-                                                             isCancelled);
+    addDockArtwork(ctx.model.draftPublication(), app, key, isCancelled);
   }
   if (isCancelled()) return false;
   if (ctx.model.publish()) {
@@ -474,7 +540,7 @@ bool HomeActivity::publishHomeSceneWithAssetsCtx(BackendContext& ctx) {
     if (isCancelled()) return false;
     const auto& app = apps[i];
     UiScene::AssetKey key{HomeScene::kBindingItemIcon, HomeScene::kBindingApps, static_cast<uint8_t>(i)};
-    (void)HomeSceneAssetDecoder::decodeAppIconForPublication(draftPub, app.path, app.icon, key, isCancelled);
+    addDockArtwork(draftPub, app, key, isCancelled);
     if (isCancelled()) return false;
   }
   if (isCancelled()) return false;
@@ -500,6 +566,13 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
   ctx.model.begin(UiScene::DataState::Ready);
   ctx.model.setBattery(powerManager.getBatteryPercentage());
   ctx.model.setWifiConnected(false);
+  if (ctx.recentBooks.empty()) {
+    ctx.model.setCurrent("欢迎使用 M4", "从文件管理导入书籍", "", "", 0);
+    ctx.model.addRecent("导入书籍", "", "", "", 0);
+    ctx.model.addRecent("开启阅读", "", "", "", 0);
+    ctx.model.addRecent("更多好书", "", "", "", 0);
+    addFirstBootArtwork(ctx.model.draftPublication());
+  }
   if (!ctx.recentBooks.empty()) {
     const RecentBook& current = ctx.recentBooks.front();
     ctx.model.setCurrent(current.title.c_str(), current.author.c_str(), "", current.coverBmpPath.c_str(), current.progress);
@@ -520,12 +593,7 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
     if (!ctx.model.addApp(app.id.c_str(), app.name.c_str(), app.icon.c_str())) break;
     hasApps = true;
   }
-  if (UITheme::getInstance().getThemeType() == ThemeType::Fengyan && !hasApps) {
-    hasApps = ctx.model.addApp("com.weread.client", "微信读书", "book");
-    hasApps = ctx.model.addApp("com.fanqie.client", "番茄", "tomato") || hasApps;
-    hasApps = ctx.model.addApp("com.jjwxc.client", "晋江", "library") || hasApps;
-  }
-  if (ctx.recentBooks.empty() && !hasApps) ctx.model.begin(UiScene::DataState::Empty);
+   if (ctx.recentBooks.empty() && !hasApps) ctx.model.begin(UiScene::DataState::Empty);
   if (isCancelled()) return;
   (void)publishHomeSceneWithAssetsFastCtx(ctx);
   if (isCancelled()) return;
@@ -578,22 +646,28 @@ bool HomeActivity::dispatchHomeSceneAction(
   HomeScene::HomeSceneSnapshot snapshot{};
   if (!backendCtx->model.copyLatest(snapshot)) return false;
   if (action.action == HomeScene::kActionOpenCurrentBook && snapshot.currentExists) {
-    onSelectBook(homeSceneText(snapshot, snapshot.currentPath),
-                 homeSceneText(snapshot, snapshot.currentOriginalSource));
+    const std::string path = homeSceneText(snapshot, snapshot.currentPath);
+    if (path.empty()) onMyLibraryOpen();
+    else onSelectBook(path, homeSceneText(snapshot, snapshot.currentOriginalSource));
   } else if (action.action == HomeScene::kActionOpenRecentBook &&
              action.itemIndex < snapshot.recentCount) {
     const auto& book = snapshot.recent[action.itemIndex];
-    onSelectBook(homeSceneText(snapshot, book.path),
-                 homeSceneText(snapshot, book.originalSource));
+    const std::string path = homeSceneText(snapshot, book.path);
+    if (path.empty()) onMyLibraryOpen();
+    else onSelectBook(path, homeSceneText(snapshot, book.originalSource));
   } else if (action.action == HomeScene::kActionOpenHistory) {
     onRecentsOpen();
   } else if (action.action == HomeScene::kActionOpenApps) {
     onAppsOpen();
   } else if (action.action == HomeScene::kActionOpenApp &&
              action.itemIndex < snapshot.appCount) {
-    if (onOpenNativeApp) {
-      onOpenNativeApp(homeSceneText(snapshot, snapshot.apps[action.itemIndex].id));
-    }
+    const std::string id = homeSceneText(snapshot, snapshot.apps[action.itemIndex].id);
+    if (id == "builtin.files") onMyLibraryOpen();
+    else if (id == "builtin.transfer") onFileTransferOpen();
+    else if (id == "builtin.store") { if (onAppStoreOpen) onAppStoreOpen(); }
+    else if (id == "builtin.settings") onSettingsOpen();
+    else if (id == "builtin.history") onRecentsOpen();
+    else if (onOpenNativeApp) onOpenNativeApp(id);
   }
   return true;
 }
