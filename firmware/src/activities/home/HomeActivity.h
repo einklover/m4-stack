@@ -77,6 +77,7 @@ class HomeActivity final : public Activity {
   const std::function<void()> onDataCapsuleOpen;  // 数据胶囊回调
   const std::function<void()> onBookmarkNotesOpen;  // 书签笔记回调
   const std::function<void()> onAppsOpen;           // 扩展应用列表
+  const std::function<void()> onAppStoreOpen;
   const std::function<void(const std::string& appId)> onOpenNativeApp;
 
 
@@ -132,6 +133,7 @@ class HomeActivity final : public Activity {
                         const std::function<void()>& onDataCapsuleOpen,
                         const std::function<void()>& onBookmarkNotesOpen,
                         const std::function<void()>& onAppsOpen,
+                        const std::function<void()>& onAppStoreOpen,
                         bool animateEntry = false, int animationDirection = 0,
                         const std::function<void(const std::string& appId)>& onOpenNativeApp = {})
       : Activity("Home", renderer, mappedInput),
@@ -147,6 +149,7 @@ class HomeActivity final : public Activity {
         onDataCapsuleOpen(onDataCapsuleOpen),
         onBookmarkNotesOpen(onBookmarkNotesOpen),
         onAppsOpen(onAppsOpen),
+        onAppStoreOpen(onAppStoreOpen),
         onOpenNativeApp(onOpenNativeApp) {}
   void onEnter() override;
   void onExit() override;
