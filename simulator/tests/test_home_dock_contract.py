@@ -64,5 +64,24 @@ class FirstBootAndStoreContracts(unittest.TestCase):
             self.assertTrue(app["sourceUrl"].startswith("https://github.com/einklover/m4-stack/"))
 
 
+    def test_catalog_includes_every_plugin_at_source_version(self):
+        """Adding a plugin or bumping a manifest must update the public catalog."""
+        catalog = json.loads(src("docs/appstore/index.json"))
+        manifests = {}
+        for path in (ROOT / "plugins").glob("*/manifest.json"):
+            entry = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn(entry["id"], manifests)
+            manifests[entry["id"]] = entry
+        self.assertEqual(len(manifests), 15)
+        self.assertEqual({app["id"] for app in catalog["apps"]}, set(manifests))
+        for app in catalog["apps"]:
+            source = manifests[app["id"]]
+            self.assertEqual((app["version"], app["versionCode"]),
+                             (source["version"], source["versionCode"]))
+            self.assertIn(f'-v{source["version"]}.m4x', app["packageUrl"])
+        self.assertLess(len(src("docs/appstore/index.json").encode("utf-8")), 48 * 1024)
+
+
+
 if __name__ == "__main__":
     unittest.main()
