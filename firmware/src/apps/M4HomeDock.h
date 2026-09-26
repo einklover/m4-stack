@@ -75,26 +75,55 @@ inline bool clear(const std::string& appId) {
   return !changed || save(slots);
 }
 
-inline std::vector<M4xInstalledApp> orderedApps(const std::vector<M4xInstalledApp>& apps) {
-  const auto slots = load();
-  std::vector<M4xInstalledApp> ordered;
-  ordered.reserve(std::min<size_t>(apps.size(), kSlotCount));
-  std::vector<bool> used(apps.size(), false);
+// Built-in destinations are virtual dock tiles, not installed .m4x packages.
+inline bool isBuiltin(const std::string& id) { return id.compare(0, 8, "builtin.") == 0; }
+inline M4xInstalledApp builtin(const std::string& id) {
+  M4xInstalledApp app;
+  app.id = id;
+  if (id == "builtin.files") app.name = "文件管理";
+  else if (id == "builtin.transfer") app.name = "传书";
+  else if (id == "builtin.store") app.name = "应用商店";
+  else if (id == "builtin.settings") app.name = "设置";
+  else if (id == "builtin.history") app.name = "阅读历史";
+  else if (id == "builtin.network") app.name = "网络";
+  else if (id == "builtin.bookmarks") app.name = "书签";
+  else if (id == "builtin.opds") app.name = "OPDS";
+  else if (id == "builtin.jianguo") app.name = "坚果云";
+  else if (id == "builtin.datacapsule") app.name = "数据胶囊";
+  else app.id.clear();
+  app.icon = id;
+  app.runtime = M4xRuntimeKind::Native;
+  return app;
+}
 
-  auto appendId = [&](const std::string& id) {
-    if (id.empty() || ordered.size() >= kSlotCount) return;
-    for (size_t i = 0; i < apps.size(); ++i) {
-      if (!used[i] && apps[i].id == id) {
-        ordered.push_back(apps[i]);
-        used[i] = true;
-        return;
-      }
-    }
+inline std::vector<M4xInstalledApp> orderedApps(const std::vector<M4xInstalledApp>& apps) {
+  const auto pinned = load();
+  std::array<M4xInstalledApp, kSlotCount> slots{};
+  std::vector<std::string> seen;
+  auto make = [&](const std::string& id) -> M4xInstalledApp {
+    for (const auto& app : apps) if (app.id == id) return app;
+    return builtin(id);
   };
-  for (const auto& id : slots) appendId(id);
-  for (size_t i = 0; i < apps.size() && ordered.size() < kSlotCount; ++i) {
-    if (!used[i]) ordered.push_back(apps[i]);
+  auto place = [&](int slot, const std::string& id) {
+    if (id.empty() || std::find(seen.begin(), seen.end(), id) != seen.end()) return false;
+    M4xInstalledApp app = make(id);
+    if (app.id.empty()) return false;
+    slots[static_cast<size_t>(slot)] = std::move(app);
+    seen.push_back(id);
+    return true;
+  };
+  // Honor exact pinned positions before assigning any defaults.
+  for (int i = 0; i < kSlotCount; ++i) place(i, pinned[static_cast<size_t>(i)]);
+  const std::array<const char*, kSlotCount> defaults = {
+      "builtin.files", "builtin.transfer", "builtin.store", "builtin.settings"};
+  for (const char* id : defaults) {
+    for (int i = 0; i < kSlotCount; ++i) {
+      if (slots[static_cast<size_t>(i)].id.empty() && place(i, id)) break;
+    }
   }
+  std::vector<M4xInstalledApp> ordered;
+  ordered.reserve(kSlotCount);
+  for (auto& slot : slots) if (!slot.id.empty()) ordered.push_back(std::move(slot));
   return ordered;
 }
 
