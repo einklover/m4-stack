@@ -400,6 +400,7 @@ void AppListActivity::reload() {
   // entries use the same configured-state checks as the legacy home menu.
   addBuiltin(BuiltinAction::FileManager, "builtin.files", L(Str::kFileManager), UIIcon::Folder);
   addBuiltin(BuiltinAction::FileTransfer, "builtin.transfer", L(Str::kWifiTransfer), UIIcon::WifiTransfer);
+  addBuiltin(BuiltinAction::AppStore, "builtin.store", "应用商店", UIIcon::Library);
   addBuiltin(BuiltinAction::RecentBooks, "builtin.history", L(Str::kReadingHistory), UIIcon::Recent);
   if (std::strlen(SETTINGS.opdsServerUrl) > 0) {
     addBuiltin(BuiltinAction::Opds, "builtin.opds", L(Str::kOPDSBrowser), UIIcon::Hotspot);
@@ -574,6 +575,9 @@ void AppListActivity::activateBuiltin(const BuiltinAction action) {
       return;
     case BuiltinAction::FileTransfer:
       if (callbacks_.onFileTransferOpen) callbacks_.onFileTransferOpen();
+      return;
+    case BuiltinAction::AppStore:
+      if (callbacks_.onAppStoreOpen) callbacks_.onAppStoreOpen();
       return;
     case BuiltinAction::RecentBooks:
       if (callbacks_.onRecentBooksOpen) callbacks_.onRecentBooksOpen();
