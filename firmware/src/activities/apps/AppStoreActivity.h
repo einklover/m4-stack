@@ -12,8 +12,10 @@
 class AppStoreActivity final : public ActivityWithSubactivity {
  public:
   AppStoreActivity(GfxRenderer& renderer, MappedInputManager& input,
-                   const std::function<void()>& onBack)
-      : ActivityWithSubactivity("AppStore", renderer, input), onBack_(onBack) {}
+                   const std::function<void()>& onBack,
+                   const std::function<void()>& onWifiOpen)
+      : ActivityWithSubactivity("AppStore", renderer, input),
+        onBack_(onBack), onWifiOpen_(onWifiOpen) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
@@ -28,6 +30,7 @@ class AppStoreActivity final : public ActivityWithSubactivity {
   struct Job;
   std::shared_ptr<State> state_;
   std::function<void()> onBack_;
+  std::function<void()> onWifiOpen_;
   std::vector<App> shown_;
   std::vector<std::pair<std::string,int>> installed_;
   int selected_ = 0;
