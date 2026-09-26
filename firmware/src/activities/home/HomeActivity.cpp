@@ -588,10 +588,10 @@ void HomeActivity::publishHomeSceneFromBackendCtx(BackendContext& ctx) {
   ctx.model.setBattery(powerManager.getBatteryPercentage());
   ctx.model.setWifiConnected(false);
   if (ctx.recentBooks.empty()) {
-    ctx.model.setCurrent("欢迎使用 M4", "从文件管理导入书籍", "", "", 0);
-    ctx.model.addRecent("导入书籍", "", "", "", 0);
-    ctx.model.addRecent("开启阅读", "", "", "", 0);
-    ctx.model.addRecent("更多好书", "", "", "", 0);
+    ctx.model.setCurrent("欢迎使用 M4", "从文件管理导入书籍", "", "firstboot:hero", 0);
+    ctx.model.addRecent("导入书籍", "", "", "firstboot:import", 0);
+    ctx.model.addRecent("开启阅读", "", "", "firstboot:read", 0);
+    ctx.model.addRecent("更多好书", "", "", "firstboot:shelf", 0);
     addFirstBootArtwork(ctx.model.draftPublication());
   }
   if (!ctx.recentBooks.empty()) {
