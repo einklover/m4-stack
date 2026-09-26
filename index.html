@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>M4 应用商店</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Noto Sans SC",sans-serif;color:#161616;background:#f5f4f0}
+*{box-sizing:border-box}body{margin:0}header,main,footer{max-width:860px;margin:auto;padding:20px}
+header{padding-top:36px}h1{font-size:2.2rem;margin:6px 0}p{line-height:1.65}
+.subtitle{color:#555}.status{padding:14px 18px;background:#fff;border:1px solid #ccc;border-radius:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+article{background:#fff;border:1px solid #d3d3d0;padding:22px;border-radius:16px;min-height:215px}
+article h2{font-size:1.25rem;margin:4px 0}.tag{display:inline-block;border:1px solid #999;border-radius:20px;font-size:.78rem;padding:2px 10px}
+.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
+a{color:#141414;text-underline-offset:3px}.links a{border:1px solid #222;border-radius:8px;padding:8px 12px;text-decoration:none}
+.links a.primary{background:#1b1b1b;color:white}.links a:hover{outline:2px solid #777}
+footer{font-size:.85rem;color:#666}code{font-family:ui-monospace,monospace}
+</style>
+</head>
+<body>
+<header><span class="tag">M4 / E-INK</span><h1>应用商店</h1><p class="subtitle">开源墨水屏插件目录。设备上的应用商店读取同一份静态 JSON，无需账号或独立服务器。</p></header>
+<main><p id="status" class="status" role="status">正在读取 GitHub 应用目录…</p><div id="apps" class="grid" aria-live="polite"></div></main>
+<footer>目录：<a href="./appstore/index.json">appstore/index.json</a> · <a href="https://github.com/einklover/m4-stack">项目源码</a></footer>
+<script>
+(async()=>{
+ const status=document.querySelector("#status"),container=document.querySelector("#apps");
+ try{
+  const res=await fetch("./appstore/index.json",{cache:"no-store"});
+  if(!res.ok)throw new Error("HTTP "+res.status);
+  const body=await res.json();
+  const apps=Array.isArray(body)?body:body.apps;
+  if(!Array.isArray(apps))throw new Error("目录格式不正确");
+  status.textContent="共 "+apps.length+" 款应用";
+  for(const app of apps){
+   const card=document.createElement("article");
+   const tag=document.createElement("span");tag.className="tag";tag.textContent=app.category||"应用";
+   const name=document.createElement("h2");name.textContent=app.name||app.id||"未命名应用";
+   const ver=document.createElement("small");ver.textContent="版本 "+(app.version||"—");
+   const desc=document.createElement("p");desc.textContent=app.description||"暂无介绍";
+   const links=document.createElement("div");links.className="links";
+   for(const [caption,url,primary] of [["下载安装包",app.packageUrl,true],["开源代码",app.sourceUrl,false]]){
+    if(typeof url!=="string"||!/^https:\/\//.test(url))continue;
+    const a=document.createElement("a");a.href=url;a.textContent=caption;a.rel="noopener noreferrer";a.className=primary?"primary":"";links.append(a);
+   }
+   card.append(tag,name,ver,desc,links);container.append(card);
+  }
+ }catch(e){status.textContent="应用目录暂不可用："+e.message;}
+})();
+</script>
+</body></html>
