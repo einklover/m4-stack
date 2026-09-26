@@ -63,12 +63,12 @@ class FileHashSink final : public M4xJsonStream::Sink {
  public:
   explicit FileHashSink(FsFile& file) : file_(file) {
     mbedtls_sha256_init(&ctx_);
-    initialized_ = mbedtls_sha256_starts_ret(&ctx_, 0) == 0;
+    initialized_ = mbedtls_sha256_starts(&ctx_, 0) == 0;
   }
   ~FileHashSink() override { mbedtls_sha256_free(&ctx_); }
   bool write(const uint8_t* bytes, size_t len) override {
     if (!initialized_ || failed_ || len > kMaxPackageBytes - size_) return false;
-    if (file_.write(bytes, len) != len || mbedtls_sha256_update_ret(&ctx_, bytes, len) != 0) {
+    if (file_.write(bytes, len) != len || mbedtls_sha256_update(&ctx_, bytes, len) != 0) {
       failed_ = true;
       return false;
     }
@@ -78,7 +78,7 @@ class FileHashSink final : public M4xJsonStream::Sink {
   std::string checksum() {
     if (!initialized_ || failed_ || size_ == 0) return {};
     uint8_t digest[32]{};
-    if (mbedtls_sha256_finish_ret(&ctx_, digest) != 0) return {};
+    if (mbedtls_sha256_finish(&ctx_, digest) != 0) return {};
     constexpr char h[] = "0123456789abcdef";
     std::string result(64, '0');
     for (int i=0;i<32;++i) {
@@ -250,6 +250,16 @@ void AppStoreActivity::taskEntry(void* arg) {
       ok = result.ok && digest == app.sha256 && !s->cancel.load();
       messageText = !result.ok ? "网络下载失败" : digest != app.sha256 ? "SHA-256 校验失败" :
                     s->cancel.load() ? "已取消" : "下载校验成功";
+      // A valid checksum authenticates bytes, not the catalog identity.
+      // Reject accidentally mislabeled packages before invoking the installer.
+      if (ok) {
+        const M4xInstallResult probe = M4xInstaller::probe(dest);
+        if (!probe.ok || probe.manifest.id != app.id ||
+            probe.manifest.versionCode != app.versionCode) {
+          ok = false;
+          messageText = "安装包标识或版本与商店目录不一致";
+        }
+      }
       if (!ok) SdMan.remove(dest.c_str());
     } else messageText = "SD 卡无法写入";
   } else messageText = "请先连接 Wi-Fi";
