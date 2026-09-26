@@ -39,8 +39,11 @@ constexpr const char* kPackagePrefix = "https://einklover.github.io/m4-stack/app
 constexpr size_t kMaxCatalogBytes = 48u * 1024u;
 constexpr size_t kMaxPackageBytes = 2u * 1024u * 1024u;
 constexpr int kVisibleRows = 6;
-constexpr int kRowTop = 116;
-constexpr int kRowHeight = 94;
+constexpr int kRowTop = 166;
+constexpr int kRowHeight = 80;
+constexpr int kToolbarTop = 74;
+constexpr int kToolbarHeight = 50;
+constexpr int kPagerHeight = 42;
 
 bool hasPrefix(const std::string& value, const char* prefix) {
   return value.compare(0, std::strlen(prefix), prefix) == 0;
@@ -163,7 +166,11 @@ void AppStoreActivity::taskEntry(void* arg) {
     bool online = false;
     if (!s->cancel.load(std::memory_order_acquire)) {
       if (!M4NativeWifi::isReady()) {
-        (void)M4NativeWifi::ensureConnected(8000, [&] { return s->cancel.load(); });
+        const auto wifi = M4NativeWifi::ensureConnected(8000, [&] { return s->cancel.load(); });
+        if (!wifi.ok) {
+          error = wifi.error == "no_saved_wifi" ? "请点顶部 Wi-Fi 设置，连接网络" :
+                  wifi.error == "wifi_timeout" ? "Wi-Fi 连接超时" : "Wi-Fi 连接失败";
+        }
       }
       if (M4NativeWifi::isReady() && !s->cancel.load()) {
         for (const char* url : {kCatalogPages, kCatalogRaw}) {
@@ -178,7 +185,7 @@ void AppStoreActivity::taskEntry(void* arg) {
           error = result.error;
           if (s->cancel.load()) break;
         }
-      } else error = "未联网";
+      } else if (error == "无法获取应用目录") error = "未联网";
     }
 
     auto parse = [&](const std::string& json) -> bool {
@@ -217,7 +224,7 @@ void AppStoreActivity::taskEntry(void* arg) {
     } else {
       std::string cached;
       if (readCache(cached) && parse(cached)) {
-        if (!s->cancel.load()) s->publish(std::move(parsed), "离线目录：可能不是最新版", true);
+        if (!s->cancel.load()) s->publish(std::move(parsed), "刷新失败：" + error, true);
       } else if (!s->cancel.load()) s->publish({}, error, true);
     }
     s->busy.store(false, std::memory_order_release);
@@ -368,6 +375,29 @@ void AppStoreActivity::loop() {
     else if (onBack_) onBack_();
     return;
   }
+  // Real touch controls: footer hints alone do not receive taps on this screen.
+  int x=0,y=0;
+  const bool tapped = mappedInput.hasTouch() && mappedInput.wasScreenTapped(x,y);
+  if (!detail_ && tapped && y >= kToolbarTop && y < kToolbarTop + kToolbarHeight) {
+    if (x < renderer.getScreenWidth()/2) {
+      if (onWifiOpen_) onWifiOpen_();
+    } else if (state_ && !state_->busy.load(std::memory_order_acquire)) {
+      startJob(false);
+    }
+    return;
+  }
+  if (!detail_ && tapped && y >= renderer.getScreenHeight()-145 &&
+      y < renderer.getScreenHeight()-145+kPagerHeight && !shown_.empty()) {
+    const int pages = (static_cast<int>(shown_.size())+kVisibleRows-1)/kVisibleRows;
+    const int next = x < renderer.getScreenWidth()/2 ? std::max(0,page_-1) :
+                     std::min(pages-1,page_+1);
+    if (next != page_) {
+      selected_ = next*kVisibleRows;
+      page_ = next;
+      dirty_ = true;
+    }
+    return;
+  }
   if (state_ && !state_->busy.load(std::memory_order_acquire)) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Right) && !detail_) startJob(false);
     if (mappedInput.wasPressed(MappedInputManager::Button::Down) && !detail_ && !shown_.empty()) {
@@ -379,10 +409,10 @@ void AppStoreActivity::loop() {
       dirty_ = true;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) select();
-    int x=0,y=0;
-    if (mappedInput.hasTouch() && mappedInput.wasScreenTapped(x,y)) {
+    if (tapped) {
       if (detail_) {
-        if (y >= renderer.getScreenHeight()-160) select();
+        if (y >= renderer.getScreenHeight()-178 &&
+            y < renderer.getScreenHeight()-108) select();
       } else if (y >= kRowTop && y < kRowTop + kVisibleRows*kRowHeight) {
         int idx = page_*kVisibleRows+(y-kRowTop)/kRowHeight;
         if (idx >= 0 && idx < static_cast<int>(shown_.size())) {
@@ -429,6 +459,18 @@ void AppStoreActivity::render() {
       M4UiText::drawCentered(renderer,UI_12_FONT_ID,210,status_.c_str());
       M4UiText::drawCentered(renderer,UI_10_FONT_ID,260,"请连接 Wi-Fi 后刷新");
     } else {
+      const int wButton = (w-54)/2;
+      renderer.drawRoundedRect(18,kToolbarTop,wButton,kToolbarHeight,1,9,true);
+      renderer.drawRoundedRect(w/2+9,kToolbarTop,wButton,kToolbarHeight,1,9,true);
+      M4UiText::drawCenteredInBox(renderer,UI_10_FONT_ID,18,kToolbarTop,wButton,kToolbarHeight,
+                                 "Wi-Fi 设置",true);
+      M4UiText::drawCenteredInBox(renderer,UI_10_FONT_ID,w/2+9,kToolbarTop,wButton,kToolbarHeight,
+                    state_ && state_->busy.load() ? "刷新中..." : "刷新目录",true);
+      const bool connected=M4NativeWifi::isReady();
+      std::string headline=(connected ? "Wi-Fi 已连接" : "Wi-Fi 未连接");
+      headline += offline_ ? " | 缓存 " : " | 共 ";
+      headline += std::to_string(shown_.size()) + " 款";
+      M4UiText::draw(renderer,UI_10_FONT_ID,22,kRowTop-16,headline.c_str());
       page_ = selected_/kVisibleRows;
       for (int row=0;row<kVisibleRows;++row) {
         const int i=page_*kVisibleRows+row;
@@ -444,9 +486,19 @@ void AppStoreActivity::render() {
         }
         M4UiText::draw(renderer,UI_10_FONT_ID,34,y+52,subtitle.c_str());
       }
+      const int pages=(static_cast<int>(shown_.size())+kVisibleRows-1)/kVisibleRows;
+      if (pages>1) {
+        renderer.drawRoundedRect(18,h-145,(w-54)/2,kPagerHeight,1,7,true);
+        renderer.drawRoundedRect(w/2+9,h-145,(w-54)/2,kPagerHeight,1,7,true);
+        M4UiText::drawCenteredInBox(renderer,UI_10_FONT_ID,18,h-145,(w-54)/2,
+                                   kPagerHeight,"上一页",true);
+        std::string next="下一页 " + std::to_string(page_+1) + "/" + std::to_string(pages);
+        M4UiText::drawCenteredInBox(renderer,UI_10_FONT_ID,w/2+9,h-145,(w-54)/2,
+                                   kPagerHeight,next.c_str(),true);
+      }
     }
     if (!status_.empty()) {
-      std::string label=offline_?"离线缓存":state_ && state_->busy.load()?"正在同步":status_;
+      const std::string label=state_ && state_->busy.load() ? "正在同步目录..." : status_;
       M4UiText::draw(renderer,UI_10_FONT_ID,22,h-93,label.c_str());
     }
     GUI.drawButtonHints(renderer,"返回","详情","","刷新");
