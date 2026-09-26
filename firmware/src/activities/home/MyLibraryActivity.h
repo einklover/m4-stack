@@ -43,6 +43,7 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
   bool isCutMode = false;
   //搜索模式
   bool isSearchMode = false;
+  bool searchTruncated = false;
   std::vector<std::string> searchResults;
   std::string originalBasePath;
 
@@ -106,7 +107,8 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
     std::string out = "{\"basepath\":\"" + safe(basepath) + "\",\"selected\":\"" + safe(selected) +
                       "\",\"selected_index\":" + std::to_string(selectorIndex) +
                       ",\"count\":" + std::to_string(visible.size()) +
-                      ",\"search\":" + (isSearchMode ? "true" : "false") + "}";
+                      ",\"search\":" + (isSearchMode ? "true" : "false") +
+                      ",\"truncated\":" + (searchTruncated ? "true" : "false") + "}";
     return out;
   }
 };

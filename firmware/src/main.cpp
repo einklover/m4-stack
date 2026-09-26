@@ -72,6 +72,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include "activities/apps/AppStoreActivity.h"
 #include "activities/apps/AppInstallActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
+#include "util/M4UiText.h"
 #include "apps/M4xInstaller.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -954,41 +955,57 @@ void setup() {
     }
 #endif
 
-    // SD Card Initialization (classified stage/detail; never format user media).
-    // Second chance: cold boot / post-flash can leave the rail unsettled; a short
-    // delay + full re-begin often succeeds even when the first probe reported no_card
-    // despite a physical card being present.
+    // Retry only before any application file handles or workers exist. A mounted
+    // volume that later fails I/O must never be remounted from this path.
+    bool sdRetryDisplayReady = false;
     if (!SdMan.begin()) {
-        Serial.printf("[%lu] [M4-SD] first begin failed stage=%s code=%s detail=%s — retry in 400ms\n", millis(),
-                      SdMan.lastStage(), SdMan.lastCodeName(), SdMan.lastDetail());
-        delay(400);
-        if (!SdMan.begin()) {
-          Serial.printf("[%lu] [M4-SD] ERROR stage=%s code=%s detail=%s\n", millis(), SdMan.lastStage(),
-                        SdMan.lastCodeName(), SdMan.lastDetail());
+      Serial.printf("[%lu] [M4-SD] first begin failed stage=%s code=%s detail=%s; retry in 400ms\n", millis(),
+                    SdMan.lastStage(), SdMan.lastCodeName(), SdMan.lastDetail());
+      delay(400);
+      if (!SdMan.begin()) {
 #ifdef CROSSPOINT_MURPHY_M4
-          // Touch not stream-ready at this point; report configured only.
-          printM4BootSummary(m4PsramOk, false, false, gpio.hasTouch(), gpio.isTouchStreamReady(), false, m4LightOk);
-#endif
-          setupDisplayAndFonts();
-          exitActivity();
-          // "no_card" is often a bus/power false negative, not an empty slot.
-          char sdMsg[120];
-          const char* code = SdMan.lastCodeName();
-          if (code && strcmp(code, "no_card") == 0) {
-            snprintf(sdMsg, sizeof(sdMsg),
-                     "SD init fail (no_card)\nReseat card & reboot\n%s", SdMan.lastDetail());
-          } else if (code && strcmp(code, "unsupported_fs") == 0) {
-            snprintf(sdMsg, sizeof(sdMsg), "SD: bad filesystem\nUse FAT32\n%s", SdMan.lastDetail());
-          } else if (code && (strcmp(code, "mount_timeout") == 0 || strcmp(code, "sector_timeout") == 0)) {
-            snprintf(sdMsg, sizeof(sdMsg), "SD: bus timeout\nReseat & reboot\n%s", SdMan.lastDetail());
-          } else {
-            snprintf(sdMsg, sizeof(sdMsg), "SD: %s/%s\n%s", SdMan.lastStage(), code ? code : "?",
-                     SdMan.lastDetail());
+        printM4BootSummary(m4PsramOk, false, false, gpio.hasTouch(), gpio.isTouchStreamReady(), false, m4LightOk);
+        setupDisplayAndFonts();
+        sdRetryDisplayReady = true;
+        for (;;) {
+          Serial.printf("[%lu] [M4-SD] waiting for retry stage=%s code=%s detail=%s\n", millis(),
+                        SdMan.lastStage(), SdMan.lastCodeName(), SdMan.lastDetail());
+          char status[64];
+          snprintf(status, sizeof(status), "SD: %s", SdMan.lastCodeName());
+          renderer.clearScreen();
+          M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 - 28, status, true,
+                                 EpdFontFamily::BOLD);
+          M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 + 8,
+                                 "Check card; Confirm to retry", true);
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          // Require a fresh press so a held boot key cannot trigger a retry loop.
+          bool released = false;
+          for (;;) {
+            gpio.update();
+            const bool pressed = mappedInputManager.isPressed(MappedInputManager::Button::Confirm);
+            if (!pressed) released = true;
+            if (released && pressed) break;
+            delay(20);
           }
-          enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager, sdMsg, EpdFontFamily::BOLD));
-          return;
+          while (mappedInputManager.isPressed(MappedInputManager::Button::Confirm)) {
+            gpio.update();
+            delay(20);
+          }
+          if (SdMan.begin()) {
+            Serial.printf("[%lu] [M4-SD] interactive retry mounted\n", millis());
+            break;
+          }
         }
+#else
+        setupDisplayAndFonts();
+        exitActivity();
+        enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager, "SD init failed",
+                                                       EpdFontFamily::BOLD));
+        return;
+#endif
+      } else {
         Serial.printf("[%lu] [M4-SD] second begin succeeded after retry\n", millis());
+      }
     }
 #ifdef CROSSPOINT_MURPHY_M4
     // Read-only capability probe: root list + optional settings file if present.
@@ -996,7 +1013,7 @@ void setup() {
       Serial.printf("[%lu] [M4-SD] ERROR capability_probe stage=%s code=%s detail=%s\n", millis(), SdMan.lastStage(),
                     SdMan.lastCodeName(), SdMan.lastDetail());
       printM4BootSummary(m4PsramOk, false, false, gpio.hasTouch(), gpio.isTouchStreamReady(), false, m4LightOk);
-      setupDisplayAndFonts();
+      if (!sdRetryDisplayReady) setupDisplayAndFonts();
       exitActivity();
       enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager, "SD: io_failure",
                                                      EpdFontFamily::BOLD));
@@ -1129,7 +1146,7 @@ void setup() {
     Serial.printf("[%lu] [DBG] FontCacheManager initialized\n", millis());
     Serial.flush();
 
-    setupDisplayAndFonts();
+    if (!sdRetryDisplayReady) setupDisplayAndFonts();
     Serial.printf("[%lu] [M4-DISP] setupDisplayAndFonts done\n", millis());
     Serial.flush();
 #ifdef CROSSPOINT_MURPHY_M4
@@ -1741,7 +1758,8 @@ void loop() {
       const auto t = M4Memory::stats(M4Memory::Pool::Ttf);
       const auto a = M4Memory::stats(M4Memory::Pool::App);
       const auto s = M4Memory::stats(M4Memory::Pool::Scratch);
-      Serial.printf("[M4-PSRAM-RESET] ttf=%u/%u app=%u/%u scratch=%u/%u internal_free=%u internal_largest=%u raw_psram_free=%u "
+      Serial.printf("[M4-PSRAM-RESET] ttf=%u/%u app=%u/%u scratch=%u/%u internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u "
+                    "raw_psram_free=%u raw_psram_largest=%u main_stack_hwm=%u "
                     "ttf_peak=%u ttf_fail=%u ttf_reset=%u app_peak=%u app_fail=%u app_reset=%u "
                     "scratch_peak=%u scratch_fail=%u scratch_reset=%u\n",
                     static_cast<unsigned>(t.used), static_cast<unsigned>(t.capacity),
@@ -1749,7 +1767,11 @@ void loop() {
                     static_cast<unsigned>(s.used), static_cast<unsigned>(s.capacity),
                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT)),
+                    static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT)),
                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                    static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+                    static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
                     static_cast<unsigned>(t.peak), static_cast<unsigned>(t.failures), static_cast<unsigned>(t.resets),
                     static_cast<unsigned>(a.peak), static_cast<unsigned>(a.failures), static_cast<unsigned>(a.resets),
                     static_cast<unsigned>(s.peak), static_cast<unsigned>(s.failures), static_cast<unsigned>(s.resets));

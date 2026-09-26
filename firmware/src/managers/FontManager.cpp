@@ -323,12 +323,14 @@ void FontManager::scanFonts() {
 
     Serial.printf("[FM] %s opened. Iterating files...\n", dirPath);
     FsFile file;
-    while (file.openNext(&fontDir, O_READ)) {
+    unsigned scannedEntries = 0;
+    constexpr unsigned kMaxFontEntriesPerDir = 512;
+    while (scannedEntries < kMaxFontEntriesPerDir && file.openNext(&fontDir, O_READ)) {
+      ++scannedEntries;
+      if ((scannedEntries & 31u) == 0) delay(1);
       if (!file.isDirectory()) {
         char filename[128];
         file.getName(filename, sizeof(filename));
-        Serial.printf("[FM] Checking %s/%s\n", dirPath, filename);
-
         String name = String(filename);
         if (allowLegacyEpdFont && name.endsWith(".epdfont")) {
         // Use the full filename (minus .epdfont extension) as the font name
@@ -367,6 +369,10 @@ void FontManager::scanFonts() {
       file.close();
     }
     fontDir.close();
+    if (scannedEntries == kMaxFontEntriesPerDir) {
+      Serial.printf("[FM] %s scan capped at %u entries; split large FONT directories\n",
+                    dirPath, kMaxFontEntriesPerDir);
+    }
   };
 
   // Legacy generated bitmap fonts stay in /fonts for internal compatibility.

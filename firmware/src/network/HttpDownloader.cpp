@@ -11,9 +11,53 @@
 #include <memory>
 
 #include "CrossPointSettings.h"
+#include "M4HttpDownloadPolicy.h"
 #include "util/UrlUtils.h"
 
+namespace {
+class BoundedWriteStream final : public Stream {
+ public:
+  BoundedWriteStream(Stream& target, WiFiClient& client, size_t limit)
+      : target_(target), client_(client), limit_(limit), started_(millis()), progressed_(started_) {}
+  size_t write(uint8_t byte) override { return write(&byte, 1); }
+  size_t write(const uint8_t* data, size_t size) override {
+    const uint32_t now = millis();
+    if (M4HttpDownloadPolicy::timedOut(now, started_, progressed_) ||
+        now - started_ >= M4HttpDownloadPolicy::kTextTotalTimeoutMs ||
+        M4HttpDownloadPolicy::exceeds(written_, size, limit_)) {
+      failed_ = true;
+      client_.stop();
+      return 0;
+    }
+    if (size == 0) return 0;
+    const size_t n = target_.write(data, size);
+    written_ += n;
+    if (n != size) failed_ = true;
+    if (n) progressed_ = millis();
+    return n;
+  }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+  bool failed() const { return failed_; }
+  size_t written() const { return written_; }
+ private:
+  Stream& target_;
+  WiFiClient& client_;
+  size_t limit_;
+  size_t written_ = 0;
+  uint32_t started_;
+  uint32_t progressed_;
+  bool failed_ = false;
+};
+}  // namespace
+
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
+  return fetchUrlBounded(url, outContent, M4HttpDownloadPolicy::kMaxFeedBytes);
+}
+
+bool HttpDownloader::fetchUrlBounded(const std::string& url, Stream& outContent, size_t maxBytes) {
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
@@ -29,6 +73,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
 
   http.begin(*client, url.c_str());
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(M4HttpDownloadPolicy::kIdleTimeoutMs);
   http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
 
   // Add Basic HTTP auth if credentials are configured
@@ -45,17 +90,30 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
     return false;
   }
 
-  http.writeToStream(&outContent);
-
+  const int length = http.getSize();
+  if (length >= 0 && static_cast<size_t>(length) > maxBytes) {
+    http.end();
+    return false;
+  }
+  WiFiClient* source = http.getStreamPtr();
+  if (!source) {
+    http.end();
+    return false;
+  }
+  // HTTPClient decodes chunked transfer framing here. The wrapper caps the
+  // decoded body and stops a stalled or overly long identity stream.
+  BoundedWriteStream bounded(outContent, *source, maxBytes);
+  const int copied = http.writeToStream(&bounded);
   http.end();
-
-  Serial.printf("[%lu] [HTTP] Fetch success\n", millis());
+  if (copied < 0 || bounded.failed() || static_cast<size_t>(copied) != bounded.written() ||
+      (length >= 0 && bounded.written() != static_cast<size_t>(length))) return false;
+  Serial.printf("[%lu] [HTTP] Fetch success bytes=%zu\n", millis(), bounded.written());
   return true;
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent) {
   StreamString stream;
-  if (!fetchUrl(url, stream)) {
+  if (!fetchUrlBounded(url, stream, M4HttpDownloadPolicy::kMaxTextBytes)) {
     return false;
   }
   outContent = stream.c_str();
@@ -87,6 +145,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::s
 
   http.begin(*client, url.c_str());
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(M4HttpDownloadPolicy::kIdleTimeoutMs);
   http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
 
   // Add Basic HTTP auth if credentials are configured
@@ -106,8 +165,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::s
   const size_t rawSize = http.getSize();
   // ESP32 HTTPClient returns -1 (0xFFFFFFFF as size_t) when Content-Length is unknown
   const size_t contentLength = (rawSize == (size_t)-1) ? 0 : rawSize;
+  const size_t effectiveMax = maxBytes < M4HttpDownloadPolicy::kMaxFileBytes
+                                  ? maxBytes : M4HttpDownloadPolicy::kMaxFileBytes;
   Serial.printf("[%lu] [HTTP] Content-Length: %zu\n", millis(), contentLength);
-  if (contentLength > maxBytes) {
+  if (contentLength > effectiveMax) {
     http.end();
     return HTTP_ERROR;
   }
@@ -139,8 +200,16 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::s
   uint8_t buffer[DOWNLOAD_CHUNK_SIZE];
   size_t downloaded = 0;
   const size_t total = contentLength > 0 ? contentLength : 0;
+  const uint32_t started = millis();
+  uint32_t progressed = started;
 
   while (http.connected() && (contentLength == 0 || downloaded < contentLength)) {
+    if (M4HttpDownloadPolicy::timedOut(millis(), started, progressed)) {
+      file.close();
+      SdMan.remove(destPath.c_str());
+      http.end();
+      return HTTP_ERROR;
+    }
     const size_t available = stream->available();
     if (available == 0) {
       delay(1);
@@ -148,7 +217,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::s
     }
 
     const size_t toRead = available < DOWNLOAD_CHUNK_SIZE ? available : DOWNLOAD_CHUNK_SIZE;
-    if (downloaded >= maxBytes || toRead > maxBytes - downloaded) {
+    if (M4HttpDownloadPolicy::exceeds(downloaded, toRead, effectiveMax)) {
       file.close();
       SdMan.remove(destPath.c_str());
       http.end();
@@ -170,6 +239,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::s
     }
 
     downloaded += bytesRead;
+    progressed = millis();
 
     if (progress && total > 0) {
       progress(downloaded, total);
@@ -208,6 +278,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_jg(const std::strin
 
   http.begin(*client, url.c_str());
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(M4HttpDownloadPolicy::kIdleTimeoutMs);
   http.addHeader("User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
 
   // Add Basic HTTP auth if credentials are configured
@@ -226,6 +297,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_jg(const std::strin
 
   const size_t rawSize_jg = http.getSize();
   const size_t contentLength = (rawSize_jg == (size_t)-1) ? 0 : rawSize_jg;
+  if (contentLength > M4HttpDownloadPolicy::kMaxFileBytes) {
+    http.end();
+    return HTTP_ERROR;
+  }
   Serial.printf("[%lu] [HTTP] Content-Length: %zu\n", millis(), contentLength);
 
   // Remove existing file if present
@@ -255,8 +330,16 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_jg(const std::strin
   uint8_t buffer[DOWNLOAD_CHUNK_SIZE];
   size_t downloaded = 0;
   const size_t total = contentLength > 0 ? contentLength : 0;
+  const uint32_t started = millis();
+  uint32_t progressed = started;
 
   while (http.connected() && (contentLength == 0 || downloaded < contentLength)) {
+    if (M4HttpDownloadPolicy::timedOut(millis(), started, progressed)) {
+      file.close();
+      SdMan.remove(destPath.c_str());
+      http.end();
+      return HTTP_ERROR;
+    }
     const size_t available = stream->available();
     if (available == 0) {
       delay(1);
@@ -264,6 +347,12 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_jg(const std::strin
     }
 
     const size_t toRead = available < DOWNLOAD_CHUNK_SIZE ? available : DOWNLOAD_CHUNK_SIZE;
+    if (M4HttpDownloadPolicy::exceeds(downloaded, toRead, M4HttpDownloadPolicy::kMaxFileBytes)) {
+      file.close();
+      SdMan.remove(destPath.c_str());
+      http.end();
+      return HTTP_ERROR;
+    }
     const size_t bytesRead = stream->readBytes(buffer, toRead);
 
     if (bytesRead == 0) {
@@ -280,6 +369,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_jg(const std::strin
     }
 
     downloaded += bytesRead;
+    progressed = millis();
 
     if (progress && total > 0) {
       progress(downloaded, total);
@@ -319,6 +409,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_dc(const std::strin
 
   http.begin(*client, url.c_str());
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(M4HttpDownloadPolicy::kIdleTimeoutMs);
   // 关键：使用 Zotero User-Agent（必须用 setUserAgent，addHeader 会被覆盖）
   http.setUserAgent("Zotero/7.0");
 
@@ -338,6 +429,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_dc(const std::strin
 
   const size_t rawSize_dc = http.getSize();
   const size_t contentLength = (rawSize_dc == (size_t)-1) ? 0 : rawSize_dc;
+  if (contentLength > M4HttpDownloadPolicy::kMaxFileBytes) {
+    http.end();
+    return HTTP_ERROR;
+  }
   Serial.printf("[%lu] [DC] Content-Length: %zu\n", millis(), contentLength);
 
   if (SdMan.exists(destPath.c_str())) {
@@ -363,8 +458,16 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_dc(const std::strin
   uint8_t buffer[DOWNLOAD_CHUNK_SIZE];
   size_t downloaded = 0;
   const size_t total = contentLength > 0 ? contentLength : 0;
+  const uint32_t started = millis();
+  uint32_t progressed = started;
 
   while (http.connected() && (contentLength == 0 || downloaded < contentLength)) {
+    if (M4HttpDownloadPolicy::timedOut(millis(), started, progressed)) {
+      file.close();
+      SdMan.remove(destPath.c_str());
+      http.end();
+      return HTTP_ERROR;
+    }
     const size_t available = stream->available();
     if (available == 0) {
       delay(1);
@@ -372,6 +475,12 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_dc(const std::strin
     }
 
     const size_t toRead = available < DOWNLOAD_CHUNK_SIZE ? available : DOWNLOAD_CHUNK_SIZE;
+    if (M4HttpDownloadPolicy::exceeds(downloaded, toRead, M4HttpDownloadPolicy::kMaxFileBytes)) {
+      file.close();
+      SdMan.remove(destPath.c_str());
+      http.end();
+      return HTTP_ERROR;
+    }
     const size_t bytesRead = stream->readBytes(buffer, toRead);
 
     if (bytesRead == 0) {
@@ -388,6 +497,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_dc(const std::strin
     }
 
     downloaded += bytesRead;
+    progressed = millis();
 
     if (progress && total > 0) {
       progress(downloaded, total);

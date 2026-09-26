@@ -724,3 +724,15 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - SdFat 2.3.1 `FatFile::openNext` skips `.` and `..` directory entries, so source review of an application's recursive delete alone does not prove a dot-entry recursion bug. Keep a depth limit and close child handles before deleting or descending to bound malformed/deep trees.
 - Reader `progress.bin` / `progress.dat` / `progress.tmp` are stored in the same `epub_`, `xtc_`, and `txt_` directories as regenerable data. Clear Cache must leave these files in place, including on partial failure; do not treat an entire book cache directory as disposable.
 - Native SDMMC transfer buffers require DMA-capable internal RAM. A device-owned bounded bounce buffer with serialized transfers avoids repeated large allocations and bounds the request workset; do not put this buffer in PSRAM.
+
+## 2026-09-26 — Bound early SD retry, legacy HTTP, and library search
+
+- Only retry SD mount interactively inside the early boot window before settings, readers, or other file owners open handles. A mounted volume that later fails a capability probe or runtime I/O needs a separate quiescence/unmount design; calling `begin()` from an arbitrary activity is unsafe.
+- `HTTPClient::writeToStream` decodes chunked transfer framing. A bounded wrapper around that API preserves OPDS feeds; directly copying `getStreamPtr()` bytes can expose chunk headers to parsers. Cap decoded text and stop idle/overlong transfers.
+- Legacy file downloads had a 4 KiB stack buffer and an unbounded zero-progress loop. Use a smaller fixed buffer and explicit byte, idle, and total limits, while checking file writes and removing incomplete generated downloads.
+- Library recursive search previously kept a large filename buffer in each stack frame and had no work bounds. Share one buffer across frames, cap depth/nodes/results/time, yield periodically, and visibly mark truncated results. Do not silently replace the full directory browser with an inaccessible first-N subset.
+
+## 2026-09-26 — Settings writes need a complete copy at every commit stage
+
+- `CrossPointSettings::saveToFile()` previously opened `settings.json` with `O_TRUNC`, so a power loss during serialization could erase preferences and account settings. Write and sync `settings.json.tmp`, rotate the complete primary to `.bak`, then rename the temp into place. On boot, try primary then backup; if backup is the only valid JSON, do not rotate a corrupt primary over it on the next save.
+- Multiple UI/network/reader tasks call `SETTINGS.saveToFile()`. Serialize the file transaction with the existing static FreeRTOS mutex pattern. A fake filesystem fault-injection host test should fail individual remove/rename steps and assert a complete primary or backup survives.

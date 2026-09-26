@@ -47,5 +47,6 @@ class HttpDownloader {
   static DownloadError downloadToFile_dc(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr);
  private:
-  static constexpr size_t DOWNLOAD_CHUNK_SIZE = 4096;
+  static constexpr size_t DOWNLOAD_CHUNK_SIZE = 1024;
+  static bool fetchUrlBounded(const std::string& url, Stream& stream, size_t maxBytes);
 };

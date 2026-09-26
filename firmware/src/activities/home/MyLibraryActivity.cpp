@@ -13,6 +13,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/M4UiText.h"
+#include "util/M4LibraryScanPolicy.h"
 #include "util/StringUtils.h"
 //加入搜索
 #include "../util/KeyboardEntryActivity.h"
@@ -132,48 +133,49 @@ bool copyDir(const char* srcPath, const char* dstPath) {
   return true;
 }
 
-// 递归搜索含关键词文件，并收集对应文件大小
+// Search is bounded by nodes, depth, matches, and wall time. Child handles
+// close before descending; one name buffer is shared across recursive frames.
 void searchFilesRecursive(const std::string& currentDir, const std::string& keyword,
-                           std::vector<std::string>& result, std::vector<uint32_t>& sizes) {
+                          std::vector<std::string>& result, std::vector<uint32_t>& sizes,
+                          M4LibraryScanPolicy::Budget& budget, unsigned depth, char (&name)[500]) {
   auto root = SdMan.open(currentDir.c_str());
   if (!root || !root.isDirectory()) {
     if (root) root.close();
     return;
   }
-
-  char name[500];
   root.rewindDirectory();
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
+    if (!budget.visit(millis())) { file.close(); break; }
+    if ((budget.entries & 31u) == 0) delay(1);
     file.getName(name, sizeof(name));
     if (name[0] == '.' || strcmp(name, "System Volume Information") == 0) {
       file.close();
       continue;
     }
-
+    const bool isDir = file.isDirectory();
+    const uint32_t size = isDir ? 0 : static_cast<uint32_t>(file.size());
+    file.close();
     std::string fullPath = currentDir;
-    if (fullPath.back() != '/') fullPath += "/";
+    if (fullPath.back() != '/') fullPath += '/';
     fullPath += name;
-
-    if (file.isDirectory()) {
-      searchFilesRecursive(fullPath + "/", keyword, result, sizes);
+    if (isDir) {
+      if (budget.descend(depth)) searchFilesRecursive(fullPath + "/", keyword, result, sizes, budget, depth + 1, name);
     } else {
       std::string fn = name;
-      std::transform(fn.begin(), fn.end(), fn.begin(), ::tolower);
-      std::string kw = keyword;
-      std::transform(kw.begin(), kw.end(), kw.begin(), ::tolower);
-
-      if (fn.find(kw) != std::string::npos) {
-        if (StringUtils::checkFileExtension(fn, ".epub") ||
-            StringUtils::checkFileExtension(fn, ".xtch") ||
-            StringUtils::checkFileExtension(fn, ".xtc") ||
-            StringUtils::checkFileExtension(fn, ".txt") ||
-            StringUtils::checkFileExtension(fn, ".md")) {
-          result.push_back(fullPath);
-          sizes.push_back(static_cast<uint32_t>(file.size()));
-        }
+      std::transform(fn.begin(), fn.end(), fn.begin(),
+                     [](unsigned char c) { return static_cast<char>(tolower(c)); });
+      if (fn.find(keyword) != std::string::npos &&
+          (StringUtils::checkFileExtension(fn, ".epub") ||
+           StringUtils::checkFileExtension(fn, ".xtch") ||
+           StringUtils::checkFileExtension(fn, ".xtc") ||
+           StringUtils::checkFileExtension(fn, ".txt") ||
+           StringUtils::checkFileExtension(fn, ".md"))) {
+        if (!budget.match()) break;
+        result.push_back(std::move(fullPath));
+        sizes.push_back(size);
       }
     }
-    file.close();
+    if (budget.truncated) break;
   }
   root.close();
 }
@@ -196,10 +198,20 @@ void MyLibraryActivity::doSearch(const char* keyword) {
   originalBasePath = basepath;
   searchResults.clear();
   searchResultSizes.clear();
+  searchTruncated = false;
   
   Serial.printf("[搜索] 开始搜索 %s 及其子目录中包含'%s'的文件\n", basepath.c_str(), SEARCH_KEYWORD);
   // 调用递归搜索（传char数组）
-  searchFilesRecursive(basepath, SEARCH_KEYWORD, searchResults, searchResultSizes);
+  std::string foldedKeyword = SEARCH_KEYWORD;
+  std::transform(foldedKeyword.begin(), foldedKeyword.end(), foldedKeyword.begin(),
+                 [](unsigned char c) { return static_cast<char>(tolower(c)); });
+  M4LibraryScanPolicy::Budget budget(millis());
+  char searchName[500];
+  searchFilesRecursive(basepath, foldedKeyword, searchResults, searchResultSizes, budget, 0, searchName);
+  searchTruncated = budget.truncated;
+  if (searchTruncated) Serial.printf("[搜索] Capped entries=%u matches=%u elapsed=%lu ms\n",
+                                      static_cast<unsigned>(budget.entries),
+                                      static_cast<unsigned>(budget.matches), millis() - budget.started);
   
   // Sort results and their sizes together to keep the two vectors in sync
   {
@@ -273,6 +285,7 @@ void MyLibraryActivity::cancelSearch() {
   isSearchMode = false;
   searchResults.clear();
   searchResultSizes.clear();
+  searchTruncated = false;
   basepath = originalBasePath;
   loadFiles();
   selectorIndex = 0;
@@ -987,6 +1000,11 @@ void MyLibraryActivity::render() const {
 
 
   int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  if (isSearchMode && searchTruncated) {
+    M4UiText::draw(renderer, UI_10_FONT_ID, metrics.contentSidePadding, contentTop,
+                   "结果较多，请缩小搜索范围");
+    contentTop += 28;
+  }
   // 有复制/剪切标记时显示状态栏
   if (hasCopyData && !copySourcePath.empty()) {
     const size_t lastSlash = copySourcePath.find_last_of('/');
