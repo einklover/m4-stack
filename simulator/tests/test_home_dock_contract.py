@@ -81,6 +81,10 @@ class FirstBootAndStoreContracts(unittest.TestCase):
             self.assertIn(f'-v{source["version"]}.m4x', app["packageUrl"])
         self.assertLess(len(src("docs/appstore/index.json").encode("utf-8")), 48 * 1024)
 
+    def test_legado_manifest_does_not_publish_local_test_endpoint(self):
+        manifest = json.loads(src("plugins/m4-legado-plugin/manifest.json"))
+        self.assertNotIn("192.168.0.118:1122", manifest["description"])
+
 
 
 if __name__ == "__main__":

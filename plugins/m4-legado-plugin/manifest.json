@@ -7,7 +7,7 @@
   "entry": "main.xml",
   "provider": "legado",
   "author": "einklover",
-  "description": "1.1.1 Native：Legado 开源阅读书源，复用系统 provider（分类/热推/目录/正文），测试端点 192.168.0.118:1122",
+  "description": "1.1.1 Native：Legado 开源阅读书源，复用系统 provider（分类/热推/目录/正文），支持配置服务端地址",
   "files": [
     "icon_home.bmp",
     "main.xml"
