@@ -58,7 +58,7 @@ class FirstBootAndStoreContracts(unittest.TestCase):
             self.assertGreater(app["versionCode"], 0)
             self.assertRegex(app["sha256"], r"^[0-9a-f]{64}$")
             self.assertTrue(app["packageUrl"].startswith(
-                "https://github.com/einklover/m4-stack/releases/download/"))
+                "https://einklover.github.io/m4-stack/appstore/packages/"))
             self.assertTrue(app["sourceUrl"].startswith("https://github.com/einklover/m4-stack/"))
 
 
