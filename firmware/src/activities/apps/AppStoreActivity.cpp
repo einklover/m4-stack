@@ -35,7 +35,7 @@ namespace {
 constexpr const char* kCatalogPages = "https://einklover.github.io/m4-stack/appstore/index.json";
 constexpr const char* kCatalogRaw = "https://raw.githubusercontent.com/einklover/m4-stack/gh-pages/appstore/index.json";
 constexpr const char* kCatalogCache = "/system/appstore_catalog.json";
-constexpr const char* kPackagePrefix = "https://github.com/einklover/m4-stack/releases/download/";
+constexpr const char* kPackagePrefix = "https://einklover.github.io/m4-stack/appstore/packages/";
 constexpr size_t kMaxCatalogBytes = 48u * 1024u;
 constexpr size_t kMaxPackageBytes = 2u * 1024u * 1024u;
 constexpr int kVisibleRows = 6;
@@ -241,7 +241,7 @@ void AppStoreActivity::taskEntry(void* arg) {
       req.url = app.packageUrl.c_str();
       req.maxBytes = kMaxPackageBytes;
       req.timeoutMs = 45000;
-      req.followRedirects = true;  // GitHub Releases redirects to its HTTPS asset CDN.
+      req.followRedirects = false;  // Same-host Pages asset: no cross-host TLS redirect.
       const auto result = M4HttpTransport::requestToSink(req, sink, nullptr, nullptr,
                                                          cancelled, &s->cancel);
       const std::string digest = result.ok ? sink.checksum() : "";
