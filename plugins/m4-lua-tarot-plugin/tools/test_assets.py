@@ -49,7 +49,7 @@ def bmp_info(path):
 
 def main():
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
-    assert (manifest["version"], manifest["versionCode"]) == ("0.1.2", 3)
+    assert (manifest["version"], manifest["versionCode"]) == ("0.1.3", 4)
     files = manifest["files"]
     assert len(files) == len(set(files)), "manifest contains duplicate file entries"
     assert manifest["entry"] in files, "manifest entry is not packaged"
