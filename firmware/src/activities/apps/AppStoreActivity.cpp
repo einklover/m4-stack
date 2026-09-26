@@ -455,22 +455,23 @@ void AppStoreActivity::render() {
     M4UiText::draw(renderer,UI_10_FONT_ID,24,h-220,status_.c_str());
     GUI.drawButtonHints(renderer,"返回",button,"","");
   } else {
+    // Always show usable Wi-Fi/refresh buttons, including when there is no cache.
+    const int wButton = (w-54)/2;
+    renderer.drawRoundedRect(18,kToolbarTop,wButton,kToolbarHeight,1,9,true);
+    renderer.drawRoundedRect(w/2+9,kToolbarTop,wButton,kToolbarHeight,1,9,true);
+    M4UiText::drawCenteredInBox(renderer,UI_10_FONT_ID,18,kToolbarTop,wButton,kToolbarHeight,
+                               "Wi-Fi 设置",true);
+    M4UiText::drawCenteredInBox(renderer,UI_10_FONT_ID,w/2+9,kToolbarTop,wButton,kToolbarHeight,
+                  state_ && state_->busy.load() ? "刷新中..." : "刷新目录",true);
+    const bool connected=M4NativeWifi::isReady();
+    std::string headline=(connected ? "Wi-Fi 已连接" : "Wi-Fi 未连接");
+    headline += offline_ ? " | 缓存 " : " | 共 ";
+    headline += std::to_string(shown_.size()) + " 款";
+    M4UiText::draw(renderer,UI_10_FONT_ID,22,kRowTop-16,headline.c_str());
     if (shown_.empty()) {
       M4UiText::drawCentered(renderer,UI_12_FONT_ID,210,status_.c_str());
       M4UiText::drawCentered(renderer,UI_10_FONT_ID,260,"请连接 Wi-Fi 后刷新");
     } else {
-      const int wButton = (w-54)/2;
-      renderer.drawRoundedRect(18,kToolbarTop,wButton,kToolbarHeight,1,9,true);
-      renderer.drawRoundedRect(w/2+9,kToolbarTop,wButton,kToolbarHeight,1,9,true);
-      M4UiText::drawCenteredInBox(renderer,UI_10_FONT_ID,18,kToolbarTop,wButton,kToolbarHeight,
-                                 "Wi-Fi 设置",true);
-      M4UiText::drawCenteredInBox(renderer,UI_10_FONT_ID,w/2+9,kToolbarTop,wButton,kToolbarHeight,
-                    state_ && state_->busy.load() ? "刷新中..." : "刷新目录",true);
-      const bool connected=M4NativeWifi::isReady();
-      std::string headline=(connected ? "Wi-Fi 已连接" : "Wi-Fi 未连接");
-      headline += offline_ ? " | 缓存 " : " | 共 ";
-      headline += std::to_string(shown_.size()) + " 款";
-      M4UiText::draw(renderer,UI_10_FONT_ID,22,kRowTop-16,headline.c_str());
       page_ = selected_/kVisibleRows;
       for (int row=0;row<kVisibleRows;++row) {
         const int i=page_*kVisibleRows+row;
