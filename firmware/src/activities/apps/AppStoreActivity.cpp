@@ -233,9 +233,15 @@ void AppStoreActivity::taskEntry(void* arg) {
       M4xIsValidPackageId(app.id) && hasPrefix(app.packageUrl, kPackagePrefix) &&
       validSha(app.sha256)) {
     M4xInstaller::ensureLayout();
-    dest = std::string("/apps_inbox/store-") + app.id + ".m4x";
+    // Never overwrite a file already handed to an installer from an earlier
+    // store screen (including an install still finishing after Home navigation).
+    const std::string prefix = std::string("/apps_inbox/store-") + app.sha256.substr(0, 12) + "-";
+    for (int attempt = 0; attempt < 8; ++attempt) {
+      std::string candidate = prefix + std::to_string(millis()) + "-" + std::to_string(attempt) + ".m4x";
+      if (!SdMan.exists(candidate.c_str())) { dest = std::move(candidate); break; }
+    }
     FsFile file;
-    if (SdMan.openFileForWrite("AppStore", dest.c_str(), file)) {
+    if (!dest.empty() && SdMan.openFileForWrite("AppStore", dest.c_str(), file)) {
       FileHashSink sink(file);
       M4HttpTransport::Request req;
       req.url = app.packageUrl.c_str();
