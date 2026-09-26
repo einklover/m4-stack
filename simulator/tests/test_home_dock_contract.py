@@ -20,6 +20,8 @@ class FirstBootAndStoreContracts(unittest.TestCase):
         home = src("firmware/src/activities/home/HomeActivity.cpp")
         self.assertIn("if (ctx.recentBooks.empty())", home)
         self.assertIn("addFirstBootArtwork(ctx.model.draftPublication())", home)
+        for virtual_cover in ("firstboot:hero", "firstboot:import", "firstboot:read", "firstboot:shelf"):
+            self.assertIn(virtual_cover, home, "empty refs hide procedural artwork in QEMU")
         self.assertIn('ctx.model.addRecent("导入书籍"', home)
         self.assertIn("if (path.empty()) onMyLibraryOpen()", home)
         self.assertNotIn("RecentBooksStore::save", home)
