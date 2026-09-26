@@ -42,7 +42,7 @@
       "description": "开源阅读书源，需自行配置 Legado 服务端地址。",
       "category": "reading",
       "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.legado.client-v1.1.1.m4x",
-      "sha256": "1d7c28b3a3f9fe810ef22659aef492a00b5431b7f144ad90f6286f3b394b5e1f",
+      "sha256": "207cd49caf1584cb141f01cff16eac382206898c89be4f5b4aac98988218a38f",
       "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-legado-plugin"
     },
     {
