@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "apps": [
+    {
+      "id": "com.m4.game2048",
+      "name": "数字合成",
+      "version": "0.1.1",
+      "versionCode": 2,
+      "description": "V1 Lua 2048 for 480x800 e-ink: slide, merge, score, restart.",
+      "category": "games",
+      "packageUrl": "https://github.com/einklover/m4-stack/releases/download/m4-appstore-packages-v1/2048.m4x",
+      "sha256": "5f2adbadd2f4f88ea12cc208247410bc1a3ff6fb20e5b4f4c409d413fdc1c39d",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/lua-2048-plugin/plugins/m4-lua-2048-plugin"
+    },
+    {
+      "id": "com.m4.tetris",
+      "name": "叠方块",
+      "version": "0.1.1",
+      "versionCode": 2,
+      "description": "V1 Lua Tetris vs ReKindle Blocks: 12x20, ILJOTSZ, 1s gravity.",
+      "category": "games",
+      "packageUrl": "https://github.com/einklover/m4-stack/releases/download/m4-appstore-packages-v1/tetris.m4x",
+      "sha256": "76270f512edfcabebe55ead96bce620eff91e3c2b1dfce5369383a83ca7f0063",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/lua-2048-plugin/plugins/m4-lua-tetris-plugin"
+    },
+    {
+      "id": "com.m4.tarot",
+      "name": "塔 罗 牌",
+      "version": "0.1.2",
+      "versionCode": 3,
+      "description": "Major Arcana tarot for 480x800 e-ink: daily draw, one-card draw, three-card spread and card library.",
+      "category": "lifestyle",
+      "packageUrl": "https://github.com/einklover/m4-stack/releases/download/m4-appstore-packages-v1/tarot.m4x",
+      "sha256": "ca42d2ea0a38e0e7b59eefa5714e0f9c038afca1219dabcb67c9998fb3f1b63e",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/lua-2048-plugin/plugins/m4-lua-tarot-plugin"
+    },
+    {
+      "id": "com.m4.pet",
+      "name": "电子宠物",
+      "version": "0.3.3",
+      "versionCode": 9,
+      "description": "Pebble pet for 480x800 e-ink: five stages, feed, play, bath, meds, night sleep.",
+      "category": "games",
+      "packageUrl": "https://github.com/einklover/m4-stack/releases/download/m4-appstore-packages-v1/pet.m4x",
+      "sha256": "1e48fa638f18f59255d67f2748ea75cb9e237a10476af007a5bc6c722363e7cf",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/lua-2048-plugin/plugins/m4-lua-pet-plugin"
+    }
+  ]
+}
