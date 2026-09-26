@@ -25,6 +25,7 @@ class AppListActivity final : public ActivityWithSubactivity {
     std::function<void()> onBookmarkNotesOpen;
     std::function<void()> onNetworkOpen;
     std::function<void()> onFileTransferOpen;
+    std::function<void()> onAppStoreOpen;
   };
 
   explicit AppListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -48,6 +49,7 @@ class AppListActivity final : public ActivityWithSubactivity {
   enum class BuiltinAction : uint8_t {
     FileManager,
     FileTransfer,
+    AppStore,
     RecentBooks,
     Opds,
     JianGuo,
