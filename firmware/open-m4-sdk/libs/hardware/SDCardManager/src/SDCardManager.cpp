@@ -441,35 +441,38 @@ uint64_t SDCardManager::sdUsedBytes() {
 }
 
 bool SDCardManager::removeDir(const char* path) {
+  return removeDirAtDepth(path, 0);
+}
+
+bool SDCardManager::removeDirAtDepth(const char* path, unsigned depth) {
+  // SdFat skips FAT dot entries itself. Limit depth for malformed or unusually
+  // nested media, and close each child before descending or mutating the volume.
+  if (depth >= 16) return false;
   auto dir = vol().open(path);
-  if (!dir) {
-    return false;
-  }
-  if (!dir.isDirectory()) {
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
     return false;
   }
 
-  auto file = dir.openNextFile();
   char name[128];
-  while (file) {
-    String filePath = path;
-    if (!filePath.endsWith("/")) {
-      filePath += "/";
-    }
+  for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
     file.getName(name, sizeof(name));
-    filePath += name;
-
-    if (file.isDirectory()) {
-      if (!removeDir(filePath.c_str())) {
-        return false;
-      }
-    } else {
-      if (!vol().remove(filePath.c_str())) {
-        return false;
-      }
+    const bool isDir = file.isDirectory();
+    file.close();
+    if (name[0] == 0 || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+      dir.close();
+      return false;
     }
-    file = dir.openNextFile();
+    String filePath = path;
+    if (!filePath.endsWith("/")) filePath += "/";
+    filePath += name;
+    const bool ok = isDir ? removeDirAtDepth(filePath.c_str(), depth + 1)
+                          : vol().remove(filePath.c_str());
+    if (!ok) {
+      dir.close();
+      return false;
+    }
   }
-
+  dir.close();
   return vol().rmdir(path);
 }

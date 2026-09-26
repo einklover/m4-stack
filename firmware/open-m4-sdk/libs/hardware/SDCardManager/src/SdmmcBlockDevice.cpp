@@ -171,6 +171,22 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   if (host.max_freq_khz < SDMMC_FREQ_DEFAULT) {
     // Best-effort: leave card at successful freq; changing after init is not always supported.
   }
+  // One bounded DMA buffer per device avoids repeated internal-heap churn.
+  // The mutex protects the shared buffer and serializes block transfers.
+  _bounce = static_cast<uint8_t*>(heap_caps_malloc(1024, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  _ioMutex = xSemaphoreCreateMutex();
+  if (!_bounce || !_ioMutex) {
+    setErr(SdmmcFailCode::Oom, SdmmcFailStage::SectorRead, lastAttempt, -1, "bounce/mutex alloc");
+    if (Serial) Serial.printf("[%lu] [SD] DMA setup OOM largest=%u\n", millis(),
+                              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT)));
+    if (_bounce) heap_caps_free(_bounce);
+    if (_ioMutex) vSemaphoreDelete(_ioMutex);
+    _bounce = nullptr;
+    _ioMutex = nullptr;
+    free(card);
+    sdmmc_host_deinit();
+    return false;
+  }
   _card = card;
   setErr(SdmmcFailCode::Ok, SdmmcFailStage::None, lastAttempt, 0, "ok");
   if (Serial)
@@ -185,6 +201,10 @@ void SdmmcBlockDevice::end() {
     _card = nullptr;
     sdmmc_host_deinit();
   }
+  if (_bounce) heap_caps_free(_bounce);
+  if (_ioMutex) vSemaphoreDelete(_ioMutex);
+  _bounce = nullptr;
+  _ioMutex = nullptr;
 }
 
 // esp-idf SDMMC uses DMA, which requires the transfer buffer to be in DMA-capable
@@ -192,25 +212,43 @@ void SdmmcBlockDevice::end() {
 // (PSRAM / arbitrary alignment), which makes sdmmc_read/write_sectors fail. Bounce
 // through a DMA-capable buffer. (heap_caps_aligned_alloc via MALLOC_CAP_DMA.)
 bool SdmmcBlockDevice::readSectors(Sector_t sector, uint8_t* dst, size_t ns) {
-  if (!_card) return false;
-  const size_t bytes = ns * 512u;
-  auto* bounce = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
-  if (!bounce) return false;
-  const esp_err_t e = sdmmc_read_sectors(static_cast<sdmmc_card_t*>(_card), bounce, sector, ns);
-  if (e == ESP_OK) memcpy(dst, bounce, bytes);
-  heap_caps_free(bounce);
-  return e == ESP_OK;
+  if (!_card || !_bounce || !_ioMutex || !dst || ns == 0) return false;
+  if (xSemaphoreTake(_ioMutex, portMAX_DELAY) != pdTRUE) return false;
+  bool ok = true;
+  for (size_t done = 0; done < ns; done += 2) {
+    const size_t count = (ns - done < 2) ? ns - done : 2;
+    const esp_err_t e = sdmmc_read_sectors(static_cast<sdmmc_card_t*>(_card), _bounce, sector + done, count);
+    if (e != ESP_OK) {
+      if (Serial) Serial.printf("[%lu] [SD] %s fail sector=%llu count=%u err=%s\n", millis(),
+                                "read", static_cast<unsigned long long>(sector + done),
+                                static_cast<unsigned>(count), esp_err_to_name(e));
+      ok = false;
+      break;
+    }
+    memcpy(dst + done * 512u, _bounce, count * 512u);
+  }
+  xSemaphoreGive(_ioMutex);
+  return ok;
 }
 
 bool SdmmcBlockDevice::writeSectors(Sector_t sector, const uint8_t* src, size_t ns) {
-  if (!_card) return false;
-  const size_t bytes = ns * 512u;
-  auto* bounce = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
-  if (!bounce) return false;
-  memcpy(bounce, src, bytes);
-  const esp_err_t e = sdmmc_write_sectors(static_cast<sdmmc_card_t*>(_card), bounce, sector, ns);
-  heap_caps_free(bounce);
-  return e == ESP_OK;
+  if (!_card || !_bounce || !_ioMutex || !src || ns == 0) return false;
+  if (xSemaphoreTake(_ioMutex, portMAX_DELAY) != pdTRUE) return false;
+  bool ok = true;
+  for (size_t done = 0; done < ns; done += 2) {
+    const size_t count = (ns - done < 2) ? ns - done : 2;
+    memcpy(_bounce, src + done * 512u, count * 512u);
+    const esp_err_t e = sdmmc_write_sectors(static_cast<sdmmc_card_t*>(_card), _bounce, sector + done, count);
+    if (e != ESP_OK) {
+      if (Serial) Serial.printf("[%lu] [SD] %s fail sector=%llu count=%u err=%s\n", millis(),
+                                "write", static_cast<unsigned long long>(sector + done),
+                                static_cast<unsigned>(count), esp_err_to_name(e));
+      ok = false;
+      break;
+    }
+  }
+  xSemaphoreGive(_ioMutex);
+  return ok;
 }
 
 Sector_t SdmmcBlockDevice::sectorCount() {

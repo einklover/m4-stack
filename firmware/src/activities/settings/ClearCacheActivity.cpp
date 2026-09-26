@@ -9,6 +9,7 @@
 #include "activities/settings/M4SettingsConfirm.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/M4CacheClearPolicy.h"
 #include "util/M4ListTouchPolicy.h"
 #include "util/M4UiText.h"
 
@@ -155,10 +156,31 @@ void ClearCacheActivity::clearCache() {
 
       file.close();  // Close before attempting to delete
 
-      if (SdMan.removeDir(fullPath.c_str())) {
+      // Reader progress lives beside derived cache files. Keep it on SD while
+      // removing every other entry; never move it through a temporary file.
+      bool ok = true;
+      auto cacheDir = SdMan.open(fullPath.c_str());
+      if (!cacheDir || !cacheDir.isDirectory()) {
+        ok = false;
+      } else {
+        for (auto child = cacheDir.openNextFile(); child; child = cacheDir.openNextFile()) {
+          char childName[128];
+          child.getName(childName, sizeof(childName));
+          const bool isDir = child.isDirectory();
+          child.close();
+          if (M4CacheClearPolicy::keepReaderProgress(childName, isDir)) continue;
+          String childPath = fullPath + "/" + childName;
+          if (!(isDir ? SdMan.removeDir(childPath.c_str()) : SdMan.remove(childPath.c_str()))) {
+            ok = false;
+            break;
+          }
+        }
+        cacheDir.close();
+      }
+      if (ok) {
         clearedCount++;
       } else {
-        Serial.printf("[%lu] [CLEAR_CACHE] Failed to remove: %s\n", millis(), fullPath.c_str());
+        Serial.printf("[%lu] [CLEAR_CACHE] Failed to clear: %s\n", millis(), fullPath.c_str());
         failedCount++;
       }
     } else {
