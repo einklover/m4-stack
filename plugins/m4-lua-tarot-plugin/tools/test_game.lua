@@ -1,4 +1,4 @@
-dofile((arg and arg[0] and arg[0]:match("(.*/)") or "./") .. "game.lua")
+dofile((arg and arg[0] and arg[0]:match("(.*/)") or "./") .. "../game.lua")
 local fail=0
 local function ok(v,msg) if not v then fail=fail+1; print("FAIL "..msg) end end
 local function eq(a,b,msg) if a~=b then fail=fail+1; print("FAIL "..msg.." got="..tostring(a).." want="..tostring(b)) end end
