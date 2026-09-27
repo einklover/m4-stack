@@ -64,12 +64,49 @@ SdFat 来自 `firmware/.pio/libdeps/murphy_m4/SdFat`，`library.properties` 版�
 
 这证明共享 `FsCache` 指针在块锁放开之后仍然有效，并且会被另一次 `prepare` 替换。它不证明 FAT 目录项损坏、不证明物理卡上的 DMA，也不证明字体扫描和安装在设备上已经撞上这个窗口。
 
-## 最小修复边界（本轮不改代码）
+## 最小修复边界
 
-要盖住的是每一次 SdFat 调用里、缓存指针还活着的整段，包括裸 `FsFile` 的 `read`/`write`/`openNext`/`getName`/`close` 以及 `mkdir`/`remove`/`rename`/`exists`。未走这把锁的入口不能和已加锁的入口并发。
+要盖住的是每一次会碰共享 `FsCache` 指针的 SdFat 函数整段，从 `prepare` 到该函数返回（含 `memcpy` 和同函数里的 `sync`）。只锁 `SDCardManager::open`、只锁 DMA，或删掉 `delay`/`yield`，都留着这个窗口。
 
-临界区停在单次卷操作结束。不要跨 HTTP 收包、`httpd_resp_send_chunk`、整次 `M4xInstaller::install`，也不要在持卷锁时 `vTaskDelay` 等 worker。`storageMutex_` 今天已经跨了上传和目录列表里的 `yield`，那是另一把锁，不能拿它冒充卷锁，也不该把卷锁嵌进那段网络等待。
+临界区停在该 SdFat 函数返回。字体扫描的 `delay(1)`、HTTP 的 `yield()`、安装里的 `vTaskDelay(1)` 都在 `FsFile` 调用之外，不会持着这把锁。不要把卷锁扩到整次安装、网络收包或 UI。
 
-顺序保持：服务锁 / `installGate` / registry 写锁 → 卷锁 → `_ioMutex`。持卷锁时不要再等渲染、字体或 UI。HTTP 上传已经是 `storageMutex_` 然后 `installGate`；卷锁只能加在这两者之内的每次卷调用上，不能反过来让持卷锁的人去等 `storageMutex_`。
+顺序：调用者可能已经持有 `storageMutex_` 或 `installGate`，然后进入 SdFat，卷锁在其中，`_ioMutex` 只在 `readSector`/`writeSector` 里再套一下。SdFat 不回头等传输锁、安装门闩、渲染或 UI。同一任务可重入（`read` 里再进 `fatGet`）。析构在同一任务释放，错误返回和 `goto fail` 都要等到函数退出才放锁，避免半截缓存操作。
 
-下一步只做这一层：给上述卷操作加短临界区，并用本 host 测试的“持卷锁则扇区不串”作为回归。不要在这一步改 DMA bounce，也不要先删 `delay`/`yield` 当作修复。
+## 实现
+
+`firmware/include/M4SdVolumeGuard.h` 与 `firmware/src/sd/M4SdVolumeLock.cpp`：FreeRTOS 递归互斥。创建失败或拿不到锁时不继续碰缓存。Host 测试用同一套接口的 `std::recursive_mutex` 实现（`-DM4_SD_VOLUME_LOCK_HOST=1`）。
+
+`firmware/scripts/patch_sdfat_volume_guard.py` 在 `firmware/.pio/libdeps/*/SdFat` 里，给 FAT/exFAT 上直接调用 `dataCachePrepare` / `fatCachePrepare` / `bitmapCachePrepare` / `cacheSync` / `cacheSafeRead` / `cacheSafeWrite` 的函数插入该 guard。`bootstrap_m4_deps.py` 在 PlatformIO 预脚本里再跑一次。libdeps 不进 Git。`FatDbg.cpp` / `ExFatDbg.cpp` 会边打印边走缓存，不在这条产品读写路径上，没有加锁。
+
+没有改 DMA bounce，也没有改字体扫描或安装里的 `delay`。裸 `FsFile` 调用不用各自加锁：窗口在库函数内部，guard 包住整段函数。
+
+## 仍未覆盖
+
+- SdFat 调试转储（`FatDbg.cpp`、`ExFatDbg.cpp`）。
+- 依赖缓存被重新解压之后、预脚本还没跑时的中间树。正常 `pio run` 会先打补丁。
+- 真机与真实 SD。本轮验收只到隔离 FAT 镜像上的 QEMU smoke。
+
+## 实际验收
+
+起点 HEAD `bdef9abc60deec6696495a768089f6a2edf61d96`。下面是卷锁实现之后的测量。文首“不改生产锁”只描述该起点之前的证据轮。
+
+| 命令 | 结果 |
+| --- | --- |
+| `python3 firmware/tests/test_m4_sd_cache_interleave.py` | exit 0。输出 `sd_cache_interleave ok dma_copies=12`。链接生产 `M4SdVolumeLock.cpp` 与 vendored `FsCache.cpp`。无锁对照仍把写载荷放到错扇区。生产 guard 持有期间对手线程 `m4SdVolumeLockTry` 失败；释放后深度为 0。`prepare` 失败和提前返回后深度也是 0。 |
+| `pio run -e murphy_m4`（`~/.platformio/penv/bin/pio`） | exit 0，SUCCESS。Flash 5,781,873 / 7,143,424（80.9%），RAM 108,924 / 327,680（33.2%）。未烧录。 |
+| `pio run -e murphy_m4_qemu_plugin` | exit 0，SUCCESS 80.71s。Flash 5,791,477 / 7,143,424（81.1%），RAM 108,236 / 327,680（33.0%）。`firmware.bin` 5,791,825 字节。未烧录。 |
+| `M4SIM_TMP=/tmp/m4-sd-guard-smoke-20260927 ./m4sim run --plugin-debug --skip-build --no-hostfwd --no-net --fresh-sd --ready-seconds 45` | exit 0。新 64 MiB FAT：`/tmp/m4-sd-guard-smoke-20260927/artifacts/murphy-sd.img`。QEMU PTY `/dev/ttys235`。第一次 ping 在启动早期超时，第二次 0.6s 就绪：`activity=Home`，`sd_ok=true`，`firmware=202608187-murphy-m4-qemu-plugin`。随后同一 `M4SIM_TMP` 下 `./m4sim stop`。未用 `/dev/cu.usbmodem101`，未写用户卡。 |
+
+Host 程序没有链接 `FatFile.cpp`，也没有 FreeRTOS 抢占。QEMU smoke 只证明这版固件能挂上隔离 FAT 并回到 Home，不证明两个任务已经在设备上交错过缓存。
+
+## 仍存漏洞
+
+- `FatDbg.cpp` / `ExFatDbg.cpp` 未加 guard。产品读写不走这两份调试转储。
+- 新解开的 SdFat 在 `pio run` 预脚本跑完之前没有 guard。
+- 未测真机、未测真实 SD、未测字体扫描与安装在设备上的碰撞。
+- 卷锁不覆盖 `delay`/`yield` 期间的目录句柄；那些让出点本来就不持卷锁。目录项一致性不在本轮范围内。
+
+## 阶段 handoff
+
+Grok 4.7 zxl4869 在原分支提交卷级 guard、补丁脚本、host 回归和本文。libdeps、固件 bin、测试镜像不进 Git。未 push。下一阶段用提交 SHA 验收。真机仍未测。
+

@@ -3,11 +3,14 @@
 // partial-sector path: dataCachePrepare returns a pointer, then the caller
 // memcpy's. A second task runs in that gap. This is not a FAT mount and not
 // a FreeRTOS preemption test.
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <thread>
 
+#include "M4SdVolumeGuard.h"
 #include "common/FsCache.h"
 
 namespace {
@@ -24,7 +27,10 @@ class MemBlockDevice : public FsBlockDeviceInterface {
   Sector_t sectorCount() override { return kCount; }
   bool syncDevice() override { return true; }
 
+  bool failReads = false;
+
   bool readSector(Sector_t sector, uint8_t* dst) override {
+    if (failReads) return false;
     if (sector >= kCount || dst == nullptr) return false;
     // DMA-style: the device lock covers only this copy, then it is released.
     takeDma();
@@ -199,6 +205,72 @@ int main() {
   assert(!writeHeld.ran);
   assert(dev.sectorIs(kSectorS, kWritePayload));
   assert(dev.sectorIs(kSectorT, kPatT));
+
+  // Production guard: other thread cannot take the mutex while prepare's
+  // pointer is still in use. Scope exit releases it, including the error path.
+  {
+    M4SdVolumeGuard outer;
+    assert(m4SdVolumeLockDepth() == 1);
+    {
+      M4SdVolumeGuard inner;
+      assert(m4SdVolumeLockDepth() == 2);
+    }
+    assert(m4SdVolumeLockDepth() == 1);
+  }
+  assert(m4SdVolumeLockDepth() == 0);
+
+  reset(dev, cache);
+  std::atomic<int> phase{0};
+  uint8_t guarded[512];
+  std::thread opponent([&] {
+    while (phase.load() == 0) std::this_thread::yield();
+    assert(!m4SdVolumeLockTry());
+    phase.store(2);
+    while (phase.load() != 3) std::this_thread::yield();
+    assert(m4SdVolumeLockTry());
+    m4SdVolumeLockGive();
+    phase.store(4);
+  });
+  {
+    M4SdVolumeGuard guard;
+    uint8_t* pc = cache.prepare(kSectorS, FsCache::CACHE_FOR_READ);
+    assert(pc != nullptr);
+    phase.store(1);
+    while (phase.load() != 2) std::this_thread::yield();
+    std::memcpy(guarded, pc, 512);
+    assert(guarded[0] == kPatS);
+    assert(cache.sector() == kSectorS);
+  }
+  phase.store(3);
+  opponent.join();
+  assert(phase.load() == 4);
+  assert(m4SdVolumeLockDepth() == 0);
+
+  reset(dev, cache);
+  dev.failReads = true;
+  {
+    M4SdVolumeGuard guard;
+    assert(cache.prepare(kSectorS, FsCache::CACHE_FOR_READ) == nullptr);
+    assert(m4SdVolumeLockDepth() == 1);
+  }
+  dev.failReads = false;
+  assert(m4SdVolumeLockDepth() == 0);
+  assert(m4SdVolumeLockTry());
+  m4SdVolumeLockGive();
+  assert(m4SdVolumeLockDepth() == 0);
+
+  auto early = [&]() -> bool {
+    M4SdVolumeGuard guard;
+    uint8_t* pc = cache.prepare(kSectorT, FsCache::CACHE_FOR_WRITE);
+    if (!pc) return false;
+    std::memset(pc, kWritePayload, 512);
+    return cache.sync();
+  };
+  reset(dev, cache);
+  assert(early());
+  assert(m4SdVolumeLockDepth() == 0);
+  assert(dev.sectorIs(kSectorT, kWritePayload));
+  assert(dev.sectorIs(kSectorS, kPatS));
 
   std::cout << "sd_cache_interleave ok dma_copies=" << dev.dmaCopies() << "\n";
   return 0;
