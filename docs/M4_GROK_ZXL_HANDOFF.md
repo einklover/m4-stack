@@ -11,7 +11,7 @@ real-device flash, no user SD. Firmware `.bin` files stay untracked build
 products. `docs/M4_ASTRA_STABILITY_AUDIT.md` was not rewritten. The audit is
 not finished.
 
-Integration commit: `INTEGRATION_COMMIT_SHA`
+Integration commit: `e0c9388cf6f79831cc3379eb6769bd2a9e9942cc`
 
 ## What "closed" means here
 
