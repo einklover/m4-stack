@@ -7,6 +7,7 @@
 #include "SdmmcBlockDevice.h"  // no-op unless FREEINK_SD_SDMMC
 // Production mapping seam (must match freeink::SdmmcFailCode order).
 #include "../../../../../src/util/M4SdStatus.h"
+#include "M4SdVolumeGuard.h"
 
 #if FREEINK_SD_SDMMC
 // Drift guard: freeink::SdmmcFailCode ordinals must match M4SdStatus::BlockCode.
@@ -38,6 +39,15 @@ SDCardManager::SDCardManager() {}
 bool SDCardManager::begin() {
   // begin is initialization, not runtime recovery. Never invalidate live files.
   if (initialized) return true;
+  // Static recursive mutex, before the block device. A refused create is an
+  // SD init failure; the volume guard must not spin or touch the cache.
+  if (!m4SdVolumeLockPrepare()) {
+    setLast("volume_lock", "recursive mutex create failed", "oom");
+    initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytesValid = false;
+    return false;
+  }
   // Native SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the esp-idf
   // SDMMC block device. FsFile from this volume is the same type the SPI path
   // returns, so the public API and consumers are unchanged.
@@ -103,6 +113,13 @@ SDCardManager::SDCardManager() : sd() {}
 bool SDCardManager::begin() {
   // begin is initialization, not runtime recovery. Never invalidate live files.
   if (initialized) return true;
+  if (!m4SdVolumeLockPrepare()) {
+    setLast("volume_lock", "recursive mutex create failed", "oom");
+    initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytesValid = false;
+    return false;
+  }
   // Profiles whose SD CS is not yet known leave it unassigned so the card stays
   // dormant — bail out before any pin is touched, or SdFat drives "pin 255" and
   // floods the log. (Native-SDMMC boards like the X4 Pro take the #if branch above.)

@@ -74,9 +74,9 @@ SdFat 来自 `firmware/.pio/libdeps/murphy_m4/SdFat`，`library.properties` 版�
 
 ## 实现
 
-`firmware/include/M4SdVolumeGuard.h` 与 `firmware/src/sd/M4SdVolumeLock.cpp`：FreeRTOS 递归互斥。创建失败或拿不到锁时不继续碰缓存。Host 测试用同一套接口的 `std::recursive_mutex` 实现（`-DM4_SD_VOLUME_LOCK_HOST=1`）。
+`firmware/include/M4SdVolumeGuard.h` 与 `firmware/src/sd/M4SdVolumeLock.cpp`：FreeRTOS 静态递归互斥（`xSemaphoreCreateRecursiveMutexStatic`）。`m4SdVolumeLockPrepare()` 在 `SDCardManager::begin` 里、块设备 `begin` 之前调用；创建被拒绝时返回失败，不空转。Guard 没拿到锁就不增加深度、析构也不释放。Host 测试用同一套接口的 `std::recursive_mutex` 实现（`-DM4_SD_VOLUME_LOCK_HOST=1`）。
 
-`firmware/scripts/patch_sdfat_volume_guard.py` 在 `firmware/.pio/libdeps/*/SdFat` 里，给 FAT/exFAT 上直接调用 `dataCachePrepare` / `fatCachePrepare` / `bitmapCachePrepare` / `cacheSync` / `cacheSafeRead` / `cacheSafeWrite` 的函数插入该 guard。`bootstrap_m4_deps.py` 在 PlatformIO 预脚本里再跑一次。libdeps 不进 Git。`FatDbg.cpp` / `ExFatDbg.cpp` 会边打印边走缓存，不在这条产品读写路径上，没有加锁。
+`firmware/scripts/patch_sdfat_volume_guard.py` 在 `firmware/.pio/libdeps/*/SdFat` 里插入 guard。除直接的 `dataCachePrepare` / `fatCachePrepare` / `bitmapCachePrepare` / `cacheSync` / `cacheSafeRead` / `cacheSafeWrite` 外，还覆盖拿着缓存指针继续读或写的调用：`cacheDir(`、`readDirCache(`、`dirCache(`、`cacheDirEntry(`、`cacheAddress(`，以及 `FatName.cpp` / `ExFatName.cpp`。锁从函数入口持有到返回，所以 helper 把指针交出来之后，目录项读写和 `cacheDirty` 仍在同一把锁里。`print_t*` 函数不加整函数锁。已安装的 SdFat 必须是 2.3.x，并且规定的 open/getName/日期函数里能看到 guard，否则脚本失败。libdeps 目录还不存在时仍返回 0，避免把依赖还没解压误判成版本错误。`bootstrap_m4_deps.py` 在 PlatformIO 预脚本里再跑一次。libdeps 不进 Git。`FatDbg.cpp` / `ExFatDbg.cpp` 会边打印边走缓存，不在这条产品读写路径上，没有加锁。
 
 没有改 DMA bounce，也没有改字体扫描或安装里的 `delay`。裸 `FsFile` 调用不用各自加锁：窗口在库函数内部，guard 包住整段函数。
 

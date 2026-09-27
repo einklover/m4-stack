@@ -16,10 +16,14 @@ FILES = (
     "src/FatLib/FatPartition.cpp",
     "src/FatLib/FatFileLFN.cpp",
     "src/FatLib/FatFileSFN.cpp",
+    "src/FatLib/FatName.cpp",
     "src/ExFatLib/ExFatFile.cpp",
     "src/ExFatLib/ExFatFileWrite.cpp",
     "src/ExFatLib/ExFatPartition.cpp",
+    "src/ExFatLib/ExFatName.cpp",
 )
+# Direct cache helpers, plus consumers that keep the returned pointer
+# (cacheDir / readDirCache / dirCache / cacheAddress) until the last use.
 TOKENS = (
     "dataCachePrepare",
     "fatCachePrepare",
@@ -27,6 +31,33 @@ TOKENS = (
     "cacheSync",
     "cacheSafeRead",
     "cacheSafeWrite",
+    "cacheDir(",
+    "readDirCache(",
+    "dirCache(",
+    "cacheDirEntry(",
+    "cacheAddress(",
+)
+# Whole-function guards. print_t functions are excluded so a Print callback
+# is not taken under the volume lock; date printers copy integers first.
+REQUIRED = (
+    "bool FatFile::openNext(",
+    "bool FatFile::open(FatFile* dirFile, FatLfn_t*",
+    "bool FatFile::openCachedEntry(",
+    "bool FatFile::cmpName(",
+    "bool FatFile::createLFN(",
+    "size_t FatFile::getName7(",
+    "size_t FatFile::getName8(",
+    "size_t FatFile::getSFN(",
+    "bool FatFile::dirEntry(",
+    "bool FatFile::getAccessDate(",
+    "bool FatFile::getCreateDateTime(",
+    "bool FatFile::getModifyDateTime(",
+    "bool ExFatFile::openPrivate(",
+    "size_t ExFatFile::getName7(",
+    "size_t ExFatFile::getName8(",
+    "bool ExFatFile::getAccessDateTime(",
+    "bool ExFatFile::getCreateDateTime(",
+    "bool ExFatFile::getModifyDateTime(",
 )
 INCLUDE = '#include "M4SdVolumeGuard.h"\n'
 GUARD = "  M4SdVolumeGuard m4SdVolumeGuard_;\n"
@@ -93,11 +124,21 @@ def _functions(text: str):
         i += 1
 
 
+def _wants_guard(sig: str, body: str) -> bool:
+    # print_t stays outside the volume lock. Date printers copy integers
+    # through the guarded getters, then print.
+    if "print_t*" in sig:
+        return False
+    if any(req in sig for req in REQUIRED):
+        return True
+    return any(tok in body for tok in TOKENS)
+
+
 def patch_text(text: str) -> str:
     inserts = []
     for start, brace, end in _functions(text):
         body = text[brace : end + 1]
-        if not any(tok in body for tok in TOKENS):
+        if not _wants_guard(text[start:brace], body):
             continue
         if MARKER in body[:200]:
             continue
@@ -130,9 +171,9 @@ def _insert_guards(text: str) -> str:
     pieces = []
     cursor = 0
     count = 0
-    for _start, brace, end in _functions(text):
+    for start, brace, end in _functions(text):
         body = text[brace : end + 1]
-        if not any(tok in body for tok in TOKENS):
+        if not _wants_guard(text[start:brace], body):
             continue
         if MARKER in body[:180]:
             continue
@@ -171,10 +212,45 @@ def patch_file(path: Path) -> int:
     return updated.count(MARKER) - original.count(MARKER)
 
 
+def _guarded(text: str, signature: str) -> bool:
+    for start, brace, end in _functions(text):
+        sig = text[start:brace]
+        if signature not in sig:
+            continue
+        body = text[brace : end + 1]
+        return MARKER in body[:200]
+    return False
+
+
+def assert_volume_guard(root: Path) -> None:
+    props = (root / "library.properties").read_text()
+    version = ""
+    for line in props.splitlines():
+        if line.startswith("version="):
+            version = line.split("=", 1)[1].strip()
+    # ^2.3.1 may resolve to a later 2.3 patch. The function list is the 2.3 API.
+    # A different major.minor is a hard failure once the dependency is installed.
+    # Absence of libdeps stays a soft skip in patch_tree (install order).
+    if not version.startswith("2.3."):
+        raise SystemExit(f"SdFat {version or 'unknown'} at {root} is outside the 2.3 guard list")
+    blob = ""
+    for rel in FILES:
+        blob += (root / rel).read_text() + "\n"
+    missing = [sig for sig in REQUIRED if not _guarded(blob, sig)]
+    if missing:
+        raise SystemExit("volume guard missing:\n  " + "\n  ".join(missing))
+    for name in ("FatFile::printName7(", "FatFile::printName8(", "ExFatFile::printName7(", "ExFatFile::printName8("):
+        if name in blob and _guarded(blob, name):
+            raise SystemExit(f"{name} holds the volume lock across Print")
+
+
 def patch_tree(lib_root: Path) -> int:
     sdfat_roots = sorted(lib_root.glob("*/SdFat"))
     total = 0
     if not sdfat_roots:
+        # PlatformIO installs lib_deps before extra scripts. An empty tree is
+        # still not a hard error here: a caller may import the patcher before
+        # the first install. A present tree with the wrong version fails closed.
         print(f"no SdFat libdeps under {lib_root}", file=sys.stderr)
         return 0
     for root in sdfat_roots:
@@ -185,6 +261,7 @@ def patch_tree(lib_root: Path) -> int:
             added = patch_file(path)
             total += added
             print(f"{path}: +{added}")
+        assert_volume_guard(root)
     return total
 
 
