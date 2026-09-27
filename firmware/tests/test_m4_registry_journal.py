@@ -10,7 +10,20 @@ import tempfile
 from test_m4_astra_stability import SRC, COMMON, function
 
 ROOT = Path(__file__).resolve().parents[2]
-JSON_INC = ROOT / 'firmware/.pio/libdeps/murphy_m4/ArduinoJson'
+JSON_CANDIDATES = [
+    ROOT / 'firmware/.pio/libdeps/murphy_m4/ArduinoJson',
+    Path('/private/tmp/m4-registry-race-20260927/firmware/.pio/libdeps/murphy_m4/ArduinoJson'),
+]
+
+
+def _json_inc():
+    for p in JSON_CANDIDATES:
+        if (p / 'src' / 'ArduinoJson.h').exists() or (p / 'ArduinoJson.h').exists():
+            return p
+    raise SystemExit('ArduinoJson headers not found')
+
+
+JSON_INC = _json_inc()
 
 
 def source_order():
@@ -68,6 +81,8 @@ def bodies():
         function(journal, 'void pushStringArray('),
         function(journal, 'void writeOne('),
         function(journal, 'bool durableWriteJournal('),
+        function(journal, 'struct ReconciledLoad {') + ';',
+        function(journal, 'ReconciledLoad loadReconciledRawStatus('),
         function(journal, 'std::string loadReconciledRaw('),
         function(journal, 'bool saveAll('),
     ]

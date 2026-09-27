@@ -257,60 +257,114 @@ bool durableWriteJournal(const char* path, const std::string& body) {
 }
 
 // Reconcile primary / bak / tmp using pure decideLoad policy.
-std::string loadReconciledRaw() {
+// Fail-closed status form: existence is checked independently via SdMan.exists
+// BEFORE any read. A present file that cannot be read, or files present with a
+// None decideLoad, returns ok=false WITHOUT any delete/promote/save so the next
+// boot can retry with the disk untouched.
+struct ReconciledLoad {
+  bool ok = false;
+  bool absent = false;  // true only when primary+bak+tmp are all absent
+  std::string raw;
+};
+
+ReconciledLoad loadReconciledRawStatus() {
   const char* path = M4xInstallTxn::kJournalPath;
   const std::string tmp = std::string(path) + ".tmp";
   const std::string bak = std::string(path) + ".bak";
 
+  const bool pPresent = SdMan.exists(path);
+  const bool bPresent = SdMan.exists(bak.c_str());
+  const bool tPresent = SdMan.exists(tmp.c_str());
+  if (!pPresent && !bPresent && !tPresent) return {true, true, {}};
+
   std::string primaryBody, bakBody, tmpBody;
-  const bool pEx = SdMan.exists(path) && readExactFile(path, primaryBody);
-  const bool bEx = SdMan.exists(bak.c_str()) && readExactFile(bak.c_str(), bakBody);
-  const bool tEx = SdMan.exists(tmp.c_str()) && readExactFile(tmp.c_str(), tmpBody);
+  if (pPresent && !readExactFile(path, primaryBody)) return {};
+  if (bPresent && !readExactFile(bak.c_str(), bakBody)) return {};
+  if (tPresent && !readExactFile(tmp.c_str(), tmpBody)) return {};
 
   M4xInstallTxn::JournalFile::Presence pr;
-  pr.primary = pEx;
-  pr.bak = bEx;
-  pr.tmp = tEx;
+  pr.primary = pPresent;
+  pr.bak = bPresent;
+  pr.tmp = tPresent;
   M4xInstallTxn::JournalFile::Validity v;
-  v.primaryValid = pEx && isValidJournalBody(primaryBody);
-  v.bakValid = bEx && isValidJournalBody(bakBody);
-  v.tmpValid = tEx && isValidJournalBody(tmpBody);
+  v.primaryValid = pPresent && isValidJournalBody(primaryBody);
+  v.bakValid = bPresent && isValidJournalBody(bakBody);
+  v.tmpValid = tPresent && isValidJournalBody(tmpBody);
 
   const auto src = M4xInstallTxn::JournalFile::decideLoad(pr, v);
   switch (src) {
     case M4xInstallTxn::JournalFile::LoadSource::Primary:
       // Drop incomplete tmp; bak may remain until next successful write.
-      if (tEx) SdMan.remove(tmp.c_str());
-      return primaryBody;
+      if (tPresent) SdMan.remove(tmp.c_str());
+      return {true, false, primaryBody};
     case M4xInstallTxn::JournalFile::LoadSource::Tmp:
       // Promote complete tmp → primary without destroying bak until success.
       if (durableWriteJournal(path, tmpBody)) {
-        return tmpBody;
+        return {true, false, tmpBody};
       }
       // Fall through: try bak if promote failed
       if (v.bakValid) {
         if (SdMan.exists(path)) SdMan.remove(path);
-        if (renameOrCopy(bak.c_str(), path)) return bakBody;
-        return bakBody;
+        if (renameOrCopy(bak.c_str(), path)) return {true, false, bakBody};
+        return {true, false, bakBody};
       }
-      return tmpBody;
+      return {true, false, tmpBody};
     case M4xInstallTxn::JournalFile::LoadSource::Bak:
       if (SdMan.exists(path)) SdMan.remove(path);
       if (!renameOrCopy(bak.c_str(), path)) {
         // Keep bak; return content even if restore rename failed.
-        return bakBody;
+        return {true, false, bakBody};
       }
-      if (tEx) SdMan.remove(tmp.c_str());
-      return bakBody;
+      if (tPresent) SdMan.remove(tmp.c_str());
+      return {true, false, bakBody};
     default:
+      // Files exist but none is a valid authoritative snapshot: fail closed.
       return {};
   }
 }
 
+std::string loadReconciledRaw() {
+  ReconciledLoad s = loadReconciledRawStatus();
+  if (!s.ok) return {};
+  return s.raw;
+}
+
 }  // namespace
 
+bool tryLoadAll(std::vector<M4xInstallTxn::JournalRecord>& out) {
+  out.clear();
+  ReconciledLoad s = loadReconciledRawStatus();
+  if (!s.ok) {
+    out.clear();
+    return false;
+  }
+  if (s.absent || s.raw.empty()) {
+    out.clear();
+    return true;
+  }
+  // Re-parse the selected snapshot; a transient low-memory allocation failure
+  // here must also fail closed (previous parse inside isValidJournalBody may
+  // have succeeded while this one OOMs).
+  JsonDocument doc;
+  if (deserializeJson(doc, s.raw)) {
+    out.clear();
+    return false;
+  }
+  if (doc.overflowed() || !doc["txns"].is<JsonArray>()) {
+    out.clear();
+    return false;
+  }
+  for (JsonObject o : doc["txns"].as<JsonArray>()) {
+    auto r = parseOne(o);
+    if (!r.id.empty() && r.phase != M4xInstallTxn::Phase::Idle) out.push_back(std::move(r));
+  }
+  return true;
+}
+
 std::vector<M4xInstallTxn::JournalRecord> loadAll() {
-  return parseBody(loadReconciledRaw());
+  std::vector<M4xInstallTxn::JournalRecord> out;
+  (void)tryLoadAll(out);
+  return out;
 }
 
 bool saveAll(const std::vector<M4xInstallTxn::JournalRecord>& recs) {
@@ -329,7 +383,8 @@ bool saveAll(const std::vector<M4xInstallTxn::JournalRecord>& recs) {
 }
 
 bool upsert(const M4xInstallTxn::JournalRecord& rec) {
-  auto all = loadAll();
+  std::vector<M4xInstallTxn::JournalRecord> all;
+  if (!tryLoadAll(all)) return false;
   bool found = false;
   for (auto& r : all) {
     if (r.id == rec.id) {
@@ -343,7 +398,8 @@ bool upsert(const M4xInstallTxn::JournalRecord& rec) {
 }
 
 bool remove(const std::string& id) {
-  auto all = loadAll();
+  std::vector<M4xInstallTxn::JournalRecord> all;
+  if (!tryLoadAll(all)) return false;
   all.erase(std::remove_if(all.begin(), all.end(), [&](const M4xInstallTxn::JournalRecord& r) { return r.id == id; }),
             all.end());
   return saveAll(all);
@@ -412,7 +468,14 @@ bool readPending(const std::string& id, bool& pending) {
 }
 
 int recoverAll(const RecoveryHooks& hooks) {
-  auto all = loadAll();
+  std::vector<M4xInstallTxn::JournalRecord> all;
+  if (!tryLoadAll(all)) {
+    // Fail CLOSED: journal exists but the authoritative snapshot cannot be
+    // read or parsed. Run no hooks and persist nothing so the next boot can
+    // retry with the disk untouched.
+    Serial.printf("[M4x] recover: journal unreadable, keeping disk unchanged\n");
+    return 0;
+  }
   int n = 0;
   std::vector<M4xInstallTxn::JournalRecord> remaining;
   remaining.reserve(all.size());

@@ -12,6 +12,12 @@ namespace M4xInstallJournal {
 // Load all open transactions (empty if missing/corrupt).
 std::vector<M4xInstallTxn::JournalRecord> loadAll();
 
+// Status-bearing load: true = authoritative snapshot read and parsed.
+// Truly absent journal (no primary/bak/tmp) is healthy empty (out cleared).
+// An existing but unreadable/invalid primary/tmp/bak, a None decideLoad, or a
+// selected-snapshot JSON parse/allocation failure returns false with out cleared.
+bool tryLoadAll(std::vector<M4xInstallTxn::JournalRecord>& out);
+
 // Replace entire journal (atomic tmp+rename when possible).
 bool saveAll(const std::vector<M4xInstallTxn::JournalRecord>& recs);
 

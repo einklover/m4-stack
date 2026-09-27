@@ -84,7 +84,10 @@ def journal_parts():
         'void writeOne(',
         'std::vector<M4xInstallTxn::JournalRecord> parseBody(',
         'bool durableWriteJournal(',
+        'struct ReconciledLoad {',
+        'ReconciledLoad loadReconciledRawStatus(',
         'std::string loadReconciledRaw(',
+        'bool tryLoadAll(',
         'std::vector<M4xInstallTxn::JournalRecord> loadAll(',
         'bool saveAll(',
         'bool upsert(',
@@ -92,7 +95,13 @@ def journal_parts():
         'M4xInstallTxn::JournalRecord find(',
         'int recoverAll(',
     ]
-    return '\n'.join(function(journal, n) for n in names)
+    parts = []
+    for n in names:
+        body = function(journal, n)
+        if n.startswith('struct ReconciledLoad'):
+            body += ';'
+        parts.append(body)
+    return '\n'.join(parts)
 
 
 def run_cpp():
