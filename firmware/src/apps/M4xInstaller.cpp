@@ -597,6 +597,20 @@ bool hookDropBak(const M4xInstallTxn::JournalRecord& rec, void*) {
 }
 
 // Caller holds installGate for the whole call. Do not acquire it here.
+// True when install/uninstall must stop. Does not modify the journal or app dirs.
+bool refuseIfPendingJournal(const std::string& id, std::string& errorOut) {
+  bool pending = false;
+  if (!M4xInstallJournal::readPending(id, pending)) {
+    errorOut = "journal_read";
+    return true;
+  }
+  if (pending) {
+    errorOut = "recovery_required";
+    return true;
+  }
+  return false;
+}
+
 void recoverInterruptedInstallsLocked() {
   M4xInstallJournal::RecoveryHooks h;
   h.liveExists = &hookLive;
@@ -726,6 +740,12 @@ M4xInstallResult M4xInstaller::install(const std::string& packagePath) {
   M4xInstallResult r = probe(packagePath);
   if (!r.ok) return r;
 
+  if (refuseIfPendingJournal(r.manifest.id, r.error)) {
+    r.ok = false;
+    r.message = r.error == "recovery_required" ? "上次安装未完成，请重启后再试" : "无法读取安装事务日志";
+    return r;
+  }
+
   auto apps = M4xRegistry::load();
   if (const auto* existing = M4xRegistry::find(apps, r.manifest.id)) {
     if (r.manifest.versionCode < existing->versionCode) {
@@ -851,6 +871,7 @@ bool M4xInstaller::uninstall(const std::string& id, bool clearData, std::string&
     errorOut = "invalid_id";
     return false;
   }
+  if (refuseIfPendingJournal(id, errorOut)) return false;
   auto apps = M4xRegistry::load();
   const auto* app = M4xRegistry::find(apps, id);
   if (!app) {

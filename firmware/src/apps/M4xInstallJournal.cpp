@@ -356,6 +356,56 @@ M4xInstallTxn::JournalRecord find(const std::string& id) {
   return {};
 }
 
+bool readPending(const std::string& id, bool& pending) {
+  pending = false;
+  if (id.empty()) return false;
+  const char* path = M4xInstallTxn::kJournalPath;
+  const std::string bak = std::string(path) + ".bak";
+  const std::string tmp = std::string(path) + ".tmp";
+
+  auto loadOne = [](const char* p, bool& present, bool& valid, std::string& body) -> bool {
+    present = false;
+    valid = false;
+    body.clear();
+    if (!SdMan.exists(p)) return true;
+    if (!readExactFile(p, body)) return false;
+    present = true;
+    valid = isValidJournalBody(body);
+    return true;
+  };
+
+  M4xInstallTxn::JournalFile::Presence pr;
+  M4xInstallTxn::JournalFile::Validity v;
+  std::string primaryBody, bakBody, tmpBody;
+  if (!loadOne(path, pr.primary, v.primaryValid, primaryBody)) return false;
+  if (!loadOne(bak.c_str(), pr.bak, v.bakValid, bakBody)) return false;
+  if (!loadOne(tmp.c_str(), pr.tmp, v.tmpValid, tmpBody)) return false;
+
+  if (!pr.primary && !pr.bak && !pr.tmp) return true;
+
+  const std::string* snap = nullptr;
+  switch (M4xInstallTxn::JournalFile::decideLoad(pr, v)) {
+    case M4xInstallTxn::JournalFile::LoadSource::Primary:
+      snap = &primaryBody;
+      break;
+    case M4xInstallTxn::JournalFile::LoadSource::Tmp:
+      snap = &tmpBody;
+      break;
+    case M4xInstallTxn::JournalFile::LoadSource::Bak:
+      snap = &bakBody;
+      break;
+    default:
+      return false;
+  }
+  for (const auto& rec : parseBody(*snap)) {
+    if (rec.id == id) {
+      pending = true;
+      break;
+    }
+  }
+  return true;
+}
+
 int recoverAll(const RecoveryHooks& hooks) {
   auto all = loadAll();
   int n = 0;

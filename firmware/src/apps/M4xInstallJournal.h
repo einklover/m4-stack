@@ -21,8 +21,14 @@ bool upsert(const M4xInstallTxn::JournalRecord& rec);
 // Remove record by id. Returns false if persist fails.
 bool remove(const std::string& id);
 
-// Find by id (empty id if missing).
+// Find by id (empty id if missing). Reads the whole journal; there is no id index.
 M4xInstallTxn::JournalRecord find(const std::string& id);
+
+// Read-only same-id check against the single JournalFile::decideLoad snapshot.
+// Does not promote, delete, or rewrite. Returns false when a primary/bak/tmp
+// file exists but cannot be read, or when files exist but decideLoad is None.
+// *pending is meaningful only when this returns true.
+bool readPending(const std::string& id, bool& pending);
 
 // Boot recovery: apply decideRecovery for every journal entry via callbacks.
 struct RecoveryHooks {
