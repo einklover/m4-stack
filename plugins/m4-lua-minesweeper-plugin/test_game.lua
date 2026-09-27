@@ -10,10 +10,12 @@ end
 
 do
   local d = Game.DIFF.easy
-  eq(d.rows, 10, "easy rows")
+  eq(d.rows, 12, "easy rows")
+  eq(d.cols, 8, "easy cols")
   eq(d.mines, 10, "easy mines")
   eq(Game.DIFF.medium.mines, 40, "med mines")
-  eq(Game.DIFF.hard.cols, 20, "hard cols")
+  eq(Game.DIFF.hard.rows, 27, "hard rows")
+  eq(Game.DIFF.hard.cols, 18, "hard cols")
 end
 
 do
