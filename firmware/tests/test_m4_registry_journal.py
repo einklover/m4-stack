@@ -56,6 +56,7 @@ def bodies():
     reg = (SRC / 'apps/M4xRegistry.cpp').read_text()
     journal = (SRC / 'apps/M4xInstallJournal.cpp').read_text()
     parts = [
+        function(reg, 'std::mutex& registryTxnMu('),
         function(reg, 'std::string readAllText('),
         function(reg, 'bool writeAllTextExact('),
         function(reg, 'bool M4xRegistry::save('),

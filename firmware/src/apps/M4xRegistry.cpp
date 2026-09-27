@@ -7,12 +7,23 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 namespace {
 
 constexpr const char* kRegistryTmp = "/system/app_registry.json.tmp";
 constexpr const char* kRegistryBak = "/system/app_registry.json.bak";
+
+// Independent of installGate. Install already holds that non-recursive mutex
+// across load/save, so taking it again here would deadlock. This mutex is the
+// only registry transaction lock: load (including bak write-back) and save
+// (primary->bak and tmp->primary) both hold it for the whole call. load must
+// not call save.
+std::mutex& registryTxnMu() {
+  static std::mutex mu;
+  return mu;
+}
 
 std::string readAllText(const char* path) {
   FsFile f;
@@ -134,6 +145,7 @@ bool parseRegistry(const std::string& raw, std::vector<M4xInstalledApp>& apps) {
 }  // namespace
 
 std::vector<M4xInstalledApp> M4xRegistry::load() {
+  std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
   std::vector<M4xInstalledApp> apps;
 
   const std::string primary = readAllText(M4xPaths::kRegistryPath);
@@ -155,6 +167,7 @@ std::vector<M4xInstalledApp> M4xRegistry::load() {
 }
 
 bool M4xRegistry::save(const std::vector<M4xInstalledApp>& apps) {
+  std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
   JsonDocument doc;
   JsonArray arr = doc["apps"].to<JsonArray>();
   for (const auto& a : apps) {
