@@ -43,6 +43,10 @@ def test_source_order():
     assert 'saveAll' not in pending and 'durableWriteJournal' not in pending
     assert 'SdMan.remove' not in pending
     assert 'decideLoad' in pending
+    assert 'parseBody(' not in pending
+    assert 'deserializeJson(doc, *snap)' in pending
+    assert 'doc.overflowed()' in pending
+    assert 'return false' in pending
     assert 'find(' not in guard
     print('pending retry source order: PASS')
 

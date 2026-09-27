@@ -397,11 +397,16 @@ bool readPending(const std::string& id, bool& pending) {
     default:
       return false;
   }
-  for (const auto& rec : parseBody(*snap)) {
-    if (rec.id == id) {
-      pending = true;
-      break;
-    }
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, *snap);
+  if (err || doc.overflowed() || !doc["txns"].is<JsonArray>()) return false;
+  for (JsonVariant v : doc["txns"].as<JsonArray>()) {
+    if (!v.is<JsonObjectConst>()) return false;
+    JsonObjectConst o = v.as<JsonObjectConst>();
+    if (!o["id"].is<const char*>()) return false;
+    const char* recId = o["id"].as<const char*>();
+    if (recId == nullptr || recId[0] == '\0') return false;
+    if (id == recId) pending = true;
   }
   return true;
 }
