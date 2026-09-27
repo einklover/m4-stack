@@ -165,6 +165,61 @@
       "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4screenbridge.client-v1.2.1.m4x",
       "sha256": "10b10bdf4fc22c7649e652aeb584f45afcb2e56593b5663b6aa4fbcdaf50618b",
       "sourceUrl": "https://github.com/einklover/m4-stack/tree/feature/firstboot-home-appstore-20260926/plugins/m4-screen-bridge-plugin"
+    },
+    {
+      "id": "com.m4.bulls",
+      "name": "几A几B",
+      "version": "0.1.0",
+      "versionCode": 1,
+      "description": "V1 Lua 几A几B. 4 unique digits, no leading zero. A place, B digit.",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.bulls-v0.1.0.m4x",
+      "sha256": "8a107c0b039d4578ae76b72ffb046b4d110ad5392f273e352969925e5362f9a0",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/main/plugins/m4-lua-bulls-plugin"
+    },
+    {
+      "id": "com.m4.connect",
+      "name": "连连看",
+      "version": "0.1.0",
+      "versionCode": 1,
+      "description": "V1 Lua Shisen-Sho. Pairs clear on a path with at most two orthogonal bends, including the outside border.",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.connect-v0.1.0.m4x",
+      "sha256": "c862e8e0387570ba8f28762ec87bab37bafa0efd553032a6dd792fcf7646fcb1",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/main/plugins/m4-lua-connect-plugin"
+    },
+    {
+      "id": "com.m4.nonogram",
+      "name": "数织",
+      "version": "0.1.0",
+      "versionCode": 1,
+      "description": "V1 Lua nonogram / picross. Original 5x5 and 10x10 pictures, black and white.",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.nonogram-v0.1.0.m4x",
+      "sha256": "574a0403e4a59f77a59700ad3fa86b75fd37853120a0e766870e5fffe1dee7b9",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/main/plugins/m4-lua-nonogram-plugin"
+    },
+    {
+      "id": "com.m4.sliding",
+      "name": "滑动拼图",
+      "version": "0.1.0",
+      "versionCode": 1,
+      "description": "V1 Lua sliding puzzle: solvable 3x3, 4x4, and 5x5, number or diamond picture.",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.sliding-v0.1.0.m4x",
+      "sha256": "d2b895c8397561865c6bde0137651c00d18e1fa491dd782d3b46608afbc11c48",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/main/plugins/m4-lua-sliding-plugin"
+    },
+    {
+      "id": "com.m4.sokoban",
+      "name": "推箱子",
+      "version": "0.1.0",
+      "versionCode": 1,
+      "description": "V1 Lua Sokoban. Original beginner levels, undo, dead corners, saved progress.",
+      "category": "games",
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.sokoban-v0.1.0.m4x",
+      "sha256": "ca5da4f010e2c1e8da1343e64b649c1fd0ba23df3dab18d5ba4ac3518c537f88",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/main/plugins/m4-lua-sokoban-plugin"
     }
   ]
 }
