@@ -1,0 +1,338 @@
+-- 推箱子 / Sokoban. Pure logic, no GUI.
+-- XSB: # wall, $ crate, . goal, @ player, * crate-on-goal, + player-on-goal.
+-- Levels are original beginner maps (not Microban). Each is solved by the
+-- host test via bounded BFS; the device never searches.
+
+Game = Game or {}
+
+Game.LEVELS = {
+[[
+#####
+#@$.#
+#####
+]],
+[[
+######
+#@ $.#
+######
+]],
+[[
+#######
+#@  $.#
+#######
+]],
+[[
+#####
+#.  #
+# $ #
+# @ #
+#####
+]],
+[[
+######
+#    #
+# .$ #
+#  @ #
+######
+]],
+[[
+######
+#  @ #
+# $  #
+# .  #
+######
+]],
+[[
+########
+# . .  #
+# $ $  #
+# @    #
+########
+]],
+[[
+########
+#      #
+#  .   #
+#  $   #
+# @    #
+########
+]],
+[[
+#########
+#       #
+#   .   #
+#   $   #
+#   @   #
+#########
+]],
+[[
+##########
+#        #
+#   .    #
+#   $    #
+#        #
+# @      #
+##########
+]],
+[[
+#######
+# .   #
+# $ # #
+#   @ #
+#######
+]],
+[[
+#########
+# .   . #
+# $   $ #
+#   @   #
+#########
+]],
+}
+
+local DIRS = {
+  u = { -1, 0 }, d = { 1, 0 }, l = { 0, -1 }, r = { 0, 1 },
+}
+
+function Game.key(r, c)
+  return tostring(r) .. "," .. tostring(c)
+end
+
+function Game.parse(text)
+  if type(text) ~= "string" then return nil end
+  local rows = {}
+  local cols = 0
+  for line in (text .. "\n"):gmatch("(.-)\n") do
+    if line:find("[#$@.*+]") then
+      rows[#rows + 1] = line
+      if #line > cols then cols = #line end
+    end
+  end
+  if #rows == 0 or cols == 0 then return nil end
+  local walls, goals, crates = {}, {}, {}
+  local pr, pc, nplayer, ncrate = nil, nil, 0, 0
+  for r = 1, #rows do
+    local line = rows[r]
+    for c = 1, cols do
+      local ch = line:sub(c, c)
+      if ch == "" then ch = " " end
+      local k = Game.key(r, c)
+      if ch == "#" then
+        walls[k] = true
+      elseif ch == "$" or ch == "*" then
+        crates[k] = true
+        ncrate = ncrate + 1
+        if ch == "*" then goals[k] = true end
+      elseif ch == "." then
+        goals[k] = true
+      elseif ch == "@" or ch == "+" then
+        pr, pc = r, c
+        nplayer = nplayer + 1
+        if ch == "+" then goals[k] = true end
+      elseif ch ~= " " then
+        return nil
+      end
+    end
+  end
+  if nplayer ~= 1 or ncrate < 1 then return nil end
+  return {
+    rows = #rows,
+    cols = cols,
+    walls = walls,
+    goals = goals,
+    crates = crates,
+    pr = pr,
+    pc = pc,
+    moves = 0,
+    pushes = 0,
+  }
+end
+
+function Game.blocked(st, r, c)
+  if r < 1 or c < 1 or r > st.rows or c > st.cols then return true end
+  return st.walls[Game.key(r, c)] == true
+end
+
+function Game.dead_squares(st)
+  local dead = {}
+  for r = 1, st.rows do
+    for c = 1, st.cols do
+      local k = Game.key(r, c)
+      if not st.walls[k] and not st.goals[k] then
+        local up = Game.blocked(st, r - 1, c)
+        local down = Game.blocked(st, r + 1, c)
+        local left = Game.blocked(st, r, c - 1)
+        local right = Game.blocked(st, r, c + 1)
+        if (up and left) or (up and right) or (down and left) or (down and right) then
+          dead[k] = true
+        end
+      end
+    end
+  end
+  return dead
+end
+
+function Game.attach_dead(st)
+  st.dead = Game.dead_squares(st)
+  return st
+end
+
+function Game.load(index)
+  local text = Game.LEVELS[index]
+  if not text then return nil end
+  local st = Game.parse(text)
+  if not st then return nil end
+  st.index = index
+  return Game.attach_dead(st)
+end
+
+function Game.snapshot(st)
+  local crates = {}
+  for k, v in pairs(st.crates) do
+    if v then crates[k] = true end
+  end
+  return {
+    pr = st.pr, pc = st.pc,
+    moves = st.moves, pushes = st.pushes,
+    crates = crates,
+  }
+end
+
+function Game.restore(st, snap)
+  st.pr, st.pc = snap.pr, snap.pc
+  st.moves, st.pushes = snap.moves, snap.pushes
+  st.crates = {}
+  for k, v in pairs(snap.crates) do
+    if v then st.crates[k] = true end
+  end
+end
+
+-- Returns "walk", "push", or nil. One crate only; no chain pushes.
+function Game.step(st, dr, dc)
+  if (dr ~= 0 and dc ~= 0) or (dr == 0 and dc == 0) then return nil end
+  if math.abs(dr) + math.abs(dc) ~= 1 then return nil end
+  local nr, nc = st.pr + dr, st.pc + dc
+  if Game.blocked(st, nr, nc) then return nil end
+  local nk = Game.key(nr, nc)
+  if st.crates[nk] then
+    local br, bc = nr + dr, nc + dc
+    if Game.blocked(st, br, bc) then return nil end
+    local bk = Game.key(br, bc)
+    if st.crates[bk] then return nil end
+    st.crates[nk] = nil
+    st.crates[bk] = true
+    st.pr, st.pc = nr, nc
+    st.moves = st.moves + 1
+    st.pushes = st.pushes + 1
+    return "push"
+  end
+  st.pr, st.pc = nr, nc
+  st.moves = st.moves + 1
+  return "walk"
+end
+
+function Game.won(st)
+  local n = 0
+  for k, v in pairs(st.crates) do
+    if v then
+      n = n + 1
+      if not st.goals[k] then return false end
+    end
+  end
+  return n > 0
+end
+
+function Game.deadlocked(st)
+  if not st.dead then return false end
+  for k, v in pairs(st.crates) do
+    if v and st.dead[k] then return true end
+  end
+  return false
+end
+
+function Game.play(st, moves)
+  if type(moves) ~= "string" then return false end
+  for i = 1, #moves do
+    local d = DIRS[moves:sub(i, i)]
+    if not d or not Game.step(st, d[1], d[2]) then return false end
+  end
+  return true
+end
+
+function Game.crate_list(st)
+  local t = {}
+  for k, v in pairs(st.crates) do
+    if v then t[#t + 1] = k end
+  end
+  table.sort(t)
+  return t
+end
+
+-- Progress: level index, per-level best moves, best pushes, cleared flags.
+function Game.blank_progress()
+  local n = #Game.LEVELS
+  local best_m, best_p, cleared = {}, {}, {}
+  for i = 1, n do
+    best_m[i] = 0
+    best_p[i] = 0
+    cleared[i] = 0
+  end
+  return { level = 1, best_m = best_m, best_p = best_p, cleared = cleared }
+end
+
+local function csv_nums(list)
+  local t = {}
+  for i = 1, #list do t[i] = tostring(list[i]) end
+  return table.concat(t, ",")
+end
+
+local function parse_csv(s, n)
+  local out = {}
+  local i = 1
+  for tok in (s .. ","):gmatch("(.-),") do
+    out[i] = tonumber(tok) or 0
+    i = i + 1
+    if i > n then break end
+  end
+  while #out < n do out[#out + 1] = 0 end
+  return out
+end
+
+function Game.serialize_progress(p)
+  return table.concat({
+    "v1",
+    tostring(p.level),
+    csv_nums(p.best_m),
+    csv_nums(p.best_p),
+    csv_nums(p.cleared),
+  }, "|")
+end
+
+function Game.deserialize_progress(s)
+  local p = Game.blank_progress()
+  if type(s) ~= "string" or s:sub(1, 3) ~= "v1|" then return p end
+  local parts = {}
+  for tok in (s .. "|"):gmatch("(.-)|") do parts[#parts + 1] = tok end
+  if #parts < 5 then return p end
+  local n = #Game.LEVELS
+  local level = tonumber(parts[2]) or 1
+  if level < 1 or level > n then level = 1 end
+  p.level = level
+  p.best_m = parse_csv(parts[3], n)
+  p.best_p = parse_csv(parts[4], n)
+  p.cleared = parse_csv(parts[5], n)
+  for i = 1, n do
+    if p.cleared[i] ~= 0 then p.cleared[i] = 1 end
+  end
+  return p
+end
+
+function Game.note_clear(p, level, moves, pushes)
+  if level < 1 or level > #Game.LEVELS then return end
+  p.cleared[level] = 1
+  local bm, bp = p.best_m[level], p.best_p[level]
+  if bm == 0 or moves < bm or (moves == bm and pushes < bp) then
+    p.best_m[level] = moves
+    p.best_p[level] = pushes
+  end
+end

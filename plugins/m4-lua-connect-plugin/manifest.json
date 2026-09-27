@@ -1,0 +1,19 @@
+{
+  "id": "com.m4.connect",
+  "name": "连连看",
+  "version": "0.1.0",
+  "versionCode": 1,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "V1 Lua Shisen-Sho. Pairs clear on a path with at most two orthogonal bends, including the outside border.",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}

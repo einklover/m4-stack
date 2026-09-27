@@ -1,0 +1,19 @@
+{
+  "id": "com.m4.nonogram",
+  "name": "数织",
+  "version": "0.1.0",
+  "versionCode": 1,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "V1 Lua nonogram / picross. Original 5x5 and 10x10 pictures, black and white.",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}
