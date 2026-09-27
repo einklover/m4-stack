@@ -127,7 +127,15 @@ void ClearCacheActivity::render() {
   }
 }
 
+extern bool m4ReaderCacheBusy();  // Main-loop ownership query in main.cpp.
+
 void ClearCacheActivity::clearCache() {
+  if (m4ReaderCacheBusy()) {
+    Serial.printf("[CLEAR_CACHE] Deferred file owners still busy; retry after returning Home\n");
+    state = FAILED;
+    updateRequired = true;
+    return;
+  }
   Serial.printf("[%lu] [CLEAR_CACHE] Clearing cache...\n", millis());
 
   // Open .crosspoint directory
@@ -142,11 +150,14 @@ void ClearCacheActivity::clearCache() {
 
   clearedCount = 0;
   failedCount = 0;
-  char name[128];
+  char name[768];
 
   // Iterate through all entries in the directory
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
-    file.getName(name, sizeof(name));
+    const size_t nameLength = file.getName(name, sizeof(name));
+    if (!nameLength || nameLength >= sizeof(name) - 1) {
+      file.close(); ++failedCount; break;
+    }
     String itemName(name);
 
     // Only delete directories starting with epub_, xtc_, or txt_
@@ -164,10 +175,11 @@ void ClearCacheActivity::clearCache() {
         ok = false;
       } else {
         for (auto child = cacheDir.openNextFile(); child; child = cacheDir.openNextFile()) {
-          char childName[128];
-          child.getName(childName, sizeof(childName));
+          char childName[768];
+          const size_t childLength = child.getName(childName, sizeof(childName));
           const bool isDir = child.isDirectory();
           child.close();
+          if (!childLength || childLength >= sizeof(childName) - 1) { ok = false; break; }
           if (M4CacheClearPolicy::keepReaderProgress(childName, isDir)) continue;
           String childPath = fullPath + "/" + childName;
           if (!(isDir ? SdMan.removeDir(childPath.c_str()) : SdMan.remove(childPath.c_str()))) {
@@ -175,8 +187,10 @@ void ClearCacheActivity::clearCache() {
             break;
           }
         }
+        if (cacheDir.getError()) ok = false;
         cacheDir.close();
       }
+      if (cacheDir) cacheDir.close();
       if (ok) {
         clearedCount++;
       } else {
@@ -187,11 +201,12 @@ void ClearCacheActivity::clearCache() {
       file.close();
     }
   }
+  if (root.getError()) ++failedCount;
   root.close();
 
   Serial.printf("[%lu] [CLEAR_CACHE] Cache cleared: %d removed, %d failed\n", millis(), clearedCount, failedCount);
 
-  state = SUCCESS;
+  state = failedCount ? FAILED : SUCCESS;
   updateRequired = true;
 }
 

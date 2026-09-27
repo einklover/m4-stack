@@ -2,10 +2,6 @@
 
 #include "../ActivityWithSubactivity.h"
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/task.h>
-
 #include <functional>
 
 // Installs every .m4x currently in /apps_inbox. Invalid or failed packages are
@@ -29,14 +25,22 @@ class BatchInstallActivity final : public ActivityWithSubactivity {
   struct Job;
 
  private:
+  // Visible progress only. total is packages discovered so far, not a finished scan.
+  struct ProgressView {
+    int total = 0;
+    int processed = 0;
+    int installed = 0;
+    int skipped = 0;
+    int failed = 0;
+    bool scanning = false;
+    bool done = false;
+  };
 
   const std::function<void()> onDone_;
   Job* job_ = nullptr;
-  TaskHandle_t displayTaskHandle_ = nullptr;
-  SemaphoreHandle_t renderingMutex_ = nullptr;
-  bool updateRequired_ = false;
+  ProgressView painted_{};
+  bool hasPaint_ = false;
+  unsigned long lastPaintMs_ = 0;
 
-  static void displayTaskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
   void render() const;
 };

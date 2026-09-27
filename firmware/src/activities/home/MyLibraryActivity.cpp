@@ -109,6 +109,28 @@ bool copyFile(const char* srcPath, const char* dstPath) {
   return ok;
 }
 
+// Compare directory identity, not spelling: FAT accepts case and short-name aliases.
+// All paths use SdMan's single volume. Close each handle before opening the next.
+bool canMoveDirectory(const std::string& source, std::string parent) {
+  auto dir = SdMan.open(source.c_str());
+  if (!dir || !dir.isDirectory()) return false;
+  const auto sourceCluster = dir.firstCluster();
+  dir.close();
+  while (!parent.empty()) {
+    dir = SdMan.open(parent.c_str());
+    if (!dir || !dir.isDirectory()) return false;
+    const bool same = dir.firstCluster() == sourceCluster;
+    dir.close();
+    if (same) return false;
+    while (parent.size() > 1 && parent.back() == '/') parent.pop_back();
+    if (parent == "/") return true;
+    const auto slash = parent.find_last_of('/');
+    if (slash == std::string::npos) return false;
+    parent.resize(slash == 0 ? 1 : slash);
+  }
+  return false;
+}
+
 // Search is bounded by nodes, depth, matches, and wall time. Child handles
 // close before descending; one name buffer is shared across recursive frames.
 void searchFilesRecursive(const std::string& currentDir, const std::string& keyword,
@@ -274,6 +296,8 @@ void MyLibraryActivity::cancelSearch() {
 void MyLibraryActivity::loadFiles() { startDirectoryPage(0); }
 
 void MyLibraryActivity::startDirectoryPage(uint64_t position) {
+  // A new page or directory gets its own cursor. The previous page's seek
+  // position must not be reused after basepath or the resume slot changes.
   scanDirectory.close();
   files.clear();
   fileSizes.clear();
@@ -303,17 +327,22 @@ bool MyLibraryActivity::selectDirectoryPage() {
 
 void MyLibraryActivity::scanDirectoryBatch() {
   if (!directoryLoading) return;
-  // Drop the handle before this turn returns. A live FsFile across UI yields
-  // races every other SdFat caller; the saved cursor reopens the same slot.
-  scanDirectory.close();
-  std::string path = basepath.empty() ? std::string("/") : basepath;
-  if (path != "/" && path.back() != '/') path.push_back('/');
-  scanDirectory = SdMan.open(path.c_str());
-  if (!scanDirectory || !scanDirectory.isDirectory() || (directoryCursor & 31ull) != 0 ||
-      !scanDirectory.seekSet(directoryCursor)) {
-    directoryError = true;
-    finishDirectoryPage();
-    return;
+  // One read-only cursor for this visible page. FatFile::seekSet follows the
+  // FAT chain from the first cluster when the reopened file position is 0, so
+  // closing and seeking on every 16-entry/4 ms turn repeats that prefix.
+  // Keeping this handle across UI turns is sequential I/O on one owner. It is
+  // not a volume lock; unsynchronized SdFat use from another task is a
+  // separate race, and close/reopen does not remove it.
+  if (!scanDirectory) {
+    std::string path = basepath.empty() ? std::string("/") : basepath;
+    if (path != "/" && path.back() != '/') path.push_back('/');
+    scanDirectory = SdMan.open(path.c_str());  // O_RDONLY
+    if (!scanDirectory || !scanDirectory.isDirectory() || (directoryCursor & 31ull) != 0 ||
+        !scanDirectory.seekSet(directoryCursor)) {
+      directoryError = true;
+      finishDirectoryPage();
+      return;
+    }
   }
   const uint32_t started = millis();
   char name[768];  // SdFat UTF-8 names can use three bytes per UTF-16 character.
@@ -371,9 +400,9 @@ void MyLibraryActivity::scanDirectoryBatch() {
     directoryNameBytes += length + 2;
   }
   // A partial batch must advance to the next aligned slot. Keeping the old
-  // cursor would reopen the same entries forever and leave the UI on "读取中".
+  // cursor would reread the same entries forever and leave the UI on "读取中".
+  // Leave scanDirectory open: the next turn continues at this position.
   const uint64_t next = scanDirectory.curPosition();
-  scanDirectory.close();
   if ((next & 31ull) != 0) {
     directoryError = true;
     finishDirectoryPage();
@@ -383,7 +412,7 @@ void MyLibraryActivity::scanDirectoryBatch() {
 }
 
 void MyLibraryActivity::finishDirectoryPage() {
-  scanDirectory.close();  // No directory handle survives a completed page or exit.
+  scanDirectory.close();  // Page cursor dies on completion and on error.
   if (directoryError) {
     // An unreadable cursor is not a later page. A "back to first" row would
     // hide the failure text and look like a successful listing.
@@ -519,7 +548,7 @@ void MyLibraryActivity::onEnter() {
 void MyLibraryActivity::onExit() {
   ActivityWithSubactivity::onExit();
 
-  scanDirectory.close();
+  scanDirectory.close();  // In-progress page cursor must not outlive the activity.
   directoryLoading = false;
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
@@ -540,7 +569,7 @@ void MyLibraryActivity::loop() {
   }
   if (directoryLoading) {
     if (mappedInput.wasBackGesture() || mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      scanDirectory.close();
+      scanDirectory.close();  // Cancel closes the page cursor before the parent scan.
       directoryLoading = false;
       // Cancel this scan. At the card root that leaves the library; deeper,
       // it resumes the parent page instead of abandoning the whole activity.
@@ -1247,7 +1276,7 @@ void MyLibraryActivity::executeActionMenu(int index) {
         if (isCutMode) {
           // Same-volume move; never emulate a directory move by mkdir + removeDir.
           // Reject moving a directory inside itself before touching the volume.
-          if (!directory || dstPath.compare(0, source.size() + 1, source + "/") != 0)
+          if (!directory || canMoveDirectory(source, basepath))
             pasteSuccess = SdMan.rename(source.c_str(), dstPath.c_str());
         } else if (!directory) {
           pasteSuccess = copyFile(source.c_str(), dstPath.c_str());

@@ -32,23 +32,85 @@ std::string functionBody(const std::string& source, const std::string& signature
   return source.substr(start, end - start);
 }
 
-void testDisplayTaskRechecksChildUnderMutex(const std::string& source) {
-  const std::string body = functionBody(source, "void AppListActivity::displayTaskLoop()", "void AppListActivity::reload()");
-  const size_t localSnapshot = body.find("snapshot.items = items_");
-  const size_t childGate = body.find("childScreenOwned_.load");
-  const size_t guard = body.find("M4RenderGuard");
-  const size_t clearUpdate = body.find("updateRequired_ = false;");
-  const size_t paint = body.find("render();");
-
-  // The current handoff takes a local snapshot, releases the local mutex,
-  // then acquires the process-wide submit guard and rechecks ownership. This
-  // avoids both stale parent paint and local->global lock nesting.
-  assert(localSnapshot != std::string::npos);
-  assert(childGate != std::string::npos);
-  assert(guard != std::string::npos && localSnapshot < guard);
-  assert(clearUpdate != std::string::npos && localSnapshot < clearUpdate);
-  assert(paint != std::string::npos && guard < paint);
+void testWorkerNeverSubmits(const std::string& source) {
+  // Cache verify and cooperative exit only. Paint moved to the UI thread, so
+  // this span must not find a snapshot or a submit that now lives later.
+  const std::string body =
+      functionBody(source, "void AppListActivity::displayTaskLoop()", "bool sameInstalledApp(");
+  assert(body.find("M4RenderGuard") == std::string::npos);
+  assert(body.find("render();") == std::string::npos);
+  assert(body.find("setMask") == std::string::npos);
+  assert(body.find("snapshot.items") == std::string::npos);
   assert(body.find("subActivity") == std::string::npos);
+  assert(body.find("clearScreen") == std::string::npos);
+  assert(body.find("childScreenOwned_.load") != std::string::npos);
+  assert(body.find("rememberDrawer") == std::string::npos);
+  assert(body.find("updateRequired_") == std::string::npos);
+  assert(body.find("acceptPendingDrawer") == std::string::npos);
+  assert(body.find("apps_ =") == std::string::npos);
+  assert(body.find("items_ =") == std::string::npos);
+  assert(body.find("selectedIndex_ =") == std::string::npos);
+  assert(body.find("mode_ = 0") == std::string::npos);
+  assert(body.find("pendingReady_") != std::string::npos);
+  const size_t take = body.find("xSemaphoreTake(renderingMutex_");
+  const size_t mode = body.find("mode_ ==", take);
+  const size_t give = body.find("xSemaphoreGive(renderingMutex_)", take);
+  assert(take != std::string::npos && mode != std::string::npos && give != std::string::npos);
+  assert(take < mode && mode < give);
+  const size_t published = body.find("displayTaskExited_.store(true");
+  const size_t discard = body.find("discardPendingDrawer()");
+  assert(published != std::string::npos && discard != std::string::npos);
+  assert(discard < published);
+  assert(body.find("displayTaskHandle_ = nullptr") < published);
+  assert(published < body.find("M4Psram::deleteTask(nullptr)"));
+}
+
+void testMainLoopSubmitsBeforeInput(const std::string& source) {
+  const std::string submit =
+      functionBody(source, "void AppListActivity::submitDirtyFrame()", "bool AppListActivity::reload(");
+  const size_t snap = submit.find("snapshot.items = items_");
+  const size_t clearUpdate = submit.find("updateRequired_ = false;");
+  const size_t mask = submit.find("setMask");
+  const size_t give = submit.find("xSemaphoreGive(renderingMutex_)", snap);
+  const size_t guard = submit.find("M4RenderGuard");
+  const size_t paint = submit.find("render();");
+  assert(snap != std::string::npos && clearUpdate != std::string::npos && mask != std::string::npos);
+  assert(give != std::string::npos && guard != std::string::npos && paint != std::string::npos);
+  assert(snap < clearUpdate && clearUpdate < mask && mask < give && give < guard && guard < paint);
+  assert(submit.find("childScreenOwned_", guard) != std::string::npos);
+  assert(submit.find("subActivity") != std::string::npos);
+  assert(submit.find("AppListFrameSnapshot& snapshot = snapshot_;") != std::string::npos);
+  assert(submit.find("AppListFrameSnapshot snapshot;") == std::string::npos);
+  assert(submit.find("snapshot_ = snapshot") == std::string::npos);
+  assert(submit.find("xSemaphoreTake(renderingMutex_", guard) != std::string::npos);
+
+  const std::string loop = functionBody(source, "void AppListActivity::loop()", "void AppListActivity::render()");
+  const size_t child = loop.find("if (subActivity)");
+  const size_t ret = loop.find("return;", child);
+  const size_t accept = loop.find("acceptPendingDrawer()", ret);
+  const size_t called = loop.find("submitDirtyFrame()", accept);
+  const size_t input = loop.find("mappedInput", called);
+  assert(child != std::string::npos && ret != std::string::npos && accept != std::string::npos &&
+         called != std::string::npos && input != std::string::npos);
+  assert(child < ret && ret < accept && accept < called && called < input);
+
+  const std::string reload = functionBody(source, "bool AppListActivity::reload(", "void AppListActivity::onEnter()");
+  assert(reload.find("setMask") == std::string::npos);
+  assert(reload.find("M4RenderGuard") == std::string::npos);
+  assert(reload.find("render(") == std::string::npos);
+  assert(reload.find("rememberDrawer") == std::string::npos);
+  assert(reload.find("apps_ = apps") == std::string::npos);
+  assert(reload.find("items_ = std::move(items)") == std::string::npos);
+  assert(reload.find("mode_ = 0") == std::string::npos);
+  assert(reload.find("selectedIndex_ =") == std::string::npos);
+  assert(reload.find("updateRequired_") == std::string::npos);
+  assert(reload.find("pendingApps_ = std::move(apps)") != std::string::npos);
+  assert(reload.find("pendingItems_ = std::move(items)") != std::string::npos);
+  assert(reload.find("pendingReady_.store(true") != std::string::npos);
+  const size_t load = reload.find("M4xRegistry::load()");
+  assert(load != std::string::npos);
+  assert(load < reload.find("exitDisplayTask_", load));
+  assert(reload.find("exitDisplayTask_", load) < reload.find("addBuiltin", load));
 }
 
 void testDrawerHasWifiTransfer(const std::string& source) {
@@ -85,7 +147,8 @@ void testPluginEnterIsSerialized(const std::string& source) {
 int main() {
   const std::string source = readAppListSource();
   assert(!source.empty());
-  testDisplayTaskRechecksChildUnderMutex(source);
+  testWorkerNeverSubmits(source);
+  testMainLoopSubmitsBeforeInput(source);
   testPluginEnterIsSerialized(source);
   testDrawerPagesWithScrollBar(source);
   testDrawerHasWifiTransfer(source);

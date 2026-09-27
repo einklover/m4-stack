@@ -8,12 +8,15 @@
 #include <base64.h>
 
 #include <cstring>
+#include <algorithm>
 #include <memory>
 
 #include "CrossPointSettings.h"
 #include "M4HttpDownloadPolicy.h"
 #include "M4DeadlineClient.h"
 #include "util/UrlUtils.h"
+#include "util/M4DownloadCommit.h"
+#include "apps/providers/M4NativeProviderHeavyGate.h"
 
 namespace {
 void startBody(WiFiClient& client, bool secure, uint32_t totalMs) {
@@ -26,13 +29,16 @@ bool bodyExpired(WiFiClient& client, bool secure) {
 }
 class BoundedWriteStream final : public Stream {
  public:
-  BoundedWriteStream(Stream& target, WiFiClient& client, size_t limit)
-      : target_(target), client_(client), limit_(limit), started_(millis()), progressed_(started_) {}
+  BoundedWriteStream(Stream& target, WiFiClient& client, size_t limit,
+                     uint32_t totalMs = M4HttpDownloadPolicy::kTextTotalTimeoutMs,
+                     HttpDownloader::ProgressCallback progress = nullptr, size_t total = 0)
+      : target_(target), client_(client), limit_(limit), started_(millis()), progressed_(started_),
+        totalMs_(totalMs), progress_(progress), total_(total) {}
   size_t write(uint8_t byte) override { return write(&byte, 1); }
   size_t write(const uint8_t* data, size_t size) override {
     const uint32_t now = millis();
     if (M4HttpDownloadPolicy::timedOut(now, started_, progressed_) ||
-        now - started_ >= M4HttpDownloadPolicy::kTextTotalTimeoutMs ||
+        now - started_ >= totalMs_ ||
         M4HttpDownloadPolicy::exceeds(written_, size, limit_)) {
       failed_ = true;
       client_.stop();
@@ -41,8 +47,13 @@ class BoundedWriteStream final : public Stream {
     if (size == 0) return 0;
     const size_t n = target_.write(data, size);
     written_ += n;
-    if (n != size) failed_ = true;
+    if (n != size) { failed_ = true; client_.stop(); }
     if (n) progressed_ = millis();
+    if (progress_ && (written_ - lastNotified_ >= 8192 || now - lastNotifyMs_ >= 250)) {
+      lastNotified_ = written_; lastNotifyMs_ = now;
+      progress_(written_, total_);
+    }
+    delay(1);
     return n;
   }
   int available() override { return 0; }
@@ -59,7 +70,46 @@ class BoundedWriteStream final : public Stream {
   uint32_t started_;
   uint32_t progressed_;
   bool failed_ = false;
+  uint32_t totalMs_;
+  HttpDownloader::ProgressCallback progress_;
+  size_t total_, lastNotified_ = 0;
+  uint32_t lastNotifyMs_ = 0;
 };
+HttpDownloader::DownloadError downloadBody(HTTPClient& http, WiFiClient& client,
+    const std::string& url, const std::string& destPath, size_t limit,
+    HttpDownloader::ProgressCallback progress) {
+  const int length = http.getSize();
+  if (length >= 0 && static_cast<size_t>(length) > limit) { http.end(); return HttpDownloader::HTTP_ERROR; }
+  const std::string tmp = destPath + ".m4-download.tmp";
+  const std::string backup = destPath + ".m4-download.bak";
+  if (SdMan.exists(backup.c_str())) { http.end(); return HttpDownloader::FILE_ERROR; }
+  FsFile file = SdMan.open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL);
+  if (!file) { http.end(); return HttpDownloader::FILE_ERROR; }
+  startBody(client, UrlUtils::isHttpsUrl(url), M4HttpDownloadPolicy::kTotalTimeoutMs);
+  BoundedWriteStream sink(file, client, limit, M4HttpDownloadPolicy::kTotalTimeoutMs,
+                          progress, length > 0 ? static_cast<size_t>(length) : 0);
+  // HTTPClient owns chunk framing. Copying getStreamPtr() directly corrupts
+  // chunked books with hexadecimal sizes and CRLFs.
+  const int copied = http.writeToStream(&sink);
+  const bool complete = !bodyExpired(client, UrlUtils::isHttpsUrl(url)) && !sink.failed() &&
+                        copied >= 0 && static_cast<size_t>(copied) == sink.written() &&
+                        (length < 0 || sink.written() == static_cast<size_t>(length));
+  const bool synced = complete && !file.getWriteError() && file.sync();
+  const bool closed = file.close();
+  http.end();
+  if (!complete || !synced || !closed) {
+    SdMan.remove(tmp.c_str());
+    return complete ? HttpDownloader::FILE_ERROR : HttpDownloader::HTTP_ERROR;
+  }
+  if (!M4DownloadCommit::commit(SdMan, tmp.c_str(), destPath.c_str(), backup.c_str())) {
+    // Keep both copies if a rename/rollback failed. A later request refuses
+    // these reserved sibling names instead of truncating recovery data.
+    Serial.printf("[HTTP] Download commit failed; recovery copies retained\n");
+    return HttpDownloader::FILE_ERROR;
+  }
+  if (progress) progress(sink.written(), sink.written());
+  return HttpDownloader::OK;
+}
 }  // namespace
 
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
@@ -67,6 +117,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
 }
 
 bool HttpDownloader::fetchUrlBounded(const std::string& url, Stream& outContent, size_t maxBytes) {
+  M4NativeProviderHeavyGate::Lock networkLock(M4NativeProviderHeavyGate::mutex());
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
@@ -139,6 +190,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::s
                                                                      const std::string& destPath,
                                                                      const size_t maxBytes,
                                                                      ProgressCallback progress) {
+  M4NativeProviderHeavyGate::Lock networkLock(M4NativeProviderHeavyGate::mutex());
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
@@ -172,106 +224,12 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFileBounded(const std::s
     return HTTP_ERROR;
   }
 
-  const size_t rawSize = http.getSize();
-  // ESP32 HTTPClient returns -1 (0xFFFFFFFF as size_t) when Content-Length is unknown
-  const size_t contentLength = (rawSize == (size_t)-1) ? 0 : rawSize;
-  const size_t effectiveMax = maxBytes < M4HttpDownloadPolicy::kMaxFileBytes
-                                  ? maxBytes : M4HttpDownloadPolicy::kMaxFileBytes;
-  Serial.printf("[%lu] [HTTP] Content-Length: %zu\n", millis(), contentLength);
-  if (contentLength > effectiveMax) {
-    http.end();
-    return HTTP_ERROR;
-  }
-
-  // Remove existing file if present
-  if (SdMan.exists(destPath.c_str())) {
-    SdMan.remove(destPath.c_str());
-  }
-
-  // Open file for writing
-  FsFile file;
-  if (!SdMan.openFileForWrite("HTTP", destPath.c_str(), file)) {
-    Serial.printf("[%lu] [HTTP] Failed to open file for writing\n", millis());
-    http.end();
-    return FILE_ERROR;
-  }
-
-  // Get the stream for chunked reading
-  WiFiClient* stream = http.getStreamPtr();
-  if (!stream) {
-    Serial.printf("[%lu] [HTTP] Failed to get stream\n", millis());
-    file.close();
-    SdMan.remove(destPath.c_str());
-    http.end();
-    return HTTP_ERROR;
-  }
-
-  // Download in chunks
-  uint8_t buffer[DOWNLOAD_CHUNK_SIZE];
-  size_t downloaded = 0;
-  const size_t total = contentLength > 0 ? contentLength : 0;
-  const uint32_t started = millis();
-  uint32_t progressed = started;
-
-  while (http.connected() && (contentLength == 0 || downloaded < contentLength)) {
-    if (M4HttpDownloadPolicy::timedOut(millis(), started, progressed)) {
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return HTTP_ERROR;
-    }
-    const size_t available = stream->available();
-    if (available == 0) {
-      delay(1);
-      continue;
-    }
-
-    const size_t toRead = available < DOWNLOAD_CHUNK_SIZE ? available : DOWNLOAD_CHUNK_SIZE;
-    if (M4HttpDownloadPolicy::exceeds(downloaded, toRead, effectiveMax)) {
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return HTTP_ERROR;
-    }
-    const size_t bytesRead = stream->readBytes(buffer, toRead);
-
-    if (bytesRead == 0) {
-      break;
-    }
-
-    const size_t written = file.write(buffer, bytesRead);
-    if (written != bytesRead) {
-      Serial.printf("[%lu] [HTTP] Write failed: wrote %zu of %zu bytes\n", millis(), written, bytesRead);
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return FILE_ERROR;
-    }
-
-    downloaded += bytesRead;
-    progressed = millis();
-
-    if (progress && total > 0) {
-      progress(downloaded, total);
-    }
-  }
-
-  file.close();
-  http.end();
-
-  Serial.printf("[%lu] [HTTP] Downloaded %zu bytes\n", millis(), downloaded);
-
-  // Verify download size if known
-  if (contentLength > 0 && downloaded != contentLength) {
-    Serial.printf("[%lu] [HTTP] Size mismatch: got %zu, expected %zu\n", millis(), downloaded, contentLength);
-    SdMan.remove(destPath.c_str());
-    return HTTP_ERROR;
-  }
-
-  return OK;
+  return downloadBody(http, *client, url, destPath, std::min(maxBytes, M4HttpDownloadPolicy::kMaxFileBytes), progress);
 }
+
 HttpDownloader::DownloadError HttpDownloader::downloadToFile_jg(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress) {
+  M4NativeProviderHeavyGate::Lock networkLock(M4NativeProviderHeavyGate::mutex());
   // Use WiFiClientSecure for HTTPS, regular WiFiClient for HTTP
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
@@ -305,105 +263,12 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_jg(const std::strin
     return HTTP_ERROR;
   }
 
-  const size_t rawSize_jg = http.getSize();
-  const size_t contentLength = (rawSize_jg == (size_t)-1) ? 0 : rawSize_jg;
-  if (contentLength > M4HttpDownloadPolicy::kMaxFileBytes) {
-    http.end();
-    return HTTP_ERROR;
-  }
-  Serial.printf("[%lu] [HTTP] Content-Length: %zu\n", millis(), contentLength);
-
-  // Remove existing file if present
-  if (SdMan.exists(destPath.c_str())) {
-    SdMan.remove(destPath.c_str());
-  }
-
-  // Open file for writing
-  FsFile file;
-  if (!SdMan.openFileForWrite("HTTP", destPath.c_str(), file)) {
-    Serial.printf("[%lu] [HTTP] Failed to open file for writing\n", millis());
-    http.end();
-    return FILE_ERROR;
-  }
-
-  // Get the stream for chunked reading
-  WiFiClient* stream = http.getStreamPtr();
-  if (!stream) {
-    Serial.printf("[%lu] [HTTP] Failed to get stream\n", millis());
-    file.close();
-    SdMan.remove(destPath.c_str());
-    http.end();
-    return HTTP_ERROR;
-  }
-
-  // Download in chunks
-  uint8_t buffer[DOWNLOAD_CHUNK_SIZE];
-  size_t downloaded = 0;
-  const size_t total = contentLength > 0 ? contentLength : 0;
-  const uint32_t started = millis();
-  uint32_t progressed = started;
-
-  while (http.connected() && (contentLength == 0 || downloaded < contentLength)) {
-    if (M4HttpDownloadPolicy::timedOut(millis(), started, progressed)) {
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return HTTP_ERROR;
-    }
-    const size_t available = stream->available();
-    if (available == 0) {
-      delay(1);
-      continue;
-    }
-
-    const size_t toRead = available < DOWNLOAD_CHUNK_SIZE ? available : DOWNLOAD_CHUNK_SIZE;
-    if (M4HttpDownloadPolicy::exceeds(downloaded, toRead, M4HttpDownloadPolicy::kMaxFileBytes)) {
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return HTTP_ERROR;
-    }
-    const size_t bytesRead = stream->readBytes(buffer, toRead);
-
-    if (bytesRead == 0) {
-      break;
-    }
-
-    const size_t written = file.write(buffer, bytesRead);
-    if (written != bytesRead) {
-      Serial.printf("[%lu] [HTTP] Write failed: wrote %zu of %zu bytes\n", millis(), written, bytesRead);
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return FILE_ERROR;
-    }
-
-    downloaded += bytesRead;
-    progressed = millis();
-
-    if (progress && total > 0) {
-      progress(downloaded, total);
-    }
-  }
-
-  file.close();
-  http.end();
-
-  Serial.printf("[%lu] [HTTP] Downloaded %zu bytes\n", millis(), downloaded);
-
-  // Verify download size if known
-  if (contentLength > 0 && downloaded != contentLength) {
-    Serial.printf("[%lu] [HTTP] Size mismatch: got %zu, expected %zu\n", millis(), downloaded, contentLength);
-    SdMan.remove(destPath.c_str());
-    return HTTP_ERROR;
-  }
-
-  return OK;
+  return downloadBody(http, *client, url, destPath, M4HttpDownloadPolicy::kMaxFileBytes, progress);
 }
 
-// 数据胶囊专用下载函数（使用 Zotero User-Agent）
 HttpDownloader::DownloadError HttpDownloader::downloadToFile_dc(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress) {
+  M4NativeProviderHeavyGate::Lock networkLock(M4NativeProviderHeavyGate::mutex());
   std::unique_ptr<WiFiClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
     auto* secureClient = new M4DeadlineClient<WiFiClientSecure>();
@@ -437,93 +302,5 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile_dc(const std::strin
     return HTTP_ERROR;
   }
 
-  const size_t rawSize_dc = http.getSize();
-  const size_t contentLength = (rawSize_dc == (size_t)-1) ? 0 : rawSize_dc;
-  if (contentLength > M4HttpDownloadPolicy::kMaxFileBytes) {
-    http.end();
-    return HTTP_ERROR;
-  }
-  Serial.printf("[%lu] [DC] Content-Length: %zu\n", millis(), contentLength);
-
-  if (SdMan.exists(destPath.c_str())) {
-    SdMan.remove(destPath.c_str());
-  }
-
-  FsFile file;
-  if (!SdMan.openFileForWrite("DC", destPath.c_str(), file)) {
-    Serial.printf("[%lu] [DC] Failed to open file for writing\n", millis());
-    http.end();
-    return FILE_ERROR;
-  }
-
-  WiFiClient* stream = http.getStreamPtr();
-  if (!stream) {
-    Serial.printf("[%lu] [DC] Failed to get stream\n", millis());
-    file.close();
-    SdMan.remove(destPath.c_str());
-    http.end();
-    return HTTP_ERROR;
-  }
-
-  uint8_t buffer[DOWNLOAD_CHUNK_SIZE];
-  size_t downloaded = 0;
-  const size_t total = contentLength > 0 ? contentLength : 0;
-  const uint32_t started = millis();
-  uint32_t progressed = started;
-
-  while (http.connected() && (contentLength == 0 || downloaded < contentLength)) {
-    if (M4HttpDownloadPolicy::timedOut(millis(), started, progressed)) {
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return HTTP_ERROR;
-    }
-    const size_t available = stream->available();
-    if (available == 0) {
-      delay(1);
-      continue;
-    }
-
-    const size_t toRead = available < DOWNLOAD_CHUNK_SIZE ? available : DOWNLOAD_CHUNK_SIZE;
-    if (M4HttpDownloadPolicy::exceeds(downloaded, toRead, M4HttpDownloadPolicy::kMaxFileBytes)) {
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return HTTP_ERROR;
-    }
-    const size_t bytesRead = stream->readBytes(buffer, toRead);
-
-    if (bytesRead == 0) {
-      break;
-    }
-
-    const size_t written = file.write(buffer, bytesRead);
-    if (written != bytesRead) {
-      Serial.printf("[%lu] [DC] Write failed: wrote %zu of %zu bytes\n", millis(), written, bytesRead);
-      file.close();
-      SdMan.remove(destPath.c_str());
-      http.end();
-      return FILE_ERROR;
-    }
-
-    downloaded += bytesRead;
-    progressed = millis();
-
-    if (progress && total > 0) {
-      progress(downloaded, total);
-    }
-  }
-
-  file.close();
-  http.end();
-
-  Serial.printf("[%lu] [DC] Downloaded %zu bytes\n", millis(), downloaded);
-
-  if (contentLength > 0 && downloaded != contentLength) {
-    Serial.printf("[%lu] [DC] Size mismatch: got %zu, expected %zu\n", millis(), downloaded, contentLength);
-    SdMan.remove(destPath.c_str());
-    return HTTP_ERROR;
-  }
-
-  return OK;
+  return downloadBody(http, *client, url, destPath, M4HttpDownloadPolicy::kMaxFileBytes, progress);
 }

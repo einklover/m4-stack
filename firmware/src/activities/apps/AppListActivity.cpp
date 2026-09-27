@@ -237,10 +237,13 @@ void AppListActivity::taskTrampoline(void* param) {
 }
 
 void AppListActivity::displayTaskLoop() {
+  // Cache verify and cooperative exit only. This task does not draw, submit,
+  // write the global footer, or replace the lists the UI reads unlocked.
+  // pendingReady_ blocks another full scan until loop() consumes the result.
   while (true) {
     if (exitDisplayTask_.load(std::memory_order_acquire)) {
-      // Cooperative shutdown: exit only while holding no locks, so the
-      // process-wide guard is never left owned by a deleted task.
+      discardPendingDrawer();
+      // Exit only while holding no locks. The release store is the last this access.
       displayTaskHandle_ = nullptr;
       displayTaskExited_.store(true, std::memory_order_release);
       Serial.printf("[WRPERF] stage=applist-display-task-exit stack_hwm=%u\n",
@@ -248,60 +251,32 @@ void AppListActivity::displayTaskLoop() {
       M4Psram::deleteTask(nullptr);
       for (;;) vTaskDelay(portMAX_DELAY);
     }
-    if (childScreenOwned_.load(std::memory_order_acquire)) {
-      vTaskDelay(10 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (updateRequired_) {
-      AppListFrameSnapshot snapshot;
-      bool shouldSubmit = false;
-      // Phase 1: snapshot under the local mutex, then release it before taking
-      // the global guard, so global is never acquired while holding local.
+    if (verifyDrawerCache_.load(std::memory_order_acquire) &&
+        showedDrawer_.load(std::memory_order_acquire) &&
+        !childScreenOwned_.load(std::memory_order_acquire) &&
+        !pendingReady_.load(std::memory_order_acquire)) {
+      bool shouldVerify = false;
       if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        // Child installation happens after releasing this mutex. Recheck
-        // after taking it so a stale pre-lock observation cannot paint the drawer
-        // over the child's first frame.
-        if (updateRequired_ && !childScreenOwned_.load(std::memory_order_acquire)) {
-          snapshot.selectedIndex = selectedIndex_;
-          snapshot.mode = mode_;
-          snapshot.uninstallClearData = uninstallClearData_;
-          snapshot.items = items_;
-          snapshot.apps = apps_;
-          snapshot_ = snapshot;
-          updateRequired_ = false;
-          shouldSubmit = true;
+        if (verifyDrawerCache_.load(std::memory_order_acquire) && mode_ == 0 &&
+            !childScreenOwned_.load(std::memory_order_acquire) &&
+            !exitDisplayTask_.load(std::memory_order_acquire) &&
+            !pendingReady_.load(std::memory_order_acquire)) {
+          shouldVerify = true;
         }
         xSemaphoreGive(renderingMutex_);
       }
-      // A child installed after the snapshot owns the screen now: drop the
-      // stale parent frame instead of painting over the plugin. (Child close
-      // re-arms updateRequired_ via reload, so nothing is lost.)
-      if (shouldSubmit) {
-        M4RenderGuard renderGuard(gM4RenderMutex);
-        if (renderGuard.owns() && !childScreenOwned_.load(std::memory_order_acquire)) {
-          render();
-          showedDrawer_ = true;
-        } else {
-          // Global contended: never submit without the guard; re-arm instead.
+      if (shouldVerify) {
+        const bool changed = reload(true);
+        if (!changed && !exitDisplayTask_.load(std::memory_order_acquire)) {
           if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-            updateRequired_ = true;
+            if (mode_ == 0 && !childScreenOwned_.load(std::memory_order_acquire) &&
+                !exitDisplayTask_.load(std::memory_order_acquire) &&
+                !pendingReady_.load(std::memory_order_acquire)) {
+              verifyDrawerCache_.store(false, std::memory_order_release);
+            }
             xSemaphoreGive(renderingMutex_);
           }
         }
-      }
-    }
-    if (verifyDrawerCache_ && showedDrawer_ && mode_ == 0 &&
-        !childScreenOwned_.load(std::memory_order_acquire) &&
-        !exitDisplayTask_.load(std::memory_order_acquire)) {
-      reloadPreserveDialog_ = true;
-      reload();
-      if (reloadChanged_) {
-        if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-          updateRequired_ = true;
-          xSemaphoreGive(renderingMutex_);
-        }
-      } else if (mode_ == 0) {
-        verifyDrawerCache_ = false;
       }
     }
     vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -367,10 +342,48 @@ bool AppListActivity::applyCachedDrawer() {
   return true;
 }
 
-void AppListActivity::reload() {
-  reloadChanged_ = false;
-  const bool preserveDialog = reloadPreserveDialog_;
-  reloadPreserveDialog_ = false;
+void AppListActivity::submitDirtyFrame() {
+  // Snapshot under the local mutex, refresh the footer from that same view,
+  // release, then take the global guard. Never construct the guard while the
+  // local mutex is held. Skip the frame when a child or a later page owns it.
+  if (subActivity || exitDisplayTask_.load(std::memory_order_acquire) ||
+      childScreenOwned_.load(std::memory_order_acquire) || !updateRequired_) {
+    return;
+  }
+  bool shouldSubmit = false;
+  if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (updateRequired_ && !childScreenOwned_.load(std::memory_order_acquire) &&
+        !exitDisplayTask_.load(std::memory_order_acquire) && !subActivity) {
+      AppListFrameSnapshot& snapshot = snapshot_;
+      snapshot.selectedIndex = selectedIndex_;
+      snapshot.mode = mode_;
+      snapshot.uninstallClearData = uninstallClearData_;
+      snapshot.items = items_;
+      snapshot.apps = apps_;
+      updateRequired_ = false;
+      M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+      shouldSubmit = true;
+    }
+    xSemaphoreGive(renderingMutex_);
+  }
+  if (shouldSubmit) {
+    M4RenderGuard renderGuard(gM4RenderMutex);
+    if (renderGuard.owns() && !childScreenOwned_.load(std::memory_order_acquire) &&
+        !exitDisplayTask_.load(std::memory_order_acquire) && !subActivity) {
+      render();
+      showedDrawer_.store(true, std::memory_order_release);
+    } else {
+      // Re-arm under the local mutex. When the guard owns the global lock this
+      // take stays global-then-local. A timed-out guard holds nothing.
+      if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+        updateRequired_ = true;
+        xSemaphoreGive(renderingMutex_);
+      }
+    }
+  }
+}
+
+bool AppListActivity::reload(const bool preserveDialog) {
   if (reloadLock_) xSemaphoreTake(reloadLock_, portMAX_DELAY);
   struct LockRelease {
     SemaphoreHandle_t sem;
@@ -379,10 +392,10 @@ void AppListActivity::reload() {
     }
   } release{reloadLock_};
 
-  if (exitDisplayTask_.load(std::memory_order_acquire)) return;
+  if (exitDisplayTask_.load(std::memory_order_acquire)) return false;
   M4xInstaller::ensureLayout();
-  const auto apps = M4xRegistry::load();
-  if (exitDisplayTask_.load(std::memory_order_acquire)) return;
+  auto apps = M4xRegistry::load();
+  if (exitDisplayTask_.load(std::memory_order_acquire)) return false;
 
   std::vector<DrawerItem> items;
   items.reserve(8 + apps.size());
@@ -445,54 +458,49 @@ void AppListActivity::reload() {
   }
 
   if (renderingMutex_) xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-  if (preserveDialog && mode_ != 0) {
-    verifyDrawerCache_ = true;
+  // Publish into pending only. The UI thread owns apps_, items_,
+  // selectedIndex_, and mode_. Exit drops this result with no cache write.
+  if (exitDisplayTask_.load(std::memory_order_acquire)) {
     if (renderingMutex_) xSemaphoreGive(renderingMutex_);
-    return;
+    return false;
+  }
+  if (preserveDialog && mode_ != 0) {
+    verifyDrawerCache_.store(true, std::memory_order_release);
+    if (renderingMutex_) xSemaphoreGive(renderingMutex_);
+    return false;
   }
   const bool changed = !sameDrawer(apps_, items_, apps, items);
   if (!changed) {
     if (renderingMutex_) xSemaphoreGive(renderingMutex_);
-    return;
+    return false;
   }
-  std::vector<M4ReturnCache::DrawerItem> cachedItems;
-  cachedItems.reserve(items.size());
-  for (const auto& item : items) {
-    M4ReturnCache::DrawerItem cached;
-    cached.plugin = item.plugin;
-    cached.builtin = static_cast<uint8_t>(item.builtin);
-    cached.appIndex = item.appIndex;
-    cached.id = item.id;
-    cached.label = item.label;
-    cached.icon = static_cast<int>(item.icon);
-    cached.pluginIcon = item.pluginIcon;
-    cachedItems.push_back(std::move(cached));
-  }
-  apps_ = apps;
-  items_ = std::move(items);
-  if (selectedIndex_ >= static_cast<int>(items_.size())) {
-    selectedIndex_ = std::max(0, static_cast<int>(items_.size()) - 1);
-  }
-  mode_ = 0;
-  M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-  reloadChanged_ = true;
+  pendingApps_ = std::move(apps);
+  pendingItems_ = std::move(items);
+  pendingReady_.store(true, std::memory_order_release);
   if (renderingMutex_) xSemaphoreGive(renderingMutex_);
-  M4ReturnCache::rememberDrawer(apps, cachedItems);
+  return true;
 }
 
 void AppListActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex_ = xSemaphoreCreateMutex();
   reloadLock_ = xSemaphoreCreateMutex();
+  if (!renderingMutex_ || !reloadLock_) {
+    exitDisplayTask_.store(true, std::memory_order_release);
+    displayTaskExited_.store(true, std::memory_order_release);
+    Serial.printf("[%lu] [AppList] failed to create display mutex\n", millis());
+    return;
+  }
   exitDisplayTask_.store(false, std::memory_order_release);
   displayTaskExited_.store(false, std::memory_order_release);
   childScreenOwned_.store(false, std::memory_order_release);
-  showedDrawer_ = false;
+  showedDrawer_.store(false, std::memory_order_release);
   if (applyCachedDrawer()) {
-    verifyDrawerCache_ = true;
+    verifyDrawerCache_.store(true, std::memory_order_release);
   } else {
     reload();
-    verifyDrawerCache_ = false;
+    acceptPendingDrawer();
+    verifyDrawerCache_.store(false, std::memory_order_release);
   }
   updateRequired_ = true;
   if (M4Psram::createTask(&AppListActivity::taskTrampoline, "AppList", 8192, this, 1,
@@ -504,35 +512,94 @@ void AppListActivity::onEnter() {
 }
 
 void AppListActivity::onExit() {
+  // Signal the display owner and stop parent painting. Do not join or delete.
   childScreenOwned_.store(true, std::memory_order_release);
-  ActivityWithSubactivity::onExit();
-  // Cooperative display-task shutdown (same pattern as MyLibrary): the task
-  // may own the process-wide submit guard mid-render; deleting it then would
-  // stick the mutex for all activities. Ask it to self-terminate (it exits
-  // holding no locks) and join boundedly; force-delete only past the deadline.
   exitDisplayTask_.store(true, std::memory_order_release);
-  for (int i = 0; i < 300; ++i) {
-    if (displayTaskExited_.load(std::memory_order_acquire)) break;
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-  if (renderingMutex_) {
-    const bool exitLocked = (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE);
-    if (displayTaskHandle_) {
-      // Deadline overrun: last resort (may strand an in-flight submit).
-      M4Psram::deleteTask(displayTaskHandle_);
-      displayTaskHandle_ = nullptr;
+  ActivityWithSubactivity::onExit();
+}
+
+AppListActivity::~AppListActivity() {
+  // Reaper only destroys after the display owner has published exit.
+  // That owner has already dropped or abandoned pending. Clear it here so a
+  // missed discard cannot outlive the activity.
+  if (displayTaskExited_.load(std::memory_order_acquire)) {
+    pendingApps_.clear();
+    pendingItems_.clear();
+    pendingReady_.store(false, std::memory_order_release);
+    if (renderingMutex_) {
+      vSemaphoreDelete(renderingMutex_);
+      renderingMutex_ = nullptr;
     }
-    if (exitLocked) xSemaphoreGive(renderingMutex_);
-    vSemaphoreDelete(renderingMutex_);
-    renderingMutex_ = nullptr;
-  } else if (displayTaskHandle_) {
-    vTaskDelete(displayTaskHandle_);
-    displayTaskHandle_ = nullptr;
+    if (reloadLock_) {
+      vSemaphoreDelete(reloadLock_);
+      reloadLock_ = nullptr;
+    }
   }
-  if (reloadLock_) {
-    vSemaphoreDelete(reloadLock_);
-    reloadLock_ = nullptr;
+}
+
+void AppListActivity::discardPendingDrawer() {
+  // Drop an unpublished drawer. The worker calls this before the exit
+  // publication. The UI receive path calls it when the activity has already
+  // exited. A missed take leaves the vectors for the destructor.
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    pendingApps_.clear();
+    pendingItems_.clear();
+    pendingReady_.store(false, std::memory_order_release);
+    xSemaphoreGive(renderingMutex_);
   }
+}
+
+void AppListActivity::acceptPendingDrawer() {
+  // Move a published drawer into the UI lists. Dialog, child, and exit keep
+  // the lists loop() is already reading. rememberDrawer runs only after a
+  // still-valid apply, and never from the worker.
+  if (exitDisplayTask_.load(std::memory_order_acquire)) {
+    discardPendingDrawer();
+    return;
+  }
+  if (subActivity || childScreenOwned_.load(std::memory_order_acquire) || mode_ != 0) {
+    return;
+  }
+  if (!pendingReady_.load(std::memory_order_acquire)) return;
+
+  bool applied = false;
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (exitDisplayTask_.load(std::memory_order_acquire)) {
+      pendingApps_.clear();
+      pendingItems_.clear();
+      pendingReady_.store(false, std::memory_order_release);
+    } else if (!subActivity && !childScreenOwned_.load(std::memory_order_acquire) && mode_ == 0 &&
+               pendingReady_.load(std::memory_order_acquire)) {
+      apps_ = std::move(pendingApps_);
+      items_ = std::move(pendingItems_);
+      pendingApps_.clear();
+      pendingItems_.clear();
+      pendingReady_.store(false, std::memory_order_release);
+      if (selectedIndex_ >= static_cast<int>(items_.size())) {
+        selectedIndex_ = std::max(0, static_cast<int>(items_.size()) - 1);
+      }
+      updateRequired_ = true;
+      applied = true;
+    }
+    xSemaphoreGive(renderingMutex_);
+  }
+  if (!applied || exitDisplayTask_.load(std::memory_order_acquire)) return;
+
+  std::vector<M4ReturnCache::DrawerItem> cachedItems;
+  cachedItems.reserve(items_.size());
+  for (const auto& item : items_) {
+    M4ReturnCache::DrawerItem cached;
+    cached.plugin = item.plugin;
+    cached.builtin = static_cast<uint8_t>(item.builtin);
+    cached.appIndex = item.appIndex;
+    cached.id = item.id;
+    cached.label = item.label;
+    cached.icon = static_cast<int>(item.icon);
+    cached.pluginIcon = item.pluginIcon;
+    cachedItems.push_back(std::move(cached));
+  }
+  if (exitDisplayTask_.load(std::memory_order_acquire)) return;
+  M4ReturnCache::rememberDrawer(apps_, cachedItems);
 }
 
 bool AppListActivity::selectedIsPlugin() const {
@@ -694,6 +761,7 @@ void AppListActivity::uninstallSelected() {
     M4HomeDock::clear(appId);
   }
   reload();
+  acceptPendingDrawer();
   if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
     updateRequired_ = true;
     xSemaphoreGive(renderingMutex_);
@@ -706,7 +774,7 @@ void AppListActivity::loop() {
       const bool warmed = applyCachedDrawer();
       childScreenOwned_.store(false, std::memory_order_release);
       if (warmed) {
-        verifyDrawerCache_ = true;
+        verifyDrawerCache_.store(true, std::memory_order_release);
         if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
           updateRequired_ = true;
           xSemaphoreGive(renderingMutex_);
@@ -720,6 +788,11 @@ void AppListActivity::loop() {
       }
     }
     return;
+  }
+
+  if (!exitDisplayTask_.load(std::memory_order_acquire)) {
+    acceptPendingDrawer();
+    submitDirtyFrame();
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
@@ -756,10 +829,11 @@ void AppListActivity::loop() {
             updateRequired_ = true;
             xSemaphoreGive(renderingMutex_);
           }
-        } else {
+        } else if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
           mode_ = 1;
           M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
           updateRequired_ = true;
+          xSemaphoreGive(renderingMutex_);
         }
       }
       return;
@@ -894,11 +968,12 @@ void AppListActivity::loop() {
 }
 
 void AppListActivity::render() const {
-  // Submit-path input staged by displayTaskLoop(): it deep-copies the dirty
-  // frame under the local mutex, releases it, then calls render() under the
-  // global guard. Reading through this const reference keeps the submitter on
-  // one generation even though reload() replaces items_/apps_ wholesale;
-  // members stay the backing store for loop() hit-testing on the main thread.
+  // Submit-path input staged by the main-loop submitDirtyFrame(): snapshot_
+  // was filled once under the local mutex, that mutex was released, then
+  // render() runs under the global guard. Reading through this const reference
+  // keeps the submitter on one generation when acceptPendingDrawer() replaces
+  // items_ and apps_; those members stay the backing store for loop()
+  // hit-testing on the main thread.
   const AppListFrameSnapshot& frame = snapshot_;
   const bool framePluginSelected =
       frame.selectedIndex >= 0 && frame.selectedIndex < static_cast<int>(frame.items.size()) &&

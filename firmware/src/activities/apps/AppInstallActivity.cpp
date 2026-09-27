@@ -39,8 +39,9 @@ void installTaskTrampoline(void* param) {
   auto* job = static_cast<InstallJob*>(param);
   Serial.printf("[M4x] install task start heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
   job->result = M4xInstaller::install(job->path);
-  job->done.store(true, std::memory_order_release);
   Serial.printf("[M4x] install task done ok=%d err=%s\n", job->result.ok ? 1 : 0, job->result.error.c_str());
+  // The UI may destroy job as soon as done becomes visible. This must be our last access.
+  job->done.store(true, std::memory_order_release);
   vTaskDelete(nullptr);
 }
 }  // namespace

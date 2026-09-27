@@ -77,7 +77,7 @@ unsigned uxTaskGetStackHighWaterMark(void*){return 0;}
 struct SerialShim { template<class... A> void printf(const char*, A... ) {} } Serial;
 struct Entry {std::string name; bool directory=false; uint32_t size=1;};
 static std::vector<Entry> disk;
-static int failAfter=-1, skewAt=-1, reads=0, opens=0, openChildren=0;
+static int failAfter=-1, skewAt=-1, reads=0, opens=0, openChildren=0, seekCalls=0, fatSteps=0;
 struct FsFile {
  bool valid=false, root=false; uint64_t position=0; size_t item=0; uint8_t error=0;
  FsFile() = default;
@@ -101,9 +101,20 @@ struct FsFile {
  explicit operator bool() const { return valid; }
  bool isDirectory() const { return root || (item < disk.size() && disk[item].directory); }
  // FAT and exFAT directory cursors are 32-byte slots, not dense item indexes.
+ // SdFat 2.3.1 FatFile::seekSet: equal position is free. A reopened file has
+ // position 0 and follows the FAT chain from the first cluster. 4096-byte
+ // clusters make that prefix walk visible without a real card.
  bool seekSet(uint64_t p) {
    if (!valid || !root || (p & 31ull) || p / 32 > disk.size()) return false;
-   position = p;
+   ++seekCalls;
+   if (p != position) {
+     constexpr unsigned kShift = 12;
+     uint32_t nNew = p == 0 ? 0u : (uint32_t)((p - 1) >> kShift);
+     uint32_t nCur = position == 0 ? 0u : (uint32_t)((position - 1) >> kShift);
+     if (p != 0 && (nNew < nCur || position == 0)) fatSteps += (int)nNew;
+     else if (nNew > nCur) fatSteps += (int)(nNew - nCur);
+     position = p;
+   }
    return true;
  }
  uint64_t curPosition() const { return position; }
@@ -150,20 +161,49 @@ struct MyLibraryActivity {
 ''' + actual + r'''
 void settle(MyLibraryActivity& a) {
  int guard = 0;
+ const int opensBefore = opens, seeksBefore = seekCalls;
  while (a.directoryLoading) {
    int before = reads;
    a.scanDirectoryBatch();
    assert(reads - before <= 16);
-   assert(!a.scanDirectory);          // handle is closed even when the page is unfinished
+   // The old assertion required !scanDirectory after every turn. That matched
+   // the close/reopen implementation and forced the next batch to seekSet from
+   // position 0. An in-progress page now keeps one directory cursor; child
+   // handles are still closed before the turn returns.
    assert(openChildren == 0);
+   if (a.directoryLoading) assert(static_cast<bool>(a.scanDirectory));
+   else assert(!a.scanDirectory);
+   assert(opens == opensBefore + 1);
+   if (!a.directoryError) assert(seekCalls == seeksBefore + 1);
    assert(++guard < 20000);
  }
  assert(!a.scanDirectory);
  assert(a.files.size() <= 66);
  assert(a.directoryNameBytes <= 8192);
 }
+int pageSeekCost(size_t count, size_t perPage) {
+ int steps = 0;
+ if (!count || !perPage) return 0;
+ for (size_t done = 0; done < count; ) {
+   uint64_t p = done * 32ull;
+   if (p) steps += (int)((p - 1) >> 12);
+   done += std::min(perPage, count - done);
+ }
+ return steps;
+}
+int reopenEveryBatchCost(size_t count) {
+ constexpr int kBatch = 4; // host clock: openNext bumps millis by 1, budget is 4
+ int steps = 0;
+ int batches = (int)((count + kBatch - 1) / kBatch);
+ for (int i = 0; i < batches; ++i) {
+   uint64_t p = (uint64_t)i * kBatch * 32ull;
+   if (p) steps += (int)((p - 1) >> 12);
+ }
+ return steps;
+}
 void exercise(size_t count, bool longNames) {
  disk.clear(); reads = 0; failAfter = -1; skewAt = -1; openChildren = 0;
+ opens = seekCalls = fatSteps = 0;
  for (size_t i = 0; i < count; ++i) {
    char n[30]; snprintf(n, sizeof(n), "%08zu.txt", i);
    disk.push_back({(longNames ? std::string(500, 'x') : std::string()) + n, false, uint32_t(i + 1)});
@@ -178,14 +218,47 @@ void exercise(size_t count, bool longNames) {
  }
  assert(seen.size() == count);
  assert(reads <= int(count + pages + 1));
- if (pages > 1) { a.selectorIndex = 0; assert(a.selectDirectoryPage()); settle(a); assert(a.directoryPageStart == 0); assert(a.files[0] != "< 回到首批 >"); }
+ size_t perPage = 0, nameBytes = 0;
+ while (perPage < count && perPage < 64 && nameBytes + disk[perPage].name.size() + 2 <= 8192) {
+   nameBytes += disk[perPage].name.size() + 2;
+   ++perPage;
+ }
+ assert(opens == (int)pages && seekCalls == (int)pages);
+ assert(fatSteps == pageSeekCost(count, perPage));
+ if (count >= 1000) assert(fatSteps * 2 < reopenEveryBatchCost(count));
+ if (pages > 1) { a.selectorIndex = 0; assert(a.selectDirectoryPage()); settle(a); assert(a.directoryPageStart == 0); assert(a.files[0] != "< 回到首批 >"); assert(!a.scanDirectory && openChildren == 0); }
+}
+void filtered(size_t count, bool longNames) {
+ disk.clear(); reads = 0; failAfter = -1; skewAt = -1; openChildren = 0;
+ opens = seekCalls = fatSteps = 0;
+ for (size_t i = 0; i < count; ++i) {
+   char n[30]; snprintf(n, sizeof(n), "%08zu.bin", i);
+   disk.push_back({(longNames ? std::string(500, 'x') : std::string()) + n, false, 1});
+ }
+ MyLibraryActivity a; a.loadFiles(); a.scanDirectoryBatch();
+ assert(a.directoryLoading && static_cast<bool>(a.scanDirectory) && openChildren == 0);
+ assert(opens == 1 && seekCalls == 1 && reads > 0 && reads <= 16);
+ while (a.directoryLoading) {
+   int before = reads;
+   a.scanDirectoryBatch();
+   assert(reads - before <= 16 && openChildren == 0);
+   assert(opens == 1 && seekCalls == 1);
+   if (a.directoryLoading) assert(static_cast<bool>(a.scanDirectory));
+ }
+ assert(!a.scanDirectory && a.files.empty() && !a.directoryError && fatSteps == 0);
+ const int quadratic = reopenEveryBatchCost(count);
+ assert(quadratic > fatSteps);
+ if (count >= 1000) assert(quadratic >= 64);
 }
 int main() {
  exercise(0, false); exercise(64, false); exercise(65, false); exercise(1000, false); exercise(10000, false); exercise(10000, true);
- disk.assign(10000, {"hidden.bin", false, 1});
+ filtered(1000, false); filtered(10000, false); filtered(1000, true); filtered(10000, true);
+ disk.assign(10000, {"hidden.bin", false, 1}); reads = 0; opens = 0; seekCalls = 0; fatSteps = 0; openChildren = 0;
  MyLibraryActivity a; a.loadFiles(); a.scanDirectoryBatch();
- assert(a.directoryLoading && !a.scanDirectory && openChildren == 0);
- a.startDirectoryPage(0); assert(!a.scanDirectory); settle(a); assert(a.files.empty() && !a.directoryError);
+ // One turn of an unfinished filtered page keeps the cursor. The previous test
+ // required it to be closed, which is the quadratic reopen this case rejects.
+ assert(a.directoryLoading && static_cast<bool>(a.scanDirectory) && openChildren == 0 && opens == 1);
+ a.startDirectoryPage(0); assert(!a.scanDirectory); opens = seekCalls = fatSteps = 0; settle(a); assert(a.files.empty() && !a.directoryError && opens == 1);
  disk.assign(100, {"book.txt", false, 1}); reads = 0; failAfter = 4; a.loadFiles(); settle(a);
  assert(a.directoryError && a.files.empty());
  failAfter = -1; disk = {{std::string(900, 'x'), false, 1}, {"ok.txt", false, 7}};
@@ -202,6 +275,12 @@ int main() {
  MyLibraryActivity c; c.loadFiles(); settle(c);
  assert(c.directoryError && c.files.empty() && !c.directoryLoading && !c.scanDirectory);
  skewAt = -1;
+ disk.assign(80, {"hidden.bin", false, 1}); reads = 0; opens = 0; seekCalls = 0; fatSteps = 0; openChildren = 0; failAfter = -1;
+ MyLibraryActivity d; d.loadFiles(); d.scanDirectoryBatch();
+ assert(d.directoryLoading && d.scanDirectory && opens == 1 && openChildren == 0);
+ d.scanDirectory.close();
+ d.directoryLoading = false;
+ assert(!d.scanDirectory && !d.directoryLoading && openChildren == 0);
 }
 '''
     run(code, 'actual directory scanner / 1k+10k+10k long names+I/O faults')
@@ -216,7 +295,69 @@ int main() {
     loop = s[s.index('void MyLibraryActivity::loop()'):]
     loading = loop[loop.index('if (directoryLoading)'):loop.index('if (subActivity)')]
     assert 'returnToParent()' in loading
+    # Cancel and activity exit close the retained cursor. Those functions sit
+    # outside the extracted scanner, so the order is checked on the real source.
+    # The compiled test runs the same two cancel statements after one open.
+    assert loading.index('scanDirectory.close()') < loading.index('directoryLoading = false') < loading.index('returnToParent()')
+    onexit = function(s, 'void MyLibraryActivity::onExit()')
+    assert onexit.index('scanDirectory.close()') < onexit.index('directoryLoading = false')
+    batch = function(s, 'void MyLibraryActivity::scanDirectoryBatch()')
+    assert 'scanDirectory.close()' not in batch
+    assert 'scanDirectory.close()' in function(s, 'void MyLibraryActivity::startDirectoryPage')
+    assert 'scanDirectory.close()' in function(s, 'void MyLibraryActivity::finishDirectoryPage')
+
+
+def directory_moves():
+    s = (SRC/'activities/home/MyLibraryActivity.cpp').read_text()
+    start = s.index('      bool pasteSuccess = false;')
+    end = s.index('      if (pasteSuccess) {', start)
+    actual = s[start:end]
+    guard = function(s, 'bool canMoveDirectory(')
+    code = COMMON + r'''
+#include <map>
+struct Directory {
+ unsigned cluster=0;
+ explicit operator bool() const { return cluster!=0; }
+ bool isDirectory() const { return cluster!=0; }
+ unsigned firstCluster() const { return cluster; }
+ void close() {}
+};
+struct SdShim {
+ std::map<std::string, unsigned> dirs{
+  {"/", 1}, {"/Books", 2}, {"/books", 2}, {"/BOOKS", 2},
+  {"/books/sub", 3}, {"/Books/sub", 3}, {"/Bookshelf", 4}, {"/Other", 5},
+  {"/BOOKS~1", 2}, {"/BOOKS~1/sub", 3}, {"/Ä", 6}, {"/ä", 6}, {"/ä/sub", 7}};
+ Directory open(const char* path) { return {dirs[path]}; }
+ int renames=0;
+ bool exists(const char*) { return false; }
+ bool rename(const char*, const char*) { ++renames; return true; }
+} SdMan;
+''' + guard + r'''
+bool copyFile(const char*, const char*) { return true; }
+bool paste(const std::string& source, const std::string& dstPath) {
+ const std::string copySourcePath=source+"/";
+ const bool isCutMode=true;
+ const std::string basepath=dstPath.substr(0,std::max(size_t(1),dstPath.find_last_of('/')));
+''' + actual + r'''
+ return pasteSuccess;
+}
+int main() {
+ assert(!paste("/Books", "/Books/sub/Books"));
+ assert(!paste("/Books", "/books/sub/Books"));
+ assert(!paste("/Books", "/BOOKS/Books"));
+ assert(!paste("/Books", "/BOOKS~1/sub/Books"));
+ assert(!paste("/Ä", "/ä/sub/Ä"));
+ assert(!paste("/Books", "/Unreadable/Books"));
+ assert(SdMan.renames==0);
+ assert(paste("/Books", "/Bookshelf/Books"));
+ assert(paste("/Books", "/Other/Books"));
+ assert(paste("/Books", "/MovedBooks"));
+ assert(SdMan.renames==3);
+}
+'''
+    run(code, 'actual directory move guard / FAT directory identities, aliases, I/O failure and siblings')
 
 if __name__ == '__main__':
+    directory_moves()
     workers()
     library()

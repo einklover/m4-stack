@@ -101,7 +101,7 @@ class SDCardManager {
 
  private:
   static SDCardManager instance;
-  bool removeDirAtDepth(const char* path, unsigned depth);
+  bool removeDirAtDepth(const char* path, unsigned depth, char (&name)[768]);
 
   bool initialized = false;
   PowerHook _powerHook = nullptr;

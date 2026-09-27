@@ -157,8 +157,13 @@ void NativeAppActivity::turnFlowPage(bool forward) {
 
 void NativeAppActivity::onExit() {
   ActivityWithSubactivity::onExit();
-  controller_.reset();
+  if (controller_) controller_->requestStop();
   document_ = {};
+}
+
+bool NativeAppActivity::readyForDestruction() const {
+  return ActivityWithSubactivity::readyForDestruction() &&
+         (!controller_ || controller_->readyForDestruction());
 }
 
 bool NativeAppActivity::loadDocument() {

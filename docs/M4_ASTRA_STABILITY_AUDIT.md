@@ -102,3 +102,18 @@ Production `pio run -e murphy_m4` SUCCESS. Flash **5,777,313 / 7,143,424 bytes (
 `pio run -e murphy_m4_qemu_plugin` SUCCESS. Flash 5,786,877 / 7,143,424 bytes (81.0%) for that debug env. Isolated smoke used a new 64 MiB FAT image at `/tmp/m4-astra-smoke-20260926/artifacts/murphy-sd.img` and QEMU PTY `/dev/ttys235` (`m4adb --port` / `--no-daemon`). The first ping timed out during early boot; the next ping was ready in 0.6 s with `activity=Home` and `sd_ok=true`. Result: `SMOKE PASS`. The session was stopped. That image was not the user's card, and the port was not `/dev/cu.usbmodem101`.
 
 A green link and a QEMU Home screen are not a hardware pass. QEMU does not show SD electrical retry, device heap, device loop-stack high-water, or long-run fragmentation. The QEMU `free_heap` / `free_psram` fields are simulator status only.
+
+## Follow-up review — 2026-09-26
+
+Reviewed committed `2e75e2b` in the existing Astra worktree. One additional data-safety defect was reproduced and fixed locally: the directory-cut prefix check was case-sensitive, but FAT resolves case variants and short-name aliases to the same directory. SdFat rename has no ancestor guard, so `/Books` could be moved into `/books/sub/Books` and become unreachable through its original parent.
+
+`canMoveDirectory` now compares the source first cluster against every destination ancestor on the single SdMan volume. Each handle closes before the next opens; unreadable paths reject the move. Host regression extracts the actual helper and paste branch, covering case aliases, Unicode aliases, short names, failed opens, same-prefix siblings and root destinations. The case-alias assertion failed before the fix and passes afterward.
+
+Fresh verification:
+- `python3 firmware/tests/test_m4_astra_stability.py`: PASS (move guard, 4000 worker returns, bounded scanner/fault cases; ASan/UBSan).
+- ASan/UBSan native tests: checked copy, deadline client, HTTP download policy, library scan policy and settings commit: PASS.
+- Dependency bootstrap, reader TTF quiescence, font handoff and persistence-lock contracts: PASS.
+- `pio run -e murphy_m4 -j1`: PASS; Flash 5,777,641 / 7,143,424, RAM 108,908 / 327,680. Build log `/private/tmp/m4-astra-review-build-final.log`. Existing FILE_READ/FILE_WRITE redefinition warnings remain.
+- Updated local production binary SHA-256: `7db69ac385a8a0f641ad43f00e73e46413c1d5695807292a5a8624294e3a94ea`. This supersedes the earlier local binary/hash above; the committed audit's earlier QEMU result applies to the prior build only.
+
+No fresh QEMU or device run in this follow-up. No flash, commit or push. No global SdFat locking or runtime-remount claim; those pre-existing limitations remain.

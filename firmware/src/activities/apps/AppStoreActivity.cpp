@@ -258,10 +258,11 @@ void AppStoreActivity::taskEntry(void* arg) {
       const auto result = M4HttpTransport::requestToSink(req, sink, nullptr, nullptr,
                                                          cancelled, &s->cancel);
       const std::string digest = result.ok ? sink.checksum() : "";
-      file.sync();
-      file.close();
-      ok = result.ok && digest == app.sha256 && !s->cancel.load();
-      messageText = !result.ok ? "网络下载失败" : digest != app.sha256 ? "SHA-256 校验失败" :
+      const bool synced = !file.getWriteError() && file.sync();
+      const bool closed = file.close();
+      ok = result.ok && synced && closed && digest == app.sha256 && !s->cancel.load();
+      messageText = !result.ok ? "网络下载失败" : !synced || !closed ? "SD 卡写入失败" :
+                    digest != app.sha256 ? "SHA-256 校验失败" :
                     s->cancel.load() ? "已取消" : "下载校验成功";
       // A valid checksum authenticates bytes, not the catalog identity.
       // Reject accidentally mislabeled packages before invoking the installer.

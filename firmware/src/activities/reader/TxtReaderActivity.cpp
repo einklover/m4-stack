@@ -4777,61 +4777,36 @@ void TxtReaderActivity::persistProgressSnapshot(const ProgressSnapshot& snapshot
   // Use progress.dat — the old progress.bin path could be written as tmp but
   // never replaced on some SD states.
   const std::string path = dir + "/progress.dat";
-  const std::string legacy = dir + "/progress.bin";
   const std::string tmp = dir + "/progress.tmp";
-  auto forceRemove = [](const char* p) {
-    if (!SdMan.exists(p)) return;
-    if (SdMan.remove(p)) return;
-    // Stuck directory or busy node — try rmdir then remove again.
-    (void)SdMan.rmdir(p);
-    (void)SdMan.removeDir(p);
-    (void)SdMan.remove(p);
-  };
-
-  auto tryWrite = [&](const char* p) -> bool {
-    forceRemove(p);
-    FsFile f;
-    if (!SdMan.openFileForWrite("TRS", p, f)) return false;
-    const size_t n = f.write(snapshot.data.data(), snapshot.data.size());
-    f.sync();
-    f.close();
-    return n == snapshot.data.size();
-  };
-
-  forceRemove(tmp.c_str());
-  if (!tryWrite(tmp.c_str())) {
-    Serial.printf("[%lu] [TRS] progress tmp WRITE FAIL ch=%d page=%d dir=%s\n", millis(), snapshot.chapter,
-                  snapshot.page,
-                  dir.c_str());
-    // Direct to progress.dat
-    if (snapshot.generation != progressGeneration_.load(std::memory_order_acquire)) {
-      forceRemove(tmp.c_str());
-      return;
-    }
-    if (!tryWrite(path.c_str())) {
-      Serial.printf("[%lu] [TRS] progress.dat WRITE FAIL ch=%d page=%d\n", millis(), snapshot.chapter,
-                    snapshot.page);
-      return;
-    }
-  } else {
-    if (snapshot.generation != progressGeneration_.load(std::memory_order_acquire)) {
-      forceRemove(tmp.c_str());
-      Serial.printf("[%lu] [TRS] stale progress temp discarded gen=%u\n", millis(),
-                    static_cast<unsigned>(snapshot.generation));
-      return;
-    }
-    forceRemove(path.c_str());
-    if (!SdMan.rename(tmp.c_str(), path.c_str())) {
-      forceRemove(path.c_str());
-      if (!tryWrite(path.c_str())) {
-        Serial.printf("[%lu] [TRS] progress.dat RENAME/WRITE FAIL ch=%d page=%d\n", millis(), snapshot.chapter,
-                      snapshot.page);
-        return;
-      }
-    }
+  // An interrupted previous rename can leave tmp as the only complete copy.
+  // Preserve it before opening a new temp; never recursively delete a path
+  // just because SD returned an error (it may be a directory or a busy file).
+  if (!SdMan.exists(path.c_str()) && SdMan.exists(tmp.c_str()) &&
+      !SdMan.rename(tmp.c_str(), path.c_str())) {
+    Serial.printf("[TRS] progress recovery rename failed; keeping temp\n");
+    return;
   }
-  // Drop legacy stuck progress.bin so load is not confused.
-  forceRemove(legacy.c_str());
+  FsFile f;
+  if (!SdMan.openFileForWrite("TRS", tmp.c_str(), f)) return;
+  const size_t n = f.write(snapshot.data.data(), snapshot.data.size());
+  const bool synced = n == snapshot.data.size() && !f.getWriteError() && f.sync();
+  const bool closed = f.close();
+  if (!synced || !closed) {
+    SdMan.remove(tmp.c_str());
+    Serial.printf("[TRS] progress temp write/sync failed; previous progress kept\n");
+    return;
+  }
+  if (snapshot.generation != progressGeneration_.load(std::memory_order_acquire)) {
+    SdMan.remove(tmp.c_str());
+    return;
+  }
+  if ((SdMan.exists(path.c_str()) && !SdMan.remove(path.c_str())) ||
+      !SdMan.rename(tmp.c_str(), path.c_str())) {
+    // loadProgress already validates and recovers progress.tmp when dat is
+    // missing. Keep that synced copy; do not attempt a destructive direct write.
+    Serial.printf("[TRS] progress commit failed; synced temp retained\n");
+    return;
+  }
   Serial.printf("[%lu] [TRS] saved progress: page %d/%d chapter %d → %s\n", millis(), snapshot.page,
                 snapshot.totalPages, snapshot.chapter, path.c_str());
 }

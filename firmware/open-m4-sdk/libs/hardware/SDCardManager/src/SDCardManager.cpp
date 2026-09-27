@@ -36,6 +36,8 @@ SDCardManager SDCardManager::instance;
 SDCardManager::SDCardManager() {}
 
 bool SDCardManager::begin() {
+  // begin is initialization, not runtime recovery. Never invalidate live files.
+  if (initialized) return true;
   // Native SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the esp-idf
   // SDMMC block device. FsFile from this volume is the same type the SPI path
   // returns, so the public API and consumers are unchanged.
@@ -99,6 +101,8 @@ bool SDCardManager::begin() {
 SDCardManager::SDCardManager() : sd() {}
 
 bool SDCardManager::begin() {
+  // begin is initialization, not runtime recovery. Never invalidate live files.
+  if (initialized) return true;
   // Profiles whose SD CS is not yet known leave it unassigned so the card stays
   // dormant — bail out before any pin is touched, or SdFat drives "pin 255" and
   // floods the log. (Native-SDMMC boards like the X4 Pro take the #if branch above.)
@@ -183,10 +187,13 @@ bool SDCardManager::capabilityProbe(const char* optionalExistingPath) {
     return false;
   }
   FsFile entry;
-  if (entry.openNext(&root, O_RDONLY)) {
-    entry.close();
-  }
+  if (entry.openNext(&root, O_RDONLY)) entry.close();
+  const bool rootReadFailed = root.getError() != 0;
   root.close();
+  if (rootReadFailed) {
+    setLast("capability_probe", "root entry read failed", "io_failure");
+    return false;
+  }
 
   if (optionalExistingPath && optionalExistingPath[0] && vol().exists(optionalExistingPath)) {
     FsFile f;
@@ -441,10 +448,11 @@ uint64_t SDCardManager::sdUsedBytes() {
 }
 
 bool SDCardManager::removeDir(const char* path) {
-  return removeDirAtDepth(path, 0);
+  char name[768];
+  return removeDirAtDepth(path, 0, name);
 }
 
-bool SDCardManager::removeDirAtDepth(const char* path, unsigned depth) {
+bool SDCardManager::removeDirAtDepth(const char* path, unsigned depth, char (&name)[768]) {
   // SdFat skips FAT dot entries itself. Limit depth for malformed or unusually
   // nested media, and close each child before descending or mutating the volume.
   if (depth >= 16) return false;
@@ -454,25 +462,25 @@ bool SDCardManager::removeDirAtDepth(const char* path, unsigned depth) {
     return false;
   }
 
-  char name[128];
   for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
-    file.getName(name, sizeof(name));
+    const size_t length = file.getName(name, sizeof(name));
     const bool isDir = file.isDirectory();
     file.close();
-    if (name[0] == 0 || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+    if (!length || length >= sizeof(name) - 1 || name[0] == 0 || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
       dir.close();
       return false;
     }
     String filePath = path;
     if (!filePath.endsWith("/")) filePath += "/";
     filePath += name;
-    const bool ok = isDir ? removeDirAtDepth(filePath.c_str(), depth + 1)
+    const bool ok = isDir ? removeDirAtDepth(filePath.c_str(), depth + 1, name)
                           : vol().remove(filePath.c_str());
     if (!ok) {
       dir.close();
       return false;
     }
   }
+  const bool readFailed = dir.getError() != 0;
   dir.close();
-  return vol().rmdir(path);
+  return !readFailed && vol().rmdir(path);
 }

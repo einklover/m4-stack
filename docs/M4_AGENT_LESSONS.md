@@ -744,3 +744,9 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - If a partial library batch ends on a non-aligned `curPosition`, fail that page. Keeping the previous cursor reopens the same slots on every UI turn and never leaves the loading screen. An unaligned cursor at the start of the next `openNext` is a different check and does not catch this, because the old cursor is still aligned.
 - Do not emulate a directory move with `mkdir` plus `removeDir`. Same-volume cut is `rename`. A failed file copy must close the source and delete only the exclusive-created partial destination.
 - Unknown-length HTTP bodies can spin in `HTTPClient` while `available()` stays 0 and the sink write callback never runs. Arm a socket-level deadline only for the text `writeToStream` path. File download loops already poll idle/total limits; arming `connected()==0` there can make an unknown-length download look complete.
+
+## 2026-09-26 — Directory moves must compare filesystem identity
+
+- A case-sensitive string prefix cannot prevent moving a FAT directory into itself: case variants, Unicode folding and short-name aliases can name the same directory. SdFat `FatFile::rename` does not reject an ancestor/descendant move before rewriting entries.
+- In MyLibrary, compare the source `firstCluster()` with every destination parent on the same SdMan volume; close each handle before opening the next and fail closed on an unreadable parent. Do not substitute ASCII-only case folding for directory identity.
+- `python3 firmware/tests/test_m4_astra_stability.py` extracts the production guard and paste path. The original guard failed the `/Books` to `/books/sub/Books` assertion; identity, short-name, Unicode, unreadable-parent and valid-sibling cases pass with the fix. Host evidence is not a physical-card test.

@@ -448,6 +448,16 @@ static bool hasPendingReaderOwner() {
   return false;
 }
 
+// Main-loop-only query: block destructive cache maintenance until retired
+// readers and Home cover workers relinquish their files. Never remount here.
+bool m4ReaderCacheBusy() {
+  return hasDeferredActivities() || hasPendingReaderOwner()
+#ifdef CROSSPOINT_MURPHY_M4
+      || HomeActivity::backendBusy()
+#endif
+      ;
+}
+
 static void reapDeferredActivities() {
   Activity* previous = nullptr;
   Activity* activity = deferredActivities;
@@ -483,9 +493,13 @@ static bool m4HomeBoundaryWorkersBusy() {
 }
 
 static void releaseM4HomeBoundaryResources() {
-  // Activities join their own workers in onExit(). These process-wide jobs can
-  // outlive an activity, so cancel them before reclaiming the shared TLS
-  // session. Never tear down the HTTP handle while one of them still owns it.
+  // exitActivity() has already linked the previous activity into
+  // deferredActivities. ScreenBridge is not in the provider busy set, and its
+  // worker can still hold M4HttpTransport's HeavyGate. shutdown() takes that
+  // gate and would block this UI call. Cancel process-wide provider jobs
+  // here. Close TLS only when those jobs are idle and no deferred activity
+  // remains. loop() already waits on gM4PendingTransientReset until
+  // reapDeferredActivities() clears the list, then calls shutdown().
   M4NativeProviderManager::cancelForeground();
   M4NativeProviderCatalog::cancel();
   M4NativeProviderDiscovery::cancel();
@@ -499,12 +513,11 @@ static void releaseM4HomeBoundaryResources() {
   }
 
   const bool providerBusy = m4HomeBoundaryWorkersBusy();
-  if (!providerBusy) {
-    M4HttpTransport::shutdown();
+  if (providerBusy || hasDeferredActivities()) {
+    Serial.println("[M4-BOUNDARY] defer TLS shutdown until providers and deferred activities release HTTP");
   } else {
-    Serial.println("[M4-BOUNDARY] provider worker still active; defer TLS shutdown");
+    M4HttpTransport::shutdown();
   }
-
 }
 #endif
 
@@ -811,6 +824,26 @@ void setupDisplayAndFonts() {
 }
 
 
+#ifdef CROSSPOINT_MURPHY_M4
+static void waitForSdRetryInput() {
+  bool released = false;
+  float tx = 0, ty = 0;
+  (void)gpio.wasTouchTap(tx, ty); // Discard an old boot-screen tap.
+  for (;;) {
+    gpio.update();
+    const bool pressed = mappedInputManager.isPressed(MappedInputManager::Button::Confirm);
+    if (!pressed) released = true;
+    if (gpio.wasTouchTap(tx, ty)) return;
+    if (released && pressed) {
+      do { gpio.update(); delay(20); }
+      while (mappedInputManager.isPressed(MappedInputManager::Button::Confirm));
+      return;
+    }
+    delay(20);
+  }
+}
+#endif
+
 void setup() {
 #ifdef CROSSPOINT_MURPHY_M4
     sanitizeM4BuzzerEarly();
@@ -976,21 +1009,9 @@ void setup() {
           M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 - 28, status, true,
                                  EpdFontFamily::BOLD);
           M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 + 8,
-                                 "Check card; Confirm to retry", true);
+                                 "Check card; tap or Confirm to retry", true);
           renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-          // Require a fresh press so a held boot key cannot trigger a retry loop.
-          bool released = false;
-          for (;;) {
-            gpio.update();
-            const bool pressed = mappedInputManager.isPressed(MappedInputManager::Button::Confirm);
-            if (!pressed) released = true;
-            if (released && pressed) break;
-            delay(20);
-          }
-          while (mappedInputManager.isPressed(MappedInputManager::Button::Confirm)) {
-            gpio.update();
-            delay(20);
-          }
+          waitForSdRetryInput();
           if (SdMan.begin()) {
             Serial.printf("[%lu] [M4-SD] interactive retry mounted\n", millis());
             break;
@@ -1009,15 +1030,20 @@ void setup() {
     }
 #ifdef CROSSPOINT_MURPHY_M4
     // Read-only capability probe: root list + optional settings file if present.
-    if (!SdMan.capabilityProbe("/.crosspoint/settings.json")) {
+    while (!SdMan.capabilityProbe("/.crosspoint/settings.json")) {
       Serial.printf("[%lu] [M4-SD] ERROR capability_probe stage=%s code=%s detail=%s\n", millis(), SdMan.lastStage(),
                     SdMan.lastCodeName(), SdMan.lastDetail());
       printM4BootSummary(m4PsramOk, false, false, gpio.hasTouch(), gpio.isTouchStreamReady(), false, m4LightOk);
-      if (!sdRetryDisplayReady) setupDisplayAndFonts();
-      exitActivity();
-      enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager, "SD: io_failure",
-                                                     EpdFontFamily::BOLD));
-      return;
+      if (!sdRetryDisplayReady) { setupDisplayAndFonts(); sdRetryDisplayReady = true; }
+      renderer.clearScreen();
+      M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 - 28,
+                            "SD read failed", true, EpdFontFamily::BOLD);
+      M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 + 8,
+                            "Tap or Confirm to retry reading", true);
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      // Re-probe the mounted volume only. No power cycle, no invalidation of
+      // handles, no formatting; capabilityProbe closes its own handles.
+      waitForSdRetryInput();
     }
     m4SdOk = true;
     Serial.printf("[%lu] [M4-SD] mounted ok part=%d fatType=%u sectors=%llu stage=%s code=%s\n", millis(),
