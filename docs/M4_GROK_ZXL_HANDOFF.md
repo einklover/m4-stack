@@ -162,7 +162,7 @@ branch was created.
 
 The sections above describe `e0c9388` / `56e9389` and stay as that close-out.
 The local image digests in "Builds reused" are that tree. They do not contain
-the sources below. This section is the later pass. Commit: `INSTALL_COMMIT_SHA`.
+the sources below. This section is the later pass. Commit: `5cc999ec2e4e7bf7adb8eb080b0ad1cd21692aae`.
 Astra was not called. songzhangchi01 was not called. No subagent was started.
 The audit is not finished. No real-device flash. No user SD.
 
