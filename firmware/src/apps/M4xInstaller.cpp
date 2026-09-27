@@ -10,7 +10,11 @@
 #include <esp_task_wdt.h>
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -29,6 +33,48 @@ inline void resetTaskWdtIfSubscribed() {
   }
 #endif
 }
+
+// Serializes install and uninstall only. HTTP file transfer already holds
+// storageMutex_ and then calls install(), so the order is storageMutex_ then
+// this gate. UI and the install worker take only this gate. Do not take
+// storageMutex_, gM4RenderMutex, or a display lock while the gate is held,
+// and do not take the gate from the HTTP handler. ensureLayout() must not
+// take it either: install() reaches that function through probe().
+std::atomic<SemaphoreHandle_t> gInstallGate{nullptr};
+
+SemaphoreHandle_t installGateHandle() {
+  SemaphoreHandle_t cur = gInstallGate.load(std::memory_order_acquire);
+  if (cur != nullptr) return cur;
+  SemaphoreHandle_t created = xSemaphoreCreateMutex();
+  if (created == nullptr) return nullptr;
+  SemaphoreHandle_t expected = nullptr;
+  if (gInstallGate.compare_exchange_strong(expected, created, std::memory_order_release,
+                                           std::memory_order_acquire)) {
+    return created;
+  }
+  vSemaphoreDelete(created);
+  return expected;
+}
+
+class InstallGateGuard {
+ public:
+  InstallGateGuard() = default;
+  bool acquire() {
+    handle_ = installGateHandle();
+    if (handle_ == nullptr) return false;
+    held_ = xSemaphoreTake(handle_, portMAX_DELAY) == pdTRUE;
+    return held_;
+  }
+  ~InstallGateGuard() {
+    if (held_) xSemaphoreGive(handle_);
+  }
+  InstallGateGuard(const InstallGateGuard&) = delete;
+  InstallGateGuard& operator=(const InstallGateGuard&) = delete;
+
+ private:
+  SemaphoreHandle_t handle_ = nullptr;
+  bool held_ = false;
+};
 
 bool writeFileBytes(const char* path, const uint8_t* data, size_t n) {
   if (SdMan.exists(path)) SdMan.remove(path);
@@ -566,6 +612,8 @@ void recoverInterruptedInstalls() {
 }  // namespace
 
 void M4xInstaller::ensureLayout() {
+  // Recovery stays outside the install transaction mutex. install() calls
+  // probe(), which calls this function, so taking that mutex here deadlocks.
   SdMan.mkdir(M4xPaths::kAppsRoot, true);
   SdMan.mkdir(M4xPaths::kAppsDataRoot, true);
   SdMan.mkdir(M4xPaths::kInbox, true);
@@ -655,6 +703,13 @@ M4xInstallResult M4xInstaller::probe(const std::string& packagePath) {
 }
 
 M4xInstallResult M4xInstaller::install(const std::string& packagePath) {
+  InstallGateGuard gate;
+  if (!gate.acquire()) {
+    M4xInstallResult denied;
+    denied.error = "install_gate";
+    denied.message = "无法开始安装";
+    return denied;
+  }
   Serial.printf("[M4x] install begin path=%s freeHeap=%u\n", packagePath.c_str(),
                 static_cast<unsigned>(ESP.getFreeHeap()));
   resetTaskWdtIfSubscribed();
@@ -778,6 +833,11 @@ M4xInstallResult M4xInstaller::install(const std::string& packagePath) {
 }
 
 bool M4xInstaller::uninstall(const std::string& id, bool clearData, std::string& errorOut) {
+  InstallGateGuard gate;
+  if (!gate.acquire()) {
+    errorOut = "install_gate";
+    return false;
+  }
   if (!M4xIsValidPackageId(id)) {
     errorOut = "invalid_id";
     return false;

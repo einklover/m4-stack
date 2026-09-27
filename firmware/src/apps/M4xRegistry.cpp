@@ -40,23 +40,40 @@ std::string readAllText(const char* path) {
   return out;
 }
 
+// Create-only. openFileForWrite uses O_TRUNC, so an existing path is refused
+// and only a file this call created is removed on failure.
 bool writeAllTextExact(const char* path, const std::string& body) {
-  if (SdMan.exists(path)) SdMan.remove(path);
+  if (SdMan.exists(path)) return false;
   FsFile f;
   if (!SdMan.openFileForWrite("M4xReg", path, f)) return false;
   const size_t n = body.size();
   size_t off = 0;
-  while (off < n) {
+  bool ok = true;
+  while (ok && off < n) {
     const size_t chunk = std::min<size_t>(4096, n - off);
     const int w = f.write(reinterpret_cast<const uint8_t*>(body.data() + off), chunk);
-    if (w <= 0) {
-      f.close();
-      SdMan.remove(path);
-      return false;
-    }
-    off += static_cast<size_t>(w);
+    if (w <= 0) ok = false;
+    else off += static_cast<size_t>(w);
   }
-  f.close();
+  if (ok && (off != n || f.getWriteError())) ok = false;
+  if (ok && f.fileSize() != n) ok = false;
+  if (ok && !f.sync()) ok = false;
+  if (!f.close()) ok = false;
+  if (!ok) {
+    SdMan.remove(path);
+    return false;
+  }
+  FsFile verify;
+  if (!SdMan.openFileForRead("M4xReg", path, verify)) {
+    SdMan.remove(path);
+    return false;
+  }
+  const bool sizeOk = verify.fileSize() == n;
+  verify.close();
+  if (!sizeOk) {
+    SdMan.remove(path);
+    return false;
+  }
   return true;
 }
 
@@ -124,7 +141,12 @@ std::vector<M4xInstalledApp> M4xRegistry::load() {
 
   const std::string bak = readAllText(kRegistryBak);
   if (parseRegistry(bak, apps)) {
-    if (!bak.empty()) writeAllTextExact(M4xPaths::kRegistryPath, bak);
+    if (!bak.empty()) {
+      if (SdMan.exists(M4xPaths::kRegistryPath)) SdMan.remove(M4xPaths::kRegistryPath);
+      if (!SdMan.exists(M4xPaths::kRegistryPath)) {
+        (void)writeAllTextExact(M4xPaths::kRegistryPath, bak);
+      }
+    }
     return apps;
   }
 
@@ -152,25 +174,45 @@ bool M4xRegistry::save(const std::vector<M4xInstalledApp>& apps) {
     JsonArray files = o["files"].to<JsonArray>();
     for (const auto& f : a.files) files.add(f);
   }
+  if (doc.overflowed()) return false;
   std::string out;
-  serializeJson(doc, out);
+  const size_t written = serializeJson(doc, out);
+  if (doc.overflowed() || written == 0 || written != out.size()) return false;
 
   SdMan.mkdir("/system", true);
 
+  if (SdMan.exists(kRegistryTmp) && !SdMan.remove(kRegistryTmp)) return false;
   if (!writeAllTextExact(kRegistryTmp, out)) return false;
 
-  if (SdMan.exists(M4xPaths::kRegistryPath)) {
-    if (SdMan.exists(kRegistryBak)) SdMan.remove(kRegistryBak);
+  const bool hadPrimary = SdMan.exists(M4xPaths::kRegistryPath);
+  if (hadPrimary) {
+    if (SdMan.exists(kRegistryBak) && !SdMan.remove(kRegistryBak)) {
+      SdMan.remove(kRegistryTmp);
+      return false;
+    }
     if (!SdMan.rename(M4xPaths::kRegistryPath, kRegistryBak)) {
       const std::string prev = readAllText(M4xPaths::kRegistryPath);
-      if (!prev.empty()) writeAllTextExact(kRegistryBak, prev);
-      SdMan.remove(M4xPaths::kRegistryPath);
+      if (prev.empty() || !writeAllTextExact(kRegistryBak, prev)) {
+        SdMan.remove(kRegistryTmp);
+        return false;
+      }
+      const std::string bakCheck = readAllText(kRegistryBak);
+      if (bakCheck != prev || !SdMan.remove(M4xPaths::kRegistryPath)) {
+        SdMan.remove(kRegistryTmp);
+        return false;
+      }
     }
   }
 
   if (!SdMan.rename(kRegistryTmp, M4xPaths::kRegistryPath)) {
+    if (SdMan.exists(M4xPaths::kRegistryPath)) {
+      SdMan.remove(kRegistryTmp);
+      return false;
+    }
     if (!writeAllTextExact(M4xPaths::kRegistryPath, out)) {
-      if (SdMan.exists(kRegistryBak)) SdMan.rename(kRegistryBak, M4xPaths::kRegistryPath);
+      if (SdMan.exists(M4xPaths::kRegistryPath)) SdMan.remove(M4xPaths::kRegistryPath);
+      if (hadPrimary && SdMan.exists(kRegistryBak)) SdMan.rename(kRegistryBak, M4xPaths::kRegistryPath);
+      SdMan.remove(kRegistryTmp);
       return false;
     }
     SdMan.remove(kRegistryTmp);

@@ -7,6 +7,7 @@
 #include "apps/M4xRegistry.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/M4RenderGuard.h"
 #include "util/M4UiText.h"
 #include "util/M4ListTouchPolicy.h"
 
@@ -14,6 +15,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <utility>
+
+extern SemaphoreHandle_t gM4RenderMutex;
+
+struct AppInstallJob {
+  std::string path;
+  M4xInstallResult result;
+  // Worker publishes done; the UI loop and the destructor acquire it.
+  std::atomic<bool> done{false};
+};
 
 namespace {
 void primaryButtonRect(int screenW, int screenH, int& x, int& y, int& w, int& h) {
@@ -28,15 +39,8 @@ bool pointInRect(int px, int py, int x, int y, int w, int h) {
 }
 
 // Worker task: install must not run on the main loop stack (miniz/zip + SD can overflow).
-struct InstallJob {
-  std::string path;
-  M4xInstallResult result;
-  // Worker publishes done; UI loop polls — needs release/acquire, not volatile.
-  std::atomic<bool> done{false};
-};
-
 void installTaskTrampoline(void* param) {
-  auto* job = static_cast<InstallJob*>(param);
+  auto* job = static_cast<AppInstallJob*>(param);
   Serial.printf("[M4x] install task start heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
   job->result = M4xInstaller::install(job->path);
   Serial.printf("[M4x] install task done ok=%d err=%s\n", job->result.ok ? 1 : 0, job->result.error.c_str());
@@ -51,22 +55,6 @@ AppInstallActivity::AppInstallActivity(GfxRenderer& renderer, MappedInputManager
     : ActivityWithSubactivity("AppInstall", renderer, mappedInput),
       packagePath_(std::move(packagePath)),
       onDone_(onDone) {}
-
-void AppInstallActivity::taskTrampoline(void* param) {
-  static_cast<AppInstallActivity*>(param)->displayTaskLoop();
-}
-
-void AppInstallActivity::displayTaskLoop() {
-  while (true) {
-    if (updateRequired_) {
-      updateRequired_ = false;
-      xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-      render();
-      xSemaphoreGive(renderingMutex_);
-    }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-  }
-}
 
 void AppInstallActivity::scanInbox() {
   inboxPackages_.clear();
@@ -111,60 +99,71 @@ void AppInstallActivity::probeSelected() {
 }
 
 void AppInstallActivity::doInstall() {
-  if (installRunning_) return;
-  installRunning_ = true;
+  if (job_ != nullptr) return;
   stage_ = Stage::Result;
   resultMessage_ = "正在安装...";
   updateRequired_ = true;
+  installTimedOut_ = false;
 
-  // Heap-allocated job outlives this call; task fills result.
-  auto* job = new InstallJob();
+  auto* job = new AppInstallJob();
   job->path = packagePath_;
-  job->done = false;
+  installStartedMs_ = millis();
 
   // Large stack: ZipFile + JSON + SD on worker, not UI loop.
-  const BaseType_t ok =
-      xTaskCreate(installTaskTrampoline, "M4xInstall", 12288, job, 1, nullptr);
+  const BaseType_t ok = xTaskCreate(installTaskTrampoline, "M4xInstall", 12288, job, 1, nullptr);
   if (ok != pdPASS) {
     delete job;
-    installRunning_ = false;
     resultMessage_ = "无法创建安装任务(内存不足)";
     updateRequired_ = true;
     return;
   }
+  job_ = job;
+}
 
-  // Poll completion without blocking forever (watchdog-safe).
-  const unsigned long start = millis();
-  while (!job->done.load(std::memory_order_acquire)) {
-    vTaskDelay(20 / portTICK_PERIOD_MS);
-    if (millis() - start > 60000) {
-      resultMessage_ = "安装超时";
-      installRunning_ = false;
-      // Leak job if task still running — better than use-after-free.
-      updateRequired_ = true;
-      return;
+void AppInstallActivity::observeInstallJob() {
+  if (job_ == nullptr) return;
+  if (job_->done.load(std::memory_order_acquire)) {
+    probe_ = std::move(job_->result);
+    delete job_;
+    job_ = nullptr;
+    installTimedOut_ = false;
+    stage_ = Stage::Result;
+    if (probe_.ok) {
+      char okLine[128];
+      std::snprintf(okLine, sizeof(okLine), "安装成功: %s %s (%d)", probe_.manifest.name.c_str(),
+                    probe_.manifest.version.c_str(), probe_.manifest.versionCode);
+      resultMessage_ = okLine;
+    } else {
+      resultMessage_ = probe_.message;
     }
+    updateRequired_ = true;
+    return;
   }
+  if (!installTimedOut_ && millis() - installStartedMs_ > 60000) {
+    resultMessage_ = "安装超时";
+    installTimedOut_ = true;
+    updateRequired_ = true;
+  }
+}
 
-  probe_ = std::move(job->result);
-  delete job;
-  installRunning_ = false;
-  stage_ = Stage::Result;
-  if (probe_.ok) {
-    char okLine[128];
-    std::snprintf(okLine, sizeof(okLine), "安装成功: %s %s (%d)", probe_.manifest.name.c_str(),
-                  probe_.manifest.version.c_str(), probe_.manifest.versionCode);
-    resultMessage_ = okLine;
-  } else {
-    resultMessage_ = probe_.message;
+bool AppInstallActivity::readyForDestruction() const {
+  if (job_ != nullptr && !job_->done.load(std::memory_order_acquire)) return false;
+  return ActivityWithSubactivity::readyForDestruction();
+}
+
+bool AppInstallActivity::preventAutoSleep() { return job_ != nullptr; }
+
+AppInstallActivity::~AppInstallActivity() {
+  if (job_ != nullptr && job_->done.load(std::memory_order_acquire)) {
+    delete job_;
+    job_ = nullptr;
   }
-  updateRequired_ = true;
 }
 
 void AppInstallActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
-  renderingMutex_ = xSemaphoreCreateMutex();
-  installRunning_ = false;
+  job_ = nullptr;
+  installTimedOut_ = false;
   M4xInstaller::ensureLayout();
   if (!packagePath_.empty()) {
     probeSelected();
@@ -177,27 +176,26 @@ void AppInstallActivity::onEnter() {
     }
   }
   updateRequired_ = true;
-  xTaskCreate(&AppInstallActivity::taskTrampoline, "AppInstallUI", 4096, this, 1, &displayTaskHandle_);
 }
 
 void AppInstallActivity::onExit() {
   ActivityWithSubactivity::onExit();
-  // Wait briefly if install still running
-  unsigned long t0 = millis();
-  while (installRunning_ && millis() - t0 < 2000) {
-    vTaskDelay(20 / portTICK_PERIOD_MS);
-  }
-  xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-  if (displayTaskHandle_) {
-    vTaskDelete(displayTaskHandle_);
-    displayTaskHandle_ = nullptr;
-  }
-  vSemaphoreDelete(renderingMutex_);
-  renderingMutex_ = nullptr;
+  // The worker still owns job_ until it release-stores done. Home can leave
+  // this screen while that task runs. readyForDestruction keeps the activity,
+  // and the destructor reclaims the job only after that store.
 }
 
 void AppInstallActivity::loop() {
-  if (installRunning_) return;  // ignore input during install worker
+  observeInstallJob();
+  if (updateRequired_) {
+    M4RenderGuard guard(gM4RenderMutex);
+    if (guard.owns()) {
+      render();
+      updateRequired_ = false;
+    }
+  }
+  // No cancel. Back and confirm stay ignored until the worker publishes done.
+  if (job_) return;
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
     onDone_();

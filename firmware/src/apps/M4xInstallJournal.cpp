@@ -31,28 +31,37 @@ bool readExactFile(const char* path, std::string& out) {
   return off == n;
 }
 
+// Create-only. openFileForWrite uses O_TRUNC, so refuse an existing path and
+// remove only the file this call created.
 bool writeExactFile(const char* path, const std::string& body) {
-  if (SdMan.exists(path)) SdMan.remove(path);
+  if (SdMan.exists(path)) return false;
   FsFile f;
   if (!SdMan.openFileForWrite("M4xJnl", path, f)) return false;
+  const size_t n = body.size();
   size_t off = 0;
-  while (off < body.size()) {
-    const size_t chunk = std::min<size_t>(4096, body.size() - off);
+  bool ok = true;
+  while (ok && off < n) {
+    const size_t chunk = std::min<size_t>(4096, n - off);
     const int w = f.write(reinterpret_cast<const uint8_t*>(body.data() + off), chunk);
-    if (w <= 0) {
-      f.close();
-      SdMan.remove(path);
-      return false;
-    }
-    off += static_cast<size_t>(w);
+    if (w <= 0) ok = false;
+    else off += static_cast<size_t>(w);
   }
-  f.close();
-  // Verify size
-  FsFile v;
-  if (!SdMan.openFileForRead("M4xJnl", path, v)) return false;
-  const size_t n = v.fileSize();
-  v.close();
-  if (n != body.size()) {
+  if (ok && (off != n || f.getWriteError())) ok = false;
+  if (ok && f.fileSize() != n) ok = false;
+  if (ok && !f.sync()) ok = false;
+  if (!f.close()) ok = false;
+  if (!ok) {
+    SdMan.remove(path);
+    return false;
+  }
+  FsFile verify;
+  if (!SdMan.openFileForRead("M4xJnl", path, verify)) {
+    SdMan.remove(path);
+    return false;
+  }
+  const bool sizeOk = verify.fileSize() == n;
+  verify.close();
+  if (!sizeOk) {
     SdMan.remove(path);
     return false;
   }
@@ -67,6 +76,8 @@ bool copyFileExact(const char* src, const char* dst) {
 
 bool renameOrCopy(const char* src, const char* dst) {
   if (SdMan.rename(src, dst)) return true;
+  // Copy would truncate dst. Callers remove a replaceable destination first.
+  if (SdMan.exists(dst)) return false;
   if (!copyFileExact(src, dst)) return false;
   SdMan.remove(src);
   return SdMan.exists(dst);
@@ -147,17 +158,59 @@ std::vector<M4xInstallTxn::JournalRecord> parseBody(const std::string& raw) {
   return out;
 }
 
-// Recoverable journal replace: never delete last valid primary before replacement exists.
-// Steps: write .tmp → primary→.bak → .tmp→primary → drop .bak
+// Recoverable journal replace. The new body is written to .tmp.part first.
+// A sole valid .tmp is never removed until the replacement is verified.
 bool durableWriteJournal(const char* path, const std::string& body) {
+  if (!isValidJournalBody(body)) return false;
+
   const std::string tmp = std::string(path) + ".tmp";
   const std::string bak = std::string(path) + ".bak";
+  const std::string part = std::string(path) + ".tmp.part";
 
-  // 1. Complete tmp write (verify size).
-  if (SdMan.exists(tmp.c_str())) SdMan.remove(tmp.c_str());
-  if (!writeExactFile(tmp.c_str(), body)) return false;
-  if (!isValidJournalBody(body)) {
-    SdMan.remove(tmp.c_str());
+  if (SdMan.exists(part.c_str()) && !SdMan.remove(part.c_str())) return false;
+  if (!writeExactFile(part.c_str(), body)) {
+    if (SdMan.exists(part.c_str())) SdMan.remove(part.c_str());
+    return false;
+  }
+
+  std::string primaryRaw;
+  std::string bakRaw;
+  std::string tmpRaw;
+  const bool primaryValid = SdMan.exists(path) && readExactFile(path, primaryRaw) && isValidJournalBody(primaryRaw);
+  const bool bakValid =
+      SdMan.exists(bak.c_str()) && readExactFile(bak.c_str(), bakRaw) && isValidJournalBody(bakRaw);
+  const bool tmpValid = SdMan.exists(tmp.c_str()) && readExactFile(tmp.c_str(), tmpRaw) && isValidJournalBody(tmpRaw);
+  if (tmpValid && !primaryValid && !bakValid) {
+    if (SdMan.exists(path)) {
+      if (SdMan.exists(bak.c_str()) && !SdMan.remove(bak.c_str())) {
+        SdMan.remove(part.c_str());
+        return false;
+      }
+      if (!renameOrCopy(path, bak.c_str())) {
+        SdMan.remove(part.c_str());
+        return false;
+      }
+    }
+    if (!renameOrCopy(part.c_str(), path)) {
+      SdMan.remove(part.c_str());
+      return false;
+    }
+    std::string check;
+    if (!readExactFile(path, check) || check != body || !isValidJournalBody(check)) {
+      SdMan.remove(part.c_str());
+      return false;
+    }
+    if (SdMan.exists(tmp.c_str())) SdMan.remove(tmp.c_str());
+    if (SdMan.exists(part.c_str())) SdMan.remove(part.c_str());
+    return true;
+  }
+
+  if (SdMan.exists(tmp.c_str()) && !SdMan.remove(tmp.c_str())) {
+    SdMan.remove(part.c_str());
+    return false;
+  }
+  if (!renameOrCopy(part.c_str(), tmp.c_str())) {
+    SdMan.remove(part.c_str());
     return false;
   }
 
@@ -199,6 +252,7 @@ bool durableWriteJournal(const char* path, const std::string& body) {
   }
   if (SdMan.exists(bak.c_str())) SdMan.remove(bak.c_str());
   if (SdMan.exists(tmp.c_str())) SdMan.remove(tmp.c_str());
+  if (SdMan.exists(part.c_str())) SdMan.remove(part.c_str());
   return true;
 }
 
@@ -260,15 +314,17 @@ std::vector<M4xInstallTxn::JournalRecord> loadAll() {
 }
 
 bool saveAll(const std::vector<M4xInstallTxn::JournalRecord>& recs) {
-  SdMan.mkdir("/system", true);
   JsonDocument doc;
   JsonArray arr = doc["txns"].to<JsonArray>();
   for (const auto& r : recs) {
     JsonObject o = arr.add<JsonObject>();
     writeOne(o, r);
   }
+  if (doc.overflowed()) return false;
   std::string out;
-  serializeJson(doc, out);
+  const size_t written = serializeJson(doc, out);
+  if (doc.overflowed() || written == 0 || written != out.size()) return false;
+  SdMan.mkdir("/system", true);
   return durableWriteJournal(M4xInstallTxn::kJournalPath, out);
 }
 

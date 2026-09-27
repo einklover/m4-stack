@@ -157,3 +157,153 @@ that loop. No device plan was executed.
 This report and the dirty source, tests, and the existing followup are the
 commit. `firmware/.pio/` and both `firmware.bin` files are not. No second
 branch was created.
+
+## Install ownership and durable saves — 2026-09-27
+
+The sections above describe `e0c9388` / `56e9389` and stay as that close-out.
+The local image digests in "Builds reused" are that tree. They do not contain
+the sources below. This section is the later pass. Commit: `INSTALL_COMMIT_SHA`.
+Astra was not called. songzhangchi01 was not called. No subagent was started.
+The audit is not finished. No real-device flash. No user SD.
+
+### What this pass ran
+
+Host regression `/tmp/m4-zxl-host-regress-2.sh` finished before either `pio`
+run. `/tmp/m4-zxl-host-regress-2/summary.txt` records `EXIT:0` for astra,
+batch, cache, cache-run, download, download-run, font, handoff, handoff-run,
+http, install, lifecycle, paint, paint-run, registry, screen, sdretry, and
+storage. The script prints `HOST_REGRESS_OK` only on that path, and the runner
+exited 0. No firmware file was edited between that run and the two builds.
+
+`test_m4_install_completion.py` printed:
+
+- `actual installer worker / UI reclaims job immediately at done publication: PASS`
+- `actual install ownership / timeout keeps the job until done: PASS`
+
+`test_m4_registry_journal.py` printed:
+
+- `registry/journal source order: PASS`
+- `actual registry and journal writers / sole tmp, sync, rename, short write: PASS`
+
+APP1 then QEMU, sequential, no overlapping `pio`:
+
+| Env | Log | Result | RAM | Flash (limit 7,143,424) | SHA-256 |
+| --- | --- | --- | --- | --- | --- |
+| `murphy_m4` | `/tmp/m4-zxl-pio-app1.log` | SUCCESS 29.26 s, `APP1_RC:0` | 108,916 / 327,680 (33.2%) | 5,779,417 (80.9%) | `2a33f5e31da1ebf5c61a90e2b9e2c53fd338a0f1f5fdecf47f0f7aef58b3850c` |
+| `murphy_m4_qemu_plugin` | `/tmp/m4-zxl-pio-qemu.log` | SUCCESS 29.34 s, `QEMU_RC:0` | 108,212 / 327,680 (33.0%) | 5,789,049 (81.0%) | `1a8dfd26cd3638998713bd109e147f743929a4dc720fccb79278f05516d3a017` |
+
+Image sizes on disk: APP1 5,779,920 bytes, QEMU plugin 5,789,552 bytes. Both
+stay under the APP1 slot. Neither file is committed.
+
+Isolated smoke, second run, log `/tmp/m4-zxl-smoke-install.log`, session
+`/tmp/m4-zxl-smoke-install-20260927`. `skip_build`, `fresh_sd` 64 MiB,
+`no_hostfwd`. QEMU command uses
+`-drive file=/tmp/m4-zxl-smoke-install-20260927/artifacts/murphy-sd.img,if=sd,format=raw`
+and `-nic user,model=open_eth` with no `hostfwd` (port 18080 stays on mihomo).
+The SD path is a regular 67,108,864-byte file; `/tmp` is `/private/tmp` on this
+Mac. Composed flash SHA-256
+`f5fc807cf3d6a632b69fb4b33f2d939db3e82a8f744173792ddb43c554b04a9e`.
+The in-boot ping timed out once (`等待响应超时 (0.246s)`), then
+`m4adb READY after 2 attempt(s)`. The script's own ping printed `PING_RC 0`
+with `"protocol"`, `activity` Home, `sd_ok` true, `firmware`
+`202608187-murphy-m4-qemu-plugin`. One boot sample: `free_heap` 162360,
+`min_free_heap` 159944, `free_psram` 1769116, `largest_internal_block` 118772.
+Frame `/tmp/m4-zxl-smoke-install-20260927/artifacts/smoke.pbm` is 48,011 bytes.
+The script printed `SMOKE PASS` and `SMOKE_RC:0`, then `session stopped`.
+QEMU pid 10795 is gone. Hardware `m4adb` on `/dev/cu.usbmodem101` (pid 47284)
+was still running afterward. This smoke is boot readiness on an empty FAT
+image. It does not open the drawer, drive install, or measure a long OOM loop.
+
+An earlier script exit on the same image stopped at a bad check: `Path.resolve()`
+turned `/tmp/...` into `/private/tmp/...` and the script treated that as an
+escape. The guest had already reached Home. That process was stopped. The
+`SMOKE PASS` line is only the re-run above.
+
+### AppInstall ownership
+
+`AppInstallActivity::doInstall` (lines 101–121) stores `"正在安装..."`, starts
+`"M4xInstall"` at stack 12288, and returns. Create failure deletes the local
+job, sets `"无法创建安装任务(内存不足)"`, and leaves `job_` null. A second
+`doInstall` while `job_` is live returns without creating another task.
+
+`loop` (lines 188–198) calls `observeInstallJob` before `M4RenderGuard` and
+`render`. While `job_` is set it returns, so Back, confirm, and `onDone_` do
+not retire the activity. A 60 s wait sets `resultMessage_` to `"安装超时"` and
+`installTimedOut_`, and leaves `job_` in place. It does not mark `probe_.ok`.
+When the worker release-stores `done`, `observeInstallJob` moves the result,
+deletes the job, and replaces the timeout text with the real message.
+
+`readyForDestruction` is false while `job_` is live and `done` is still false,
+then it defers to the parent. `preventAutoSleep` is true while `job_` is live.
+`onExit` does not delete the job, does not call `vTaskDelete`, and does not
+delay. The destructor deletes the job only after an acquire sees `done`. If
+destruction happens before that store, the destructor leaves the job allocated
+so the worker is not writing into a freed object. The reaper is what is
+supposed to wait. The display task `AppInstallUI` is gone; paint is the `loop`
+path under `M4RenderGuard`.
+
+### Registry and journal
+
+`M4xRegistry::save` returns false on `overflowed`, a zero `serializeJson`, or
+`written != out.size()` before `mkdir` or any file operation (lines 177–180).
+The new bytes go to `/system/app_registry.json.tmp` through `writeAllTextExact`,
+which refuses an existing path and removes only a file it just created when
+sync, close, size, or the reopen check fails. Rename failure with the primary
+still present leaves that primary and drops the tmp.
+
+`durableWriteJournal` rejects an invalid body, writes `.tmp.part` first, and
+does not remove a sole valid `.tmp` until the promoted body is reread and
+matches. Host injection covered sync failure, short write, rename failure with
+remove blocked, and a blocked stale `.tmp.part`.
+
+Residual, still open: if sole-tmp promotion's `renameOrCopy(part, path)`
+succeeds and the reread then fails (`M4xInstallJournal.cpp` lines 194–201),
+the function removes `.part` and returns false. The new primary is already in
+place, and the previous valid `.tmp` is still there. `decideLoad` prefers a
+primary that still parses, so a corrupt-but-parseable body would hide the
+good tmp. The sole tmp is intentionally not deleted on that path.
+
+### Install gate
+
+`InstallGateGuard` has a default constructor so `InstallGateGuard gate;`
+compiles next to the deleted copy operations. `M4xInstaller::install` takes it
+before `probe` (lines 706–717). `uninstall` takes it before
+`M4xIsValidPackageId` (lines 836–841). Take failure returns `install_gate` /
+`"无法开始安装"` or `errorOut = "install_gate"`. The wait is `portMAX_DELAY`.
+The guard does not take `storageMutex_` or `gM4RenderMutex`. `ensureLayout`
+does not take the gate: `install` reaches it through `probe`, and taking it
+there would deadlock.
+
+HTTP `handleUpload` still holds `StorageGuard(storageMutex_)` from
+`M4FileTransferHttpRoutes.cpp` line 392 across `M4xInstaller::install` at line
+492. That order is storage, then the gate. The UI worker takes only the gate.
+The two locks do not cycle. A UI install stalls other file-transfer SD work
+for the whole install. That stall is accepted. `main` uninstall and a debug
+synchronous install block inside the same gate.
+
+Still open: `probe` / `ensureLayout` / `recoverInterruptedInstalls` from
+another task do not take the gate, so recovery can still run beside an
+in-flight install. No process-wide SdFat mutex was added for that.
+
+### SdFat concurrency — blocked, no code change
+
+No volume mutex was added, and none should be until a lock order exists.
+`FontManager::scanFonts` (`FontManager.cpp` lines 328–330) calls `openNext`
+and then `delay(1)` every 32 entries while `fontDir` stays open.
+`scanFiles` (`M4FileTransferHttpRoutes.cpp` lines 216–241) closes each child
+and `yield()`s, and keeps `root` open across the next `openNextFile`. This
+build does not remount after boot. The install gate does not cover these
+scans. SdFat sources under libdeps were not edited.
+
+### Long-run OOM — plan only, not executed
+
+Do not flash this tree for the measurement. The operator backs up the user SD
+first; this session does not mount or write that card.
+
+1. TTF face-switch loop. Record `free_heap`, `min_free_heap`, `largest_internal_block`, and `free_psram` each switch.
+2. Large txt page-forward for several minutes, same counters.
+3. Image and cover decode until an allocation fails. The UI must fail closed. A reboot is a failure.
+
+Pass on device: no panic, the heap returns to a floor after each scenario, and
+the counters do not grow without a bound across repeats. The QEMU numbers
+above are one boot. They are not that pass. No device PASS.
