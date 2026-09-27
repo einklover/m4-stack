@@ -162,6 +162,7 @@ void CrossPointWebServerActivity::onExit() {
 
   bool cleanupDeferred = false;
   if (deferredCleanupContext) {
+    fileTransferService().abortOwnedWsUpload();
     if (!deferredCleanupTaskHandle) ensureDeferredCleanupWorker();
     if (deferredCleanupTaskHandle) {
       deferredCleanupContext->isApMode = isApMode;

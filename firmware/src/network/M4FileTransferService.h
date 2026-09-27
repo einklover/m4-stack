@@ -37,6 +37,7 @@ class M4FileTransferService final {
   bool hasDnsServer() const { return static_cast<bool>(dnsServer); }
 
   void stopWebServer();
+  void abortOwnedWsUpload();
   void stopForSetupError(bool isApMode);
   void stop(bool isApMode);
 

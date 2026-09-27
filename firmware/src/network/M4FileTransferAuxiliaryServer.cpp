@@ -51,8 +51,20 @@ bool M4FileTransferAuxiliaryServer::begin() {
   return true;
 }
 
-void M4FileTransferAuxiliaryServer::stop() {
+void M4FileTransferAuxiliaryServer::abortOwnedUpload() {
   if (wsUploadInProgress_ || storageLocked_) abortUpload(true);
+}
+
+void M4FileTransferAuxiliaryServer::stop() {
+  // Close sockets from the cleanup task. Do not give storageMutex_ here: the
+  // UI owner must abortOwnedUpload() before handoff.
+  if ((wsUploadInProgress_ || storageLocked_) &&
+      storageOwner_ == xTaskGetCurrentTaskHandle()) {
+    abortUpload(true);
+  } else if (wsUploadFile_) {
+    wsUploadFile_.close();
+    wsUploadInProgress_ = false;
+  }
 
   if (wsServer_) {
     wsServer_->close();
@@ -106,14 +118,17 @@ M4FileTransferAuxiliaryServer::WsUploadStatus M4FileTransferAuxiliaryServer::upl
 bool M4FileTransferAuxiliaryServer::acquireStorage() {
   if (storageLocked_) return true;
   if (!storageMutex_) return false;
-  if (xSemaphoreTake(storageMutex_, portMAX_DELAY) != pdTRUE) return false;
+  if (xSemaphoreTake(storageMutex_, kStorageTakeTicks) != pdTRUE) return false;
   storageLocked_ = true;
+  storageOwner_ = xTaskGetCurrentTaskHandle();
   return true;
 }
 
 void M4FileTransferAuxiliaryServer::releaseStorage() {
   if (!storageLocked_) return;
+  if (storageOwner_ != xTaskGetCurrentTaskHandle()) return;
   storageLocked_ = false;
+  storageOwner_ = nullptr;
   xSemaphoreGive(storageMutex_);
 }
 
