@@ -1,5 +1,7 @@
 # M4 多 worktree 编排（Grok 居中）
 
+> 2026-09-27 历史说明：本文是旧的 Home/Scene 多 worktree 流程，下文原样保留。M4 稳定性的新角色与闭环以 `.agents/skills/m4-grok-astra/SKILL.md` 为准，并优先于本文和 `docs/M4_AGENT_LESSONS.md` 的旧分工；硬件与数据安全仍以 `AGENTS.md` 为准。
+
 > 协调者：本对话（Grok）。子代理改代码；Grok 拆任务、合并、审计、测、验收。
 > 语言：给 Muse/Luna 的任务书和定位 prompt 用英文；对人用中文。英文用户消息 = 远程 agent 调用，用英文交卷。
 > 图片：对人 markdown 内嵌本地 RGB PNG，不要图床；远程 agent 才给 URL。

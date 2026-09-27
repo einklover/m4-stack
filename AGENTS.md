@@ -1,5 +1,7 @@
 # Murphy M4 AI operating contract
 
+Stability work (2026-09-27): `.agents/skills/m4-grok-astra/SKILL.md` is the role source for the M4 stability project. Those roles take priority over the older split in `docs/M4_ORCHESTRATION.md` and `docs/M4_AGENT_LESSONS.md`. Hardware and data-safety rules in this file stay binding and are not overridden. Read that skill before assigning a writer, a reviewer, or an integration run.
+
 This monorepo is the source of truth for Murphy M4 firmware, simulator, and plugins. Work in the current worktree and preserve the repository's boundaries.
 
 ## First five minutes
