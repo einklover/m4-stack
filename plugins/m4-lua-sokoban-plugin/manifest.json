@@ -1,0 +1,19 @@
+{
+  "id": "com.m4.sokoban",
+  "name": "推箱子",
+  "version": "0.1.0",
+  "versionCode": 1,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "V1 Lua Sokoban. Original beginner levels, undo, dead corners, saved progress.",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}

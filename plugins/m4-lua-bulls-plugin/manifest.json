@@ -1,0 +1,19 @@
+{
+  "id": "com.m4.bulls",
+  "name": "几A几B",
+  "version": "0.1.0",
+  "versionCode": 1,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "V1 Lua 几A几B. 4 unique digits, no leading zero. A place, B digit.",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}
