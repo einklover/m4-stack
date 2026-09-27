@@ -1055,6 +1055,12 @@ void setup() {
     Serial.printf("[%lu] [M4-SD] mounted ok\n", millis());
 #endif
 
+    // setup() is still the only application task. SD begin has returned and,
+    // on Murphy, capabilityProbe has succeeded. QEMU's SD-less scene path
+    // returns above and does not reach here. Later ensureLayout calls only
+    // create directories; they do not recover.
+    M4xInstaller::recoverInterrupted();
+
     SETTINGS.loadFromFile();
 #ifdef M4_QEMU_PLUGIN_FONT
     if (SdMan.exists("/FONT/" M4_QEMU_PLUGIN_FONT)) {

@@ -27,6 +27,11 @@ class M4xInstaller {
   // Absolute path to app entry script.
   static std::string entryScriptPath(const M4xInstalledApp& app);
 
-  // Ensure base directories exist.
+  // Create base directories only. Does not recover or take the install gate.
   static void ensureLayout();
+
+  // Boot recovery of crash leftovers. Takes the install gate. Not used by
+  // probe, reload, or HTTP preflight. Call once after SD is mounted and
+  // before any install task exists.
+  static void recoverInterrupted();
 };

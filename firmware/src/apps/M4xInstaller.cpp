@@ -34,12 +34,14 @@ inline void resetTaskWdtIfSubscribed() {
 #endif
 }
 
-// Serializes install and uninstall only. HTTP file transfer already holds
-// storageMutex_ and then calls install(), so the order is storageMutex_ then
-// this gate. UI and the install worker take only this gate. Do not take
+// Serializes install, uninstall, and boot recovery. HTTP file transfer already
+// holds storageMutex_ and then calls install(), so the order is storageMutex_
+// then this gate. UI and the install worker take only this gate. Do not take
 // storageMutex_, gM4RenderMutex, or a display lock while the gate is held,
 // and do not take the gate from the HTTP handler. ensureLayout() must not
-// take it either: install() reaches that function through probe().
+// take it: install() reaches that function through probe(). The mutex is not
+// recursive. Recovery work is the locked helper. Only recoverInterrupted()
+// acquires the gate, and that entry is not called while the gate is already held.
 std::atomic<SemaphoreHandle_t> gInstallGate{nullptr};
 
 SemaphoreHandle_t installGateHandle() {
@@ -594,7 +596,8 @@ bool hookDropBak(const M4xInstallTxn::JournalRecord& rec, void*) {
   return !SdMan.exists(rec.backupPath.c_str());
 }
 
-void recoverInterruptedInstalls() {
+// Caller holds installGate for the whole call. Do not acquire it here.
+void recoverInterruptedInstallsLocked() {
   M4xInstallJournal::RecoveryHooks h;
   h.liveExists = &hookLive;
   h.bakExists = &hookBak;
@@ -612,13 +615,19 @@ void recoverInterruptedInstalls() {
 }  // namespace
 
 void M4xInstaller::ensureLayout() {
-  // Recovery stays outside the install transaction mutex. install() calls
-  // probe(), which calls this function, so taking that mutex here deadlocks.
   SdMan.mkdir(M4xPaths::kAppsRoot, true);
   SdMan.mkdir(M4xPaths::kAppsDataRoot, true);
   SdMan.mkdir(M4xPaths::kInbox, true);
   SdMan.mkdir("/system", true);
-  recoverInterruptedInstalls();
+}
+
+void M4xInstaller::recoverInterrupted() {
+  InstallGateGuard gate;
+  if (!gate.acquire()) {
+    Serial.printf("[M4x] recover: install gate unavailable\n");
+    return;
+  }
+  recoverInterruptedInstallsLocked();
 }
 
 M4xInstallResult M4xInstaller::probe(const std::string& packagePath) {

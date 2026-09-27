@@ -2,7 +2,7 @@
 
 // Global install transaction journal + pure recovery decisions (host-testable).
 // Production M4xInstaller persists records under /system/m4x_install_journal.json
-// and executes decideRecovery() / applyRecoveryHooks() on boot / ensureLayout.
+// and executes decideRecovery() from M4xInstaller::recoverInterrupted() at boot.
 
 #include <string>
 #include <vector>
