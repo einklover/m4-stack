@@ -54,6 +54,9 @@ constexpr M4SettingsRow kMaintenance[] = {
     {"batchInstall", "批量安装插件", M4SettingsControl::Navigate, true},
     {"developerOptions", "开发者选项", M4SettingsControl::Navigate, true},
     {"switchBootSlot", "切换启动槽", M4SettingsControl::Confirm, true},
+#ifdef CROSSPOINT_MURPHY_M4
+    {"pluginJournalRelease", "修复未完成插件安装记录", M4SettingsControl::Navigate, true},
+#endif
 };
 
 constexpr M4SettingsRow kAdvanced[] = {

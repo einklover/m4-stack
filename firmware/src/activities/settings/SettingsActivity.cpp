@@ -31,6 +31,7 @@
 #include "ResetSettingsActivity.h"
 #ifdef CROSSPOINT_MURPHY_M4
 #include "DeveloperOptionsActivity.h"
+#include "PluginJournalReleaseActivity.h"
 #include <esp_ota_ops.h>
 #include <WiFi.h>
 #endif
@@ -178,6 +179,7 @@ void SettingsActivity::onEnter() {
 #ifdef CROSSPOINT_MURPHY_M4
   appendAction(allSettings_, L(Str::kDeveloperOptions), "developerOptions");
   appendAction(allSettings_, L(Str::kSwitchBootSlot), "switchBootSlot");
+  appendAction(allSettings_, "修复未完成插件安装记录", "pluginJournalRelease");
   appendAction(allSettings_, L(Str::kUiFontFamily), "uiFontFamily");
 #endif
 
@@ -665,6 +667,8 @@ void SettingsActivity::launchAction(const SettingInfo& setting) {
 #ifdef CROSSPOINT_MURPHY_M4
   } else if (strcmp(k, "developerOptions") == 0) {
     enterNewActivity(new DeveloperOptionsActivity(renderer, mappedInput, restore));
+  } else if (strcmp(k, "pluginJournalRelease") == 0) {
+    enterNewActivity(new PluginJournalReleaseActivity(renderer, mappedInput, restore));
 #endif
   } else if (strcmp(k, "wifi") == 0) {
     enterNewActivity(new WifiSelectionActivity(renderer, mappedInput, [restore](bool) { restore(); }));
