@@ -154,12 +154,12 @@ python3 simulator/qemu/run_plugin_debug.py \
 
 以下六张 PNG 由上述**实际 QEMU m4adb 480×800 逻辑 PBM** 直接转存（不是 Pillow 重绘的模拟界面）；三列两行联系图的顺序为游戏、选关、第三章、第17关、右键后、撤销后：
 
-- [实际 QEMU 六屏联系图](../../screenshots/sokoban-qemu-20260928/qemu-contact.png)
-- [实际游戏画面](../../screenshots/sokoban-qemu-20260928/real-game-screen.png)
-- [选关画面](../../screenshots/sokoban-qemu-20260928/real-picker-screen.png)
-- [第三章选关](../../screenshots/sokoban-qemu-20260928/real-chapter3-screen.png)
-- [第17关](../../screenshots/sokoban-qemu-20260928/real-level17-screen.png)
-- [右键后](../../screenshots/sokoban-qemu-20260928/real-level17-after-right.png)
-- [撤销后](../../screenshots/sokoban-qemu-20260928/real-level17-after-undo.png)
+- [实际 QEMU 六屏联系图](../screenshots/sokoban-qemu-20260928/qemu-contact.png)
+- [实际游戏画面](../screenshots/sokoban-qemu-20260928/real-game-screen.png)
+- [选关画面](../screenshots/sokoban-qemu-20260928/real-picker-screen.png)
+- [第三章选关](../screenshots/sokoban-qemu-20260928/real-chapter3-screen.png)
+- [第17关](../screenshots/sokoban-qemu-20260928/real-level17-screen.png)
+- [右键后](../screenshots/sokoban-qemu-20260928/real-level17-after-right.png)
+- [撤销后](../screenshots/sokoban-qemu-20260928/real-level17-after-undo.png)
 
 **测试级别：** 已证明 ESP32-S3 QEMU 固件编译、真实 QEMU 启动、插件 USB 安装和启动、运行时状态、真实模拟屏幕捕获、章节与关卡触摸跳转以及实体按键注入后的帧变化；全部 24 关和远距离点击路径另有 Lua Host 验证。未证明 QEMU 的所有触摸功能与绘图均视觉正确，未逐关完成 QEMU 实操，未在物理墨水屏进行触摸或刷新率测试；版权授权仍是公开上架前的单独阻断条件。复验结束时已停止 QEMU，不留下后台进程。
