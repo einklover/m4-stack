@@ -1,3 +1,4 @@
+> **Historical workflow:** since 2026-09-28, `AGENTS.md` and `.agents/skills/m4-development-workflow/SKILL.md` govern M4 roles, gates and evidence. The old model dispatch text below must not automatically invoke Astra.
 # M4 多 worktree 编排（Grok 居中）
 
 > 协调者：本对话（Grok）。子代理改代码；Grok 拆任务、合并、审计、测、验收。

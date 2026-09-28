@@ -1,3 +1,4 @@
+> **Current M4 workflow (2026-09-28):** read `AGENTS.md` and `.agents/skills/m4-development-workflow/SKILL.md` first. Old model-role notes are historical. Astra stays off without explicit user authorization.
 # AI quickstart
 
 This repository is an M4-only main-rebuild worktree. The source tree, current handoff, and the active task are more reliable than old chat or historical handoff notes.
