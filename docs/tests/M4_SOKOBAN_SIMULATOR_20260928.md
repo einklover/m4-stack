@@ -104,8 +104,7 @@ m4adb ping（`/tmp/m4-sokoban-qa-20260928/artifacts/ping.json`），就绪 7.8 �
 
 原始帧 `/tmp/m4-sokoban-qa-20260928/artifacts/ssd1677-frame.pbm`：48011 字节，头 `P4\n800 480\n`，sha256 `9c0e93f67076b8ea7dd70df8646354e9ba4a65a82a436104e0bb63e5f1584d63`。800×480 共 384000 位，置位 1355，墨水行约 y=184–294。
 
-同内容 PNG：`/tmp/m4-sokoban-qa-20260928/artifacts/qemu-sokoban-first-frame.png`，1897 字节，sha256 `4ec2b8060a1705e1410b5fa4c062b788e4874fa78dea85d3edc176b6328f5692`。仓库副本 `docs/tests/M4_SOKOBAN_SIMULATOR_20260928-frame.png`，哈希相同。24 小时临时链接：http://179.255.101.123/share/EFaU_x5MbIUSh14IaL5eqQ/M4_SOKOBAN_SIMULATOR_20260928-frame.png
-
+同内容 PNG：`/tmp/m4-sokoban-qa-20260928/artifacts/qemu-sokoban-first-frame.png`，1897 字节，sha256 `4ec2b8060a1705e1410b5fa4c062b788e4874fa78dea85d3edc176b6328f5692`。仓库副本 `docs/tests/M4_SOKOBAN_SIMULATOR_20260928-frame.png`，哈希相同。
 画面上的字是「推箱子」和「正在启动...」。字在 800×480 控制器帧里横躺，固件 ping 报告的逻辑分辨率是 480×800。这是启动闪屏，不是棋盘、选关或过关画面。
 
 ## 本次 QEMU 没有覆盖的玩法
@@ -124,3 +123,43 @@ UI_EXIT:0
 ```
 
 `python3 plugins/m4-lua-sokoban-plugin/tools/level_audit.py --quality-v2` 退出码 0。摘要：`level_count` 24，`one_push_count` 1，箱子分布 1/2/3 关为 1/16/7，`quality_v2_unmet` 为 `[]`。关卡 21–24 的求解统计在同一日志里：21（20 推 / 41 步）、22（21 / 54）、23（21 / 89）、24（32 / 97）。
+
+## 后续：持续运行 QEMU，验证实际游戏屏幕和交互（协调端复验）
+
+首轮由 **songzhangchi01 / Grok 4.7 High** 真正完成的构建、QEMU 启动、m4adb ping、安装和 launch 已由上面的原始日志证实。第一次只有启动闪屏。随后协调端基于**同一份已编译的固件、未修改的插件和同一 QEMU 9.2.2**，进行了一次实际持续运行的 QEMU 复验；它不是 Grok 原始测试，不得混淆。
+
+复验命令（在相同冻结代码 `3e3e096c4076da23f0b3b6328f42659087d776e1` 的独立 worktree）：
+
+```bash
+export PATH="$HOME/.platformio/penv/bin:$PATH"
+export QEMU_XTENSA=/Volumes/z/paseo/migrated-home/cache/murphy-m4/espressif-qemu-v3/build-murphy-v3/qemu-system-xtensa
+export M4_PLUGIN_DEBUG_TMP=/tmp/m4-sokoban-qa-20260928
+python3 simulator/qemu/run_plugin_debug.py \
+  --skip-build --plugin-src plugins/m4-lua-sokoban-plugin \
+  --app-id com.m4.sokoban --seconds 90 --no-net-check --keep-alive
+```
+
+日志：`/tmp/m4-sokoban-qa-20260928/keepalive.log`。用 `m4adb.py --port /dev/ttys235 --no-daemon --timeout 15 --ready-timeout 7` 注入 `ui`、`tap`、`key` 和 `screenshot`；每一步都有运行时退出码与屏幕文件。第二次设备 `ui` 返回 `activity=AppRuntime`、`active_app=com.m4.sokoban`、`failed=false`、`ready=true`，即真正进入插件运行时，不再停留在启动画面。
+
+实际输入与捕获结果：
+
+| 操作 | 实测证据 |
+|---|---|
+| 打开后屏幕 | `m4adb screenshot` 逻辑 PBM 480×800；63680 黑色像素；画面覆盖边界 (14,12)–(467,777) |
+| 点击选关 | `tap 384 587` 返回 0；重新截图相对游戏画面有 **77119** 个像素变化 |
+| 点击第三章节 | `tap 388 112` 返回 0；第三章节截图 24765 黑色像素，区别于首章选关的 23665 |
+| 打开第 17 关 | `tap 60 185` 返回 0；游戏截图 102222 黑色像素，内容区别于第三章节选关 |
+| 实体方向键右 | `key right` 返回 0；截图相对第 17 关初始帧变化 **2410** 个像素 |
+| 点击撤销 | `tap 80 590` 返回 0；截图相对第 17 关最初帧仍差 **2716** 个像素，因此**不能据此声称真实 QEMU 逐像素恢复成功**。主机侧逐步 Undo 的独立断言通过；面板上的余差留待核查 |
+
+以下六张 PNG 由上述**实际 QEMU m4adb 480×800 逻辑 PBM** 直接转存（不是 Pillow 重绘的模拟界面）；三列两行联系图的顺序为游戏、选关、第三章、第17关、右键后、撤销后：
+
+- [实际 QEMU 六屏联系图](../../screenshots/sokoban-qemu-20260928/qemu-contact.png)
+- [实际游戏画面](../../screenshots/sokoban-qemu-20260928/real-game-screen.png)
+- [选关画面](../../screenshots/sokoban-qemu-20260928/real-picker-screen.png)
+- [第三章选关](../../screenshots/sokoban-qemu-20260928/real-chapter3-screen.png)
+- [第17关](../../screenshots/sokoban-qemu-20260928/real-level17-screen.png)
+- [右键后](../../screenshots/sokoban-qemu-20260928/real-level17-after-right.png)
+- [撤销后](../../screenshots/sokoban-qemu-20260928/real-level17-after-undo.png)
+
+**测试级别：** 已证明 ESP32-S3 QEMU 固件编译、真实 QEMU 启动、插件 USB 安装和启动、运行时状态、真实模拟屏幕捕获、章节与关卡触摸跳转以及实体按键注入后的帧变化；全部 24 关和远距离点击路径另有 Lua Host 验证。未证明 QEMU 的所有触摸功能与绘图均视觉正确，未逐关完成 QEMU 实操，未在物理墨水屏进行触摸或刷新率测试；版权授权仍是公开上架前的单独阻断条件。复验结束时已停止 QEMU，不留下后台进程。
