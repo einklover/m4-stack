@@ -1,28 +1,31 @@
 # 推箱子 (com.m4.sokoban)
 
-Black-and-white Sokoban for the 480×800 M4 e-ink screen. One static frame per change. No animation and no search on the device.
+Black-and-white Sokoban for the 480×800 M4 e-ink screen. The board uses custom high-contrast 1-bit player, crate, target and wall silhouettes; a compact three-action toolbar replaces eight crowded text buttons. One static frame per state change, no animations or runtime puzzle solver. Interface layout draws inspiration from the KOReader e-reader Sokoban plugin, but all M4 drawing/control code is independently written.
 
-## Play
+## Play and controls
 
-Push every crate onto a goal. Walls block movement. A push moves one crate into an empty floor or goal. Two crates in a row do not chain.
+- The large central board is the main focus. A filled pixel pawn is **you**; an X-outlined square is a **crate**; a square with a bullseye is a **goal**. A crate with a solid center marker is already on a goal. Black blocks are walls.
+- Use hardware direction keys or large touch arrows to **walk and push**. Crates can be pushed only one at a time, never pulled.
+- Tap **any reachable empty floor tile** for bounded shortest-path walking. This never auto-pushes a crate or runs the solver on the device. Physical Confirm acts as Undo during play.
+- The three large actions are **撤销 Undo**, **重开 Restart**, **选关 Levels**. A small **?** at the upper right opens a legend and controls page. System Back is handled by the host to leave the plugin.
+- The level picker displays **three named chapters** with eight 2×4 level cards per page. Tap a chapter tab or use the chapter arrows. Finished cards show the saved best result. Physical D-pad and Confirm work here as well.
+- After a win, the board stays visible and the two unambiguous actions are **下一关 Next** and **选择关卡 Levels**. On the final level, Next returns to the completed chapter.
+- State is saved as versioned app data `microban_progress.csv`. The original `progress.csv` belongs to old V1 maps and is never overwritten or misinterpreted.
 
-- Direction keys, the on-screen 左/上/下/右 buttons, or a tap on a cell next to the player: one step.
-- 确认 key or 撤销: undo, up to 80 snapshots.
-- 重开: restart the current level.
-- 选关: pick a level. 帮助: controls. 返回 leaves that screen.
-- The system back key is not consumed during play, so the host can leave the plugin.
-- A crate on a non-goal corner (two orthogonal walls) is marked 死角. Undo or 重开.
-- Clearing a level stores the best move count, then the best push count, in app data `microban_progress.csv`; the old `progress.csv` remains untouched.
+The provided `tools/render_ui_trace.lua` and `tools/render_ui_preview.py` make reproducible **host-simulated** black/white 480×800 PNG screens of the actual Lua GUI draw calls. These are preview frames, not QEMU or real-device e-ink output. Their mock font rasterization uses a locally installed CJK font and can differ from actual firmware.
 
 ## Tests
 
-`test_game.lua` checks the XSB parser (`# $ . @ * +`), walk versus push, pushes into a wall or a second crate, undo, corner deadlock, win, progress round-trip, and a bounded BFS proof that every bundled level is solvable. The solver runs only in the host test.
+`test_ui.lua` verifies 480×800 draw-call bounds, discoverable help, selected chapter cards, win-next, V1 save isolation and bounded no-push floor tapping. `test_game.lua` checks the XSB parser (`# $ . @ * +`), walk versus push, pushes into a wall or a second crate, undo, corner deadlock, win, progress round-trip, and a bounded BFS proof that every bundled level is solvable. The solver runs only in the host test.
 
 ```
 cc -O2 -DLUA_COMPAT_5_3 -DLUA_32BITS=1 -I firmware/lib/Lua/src \
   plugins/m4-lua-sokoban-plugin/tools/lua_host.c firmware/lib/Lua/src/*.c \
   -o /tmp/sokoban_lua_host
 /tmp/sokoban_lua_host plugins/m4-lua-sokoban-plugin/test_game.lua
+/tmp/sokoban_lua_host plugins/m4-lua-sokoban-plugin/test_ui.lua
+python3 plugins/m4-lua-sokoban-plugin/tools/level_audit.py --quality-v2
+python3 plugins/m4-lua-sokoban-plugin/tools/render_ui_preview.py --host /tmp/sokoban_lua_host --out /tmp/sokoban-ui-preview
 python3 plugins/m4-lua-sokoban-plugin/tools/make_icon.py
 python3 plugins/m4-lua-sokoban-plugin/tools/package.py
 ```
