@@ -2,6 +2,8 @@
 
 #ifdef CROSSPOINT_MURPHY_M4
 
+#include <algorithm>
+
 #include <GfxRenderer.h>
 #include <HardwareSerial.h>
 
@@ -15,7 +17,7 @@
 
 namespace {
 
-constexpr int kMaxRows = 8;
+constexpr int kVisibleRows = 8;
 
 const char* kTitle = "修复未完成插件安装记录";
 const char* kWarn1 = "只归档并解除阻塞";
@@ -46,11 +48,10 @@ void PluginJournalReleaseActivity::reloadRows() {
     return;
   }
   listOk_ = true;
-  if (ids.size() > static_cast<size_t>(kMaxRows)) truncated_ = true;
-  const size_t n = ids.size() < static_cast<size_t>(kMaxRows) ? ids.size() : static_cast<size_t>(kMaxRows);
-  rows_.reserve(n);
-  for (size_t i = 0; i < n; ++i) {
-    rows_.push_back(Row{ids[i].id, ids[i].inRegistry});
+  truncated_ = ids.size() > static_cast<size_t>(kVisibleRows);
+  rows_.reserve(ids.size());
+  for (const auto& id : ids) {
+    rows_.push_back(Row{id.id, id.inRegistry});
   }
   m4JournalReleaseSetCount(ui_, static_cast<int>(rows_.size()));
   if (rows_.empty()) status_ = "没有未完成记录";
@@ -102,6 +103,7 @@ void PluginJournalReleaseActivity::applyRelease() {
   const std::string id = rows_[static_cast<size_t>(index)].id;
   std::string err;
   const bool ok = M4xInstaller::archiveAndReleasePending(id, err);
+  xSemaphoreTake(renderingMutex_, portMAX_DELAY);
   m4JournalReleaseShowResult(ui_);
   reloadRows();
   ui_.page = M4JournalReleasePage::Result;
@@ -113,6 +115,7 @@ void PluginJournalReleaseActivity::applyRelease() {
     Serial.printf("[M4x] journal release fail id=%s err=%s\n", id.c_str(), err.c_str());
   }
   updateRequired_ = true;
+  xSemaphoreGive(renderingMutex_);
 }
 
 void PluginJournalReleaseActivity::render() {
@@ -143,11 +146,15 @@ void PluginJournalReleaseActivity::render() {
   } else if (!listOk_ || rows_.empty()) {
     M4UiText::draw(renderer, NOTOSANS_18_FONT_ID, 16, y, status_.c_str(), true, EpdFontFamily::BOLD);
   } else {
+    const int start = m4JournalReleaseWindowStart(ui_, kVisibleRows);
+    const int end = std::min(static_cast<int>(rows_.size()), start + kVisibleRows);
     if (truncated_) {
-      M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 16, y, "仅显示前 8 条", true);
+      char page[48];
+      snprintf(page, sizeof(page), "第 %d/%d 条", ui_.selected + 1, static_cast<int>(rows_.size()));
+      M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 16, y, page, true);
       y += 24;
     }
-    for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
+    for (int i = start; i < end; ++i) {
       const bool sel = i == ui_.selected;
       if (sel) renderer.fillRect(8, y - 4, pageW - 16, 28);
       const char* mark = rows_[static_cast<size_t>(i)].inRegistry ? "" : " [未登记]";

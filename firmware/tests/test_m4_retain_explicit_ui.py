@@ -92,6 +92,16 @@ int main() {
   m4JournalReleaseActivate(empty);
   assert(empty.page == M4JournalReleasePage::List);
   assert(!empty.releaseRequested);
+
+  M4JournalReleaseUi many;
+  m4JournalReleaseSetCount(many, 9);
+  for (int i = 0; i < 8; ++i) m4JournalReleaseMove(many, 1);
+  assert(many.selected == 8);
+  assert(m4JournalReleaseWindowStart(many, 8) == 1);
+  m4JournalReleaseActivate(many);
+  m4JournalReleaseActivate(many);
+  assert(many.releaseRequested);
+  assert(many.releaseIndex == 8);
   return 0;
 }
 '''

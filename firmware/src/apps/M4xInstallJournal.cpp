@@ -695,10 +695,23 @@ bool archiveAndRelease(const std::string& id, const ArchiveHooks& hooks, std::st
     return false;
   }
 
-  const std::string root = std::string("/system/m4x_archive/") + id;
+  // A failed attempt leaves the directory behind. Keep that partial tree and
+  // write the next free slot so the still-pending journal can be released.
+  std::string root = std::string("/system/m4x_archive/") + id;
   if (SdMan.exists(root.c_str())) {
-    errorOut = "archive_exists";
-    return false;
+    bool placed = false;
+    for (int n = 2; n <= 32; ++n) {
+      const std::string alt = std::string("/system/m4x_archive/") + id + "-" + std::to_string(n);
+      if (!SdMan.exists(alt.c_str())) {
+        root = alt;
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      errorOut = "archive_exists";
+      return false;
+    }
   }
   const std::string snapPath = root + "/snapshot.json";
   for (size_t i = 1; i < snapPath.size(); ++i) {

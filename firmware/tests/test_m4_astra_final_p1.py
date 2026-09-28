@@ -321,6 +321,19 @@ int main() {
   assert(!M4xInstallJournal::archiveAndRelease(kApp, ah, err));
   assert(err == "archive_copy");
   assert(disk[M4xInstallTxn::kJournalPath].data == before);
+  assert(disk.count("/system/m4x_archive/com.example.clock"));
+  const auto partialSnap = disk["/system/m4x_archive/com.example.clock/snapshot.json"].data;
+  assert(partialSnap == before);
+  disk["/apps_data/com.example.clock/note"] = {false, "KEEP"};
+  ah.copyFile = copyFile;
+  assert(M4xInstallJournal::archiveAndRelease(kApp, ah, err));
+  assert(disk["/system/m4x_archive/com.example.clock/snapshot.json"].data == partialSnap);
+  assert(disk["/system/m4x_archive/com.example.clock-2/snapshot.json"].data == before);
+  assert(disk["/system/m4x_archive/com.example.clock-2/live/main.lua"].data == "OLD");
+  assert(disk["/apps/com.example.clock/main.lua"].data == "OLD");
+  assert(disk["/apps_data/com.example.clock/note"].data == "KEEP");
+  bool pendingRetry = true;
+  assert(M4xInstallJournal::readPending(kApp, pendingRetry) && !pendingRetry);
 
   plant(journal("live_switched", 1, 2));
   disk.erase("/apps/com.example.clock.bak");

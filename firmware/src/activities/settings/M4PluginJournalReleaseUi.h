@@ -65,3 +65,15 @@ inline void m4JournalReleaseShowResult(M4JournalReleaseUi& ui) {
   ui.releaseRequested = false;
   ui.releaseIndex = -1;
 }
+
+// First visible row for a window of `visible` lines. Selection past the first
+// screen stays reachable; the activity stores every pending id.
+inline int m4JournalReleaseWindowStart(const M4JournalReleaseUi& ui, int visible) {
+  if (visible < 1) visible = 1;
+  if (ui.count <= visible) return 0;
+  int start = ui.selected - (visible - 1);
+  if (start < 0) start = 0;
+  const int maxStart = ui.count - visible;
+  if (start > maxStart) start = maxStart;
+  return start;
+}
