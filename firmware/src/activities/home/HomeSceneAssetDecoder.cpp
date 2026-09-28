@@ -1,5 +1,6 @@
 #include "activities/home/HomeSceneAssetDecoder.h"
 
+#include "components/icons/app_store_generated.h"
 #include "components/icons/drawer_builtins.h"
 
 #include <algorithm>
@@ -104,6 +105,7 @@ std::string resolveAppIconPath(const std::string& installPath, const std::string
 
 const uint8_t* builtinSheetIcon(const char* id) {
   if (!id) return nullptr;
+  if (std::strcmp(id, "builtin.store") == 0) return kAppStoreGeneratedIcon;
   if (std::strcmp(id, "builtin.files") == 0) return kBuiltinFilesIcon;
   if (std::strcmp(id, "builtin.history") == 0) return kBuiltinHistoryIcon;
   if (std::strcmp(id, "builtin.bookmarks") == 0) return kBuiltinBookmarksIcon;

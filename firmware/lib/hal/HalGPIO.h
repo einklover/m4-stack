@@ -52,6 +52,7 @@ class HalGPIO {
   bool wasReleased(uint8_t buttonIndex) const;
   bool wasAnyReleased() const;
   unsigned long getHeldTime() const;
+  unsigned long getPowerButtonHeldTime() const;
 
   // Capacitive touch (inert / false on X3/X4; live on Murphy M4)
   bool hasTouch() const;           // controller configured

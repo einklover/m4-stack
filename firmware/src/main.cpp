@@ -529,6 +529,10 @@ void enterNewActivity(Activity* activity) {
 // Verify power button press duration on wake-up from deep sleep
 // Pre-condition: isWakeupByPowerButton() == true
 void verifyPowerButtonDuration() {
+#ifdef CROSSPOINT_MURPHY_M4
+  // Short press wakes and boots. Do not re-sleep when longPressBoot is still set.
+  return;
+#endif
   // If long-press-to-boot is disabled, any press length is sufficient to boot.
   // This is independent of the shortPwrBtn (power button function) setting,
   // because the device is not yet on when this check runs.
@@ -1681,6 +1685,23 @@ void loop() {
     return;
   }
 
+#ifdef CROSSPOINT_MURPHY_M4
+  // Fixed short-press sleep. Act once on release, after boot settle and a
+  // minimum held time, so a held key and wake bounce do not sleep every frame.
+  {
+    static unsigned long m4PowerIgnoreUntilMs = 0;
+    if (m4PowerIgnoreUntilMs == 0) {
+      m4PowerIgnoreUntilMs = millis() + 700;
+    }
+    if (millis() >= m4PowerIgnoreUntilMs && gpio.wasReleased(HalGPIO::BTN_POWER)) {
+      const unsigned long held = gpio.getPowerButtonHeldTime();
+      if (held >= 60 && held < 8000) {
+        enterDeepSleep();
+        return;
+      }
+    }
+  }
+#else
   // 短按电源键功能处理
   if (gpio.wasReleased(HalGPIO::BTN_POWER)) {
     // 检查短按电源键的设置
@@ -1706,6 +1727,7 @@ void loop() {
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
+#endif
 
   // Long press Back button (1.5s) → go home from any non-home page
   static bool longPressBackHomeFired = false;
