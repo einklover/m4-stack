@@ -30,6 +30,7 @@ local function layout()
   button("undo",   14, 565, 144, 58, "撤销")
   button("reset", 168, 565, 144, 58, "重开")
   button("pick",  322, 565, 144, 58, "选关")
+  button("help", 414, 43, 52, 40, "?")
   -- Large physical-D-pad-equivalent touch targets, with arrows AND labels.
   button("up",    198, 633, 84, 65, "上")
   button("left",   97, 707, 84, 69, "左")
@@ -257,7 +258,11 @@ local function draw_play()
   local best=prog.best_m[st.index] or 0
   if best>0 then info=info.."    最佳 "..best end
   label(16, 16, 51, info)
+  if last_action ~= "" and not Game.won(st) then
+    label(12, 18, 78, last_action)
+  end
   board()
+  draw_button(BTN.help)
   if Game.won(st) then
     gui.drawLine(14,558,466,558)
     label(16, 20, 579, "过关！  "..st.moves.." 步 / "..st.pushes.." 次推动")
@@ -265,9 +270,6 @@ local function draw_play()
     draw_button(BTN.winpick)
   else
     gui.drawLine(14,556,466,556)
-    if last_action ~= "" then
-      label(12, 19, 538, last_action)
-    end
     draw_button(BTN.undo)
     draw_button(BTN.reset)
     draw_button(BTN.pick)
@@ -440,6 +442,7 @@ function onTouch(x,y,phase)
     end
     return
   end
+  if hit(BTN.help,x,y) then mode="help";frame_changed=true;return end
   if hit(BTN.undo,x,y) then undo();return end
   if hit(BTN.reset,x,y) then restart();return end
   if hit(BTN.pick,x,y) then
