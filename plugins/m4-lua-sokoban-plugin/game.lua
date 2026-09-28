@@ -1,92 +1,265 @@
 -- 推箱子 / Sokoban. Pure logic, no GUI.
 -- XSB: # wall, $ crate, . goal, @ player, * crate-on-goal, + player-on-goal.
--- Levels are original beginner maps (not Microban). Each is solved by the
--- host test via bounded BFS; the device never searches.
+-- Curated attributed Microban levels; the offline audit proves each shipped map.
 
 Game = Game or {}
 
+-- Microban by David W. Skinner (revised April 2000).
+-- Maps drawn from OMerkel/Sokoban 3rdParty/Levels/Microban.txt.
+-- KOReader describes this set as public domain; verify redistribution
+-- permission before any public app-store release. M4 Lua code is original.
+Game.MICROBAN_IDS = {44, 2, 21, 4, 25, 1, 17, 24, 9, 26, 27, 14, 23, 12, 15, 3, 18, 22, 20, 11, 19, 13, 10, 8}
+Game.CHAPTERS = {"初识搬运", "绕路布局", "次序机关"}
+
 Game.LEVELS = {
+-- Microban #44
 [[
 #####
 #@$.#
 #####
 ]],
-[[
-######
-#@ $.#
-######
-]],
-[[
-#######
-#@  $.#
-#######
-]],
-[[
-#####
-#.  #
-# $ #
-# @ #
-#####
-]],
+-- Microban #2
 [[
 ######
 #    #
-# .$ #
-#  @ #
+# #@ #
+# $* #
+# .* #
+#    #
 ######
 ]],
+-- Microban #21
 [[
-######
-#  @ #
-# $  #
-# .  #
-######
+#######
+#  ####
+# . . #
+# $$#@#
+##    #
+#######
 ]],
-[[
-########
-# . .  #
-# $ $  #
-# @    #
-########
-]],
+-- Microban #4
 [[
 ########
 #      #
-#  .   #
-#  $   #
-# @    #
+# .**$@#
+#      #
+#####  #
 ########
 ]],
+-- Microban #25
+[[
+#######
+##  ###
+## $$ #
+##... #
+#  @$ #
+#   ###
+#######
+]],
+-- Microban #1
+[[
+######
+# .###
+#  ###
+#*@  #
+#  $ #
+#  ###
+######
+]],
+-- Microban #17
+[[
+######
+# @ ##
+#...##
+#$$$##
+#    #
+#    #
+######
+]],
+-- Microban #24
+[[
+#######
+###   #
+###$$@#
+#   ###
+#     #
+# . . #
+#######
+]],
+-- Microban #9
+[[
+######
+#.  ##
+#@$$ #
+##   #
+###  #
+####.#
+######
+]],
+-- Microban #26
+[[
+######
+## @ #
+##   #
+###$ #
+# ...#
+# $$ #
+###  #
+######
+]],
+-- Microban #27
+[[
+#######
+#   .##
+# ## ##
+#  $$@#
+# #   #
+#.  ###
+#######
+]],
+-- Microban #14
+[[
+#######
+#     #
+# # # #
+#. $*@#
+#   ###
+#######
+]],
+-- Microban #23
+[[
+#######
+#  *  #
+#     #
+## # ##
+##$@.##
+##   ##
+#######
+]],
+-- Microban #12
 [[
 #########
+#   #####
+# $  ####
+## $ ####
+####@.  #
+###  .# #
+###     #
+#########
+]],
+-- Microban #15
+[[
+#########
+######@##
+#    .* #
+#   #   #
+#####$# #
+#####   #
+#########
+]],
+-- Microban #3
+[[
+#########
+###  ####
+#     $ #
+# #  #$ #
+# . .#@ #
+#########
+]],
+-- Microban #18
+[[
+#######
+#     #
+#. .  #
+# ## ##
+#  $ ##
+###$ ##
+###@ ##
+###  ##
+#######
+]],
+-- Microban #22
+[[
+#######
+#   ###
+#. .  #
+#   # #
+## #  #
+##@$$ #
+##    #
+##  ###
+#######
+]],
+-- Microban #20
+[[
+#########
+#     ###
+#  @$$..#
+#### ## #
+###     #
+###  ####
+###  ####
+#########
+]],
+-- Microban #11
+[[
+#########
+###    ##
+### ##@##
+### # $ #
+# ..# $ #
 #       #
-#   .   #
-#   $   #
-#   @   #
+#  ######
 #########
 ]],
+-- Microban #19
 [[
-##########
-#        #
-#   .    #
-#   $    #
-#        #
-# @      #
-##########
+########
+#   .. #
+#  @$$ #
+##### ##
+####  ##
+####  ##
+####  ##
+########
 ]],
+-- Microban #13
 [[
 #######
-# .   #
-# $ # #
-#   @ #
+#. ####
+#.@ ###
+#. $###
+##$ ###
+## $  #
+##    #
+##  ###
 #######
 ]],
+-- Microban #10
 [[
-#########
-# .   . #
-# $   $ #
-#   @   #
-#########
+###########
+#######.  #
+#######.# #
+#######.# #
+# @ $ $ $ #
+# # # # ###
+#       ###
+###########
+]],
+-- Microban #8
+[[
+########
+### ..@#
+### $$ #
+#### ###
+#### ###
+#### ###
+#### ###
+#    ###
+# #   ##
+#   # ##
+###   ##
+########
 ]],
 }
 
@@ -300,7 +473,7 @@ end
 
 function Game.serialize_progress(p)
   return table.concat({
-    "v1",
+    "v2",
     tostring(p.level),
     csv_nums(p.best_m),
     csv_nums(p.best_p),
@@ -310,7 +483,7 @@ end
 
 function Game.deserialize_progress(s)
   local p = Game.blank_progress()
-  if type(s) ~= "string" or s:sub(1, 3) ~= "v1|" then return p end
+  if type(s) ~= "string" or s:sub(1, 3) ~= "v2|" then return p end
   local parts = {}
   for tok in (s .. "|"):gmatch("(.-)|") do parts[#parts + 1] = tok end
   if #parts < 5 then return p end

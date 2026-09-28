@@ -12,7 +12,7 @@ Push every crate onto a goal. Walls block movement. A push moves one crate into 
 - 选关: pick a level. 帮助: controls. 返回 leaves that screen.
 - The system back key is not consumed during play, so the host can leave the plugin.
 - A crate on a non-goal corner (two orthogonal walls) is marked 死角. Undo or 重开.
-- Clearing a level stores the best move count, then the best push count, in app data `progress.csv`.
+- Clearing a level stores the best move count, then the best push count, in app data `microban_progress.csv`; the old `progress.csv` remains untouched.
 
 ## Tests
 
@@ -31,8 +31,8 @@ python3 plugins/m4-lua-sokoban-plugin/tools/package.py
 
 ## Levels and license
 
-The 12 maps are original small boards written for this plugin. They are not copies of Microban or of the sample set in [rrthomas/sokoban](https://github.com/rrthomas/sokoban).
+This version uses 24 selected puzzles from **Microban by David W. Skinner**, revised April 2000, with author-level IDs preserved in `Game.MICROBAN_IDS`. They are not original M4-created levels. Source: [OMerkel's attributed Microban text](https://github.com/OMerkel/Sokoban/blob/master/3rdParty/Levels/Microban.txt).
 
-David W. Skinner’s Microban set is widely described as public domain, including by the KOReader plugin README, but this package does not ship those texts. [kbarni/sokoban.koplugin](https://github.com/kbarni/sokoban.koplugin) is GPL-3.0; none of its code or assets are included. XSB character meanings are the usual Sokoban notation.
+David W. Skinner’s Microban set is widely described as public domain, including by the KOReader plugin README, but the source header identifies Skinner as copyright holder without an explicit license grant. The maps are staged on an isolated development branch. Verify redistribution permissions before a public app-store release. [kbarni/sokoban.koplugin](https://github.com/kbarni/sokoban.koplugin) is GPL-3.0; none of its code or assets are included. XSB character meanings are the usual Sokoban notation.
 
 `icon_home.bmp` is a program-generated 62×64, 1-bit, uncompressed BMP. Palette index 0 is black and index 1 is white, matching `m4-lua-huarong-plugin`.
