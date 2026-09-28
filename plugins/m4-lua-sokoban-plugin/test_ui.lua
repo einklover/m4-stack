@@ -51,6 +51,15 @@ assert(type(mem["microban_progress.csv"])=="string","new progress missing")
 onTouch(235,690,"tap")
 draw()
 assert(has("2 / 24"),"next-level touch misses")
+-- The board tap on a far, reachable, EMPTY tile should walk a full route in
+-- one visible frame and retain step-by-step Undo. Coordinates are for Microban
+-- level 2 at 63px/cell (board x51 y99, destination row6 col5).
+onTouch(334,445,"tap")
+draw()
+assert(not has("步数 0"),"far empty-floor tap failed to walk")
+onKey("confirm")  -- Undo the final step, not all path steps at once.
+draw()
+assert(not has("步数 0"),"tap-to-walk undo should preserve earlier steps")
 -- A small upper-right '?' makes instructions discoverable.
 onTouch(435,60,"tap")
 draw()
