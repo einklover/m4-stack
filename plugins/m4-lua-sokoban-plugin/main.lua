@@ -220,21 +220,36 @@ local function draw_crate(x, y, sz, on_goal)
   end
 end
 
-local function draw_player(x, y, sz)
-  local cx,cy=x+math.floor(sz/2),y+math.floor(sz/2)
-  local head=math.max(11,math.floor(sz/4))
-  local torso=math.max(11,math.floor(sz/3.6))
-  local arm=math.max(4,math.floor(sz/11))
-  local head_y=cy-math.floor(sz*0.32)
-  local body_y=cy+1
-  local body_h=math.max(11,math.floor(sz/4))
-  -- Solid walking-person silhouette, unmistakable beside outlined crates.
-  gui.fillRect(cx-math.floor(head/2),head_y,head,head)
-  gui.fillRect(cx-math.floor(torso/2),body_y,torso,body_h)
-  gui.fillRect(cx-math.floor(torso/2)-arm-1,body_y+3,arm,math.max(7,body_h-4))
-  gui.fillRect(cx+math.floor(torso/2)+1,body_y+3,arm,math.max(7,body_h-4))
-  gui.fillRect(cx-math.floor(torso/2)+2,body_y+body_h,arm+1,math.max(5,math.floor(sz/8)))
-  gui.fillRect(cx+math.floor(torso/2)-arm-3,body_y+body_h,arm+1,math.max(5,math.floor(sz/8)))
+local function draw_player(x,y,sz)
+  -- Dedicated 9x11 1-bit pawn silhouette. An opaque, human-shaped sprite reads
+  -- clearly even at the smallest bundled 37px tile; crate symbols remain outlines.
+  local glyph={
+    "...###...",
+    "..#####..",
+    "..#####..",
+    "...###...",
+    ".#######.",
+    "#########",
+    ".#######.",
+    "..#####..",
+    "..##.##..",
+    ".###.###.",
+    "###...###",
+  }
+  local px=math.max(2,math.floor(sz/14))
+  local sx=x+math.floor((sz-9*px)/2)
+  local sy=y+math.floor((sz-11*px)/2)
+  for row,line in ipairs(glyph) do
+    local begin=nil
+    for col=1,10 do
+      local filled=col<=9 and line:sub(col,col)=="#"
+      if filled and not begin then begin=col end
+      if not filled and begin then
+        gui.fillRect(sx+(begin-1)*px,sy+(row-1)*px,(col-begin)*px,px)
+        begin=nil
+      end
+    end
+  end
 end
 
 local function board()
