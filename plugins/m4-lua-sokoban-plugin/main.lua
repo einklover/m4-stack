@@ -22,7 +22,7 @@ end
 
 local function layout()
   local rows, cols = st and st.rows or 8, st and st.cols or 8
-  CELL = math.min(50, math.floor(444 / rows), math.floor(444 / cols))
+  CELL = math.min(68, math.floor(444 / rows), math.floor(444 / cols))
   GRID_W, GRID_H = CELL * cols, CELL * rows
   GRID_X = math.floor((W - GRID_W) / 2)
   GRID_Y = 96 + math.floor((448 - GRID_H) / 2)
@@ -216,19 +216,25 @@ local function draw_crate(x, y, sz, on_goal)
     gui.fillRect(x2-6,y1+3,4,4)
     gui.fillRect(x1+3,y2-6,4,4)
     gui.fillRect(x2-6,y2-6,4,4)
+    gui.fillRect(x+math.floor(sz/2)-5,y+math.floor(sz/2)-5,10,10)
   end
 end
 
 local function draw_player(x, y, sz)
-  local cx = x+math.floor(sz/2)
-  local cy = y+math.floor(sz/2)
-  local head = math.max(7, math.floor(sz/4))
-  gui.fillRect(cx-math.floor(head/2), cy-head-5, head, head)
-  gui.fillRect(cx-5, cy+2, 10, 11)
-  gui.drawLine(cx-6,cy+4,cx-10,cy+11)
-  gui.drawLine(cx+6,cy+4,cx+10,cy+11)
-  gui.drawLine(cx-2,cy+12,cx-7,cy+16)
-  gui.drawLine(cx+2,cy+12,cx+7,cy+16)
+  local cx,cy=x+math.floor(sz/2),y+math.floor(sz/2)
+  local head=math.max(11,math.floor(sz/4))
+  local torso=math.max(11,math.floor(sz/3.6))
+  local arm=math.max(4,math.floor(sz/11))
+  local head_y=cy-math.floor(sz*0.32)
+  local body_y=cy+1
+  local body_h=math.max(11,math.floor(sz/4))
+  -- Solid walking-person silhouette, unmistakable beside outlined crates.
+  gui.fillRect(cx-math.floor(head/2),head_y,head,head)
+  gui.fillRect(cx-math.floor(torso/2),body_y,torso,body_h)
+  gui.fillRect(cx-math.floor(torso/2)-arm-1,body_y+3,arm,math.max(7,body_h-4))
+  gui.fillRect(cx+math.floor(torso/2)+1,body_y+3,arm,math.max(7,body_h-4))
+  gui.fillRect(cx-math.floor(torso/2)+2,body_y+body_h,arm+1,math.max(5,math.floor(sz/8)))
+  gui.fillRect(cx+math.floor(torso/2)-arm-3,body_y+body_h,arm+1,math.max(5,math.floor(sz/8)))
 end
 
 local function board()
@@ -240,7 +246,7 @@ local function board()
       if st.walls[key] then
         draw_wall(x,y,CELL)
       else
-        if st.goals[key] then draw_goal(x,y,CELL) end
+        if st.goals[key] and not st.crates[key] then draw_goal(x,y,CELL) end
         if st.crates[key] then draw_crate(x,y,CELL,st.goals[key]) end
       end
     end
@@ -433,6 +439,7 @@ function onTouch(x,y,phase)
     end
     return
   end
+  if hit(BTN.help,x,y) then mode="help";frame_changed=true;return end
   if Game.won(st) then
     if hit(BTN.nextlevel,x,y) then advance_level()
     elseif hit(BTN.winpick,x,y) then
@@ -442,7 +449,6 @@ function onTouch(x,y,phase)
     end
     return
   end
-  if hit(BTN.help,x,y) then mode="help";frame_changed=true;return end
   if hit(BTN.undo,x,y) then undo();return end
   if hit(BTN.reset,x,y) then restart();return end
   if hit(BTN.pick,x,y) then
