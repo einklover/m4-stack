@@ -488,11 +488,13 @@ bool hookLive(const std::string& p, void*) { return SdMan.exists(p.c_str()); }
 bool hookBak(const std::string& p, void*) { return SdMan.exists(p.c_str()); }
 bool hookStaging(const std::string& p, void*) { return SdMan.exists(p.c_str()); }
 bool hookRegHas(const std::string& id, void*) {
-  auto apps = M4xRegistry::load();
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) return false;
   return M4xRegistry::find(apps, id) != nullptr;
 }
 bool hookRegMatch(const M4xInstallTxn::JournalRecord& rec, void*) {
-  auto apps = M4xRegistry::load();
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) return false;
   const auto* a = M4xRegistry::find(apps, rec.id);
   return a && a->versionCode == rec.newVersionCode && a->entry == rec.newEntry;
 }
@@ -569,7 +571,8 @@ bool hookRestoreOld(const M4xInstallTxn::JournalRecord& rec, void*) {
 }
 
 bool hookCommitReg(const M4xInstallTxn::JournalRecord& rec, void*) {
-  auto apps = M4xRegistry::load();
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) return false;
   M4xManifest m;
   m.id = rec.id;
   m.name = rec.newName;
@@ -582,8 +585,8 @@ bool hookCommitReg(const M4xInstallTxn::JournalRecord& rec, void*) {
   m.valid = true;
   M4xRegistry::upsert(apps, m, rec.installPath, static_cast<uint32_t>(millis() / 1000));
   if (!M4xRegistry::save(apps)) return false;
-  // Postcondition: registry matches new.
-  apps = M4xRegistry::load();
+  // Postcondition: registry matches new. A transient re-read is not success.
+  if (!M4xRegistry::tryLoad(apps)) return false;
   const auto* a = M4xRegistry::find(apps, rec.id);
   return a && a->versionCode == rec.newVersionCode && a->entry == rec.newEntry;
 }
@@ -763,7 +766,13 @@ M4xInstallResult M4xInstaller::install(const std::string& packagePath) {
     return r;
   }
 
-  auto apps = M4xRegistry::load();
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) {
+    r.ok = false;
+    r.error = "registry_read";
+    r.message = "无法读取应用注册表（未改动注册表）";
+    return r;
+  }
   if (const auto* existing = M4xRegistry::find(apps, r.manifest.id)) {
     if (r.manifest.versionCode < existing->versionCode) {
       r.ok = false;
@@ -889,7 +898,11 @@ bool M4xInstaller::uninstall(const std::string& id, bool clearData, std::string&
     return false;
   }
   if (refuseIfPendingJournal(id, errorOut)) return false;
-  auto apps = M4xRegistry::load();
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) {
+    errorOut = "registry_read";
+    return false;
+  }
   const auto* app = M4xRegistry::find(apps, id);
   if (!app) {
     errorOut = "not_installed";

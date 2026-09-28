@@ -23,18 +23,24 @@ def body_after_brace(fn):
 
 def test_lock_spans_load_and_save():
     load = function(REG, 'std::vector<M4xInstalledApp> M4xRegistry::load(')
+    try_load = function(REG, 'bool M4xRegistry::tryLoad(')
+    helper = function(REG, 'RegistryLoadResult loadRegistryUnlocked(')
     save = function(REG, 'bool M4xRegistry::save(')
     lock_stmt = 'std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());'
     assert body_after_brace(load).startswith(lock_stmt)
+    assert body_after_brace(try_load).startswith(lock_stmt)
     assert body_after_brace(save).startswith(lock_stmt)
     assert load.count(lock_stmt) == 1
+    assert try_load.count(lock_stmt) == 1
     assert save.count(lock_stmt) == 1
-    assert 'unlock' not in load and 'unlock' not in save
-    assert 'M4xRegistry::save' not in load
-    assert 'installGate' not in load and 'installGate' not in save
+    assert 'unlock' not in load and 'unlock' not in try_load and 'unlock' not in save
+    assert 'M4xRegistry::save' not in load and 'M4xRegistry::save' not in try_load
+    assert 'installGate' not in load and 'installGate' not in try_load and 'installGate' not in save
     assert 'recursive_mutex' not in function(REG, 'std::mutex& registryTxnMu(')
-    # Write-back and both rename phases stay after the lock is taken.
-    assert load.index(lock_stmt) < load.index('writeAllTextExact')
+    # Write-back stays inside the helper both entry points call after the lock.
+    assert load.index(lock_stmt) < load.index('loadRegistryUnlocked')
+    assert try_load.index(lock_stmt) < try_load.index('loadRegistryUnlocked')
+    assert 'writeAllTextExact' in helper
     assert save.index(lock_stmt) < save.index('kRegistryBak')
     assert save.index(lock_stmt) < save.index('kRegistryTmp')
     assert re.search(r'registryTxnMu\(\)\s*\{[^}]*static std::mutex mu;', REG)

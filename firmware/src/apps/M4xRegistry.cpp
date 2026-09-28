@@ -190,51 +190,81 @@ RegistryParse parseRegistry(const std::string& raw, std::vector<M4xInstalledApp>
   return RegistryParse::Ok;
 }
 
-}  // namespace
-
-std::vector<M4xInstalledApp> M4xRegistry::load() {
-  std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
+struct RegistryLoadResult {
+  bool failClosed = false;
   std::vector<M4xInstalledApp> apps;
+};
 
+// strictWrite is the modify/save path. IoError and Transient must not substitute
+// the backup or an empty table. Confirmed-corrupt and missing still repair from bak.
+RegistryLoadResult loadRegistryUnlocked(bool strictWrite) {
+  RegistryLoadResult out;
   const RegistryRead primary = readRegistryFile(M4xPaths::kRegistryPath);
   if (primary.kind == RegistryReadKind::Ok) {
-    const RegistryParse parsed = parseRegistry(primary.text, apps);
-    if (parsed == RegistryParse::Ok) return apps;
+    const RegistryParse parsed = parseRegistry(primary.text, out.apps);
+    if (parsed == RegistryParse::Ok) return out;
     if (parsed == RegistryParse::Transient) {
-      apps.clear();
+      out.apps.clear();
+      if (strictWrite) {
+        out.failClosed = true;
+        return out;
+      }
       const RegistryRead bak = readRegistryFile(kRegistryBak);
       if (bak.kind == RegistryReadKind::Ok &&
-          parseRegistry(bak.text, apps) == RegistryParse::Ok) {
-        return apps;
+          parseRegistry(bak.text, out.apps) == RegistryParse::Ok) {
+        return out;
       }
-      apps.clear();
-      return apps;
+      out.apps.clear();
+      return out;
     }
+    out.apps.clear();
   } else if (primary.kind == RegistryReadKind::IoError) {
-    apps.clear();
+    out.apps.clear();
+    if (strictWrite) {
+      out.failClosed = true;
+      return out;
+    }
     const RegistryRead bak = readRegistryFile(kRegistryBak);
     if (bak.kind == RegistryReadKind::Ok &&
-        parseRegistry(bak.text, apps) == RegistryParse::Ok) {
-      return apps;
+        parseRegistry(bak.text, out.apps) == RegistryParse::Ok) {
+      return out;
     }
-    apps.clear();
-    return apps;
+    out.apps.clear();
+    return out;
   }
 
   // Primary is absent or confirmed corrupt. A readable backup may replace it.
   const RegistryRead bak = readRegistryFile(kRegistryBak);
-  if (bak.kind == RegistryReadKind::Ok && parseRegistry(bak.text, apps) == RegistryParse::Ok) {
+  if (bak.kind == RegistryReadKind::Ok && parseRegistry(bak.text, out.apps) == RegistryParse::Ok) {
     if (!bak.text.empty()) {
       if (SdMan.exists(M4xPaths::kRegistryPath)) SdMan.remove(M4xPaths::kRegistryPath);
       if (!SdMan.exists(M4xPaths::kRegistryPath)) {
         (void)writeAllTextExact(M4xPaths::kRegistryPath, bak.text);
       }
     }
-    return apps;
+    return out;
   }
 
-  apps.clear();
-  return apps;
+  out.apps.clear();
+  return out;
+}
+
+}  // namespace
+
+std::vector<M4xInstalledApp> M4xRegistry::load() {
+  std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
+  return loadRegistryUnlocked(false).apps;
+}
+
+bool M4xRegistry::tryLoad(std::vector<M4xInstalledApp>& apps) {
+  std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
+  RegistryLoadResult loaded = loadRegistryUnlocked(true);
+  if (loaded.failClosed) {
+    apps.clear();
+    return false;
+  }
+  apps = std::move(loaded.apps);
+  return true;
 }
 
 bool M4xRegistry::save(const std::vector<M4xInstalledApp>& apps) {

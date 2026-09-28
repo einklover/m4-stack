@@ -6,9 +6,14 @@ from test_m4_astra_stability import SRC, function
 
 def test_source():
     reg = (SRC / 'apps/M4xRegistry.cpp').read_text()
-    load = function(reg, 'std::vector<M4xInstalledApp> M4xRegistry::load(')
+    load = function(reg, 'RegistryLoadResult loadRegistryUnlocked(')
     parse = function(reg, 'RegistryParse parseRegistry(')
     read = function(reg, 'RegistryRead readRegistryFile(')
+    ui = function(reg, 'std::vector<M4xInstalledApp> M4xRegistry::load(')
+    write = function(reg, 'bool M4xRegistry::tryLoad(')
+    assert 'loadRegistryUnlocked(false)' in ui
+    assert 'loadRegistryUnlocked(true)' in write
+    assert 'failClosed' in write
     assert 'DeserializationError::NoMemory' in parse
     assert 'RegistryParse::Transient' in parse
     assert 'RegistryReadKind::IoError' in read
