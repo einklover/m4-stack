@@ -58,7 +58,7 @@ def canonical(rows):
 
 def solve(rows, state_cap=200000):
     w, h, floor, goals, start_crates, start_player = parse(rows)
-    shift = (-w, w, -1, 1)
+    shift = (-1, 1, -w, w)
     start = (start_player, start_crates)
     best = {start: (0, 0)}
     queue = [(0, 0, 0, start_player, start_crates)]
