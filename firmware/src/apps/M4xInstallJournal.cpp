@@ -6,7 +6,9 @@
 #include <SDCardManager.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <utility>
 
 namespace M4xInstallJournal {
 namespace {
@@ -83,12 +85,22 @@ bool renameOrCopy(const char* src, const char* dst) {
   return SdMan.exists(dst);
 }
 
-// Valid journal document: parses as JSON object with a "txns" array (may be empty).
-bool isValidJournalBody(const std::string& raw) {
-  if (raw.empty()) return false;
+}  // namespace
+
+JournalParse classifyJournalBody(const std::string& raw) {
+  if (raw.empty()) return JournalParse::Corrupt;
   JsonDocument doc;
-  if (deserializeJson(doc, raw)) return false;
-  return doc["txns"].is<JsonArray>();
+  const DeserializationError err = deserializeJson(doc, raw);
+  if (err == DeserializationError::NoMemory) return JournalParse::Resource;
+  if (err) return JournalParse::Corrupt;
+  if (!doc["txns"].is<JsonArray>()) return JournalParse::Corrupt;
+  return JournalParse::Valid;
+}
+
+namespace {
+
+bool isValidJournalBody(const std::string& raw) {
+  return classifyJournalBody(raw) == JournalParse::Valid;
 }
 
 void pushStringArray(JsonArray arr, const std::vector<std::string>& v) {
@@ -256,61 +268,117 @@ bool durableWriteJournal(const char* path, const std::string& body) {
   return true;
 }
 
-// Reconcile primary / bak / tmp using pure decideLoad policy.
-std::string loadReconciledRaw() {
+}  // namespace
+
+ReconciledLoad selectJournalSnapshot() {
   const char* path = M4xInstallTxn::kJournalPath;
   const std::string tmp = std::string(path) + ".tmp";
   const std::string bak = std::string(path) + ".bak";
 
+  const bool pPresent = SdMan.exists(path);
+  const bool bPresent = SdMan.exists(bak.c_str());
+  const bool tPresent = SdMan.exists(tmp.c_str());
+  if (!pPresent && !bPresent && !tPresent) return {true, true, {}, {}};
+
   std::string primaryBody, bakBody, tmpBody;
-  const bool pEx = SdMan.exists(path) && readExactFile(path, primaryBody);
-  const bool bEx = SdMan.exists(bak.c_str()) && readExactFile(bak.c_str(), bakBody);
-  const bool tEx = SdMan.exists(tmp.c_str()) && readExactFile(tmp.c_str(), tmpBody);
+  if (pPresent && !readExactFile(path, primaryBody)) return {};
+  if (bPresent && !readExactFile(bak.c_str(), bakBody)) return {};
+  if (tPresent && !readExactFile(tmp.c_str(), tmpBody)) return {};
+
+  const JournalParse pClass = pPresent ? classifyJournalBody(primaryBody) : JournalParse::Corrupt;
+  const JournalParse bClass = bPresent ? classifyJournalBody(bakBody) : JournalParse::Corrupt;
+  const JournalParse tClass = tPresent ? classifyJournalBody(tmpBody) : JournalParse::Corrupt;
+  if ((pPresent && pClass == JournalParse::Resource) || (bPresent && bClass == JournalParse::Resource) ||
+      (tPresent && tClass == JournalParse::Resource)) {
+    return {};
+  }
 
   M4xInstallTxn::JournalFile::Presence pr;
-  pr.primary = pEx;
-  pr.bak = bEx;
-  pr.tmp = tEx;
+  pr.primary = pPresent;
+  pr.bak = bPresent;
+  pr.tmp = tPresent;
   M4xInstallTxn::JournalFile::Validity v;
-  v.primaryValid = pEx && isValidJournalBody(primaryBody);
-  v.bakValid = bEx && isValidJournalBody(bakBody);
-  v.tmpValid = tEx && isValidJournalBody(tmpBody);
+  v.primaryValid = pPresent && pClass == JournalParse::Valid;
+  v.bakValid = bPresent && bClass == JournalParse::Valid;
+  v.tmpValid = tPresent && tClass == JournalParse::Valid;
 
-  const auto src = M4xInstallTxn::JournalFile::decideLoad(pr, v);
-  switch (src) {
+  ReconciledLoad out;
+  out.source = M4xInstallTxn::JournalFile::decideLoad(pr, v);
+  switch (out.source) {
     case M4xInstallTxn::JournalFile::LoadSource::Primary:
-      // Drop incomplete tmp; bak may remain until next successful write.
-      if (tEx) SdMan.remove(tmp.c_str());
-      return primaryBody;
+      out.raw = primaryBody;
+      break;
     case M4xInstallTxn::JournalFile::LoadSource::Tmp:
-      // Promote complete tmp → primary without destroying bak until success.
-      if (durableWriteJournal(path, tmpBody)) {
-        return tmpBody;
-      }
-      // Fall through: try bak if promote failed
-      if (v.bakValid) {
-        if (SdMan.exists(path)) SdMan.remove(path);
-        if (renameOrCopy(bak.c_str(), path)) return bakBody;
-        return bakBody;
-      }
-      return tmpBody;
+      out.raw = tmpBody;
+      break;
     case M4xInstallTxn::JournalFile::LoadSource::Bak:
-      if (SdMan.exists(path)) SdMan.remove(path);
-      if (!renameOrCopy(bak.c_str(), path)) {
-        // Keep bak; return content even if restore rename failed.
-        return bakBody;
-      }
-      if (tEx) SdMan.remove(tmp.c_str());
-      return bakBody;
+      out.raw = bakBody;
+      break;
     default:
       return {};
   }
+  out.ok = true;
+  return out;
+}
+
+bool promoteSelectedSnapshot(M4xInstallTxn::JournalFile::LoadSource source, const std::string& raw) {
+  const char* path = M4xInstallTxn::kJournalPath;
+  const std::string tmp = std::string(path) + ".tmp";
+  const std::string bak = std::string(path) + ".bak";
+  switch (source) {
+    case M4xInstallTxn::JournalFile::LoadSource::Primary:
+      if (SdMan.exists(tmp.c_str())) SdMan.remove(tmp.c_str());
+      return true;
+    case M4xInstallTxn::JournalFile::LoadSource::Tmp:
+      // Failure keeps primary, bak, and tmp for a later retry.
+      return durableWriteJournal(path, raw);
+    case M4xInstallTxn::JournalFile::LoadSource::Bak: {
+      if (SdMan.exists(path) && !SdMan.remove(path)) return false;
+      if (!renameOrCopy(bak.c_str(), path)) return false;
+      if (SdMan.exists(tmp.c_str())) SdMan.remove(tmp.c_str());
+      std::string check;
+      return readExactFile(path, check) && check == raw;
+    }
+    default:
+      return false;
+  }
+}
+
+namespace {
+
+std::string loadReconciledRaw() {
+  ReconciledLoad selected = selectJournalSnapshot();
+  if (!selected.ok || selected.absent) return {};
+  if (!promoteSelectedSnapshot(selected.source, selected.raw)) return {};
+  return selected.raw;
 }
 
 }  // namespace
 
+bool tryLoadAll(std::vector<M4xInstallTxn::JournalRecord>& out) {
+  out.clear();
+  const ReconciledLoad selected = selectJournalSnapshot();
+  if (!selected.ok) return false;
+  if (selected.absent || selected.raw.empty()) return true;
+
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, selected.raw);
+  if (err || doc.overflowed() || !doc["txns"].is<JsonArray>()) return false;
+  for (JsonObject o : doc["txns"].as<JsonArray>()) {
+    auto r = parseOne(o);
+    if (!r.id.empty() && r.phase != M4xInstallTxn::Phase::Idle) out.push_back(std::move(r));
+  }
+  if (!promoteSelectedSnapshot(selected.source, selected.raw)) {
+    out.clear();
+    return false;
+  }
+  return true;
+}
+
 std::vector<M4xInstallTxn::JournalRecord> loadAll() {
-  return parseBody(loadReconciledRaw());
+  std::vector<M4xInstallTxn::JournalRecord> out;
+  (void)tryLoadAll(out);
+  return out;
 }
 
 bool saveAll(const std::vector<M4xInstallTxn::JournalRecord>& recs) {
@@ -329,7 +397,8 @@ bool saveAll(const std::vector<M4xInstallTxn::JournalRecord>& recs) {
 }
 
 bool upsert(const M4xInstallTxn::JournalRecord& rec) {
-  auto all = loadAll();
+  std::vector<M4xInstallTxn::JournalRecord> all;
+  if (!tryLoadAll(all)) return false;
   bool found = false;
   for (auto& r : all) {
     if (r.id == rec.id) {
@@ -343,7 +412,8 @@ bool upsert(const M4xInstallTxn::JournalRecord& rec) {
 }
 
 bool remove(const std::string& id) {
-  auto all = loadAll();
+  std::vector<M4xInstallTxn::JournalRecord> all;
+  if (!tryLoadAll(all)) return false;
   all.erase(std::remove_if(all.begin(), all.end(), [&](const M4xInstallTxn::JournalRecord& r) { return r.id == id; }),
             all.end());
   return saveAll(all);
@@ -370,7 +440,9 @@ bool readPending(const std::string& id, bool& pending) {
     if (!SdMan.exists(p)) return true;
     if (!readExactFile(p, body)) return false;
     present = true;
-    valid = isValidJournalBody(body);
+    const JournalParse parsed = classifyJournalBody(body);
+    if (parsed == JournalParse::Resource) return false;
+    valid = parsed == JournalParse::Valid;
     return true;
   };
 
@@ -412,7 +484,11 @@ bool readPending(const std::string& id, bool& pending) {
 }
 
 int recoverAll(const RecoveryHooks& hooks) {
-  auto all = loadAll();
+  std::vector<M4xInstallTxn::JournalRecord> all;
+  if (!tryLoadAll(all)) {
+    Serial.printf("[M4x] recover: journal unreadable, keeping disk unchanged\n");
+    return 0;
+  }
   int n = 0;
   std::vector<M4xInstallTxn::JournalRecord> remaining;
   remaining.reserve(all.size());
@@ -469,9 +545,8 @@ int recoverAll(const RecoveryHooks& hooks) {
         break;
 
       case M4xInstallTxn::RecoveryAction::DropBakClearJournal:
-        // decideRecovery only returns this when registryMatchesNew.
-        if (!fs.registryMatchesNew) {
-          // Defensive: never drop bak without verified match.
+        // decideRecovery only returns this when registryMatchesNew and live exists.
+        if (!fs.registryMatchesNew || !fs.liveExists) {
           act = M4xInstallTxn::RecoveryAction::RetainJournal;
           hr.dropBakOk = false;
         } else {
@@ -504,6 +579,180 @@ int recoverAll(const RecoveryHooks& hooks) {
                   static_cast<unsigned>(remaining.size()));
   }
   return n;
+}
+
+namespace {
+
+bool listTreeAt(const std::string& root, const std::string& rel, std::vector<std::string>& files,
+                std::vector<std::string>& dirs, int depth) {
+  if (depth > 16 || files.size() + dirs.size() > 500) return false;
+  std::string path = root;
+  if (!rel.empty()) {
+    if (path.back() != '/') path += '/';
+    path += rel;
+  }
+  FsFile dir = SdMan.open(path.c_str());
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return false;
+  }
+  for (;;) {
+    FsFile f = dir.openNextFile();
+    if (!f) break;
+    char name[128] = {};
+    f.getName(name, sizeof(name));
+    if (name[0] == '\0' || std::strcmp(name, ".") == 0 || std::strcmp(name, "..") == 0) {
+      f.close();
+      continue;
+    }
+    const std::string child = rel.empty() ? std::string(name) : rel + "/" + name;
+    const bool isDir = f.isDirectory();
+    f.close();
+    if (isDir) dirs.push_back(child);
+    else files.push_back(child);
+  }
+  dir.close();
+  return true;
+}
+
+}  // namespace
+
+bool archiveListTree(const std::string& root, std::vector<std::string>& relPaths) {
+  relPaths.clear();
+  if (!SdMan.exists(root.c_str())) return true;
+  std::vector<std::string> dirs = {""};
+  std::vector<std::string> files;
+  for (size_t i = 0; i < dirs.size(); ++i) {
+    if (!listTreeAt(root, dirs[i], files, dirs, static_cast<int>(i))) return false;
+  }
+  relPaths.swap(files);
+  return relPaths.size() <= 500;
+}
+
+bool archiveCopyFileVerified(const std::string& src, const std::string& dst) {
+  std::string body;
+  if (!readExactFile(src.c_str(), body)) return false;
+  for (size_t i = 1; i < dst.size(); ++i) {
+    if (dst[i] == '/') SdMan.mkdir(dst.substr(0, i).c_str(), true);
+  }
+  if (!writeExactFile(dst.c_str(), body)) return false;
+  std::string back;
+  return readExactFile(dst.c_str(), back) && back == body;
+}
+
+bool listPendingJournalIds(std::vector<PendingJournalId>& out,
+                           bool (*inRegistry)(const std::string& id, void* ud), void* ud) {
+  out.clear();
+  const ReconciledLoad selected = selectJournalSnapshot();
+  if (!selected.ok) return false;
+  if (selected.absent || selected.raw.empty()) return true;
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, selected.raw);
+  if (err || doc.overflowed() || !doc["txns"].is<JsonArray>()) return false;
+  for (JsonObject o : doc["txns"].as<JsonArray>()) {
+    auto r = parseOne(o);
+    if (r.id.empty() || r.phase == M4xInstallTxn::Phase::Idle) continue;
+    PendingJournalId row;
+    row.id = r.id;
+    row.inRegistry = inRegistry && inRegistry(r.id, ud);
+    out.push_back(std::move(row));
+  }
+  return true;
+}
+
+bool archiveAndRelease(const std::string& id, const ArchiveHooks& hooks, std::string& errorOut) {
+  errorOut.clear();
+  bool idOk = !id.empty() && id.size() <= 80;
+  for (unsigned char c : id) {
+    if (!(std::isalnum(c) || c == '.' || c == '_' || c == '-')) idOk = false;
+  }
+  if (!idOk || !hooks.pathExists || !hooks.listTree || !hooks.copyFile) {
+    errorOut = "archive_args";
+    return false;
+  }
+  const ReconciledLoad first = selectJournalSnapshot();
+  if (!first.ok || first.absent || first.raw.empty()) {
+    errorOut = "journal_unavailable";
+    return false;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, first.raw) || doc.overflowed() || !doc["txns"].is<JsonArray>()) {
+    errorOut = "journal_unreadable";
+    return false;
+  }
+  bool found = false;
+  M4xInstallTxn::JournalRecord rec;
+  for (JsonObject o : doc["txns"].as<JsonArray>()) {
+    auto r = parseOne(o);
+    if (r.id == id) {
+      rec = std::move(r);
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    errorOut = "not_found";
+    return false;
+  }
+
+  const std::string root = std::string("/system/m4x_archive/") + id;
+  if (SdMan.exists(root.c_str())) {
+    errorOut = "archive_exists";
+    return false;
+  }
+  const std::string snapPath = root + "/snapshot.json";
+  for (size_t i = 1; i < snapPath.size(); ++i) {
+    if (snapPath[i] == '/') SdMan.mkdir(snapPath.substr(0, i).c_str(), true);
+  }
+  if (!writeExactFile(snapPath.c_str(), first.raw)) {
+    errorOut = "archive_snapshot";
+    return false;
+  }
+  std::string snapBack;
+  if (!readExactFile(snapPath.c_str(), snapBack) || snapBack != first.raw) {
+    errorOut = "archive_snapshot";
+    return false;
+  }
+
+  const std::string aside = rec.installPath + ".m4x_restore_aside";
+  const std::pair<const char*, std::string> trees[] = {
+      {"live", rec.installPath},
+      {"bak", rec.backupPath},
+      {"staging", rec.stagingPath},
+      {"aside", aside},
+  };
+  for (const auto& tree : trees) {
+    if (tree.second.empty() || !hooks.pathExists(tree.second, hooks.ud)) continue;
+    std::vector<std::string> rels;
+    if (!hooks.listTree(tree.second, rels, hooks.ud)) {
+      errorOut = "archive_list";
+      return false;
+    }
+    for (const auto& rel : rels) {
+      const std::string src = tree.second.back() == '/' ? tree.second + rel : tree.second + "/" + rel;
+      const std::string dst = root + "/" + tree.first + "/" + rel;
+      if (!hooks.copyFile(src, dst, hooks.ud)) {
+        errorOut = "archive_copy";
+        return false;
+      }
+    }
+  }
+
+  const ReconciledLoad again = selectJournalSnapshot();
+  if (!again.ok || again.raw != first.raw) {
+    errorOut = "snapshot_changed";
+    return false;
+  }
+  if (!remove(id)) {
+    errorOut = "release_failed";
+    return false;
+  }
+  bool pending = true;
+  if (!readPending(id, pending) || pending) {
+    errorOut = "release_unconfirmed";
+    return false;
+  }
+  return true;
 }
 
 }  // namespace M4xInstallJournal

@@ -34,4 +34,9 @@ class M4xInstaller {
   // probe, reload, or HTTP preflight. Call once after SD is mounted and
   // before any install task exists.
   static void recoverInterrupted();
+
+  // Explicit confirmation to archive one stuck journal id and drop only that
+  // journal record. Not install or uninstall. Takes the install gate.
+  // Leaves the registry and /apps_data/<id> in place.
+  static bool archiveAndReleasePending(const std::string& id, std::string& errorOut);
 };

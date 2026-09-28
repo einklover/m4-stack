@@ -64,10 +64,13 @@ def bodies():
         function(journal, 'bool writeExactFile('),
         function(journal, 'bool copyFileExact('),
         function(journal, 'bool renameOrCopy('),
+        function(journal, 'JournalParse classifyJournalBody('),
         function(journal, 'bool isValidJournalBody('),
         function(journal, 'void pushStringArray('),
         function(journal, 'void writeOne('),
         function(journal, 'bool durableWriteJournal('),
+        function(journal, 'ReconciledLoad selectJournalSnapshot('),
+        function(journal, 'bool promoteSelectedSnapshot('),
         function(journal, 'std::string loadReconciledRaw('),
         function(journal, 'bool saveAll('),
     ]
@@ -78,7 +81,10 @@ def bodies():
 #include "apps/M4xPaths.h"
 #include "apps/M4xRegistry.h"
 #include "apps/M4xInstallTxn.h"
+#include "apps/M4xInstallJournal.h"
 #include <ArduinoJson.h>
+using M4xInstallJournal::JournalParse;
+using M4xInstallJournal::ReconciledLoad;
 const char* M4xRuntimeKey(M4xRuntimeKind){return "lua";}
 constexpr const char* kRegistryTmp = "/system/app_registry.json.tmp";
 constexpr const char* kRegistryBak = "/system/app_registry.json.bak";

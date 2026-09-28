@@ -628,6 +628,23 @@ void recoverInterruptedInstallsLocked() {
 
 }  // namespace
 
+bool M4xInstaller::archiveAndReleasePending(const std::string& id, std::string& errorOut) {
+  InstallGateGuard gate;
+  if (!gate.acquire()) {
+    errorOut = "install_gate";
+    return false;
+  }
+  M4xInstallJournal::ArchiveHooks hooks;
+  hooks.pathExists = [](const std::string& path, void*) { return SdMan.exists(path.c_str()); };
+  hooks.listTree = [](const std::string& root, std::vector<std::string>& rels, void*) {
+    return M4xInstallJournal::archiveListTree(root, rels);
+  };
+  hooks.copyFile = [](const std::string& src, const std::string& dst, void*) {
+    return M4xInstallJournal::archiveCopyFileVerified(src, dst);
+  };
+  return M4xInstallJournal::archiveAndRelease(id, hooks, errorOut);
+}
+
 void M4xInstaller::ensureLayout() {
   SdMan.mkdir(M4xPaths::kAppsRoot, true);
   SdMan.mkdir(M4xPaths::kAppsDataRoot, true);
