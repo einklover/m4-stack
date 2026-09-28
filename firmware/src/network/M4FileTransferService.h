@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 
+#include "memory/M4FileTransferMemoryAccount.h"
+
 class DNSServer;
 
 class M4FileTransferService final {
@@ -43,6 +45,7 @@ class M4FileTransferService final {
  private:
   class HttpRuntime;
 
+  M4FileTransferMemoryAccount memoryAccount;
   std::unique_ptr<HttpRuntime> httpRuntime;
   std::unique_ptr<DNSServer> dnsServer;
   bool mdnsRunning = false;
