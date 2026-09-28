@@ -233,16 +233,31 @@ RegistryLoadResult loadRegistryUnlocked(bool strictWrite) {
     return out;
   }
 
-  // Primary is absent or confirmed corrupt. A readable backup may replace it.
+  // Primary is missing or confirmed corrupt. Never accept an unreadable backup
+  // as an empty registry on a modify/save path: transient SD/JSON failures may
+  // recover later, and overwriting them here would destroy installed app rows.
   const RegistryRead bak = readRegistryFile(kRegistryBak);
-  if (bak.kind == RegistryReadKind::Ok && parseRegistry(bak.text, out.apps) == RegistryParse::Ok) {
-    if (!bak.text.empty()) {
-      if (SdMan.exists(M4xPaths::kRegistryPath)) SdMan.remove(M4xPaths::kRegistryPath);
-      if (!SdMan.exists(M4xPaths::kRegistryPath)) {
-        (void)writeAllTextExact(M4xPaths::kRegistryPath, bak.text);
-      }
-    }
+  if (bak.kind == RegistryReadKind::IoError) {
+    if (strictWrite) out.failClosed = true;
+    out.apps.clear();
     return out;
+  }
+  if (bak.kind == RegistryReadKind::Ok) {
+    const RegistryParse parsed = parseRegistry(bak.text, out.apps);
+    if (parsed == RegistryParse::Transient) {
+      if (strictWrite) out.failClosed = true;
+      out.apps.clear();
+      return out;
+    }
+    if (parsed == RegistryParse::Ok) {
+      if (!bak.text.empty()) {
+        if (SdMan.exists(M4xPaths::kRegistryPath)) SdMan.remove(M4xPaths::kRegistryPath);
+        if (!SdMan.exists(M4xPaths::kRegistryPath)) {
+          (void)writeAllTextExact(M4xPaths::kRegistryPath, bak.text);
+        }
+      }
+      return out;
+    }
   }
 
   out.apps.clear();

@@ -99,6 +99,7 @@ class InstallGateGuard {
 };
 
 static bool gPrimaryReadFail = false;
+static bool gBackupReadFail = false;
 static int gUnexpected = 0;
 struct Node { bool dir = false; std::string data; };
 static std::map<std::string, Node> disk;
@@ -131,6 +132,7 @@ struct SdShim {
   bool mkdir(const char* p, bool) { disk[p] = Node{true, {}}; return true; }
   bool openFileForRead(const char*, const char* p, FsFile& f) {
     if (gPrimaryReadFail && std::string(p) == M4xPaths::kRegistryPath) return false;
+    if (gBackupReadFail && std::string(p) == "/system/app_registry.json.bak") return false;
     if (!disk.count(p) || disk[p].dir) return false;
     f = FsFile(p);
     return true;
@@ -202,6 +204,7 @@ static void plant(const std::string& primary) {
   disk.clear();
   gUnexpected = 0;
   gPrimaryReadFail = false;
+  gBackupReadFail = false;
   gFailBody.clear();
   disk[M4xPaths::kRegistryPath] = Node{false, primary};
   disk[kBak] = Node{false, kOld};
@@ -239,7 +242,51 @@ static void rejectWritePaths() {
   expectUnchanged();
 }
 
+// Real M4xRegistry::tryLoad + installer hook must fail closed if the ONLY
+// surviving backup cannot be read or its JSON parse runs out of memory.
+static void rejectUnreadableBackup(bool missingPrimary, bool backupIoError) {
+  plant("{");  // a confirmed-corrupt primary; optionally remove it entirely.
+  if (missingPrimary) disk.erase(M4xPaths::kRegistryPath);
+  gBackupReadFail = backupIoError;
+  if (!backupIoError) gFailBody = kOld;  // force backup JSON NoMemory
+  const auto originalDisk = disk;
+  std::vector<M4xInstalledApp> apps;
+  assert(!M4xRegistry::tryLoad(apps));
+  assert(apps.empty());
+  M4xInstallTxn::JournalRecord rec;
+  rec.id = "com.example.new";
+  rec.installPath = "/apps/com.example.new";
+  rec.newVersionCode = 2;
+  rec.newEntry = "main.lua";
+  assert(!hookCommitReg(rec, nullptr));
+  std::string err;
+  assert(!M4xInstaller::uninstall("com.example.new", false, err));
+  assert(err == "registry_read");
+  M4xInstallResult installed = M4xInstaller::install("/inbox/app.m4x");
+  assert(!installed.ok && installed.error == "registry_read");
+  assert(disk.size() == originalDisk.size());
+  assert(disk.at(kBak).data == kOld);
+  if (!missingPrimary) {
+    assert(disk.at(M4xPaths::kRegistryPath).data == "{");
+  } else {
+    assert(!disk.count(M4xPaths::kRegistryPath));
+  }
+  assert(!disk.count("/system/app_registry.json.tmp"));
+  assert(gUnexpected == 0);
+  gBackupReadFail = false;
+  gFailBody.clear();
+}
+
 int main() {
+  rejectUnreadableBackup(false, false); // corrupt primary, backup NoMemory
+  rejectUnreadableBackup(true, false);  // missing primary, backup NoMemory
+  rejectUnreadableBackup(false, true);  // corrupt primary, backup SD read error
+  rejectUnreadableBackup(true, true);   // missing primary, backup SD read error
+  disk.clear();
+  gUnexpected = 0;
+  std::vector<M4xInstalledApp> firstInstall;
+  assert(M4xRegistry::tryLoad(firstInstall) && firstInstall.empty());
+
   plant(kNew);
   gPrimaryReadFail = true;
   rejectWritePaths();
