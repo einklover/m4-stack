@@ -1,0 +1,62 @@
+name: m4-development-gate
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  m4-workflow-contract:
+    name: m4-workflow-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Test gate logic
+        run: python3 -m unittest discover -s scripts/tests -p 'test_check_m4_workflow.py' -v
+
+      - name: Verify PR evidence and code diff
+        id: evidence
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || 'origin/main' }}
+        run: |
+          set -euo pipefail
+          git diff --check "$(git merge-base "$BASE_REF" HEAD)" HEAD
+          python3 scripts/check_m4_workflow.py --base-ref "$BASE_REF"
+
+      - name: Install build tools
+        if: steps.evidence.outputs.firmware_build == 'true'
+        run: |
+          python3 -m pip install --user platformio
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap and test dependencies
+        if: steps.evidence.outputs.firmware_build == 'true'
+        run: |
+          bash scripts/bootstrap_deps.sh
+          python3 firmware/tests/test_m4_dependency_bootstrap_contract.py
+
+      - name: Compile production and QEMU sequentially
+        if: steps.evidence.outputs.firmware_build == 'true'
+        working-directory: firmware
+        run: |
+          set -euo pipefail
+          pio run -e murphy_m4 -j1
+          test -s .pio/build/murphy_m4/firmware.bin
+          pio run -e murphy_m4_qemu -j1
+          test -s .pio/build/murphy_m4_qemu/firmware.bin
+          echo '### Build SHA256 (not hardware proof)' >> "$GITHUB_STEP_SUMMARY"
+          sha256sum .pio/build/{murphy_m4,murphy_m4_qemu}/firmware.bin >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Evidence limitations
+        if: always()
+        run: |
+          echo 'CI cannot prove a Muse review occurred or verify physical hardware.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Astra is opt-in only and is not scheduled by CI.' >> "$GITHUB_STEP_SUMMARY"

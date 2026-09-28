@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'firmware/src/**'
+      - 'firmware/lib/**'
+      - 'firmware/open-m4-sdk/**'
       - 'firmware/tests/**'
       - 'firmware/platformio.ini'
       - 'firmware/scripts/**'
