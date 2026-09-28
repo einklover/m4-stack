@@ -212,9 +212,15 @@ RebuildResult rebuildIndex() {
   // stop adding once kMaxIndex unique keys are collected.
   while (gActiveCount < static_cast<size_t>(kMaxIndex)) {
     if (static_cast<uint64_t>(pos) + kRecordHeader > fileSize) break;  // torn tail
-    if (!f.seekSet(pos)) break;
+    if (!f.seekSet(pos)) {
+      f.close();
+      return RebuildResult::IoError;
+    }
     const int got = f.read(recHdr, sizeof(recHdr));
-    if (got != static_cast<int>(sizeof(recHdr))) break;
+    if (got != static_cast<int>(sizeof(recHdr))) {
+      f.close();
+      return RebuildResult::IoError;
+    }
     Key k;
     k.familyHash = readU32(recHdr);
     k.sizePx = readU16(recHdr + 4);
