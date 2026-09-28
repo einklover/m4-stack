@@ -8,6 +8,45 @@
 #include <cstring>
 #include <new>
 
+#if defined(ESP32)
+class FaceLock {
+ public:
+  explicit FaceLock(SemaphoreHandle_t mu) : mu_(mu), held_(false) {
+    if (mu_) {
+      xSemaphoreTake(mu_, portMAX_DELAY);
+      held_ = true;
+    }
+  }
+  ~FaceLock() {
+    if (held_ && mu_) xSemaphoreGive(mu_);
+  }
+  FaceLock(const FaceLock&) = delete;
+  FaceLock& operator=(const FaceLock&) = delete;
+
+ private:
+  SemaphoreHandle_t mu_;
+  bool held_;
+};
+#endif
+
+// Glyph outline allocation throws std::bad_alloc from the TTF PSRAM allocator.
+// Catch it inside the face lock so the semaphore is given and the caller sees
+// a missing glyph instead of an escaped exception.
+template <class F>
+auto m4UnderFaceLock(SemaphoreHandle_t mu, F&& fn) -> decltype(fn()) {
+  using R = decltype(fn());
+#if defined(ESP32)
+  FaceLock lock(mu);
+#else
+  (void)mu;
+#endif
+  try {
+    return fn();
+  } catch (const std::bad_alloc&) {
+    return R();
+  }
+}
+
 extern void m4AppendFontDiagnostic(const char* line);
 extern "C" void m4YieldToDebugBridge() __attribute__((weak));
 extern "C" void m4YieldToDebugBridge() {}
@@ -373,14 +412,7 @@ int TtfEpdFont::lookupAdvancePx(uint32_t cp) const {
 
 int TtfEpdFont::glyphAdvanceX(uint32_t cp, const EpdFontStyles::Style style) const {
   (void)style;
-#if defined(ESP32)
-  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-#endif
-  const int adv = lookupAdvancePx(cp);
-#if defined(ESP32)
-  if (mutex_) xSemaphoreGive(mutex_);
-#endif
-  return adv;
+  return m4UnderFaceLock(mutex_, [&]() -> int { return lookupAdvancePx(cp); });
 }
 bool TtfEpdFont::backendRasterize(uint16_t gid, ttf::GlyphBitmap& out) const {
   return usesCffBackend() ? cffFont_.rasterize(gid, renderSizePx_, out)
@@ -860,16 +892,13 @@ void TtfEpdFont::logPerformanceStats(const char* stage) {
 }
 
 void TtfEpdFont::clearCaches() {
-#if defined(ESP32)
-  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-#endif
-  if (entries_) {
-    for (uint16_t i = 0; i < maxSlots_; ++i) evictSlot(i);
-  }
-  backendClearScratch();
-#if defined(ESP32)
-  if (mutex_) xSemaphoreGive(mutex_);
-#endif
+  (void)m4UnderFaceLock(mutex_, [&]() -> int {
+    if (entries_) {
+      for (uint16_t i = 0; i < maxSlots_; ++i) evictSlot(i);
+    }
+    backendClearScratch();
+    return 0;
+  });
 }
 
 int TtfEpdFont::ensureGlyph(uint32_t cp) const {
@@ -966,19 +995,15 @@ const EpdGlyph* TtfEpdFont::getGlyph(uint32_t cp,
                                     const EpdFontStyles::Style style) const {
   (void)style;
   const uint32_t startedUs = micros();
-#if defined(ESP32)
-  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-#endif
-  const int slot = ensureGlyph(cp);
-  const uint32_t elapsedUs = static_cast<uint32_t>(micros() - startedUs);
-  ++perfLookups_;
-  perfTotalLookupUs_ += elapsedUs;
-  if (elapsedUs > perfMaxLookupUs_) perfMaxLookupUs_ = elapsedUs;
-  if (elapsedUs >= 5000u) ++perfSlowLookups_;
-#if defined(ESP32)
-  if (mutex_) xSemaphoreGive(mutex_);
-#endif
-  return slot < 0 ? nullptr : &entries_[slot].glyph;
+  return m4UnderFaceLock(mutex_, [&]() -> const EpdGlyph* {
+    const int slot = ensureGlyph(cp);
+    const uint32_t elapsedUs = static_cast<uint32_t>(micros() - startedUs);
+    ++perfLookups_;
+    perfTotalLookupUs_ += elapsedUs;
+    if (elapsedUs > perfMaxLookupUs_) perfMaxLookupUs_ = elapsedUs;
+    if (elapsedUs >= 5000u) ++perfSlowLookups_;
+    return slot < 0 ? nullptr : &entries_[slot].glyph;
+  });
 }
 
 const uint8_t* TtfEpdFont::loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffer,
@@ -995,21 +1020,15 @@ const uint8_t* TtfEpdFont::loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffe
     return nullptr;
   }
   const uint32_t cp = glyph->dataOffset;
-#if defined(ESP32)
-  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-#endif
-  const int slot = ensureGlyph(cp);
-  const uint8_t* result = nullptr;
-  if (slot >= 0 && entries_[slot].bitmap && entries_[slot].bitmapSize) {
-    if (buffer) {
-      std::memcpy(buffer, entries_[slot].bitmap, entries_[slot].bitmapSize);
-      result = buffer;
-    } else {
-      result = entries_[slot].bitmap;
+  return m4UnderFaceLock(mutex_, [&]() -> const uint8_t* {
+    const int slot = ensureGlyph(cp);
+    if (slot >= 0 && entries_[slot].bitmap && entries_[slot].bitmapSize) {
+      if (buffer) {
+        std::memcpy(buffer, entries_[slot].bitmap, entries_[slot].bitmapSize);
+        return buffer;
+      }
+      return entries_[slot].bitmap;
     }
-  }
-#if defined(ESP32)
-  if (mutex_) xSemaphoreGive(mutex_);
-#endif
-  return result;
+    return nullptr;
+  });
 }

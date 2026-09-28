@@ -1,0 +1,27 @@
+"""Source contract: transient registry read/parse must not replace primary."""
+from pathlib import Path
+
+from test_m4_astra_stability import SRC, function
+
+
+def test_source():
+    reg = (SRC / 'apps/M4xRegistry.cpp').read_text()
+    load = function(reg, 'std::vector<M4xInstalledApp> M4xRegistry::load(')
+    parse = function(reg, 'RegistryParse parseRegistry(')
+    read = function(reg, 'RegistryRead readRegistryFile(')
+    assert 'DeserializationError::NoMemory' in parse
+    assert 'RegistryParse::Transient' in parse
+    assert 'RegistryReadKind::IoError' in read
+    transient = load[load.index('RegistryParse::Transient'):load.index('RegistryReadKind::IoError')]
+    io = load[load.index('RegistryReadKind::IoError'):load.index('Primary is absent')]
+    assert 'writeAllTextExact' not in transient
+    assert 'SdMan.remove' not in transient
+    assert 'writeAllTextExact' not in io
+    assert 'SdMan.remove' not in io
+    repair = load[load.index('Primary is absent'):]
+    assert 'writeAllTextExact' in repair
+    print('registry transient load source: PASS')
+
+
+if __name__ == '__main__':
+    test_source()

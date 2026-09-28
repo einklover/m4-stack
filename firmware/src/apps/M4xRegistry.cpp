@@ -25,6 +25,47 @@ std::mutex& registryTxnMu() {
   return mu;
 }
 
+enum class RegistryReadKind { Missing, Ok, IoError };
+
+struct RegistryRead {
+  RegistryReadKind kind;
+  std::string text;
+};
+
+// Missing means the path is not on the card. IoError means it is present but
+// this read did not return the full file (open, size, or short read). Callers
+// that repair a registry must not delete or replace an IoError primary.
+RegistryRead readRegistryFile(const char* path) {
+  FsFile f;
+  if (!SdMan.openFileForRead("M4xReg", path, f)) {
+    return {SdMan.exists(path) ? RegistryReadKind::IoError : RegistryReadKind::Missing, {}};
+  }
+  const size_t n = f.fileSize();
+  if (n > 256u * 1024u) {
+    f.close();
+    return {RegistryReadKind::IoError, {}};
+  }
+  std::string out;
+  out.resize(n);
+  if (n > 0) {
+    size_t off = 0;
+    while (off < n) {
+      const int r = f.read(reinterpret_cast<uint8_t*>(&out[off]), n - off);
+      if (r <= 0) {
+        f.close();
+        return {RegistryReadKind::IoError, {}};
+      }
+      off += static_cast<size_t>(r);
+    }
+    if (off != n) {
+      f.close();
+      return {RegistryReadKind::IoError, {}};
+    }
+  }
+  f.close();
+  return {RegistryReadKind::Ok, std::move(out)};
+}
+
 std::string readAllText(const char* path) {
   FsFile f;
   if (!SdMan.openFileForRead("M4xReg", path, f)) return {};
@@ -106,12 +147,19 @@ void applyLiveManifestRuntime(const std::string& installPath, M4xRuntimeKind& ru
   provider = live.provider;
 }
 
-bool parseRegistry(const std::string& raw, std::vector<M4xInstalledApp>& apps) {
+enum class RegistryParse { Ok, Corrupt, Transient };
+
+RegistryParse parseRegistry(const std::string& raw, std::vector<M4xInstalledApp>& apps) {
   apps.clear();
-  if (raw.empty()) return false;
+  if (raw.empty()) return RegistryParse::Corrupt;
   JsonDocument doc;
-  if (deserializeJson(doc, raw)) return false;
-  if (!doc["apps"].is<JsonArray>()) return false;
+  const DeserializationError err = deserializeJson(doc, raw);
+  if (err == DeserializationError::NoMemory || err == DeserializationError::TooDeep) {
+    return RegistryParse::Transient;
+  }
+  if (err) return RegistryParse::Corrupt;
+  if (doc.overflowed()) return RegistryParse::Transient;
+  if (!doc["apps"].is<JsonArray>()) return RegistryParse::Corrupt;
 
   for (JsonObject o : doc["apps"].as<JsonArray>()) {
     M4xInstalledApp a;
@@ -139,7 +187,7 @@ bool parseRegistry(const std::string& raw, std::vector<M4xInstalledApp>& apps) {
     }
     if (!a.id.empty() && !a.path.empty()) apps.push_back(std::move(a));
   }
-  return true;
+  return RegistryParse::Ok;
 }
 
 }  // namespace
@@ -148,15 +196,38 @@ std::vector<M4xInstalledApp> M4xRegistry::load() {
   std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
   std::vector<M4xInstalledApp> apps;
 
-  const std::string primary = readAllText(M4xPaths::kRegistryPath);
-  if (parseRegistry(primary, apps)) return apps;
+  const RegistryRead primary = readRegistryFile(M4xPaths::kRegistryPath);
+  if (primary.kind == RegistryReadKind::Ok) {
+    const RegistryParse parsed = parseRegistry(primary.text, apps);
+    if (parsed == RegistryParse::Ok) return apps;
+    if (parsed == RegistryParse::Transient) {
+      apps.clear();
+      const RegistryRead bak = readRegistryFile(kRegistryBak);
+      if (bak.kind == RegistryReadKind::Ok &&
+          parseRegistry(bak.text, apps) == RegistryParse::Ok) {
+        return apps;
+      }
+      apps.clear();
+      return apps;
+    }
+  } else if (primary.kind == RegistryReadKind::IoError) {
+    apps.clear();
+    const RegistryRead bak = readRegistryFile(kRegistryBak);
+    if (bak.kind == RegistryReadKind::Ok &&
+        parseRegistry(bak.text, apps) == RegistryParse::Ok) {
+      return apps;
+    }
+    apps.clear();
+    return apps;
+  }
 
-  const std::string bak = readAllText(kRegistryBak);
-  if (parseRegistry(bak, apps)) {
-    if (!bak.empty()) {
+  // Primary is absent or confirmed corrupt. A readable backup may replace it.
+  const RegistryRead bak = readRegistryFile(kRegistryBak);
+  if (bak.kind == RegistryReadKind::Ok && parseRegistry(bak.text, apps) == RegistryParse::Ok) {
+    if (!bak.text.empty()) {
       if (SdMan.exists(M4xPaths::kRegistryPath)) SdMan.remove(M4xPaths::kRegistryPath);
       if (!SdMan.exists(M4xPaths::kRegistryPath)) {
-        (void)writeAllTextExact(M4xPaths::kRegistryPath, bak);
+        (void)writeAllTextExact(M4xPaths::kRegistryPath, bak.text);
       }
     }
     return apps;
