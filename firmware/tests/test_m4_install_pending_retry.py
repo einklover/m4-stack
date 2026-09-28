@@ -66,7 +66,10 @@ def parts():
         'void writeOne(',
         'std::vector<M4xInstallTxn::JournalRecord> parseBody(',
         'bool durableWriteJournal(',
+        'struct ReconciledLoad {',
+        'ReconciledLoad loadReconciledRawStatus(',
         'std::string loadReconciledRaw(',
+        'bool tryLoadAll(',
         'std::vector<M4xInstallTxn::JournalRecord> loadAll(',
         'bool saveAll(',
         'bool upsert(',
@@ -75,7 +78,7 @@ def parts():
         'bool readPending(',
         'int recoverAll(',
     ]
-    return '\n'.join(function(journal, n) for n in names), function(inst, 'bool refuseIfPendingJournal(')
+    return '\n'.join((function(journal, n)+';' if n.startswith('struct ReconciledLoad') else function(journal, n)) for n in names), function(inst, 'bool refuseIfPendingJournal(')
 
 
 def run_cpp():
