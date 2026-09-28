@@ -404,6 +404,43 @@ function Game.step(st, dr, dc)
   return "walk"
 end
 
+-- Deterministic bounded path to an EMPTY floor tile. Never moves a crate.
+-- Called only on tap: search size is bounded by the current tiny board.
+function Game.walk_path(st, target_r, target_c)
+  if Game.blocked(st, target_r, target_c) or
+      st.crates[Game.key(target_r, target_c)] then return nil end
+  if target_r == st.pr and target_c == st.pc then return {} end
+  local cap = st.rows * st.cols
+  local q, head = { { st.pr, st.pc } }, 1
+  local start = Game.key(st.pr, st.pc)
+  local prev = { [start] = true }
+  local goal = Game.key(target_r, target_c)
+  local moves = { {-1,0}, {1,0}, {0,-1}, {0,1} }
+  while head <= #q and head <= cap do
+    local at = q[head]
+    head = head + 1
+    for _,d in ipairs(moves) do
+      local nr,nc = at[1]+d[1],at[2]+d[2]
+      local nk = Game.key(nr,nc)
+      if not prev[nk] and not Game.blocked(st,nr,nc) and not st.crates[nk] then
+        prev[nk] = { Game.key(at[1],at[2]),d[1],d[2] }
+        if nk == goal then
+          local path = {}
+          local k = goal
+          while k ~= start do
+            local link = prev[k]
+            table.insert(path,1,{ link[2],link[3] })
+            k = link[1]
+          end
+          return path
+        end
+        q[#q+1] = {nr,nc}
+      end
+    end
+  end
+  return nil
+end
+
 function Game.won(st)
   local n = 0
   for k, v in pairs(st.crates) do
