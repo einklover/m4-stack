@@ -3,6 +3,7 @@ name: m4-development-gate
 on:
   pull_request:
     branches: [main]
+    types: [opened, reopened, synchronize, edited, ready_for_review]
   workflow_dispatch:
 
 permissions:
