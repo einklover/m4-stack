@@ -1,0 +1,19 @@
+{
+  "id": "com.m4.sokoban",
+  "name": "推箱子",
+  "version": "0.2.0",
+  "versionCode": 2,
+  "runtime": "lua",
+  "entry": "main.lua",
+  "author": "m4",
+  "description": "Staged Microban 24-level campaign, chapter picker, undo, next-level and isolated progress.",
+  "files": [
+    "icon_home.bmp",
+    "game.lua",
+    "main.lua"
+  ],
+  "permissions": [
+    "filesystem.appdata"
+  ],
+  "icon": "icon_home.bmp"
+}

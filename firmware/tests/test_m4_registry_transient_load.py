@@ -18,12 +18,13 @@ def test_source():
     assert 'RegistryParse::Transient' in parse
     assert 'RegistryReadKind::IoError' in read
     transient = load[load.index('RegistryParse::Transient'):load.index('RegistryReadKind::IoError')]
-    io = load[load.index('RegistryReadKind::IoError'):load.index('Primary is absent')]
+    repair_start = load.index('// Primary is ')
+    io = load[load.index('RegistryReadKind::IoError'):repair_start]
     assert 'writeAllTextExact' not in transient
     assert 'SdMan.remove' not in transient
     assert 'writeAllTextExact' not in io
     assert 'SdMan.remove' not in io
-    repair = load[load.index('Primary is absent'):]
+    repair = load[repair_start:]
     assert 'writeAllTextExact' in repair
     print('registry transient load source: PASS')
 
