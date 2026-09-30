@@ -1,4 +1,6 @@
 #include "SDCardManager.h"
+#include "M4ScopedFileClose.h"
+#include <new>
 
 #include <BoardConfig.h>
 #include <driver/gpio.h>
@@ -7,6 +9,7 @@
 #include "SdmmcBlockDevice.h"  // no-op unless FREEINK_SD_SDMMC
 // Production mapping seam (must match freeink::SdmmcFailCode order).
 #include "../../../../../src/util/M4SdStatus.h"
+#include "M4SdVolumeGuard.h"
 
 #if FREEINK_SD_SDMMC
 // Drift guard: freeink::SdmmcFailCode ordinals must match M4SdStatus::BlockCode.
@@ -36,6 +39,17 @@ SDCardManager SDCardManager::instance;
 SDCardManager::SDCardManager() {}
 
 bool SDCardManager::begin() {
+  // begin is initialization, not runtime recovery. Never invalidate live files.
+  if (initialized) return true;
+  // Static recursive mutex, before the block device. A refused create is an
+  // SD init failure; the volume guard must not spin or touch the cache.
+  if (!m4SdVolumeLockPrepare()) {
+    setLast("volume_lock", "recursive mutex create failed", "oom");
+    initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytesValid = false;
+    return false;
+  }
   // Native SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the esp-idf
   // SDMMC block device. FsFile from this volume is the same type the SPI path
   // returns, so the public API and consumers are unchanged.
@@ -99,6 +113,15 @@ bool SDCardManager::begin() {
 SDCardManager::SDCardManager() : sd() {}
 
 bool SDCardManager::begin() {
+  // begin is initialization, not runtime recovery. Never invalidate live files.
+  if (initialized) return true;
+  if (!m4SdVolumeLockPrepare()) {
+    setLast("volume_lock", "recursive mutex create failed", "oom");
+    initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytesValid = false;
+    return false;
+  }
   // Profiles whose SD CS is not yet known leave it unassigned so the card stays
   // dormant — bail out before any pin is touched, or SdFat drives "pin 255" and
   // floods the log. (Native-SDMMC boards like the X4 Pro take the #if branch above.)
@@ -183,10 +206,13 @@ bool SDCardManager::capabilityProbe(const char* optionalExistingPath) {
     return false;
   }
   FsFile entry;
-  if (entry.openNext(&root, O_RDONLY)) {
-    entry.close();
-  }
+  if (entry.openNext(&root, O_RDONLY)) entry.close();
+  const bool rootReadFailed = root.getError() != 0;
   root.close();
+  if (rootReadFailed) {
+    setLast("capability_probe", "root entry read failed", "io_failure");
+    return false;
+  }
 
   if (optionalExistingPath && optionalExistingPath[0] && vol().exists(optionalExistingPath)) {
     FsFile f;
@@ -216,8 +242,10 @@ bool SDCardManager::ready() const {
   return initialized;
 }
 
-std::vector<String> SDCardManager::listFiles(const char* path, const int maxFiles) {
+std::vector<String> SDCardManager::listFiles(const char* path, const int maxFiles, bool* partial) {
   std::vector<String> ret;
+  if (partial) *partial = false;
+  if (maxFiles <= 0) return ret;
   if (!initialized) {
     if (Serial) Serial.printf("[%lu] [SD] not initialized, returning empty list\n", millis());
     return ret;
@@ -236,16 +264,29 @@ std::vector<String> SDCardManager::listFiles(const char* path, const int maxFile
 
   int count = 0;
   char name[128];
-  for (auto f = root.openNextFile(); f && count < maxFiles; f = root.openNextFile()) {
+  const uint32_t started = millis();
+  unsigned visited = 0;
+  while (count < maxFiles && visited < 512 && millis() - started < 400) {
+    auto f = root.openNextFile();
+    if (!f) { root.close(); return ret; }
+    ++visited;
     if (f.isDirectory()) {
       f.close();
       continue;
     }
     f.getName(name, sizeof(name));
-    ret.emplace_back(name);
+    try {
+      if (name[0]) ret.emplace_back(name);
+    } catch (const std::bad_alloc&) {
+      f.close();
+      if (partial) *partial = true;
+      root.close();
+      return ret;
+    }
     f.close();
     count++;
   }
+  if (partial) *partial = true;
   root.close();
   return ret;
 }
@@ -441,35 +482,39 @@ uint64_t SDCardManager::sdUsedBytes() {
 }
 
 bool SDCardManager::removeDir(const char* path) {
+  char name[768];
+  return removeDirAtDepth(path, 0, name);
+}
+
+bool SDCardManager::removeDirAtDepth(const char* path, unsigned depth, char (&name)[768]) {
+  // SdFat skips FAT dot entries itself. Limit depth for malformed or unusually
+  // nested media, and close each child before descending or mutating the volume.
+  if (depth >= 16) return false;
   auto dir = vol().open(path);
-  if (!dir) {
-    return false;
-  }
-  if (!dir.isDirectory()) {
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
     return false;
   }
 
-  auto file = dir.openNextFile();
-  char name[128];
-  while (file) {
+  for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    const size_t length = file.getName(name, sizeof(name));
+    const bool isDir = file.isDirectory();
+    file.close();
+    if (!length || length >= sizeof(name) - 1 || name[0] == 0 || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+      dir.close();
+      return false;
+    }
     String filePath = path;
-    if (!filePath.endsWith("/")) {
-      filePath += "/";
-    }
-    file.getName(name, sizeof(name));
+    if (!filePath.endsWith("/")) filePath += "/";
     filePath += name;
-
-    if (file.isDirectory()) {
-      if (!removeDir(filePath.c_str())) {
-        return false;
-      }
-    } else {
-      if (!vol().remove(filePath.c_str())) {
-        return false;
-      }
+    const bool ok = isDir ? removeDirAtDepth(filePath.c_str(), depth + 1, name)
+                          : vol().remove(filePath.c_str());
+    if (!ok) {
+      dir.close();
+      return false;
     }
-    file = dir.openNextFile();
   }
-
-  return vol().rmdir(path);
+  const bool readFailed = dir.getError() != 0;
+  dir.close();
+  return !readFailed && vol().rmdir(path);
 }

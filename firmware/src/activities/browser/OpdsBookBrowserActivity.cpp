@@ -42,7 +42,7 @@ void OpdsBookBrowserActivity::onEnter() {
   updateRequired = true;
 
   xTaskCreate(&OpdsBookBrowserActivity::taskTrampoline, "OpdsBookBrowserTask",
-              4096,               // Stack size (larger for HTTP operations)
+              8192,               // TTF chrome raster does not fit in 4KB
               this,               // Parameters
               1,                  // Priority
               &displayTaskHandle  // Task handle

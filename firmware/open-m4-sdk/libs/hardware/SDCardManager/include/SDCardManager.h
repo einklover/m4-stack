@@ -52,7 +52,9 @@ class SDCardManager {
   // scans the FAT and is too slow to call on every frame). 0 if not mounted or
   // the cluster count cannot be determined.
   uint64_t sdUsedBytes();
-  std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
+  // A finite entry/time window; partial is true when enumeration stops early.
+  // Limits apply between SD operations, not to an in-flight driver call.
+  std::vector<String> listFiles(const char* path = "/", int maxFiles = 200, bool* partial = nullptr);
   // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);
   // Low-memory helpers:
@@ -101,6 +103,7 @@ class SDCardManager {
 
  private:
   static SDCardManager instance;
+  bool removeDirAtDepth(const char* path, unsigned depth, char (&name)[768]);
 
   bool initialized = false;
   PowerHook _powerHook = nullptr;

@@ -70,24 +70,24 @@ void DeveloperOptionsActivity::render() {
 
   // Toggle row
   const bool on = SETTINGS.developerSerialDebugEnabled != 0;
-  M4UiText::draw(renderer, UI_12_FONT_ID, 16, y, L(Str::kUsbSerialDebug), true, EpdFontFamily::BOLD);
+  M4UiText::draw(renderer, NOTOSANS_18_FONT_ID, 16, y, L(Str::kUsbSerialDebug), true, EpdFontFamily::BOLD);
   const char* stateLabel = on ? L(Str::kOn) : L(Str::kOff);
-  const int stateW = M4UiText::textWidth(renderer, UI_12_FONT_ID, stateLabel);
-  M4UiText::draw(renderer, UI_12_FONT_ID, pageW - 16 - stateW, y, stateLabel, true, EpdFontFamily::BOLD);
+  const int stateW = M4UiText::textWidth(renderer, NOTOSANS_18_FONT_ID, stateLabel);
+  M4UiText::draw(renderer, NOTOSANS_18_FONT_ID, pageW - 16 - stateW, y, stateLabel, true, EpdFontFamily::BOLD);
   y += metrics.listRowHeight;
 
   // Warning box
   y += 8;
-  M4UiText::draw(renderer, UI_10_FONT_ID, 16, y, L(Str::kUsbSerialDebugWarn1), true);
+  M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 16, y, L(Str::kUsbSerialDebugWarn1), true);
   y += 28;
-  M4UiText::draw(renderer, UI_10_FONT_ID, 16, y, L(Str::kUsbSerialDebugWarn2), true);
+  M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 16, y, L(Str::kUsbSerialDebugWarn2), true);
   y += 28;
-  M4UiText::draw(renderer, UI_10_FONT_ID, 16, y, L(Str::kUsbSerialDebugWarn3), true);
+  M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 16, y, L(Str::kUsbSerialDebugWarn3), true);
   y += 36;
-  M4UiText::draw(renderer, UI_10_FONT_ID, 16, y, L(Str::kUsbSerialDebugPersist), true);
+  M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 16, y, L(Str::kUsbSerialDebugPersist), true);
   y += 28;
   // Plugin error log path is fixed; keep ASCII/safe CJK for the subset font.
-  M4UiText::draw(renderer, UI_10_FONT_ID, 16, y, "插件错误: apps_data/.../logs/error.log", true);
+  M4UiText::draw(renderer, NOTOSANS_14_FONT_ID, 16, y, "插件错误: apps_data/.../logs/error.log", true);
 
   const auto labels = mappedInput.mapLabels(L(Str::kBack), L(Str::kToggle), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

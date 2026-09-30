@@ -78,17 +78,17 @@ void testAdvancedWindowClamp() {
   m4SettingsUiEnterRoot(st);
   m4SettingsUiOpenChildList(st, "advanced");
   const int n = m4SettingsUiVisibleCount(st);
-  assert(n > 9);
+  assert(n == 5);
   assert(st.windowStart == 0);
   assert(st.selectedSlot == 0);
   for (int i = 0; i < n + 5; ++i) m4SettingsUiMove(st, 1);
   assert(st.selectedSlot == n - 1);
-  assert(st.windowStart == n - 9);
+  assert(st.windowStart == 0);
   assert(m4SettingsUiMove(st, 1) == n - 1);
   m4SettingsUiMove(st, -(n + 5));
   assert(st.selectedSlot == 0);
   assert(st.windowStart == 0);
-  printf("advanced overflow window + clamp PASS (n=%d)\n", n);
+  printf("advanced group index fits one screen PASS (n=%d)\n", n);
 }
 
 void testKeysFitsOneWindow() {

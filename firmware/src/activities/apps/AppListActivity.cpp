@@ -10,7 +10,9 @@
 #include "MappedInputManager.h"
 #include "NativeAppActivity.h"
 #include "activities/home/HomeSceneAssetDecoder.h"
+#include "apps/M4HomeDock.h"
 #include "apps/M4xInstaller.h"
+#include "apps/providers/M4Psram.h"
 #include "components/icons/book.h"
 #include "components/icons/cog.h"
 #include "components/icons/folder.h"
@@ -20,6 +22,7 @@
 #include "components/icons/settings.h"
 #include "components/icons/transfer.h"
 #include "components/icons/wifi.h"
+#include "components/icons/wifi_transfer.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/ButtonNavigator.h"
@@ -27,6 +30,7 @@
 // Angle form: the Phase 1 guard contract scans comment/string-masked source,
 // so the header anchor must stay visible outside a quoted literal.
 #include <util/M4RenderGuard.h>
+#include "util/M4ReturnCache.h"
 #include "util/M4UiText.h"
 #include "util/TouchHitGeometry.h"
 #include <Utf8.h>
@@ -39,10 +43,11 @@ extern SemaphoreHandle_t gM4RenderMutex;
 
 namespace {
 constexpr unsigned long kAppLongPressMs = 700;
-constexpr int kDrawerColumns = 3;
-constexpr int kDrawerTileHeight = 120;
-constexpr int kDrawerGapX = 8;
+constexpr int kDrawerColumns = 4;
+constexpr int kDrawerMinTileHeight = 118;
+constexpr int kDrawerGapX = 6;
 constexpr int kDrawerGapY = 8;
+constexpr int kDrawerPadX = 4;
 constexpr int kDrawerIconSlot = 80;
 constexpr int kBuiltinIconSize = 32;
 constexpr size_t kDrawerLabelMaxChars = 4;
@@ -58,16 +63,42 @@ TouchHitGeometry::Rect uninstallDataToggleRect(const GfxRenderer& renderer) {
   return {std::max(0, (renderer.getScreenWidth() - width) / 2), renderer.getScreenHeight() - 290, width, height};
 }
 
+TouchHitGeometry::Rect dockSlotRect(const GfxRenderer& renderer, int slot) {
+  constexpr int width = 190;
+  constexpr int height = 64;
+  constexpr int gap = 20;
+  constexpr int top = 235;
+  const int row = slot / 2;
+  const int col = slot % 2;
+  const int totalWidth = width * 2 + gap;
+  const int startX = (renderer.getScreenWidth() - totalWidth) / 2;
+  return {startX + col * (width + gap), top + row * (height + 18), width, height};
+}
+
 struct DrawerGridLayout {
   int top = 0;
   int bottom = 0;
   int startX = 0;
   int tileWidth = 0;
-  int tileHeight = kDrawerTileHeight;
+  int tileHeight = kDrawerMinTileHeight;
   int rows = 1;
   int pageStart = 0;
   int pageItems = kDrawerColumns;
   int itemCount = 0;
+  int scrollBarX = 0;
+  int scrollBarWidth = 0;
+  int scrollTrackHeight = 0;
+  bool showScrollBar = false;
+
+  int totalPages() const {
+    if (pageItems <= 0) return 1;
+    return std::max(1, (itemCount + pageItems - 1) / pageItems);
+  }
+
+  int currentPage() const {
+    if (pageItems <= 0) return 0;
+    return pageStart / pageItems;
+  }
 
   TouchHitGeometry::Rect tileRect(const int index) const {
     if (index < pageStart || index >= pageStart + pageItems || index >= itemCount || tileWidth <= 0) return {};
@@ -84,6 +115,19 @@ struct DrawerGridLayout {
     }
     return -1;
   }
+
+  bool scrollBarContains(const int x, const int y) const {
+    if (!showScrollBar) return false;
+    const int left = scrollBarX - scrollBarWidth - 8;
+    return x >= left && x < scrollBarX + 8 && y >= top && y < bottom;
+  }
+
+  int pageFromScrollY(const int y) const {
+    const int pages = totalPages();
+    if (pages <= 1 || scrollTrackHeight <= 0) return 0;
+    const int rel = std::min(std::max(y - top, 0), scrollTrackHeight - 1);
+    return std::min(pages - 1, (rel * pages) / scrollTrackHeight);
+  }
 };
 
 DrawerGridLayout makeDrawerGridLayout(const GfxRenderer& renderer, const int selectedIndex, const int itemCount) {
@@ -92,20 +136,45 @@ DrawerGridLayout makeDrawerGridLayout(const GfxRenderer& renderer, const int sel
   const auto metrics = UITheme::getInstance().getMetrics();
   layout.top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   layout.bottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  layout.scrollTrackHeight = std::max(0, layout.bottom - layout.top);
 
-  const int availableHeight = std::max(0, layout.bottom - layout.top);
-  layout.rows = std::max(1, (availableHeight + kDrawerGapY) / (kDrawerTileHeight + kDrawerGapY));
+  const int availableHeight = layout.scrollTrackHeight;
+  layout.rows = std::max(1, (availableHeight + kDrawerGapY) / (kDrawerMinTileHeight + kDrawerGapY));
+  while (layout.rows > 1) {
+    const int used = layout.rows * kDrawerMinTileHeight + (layout.rows - 1) * kDrawerGapY;
+    if (used <= availableHeight) break;
+    --layout.rows;
+  }
+  const int rowGaps = std::max(0, layout.rows - 1) * kDrawerGapY;
+  layout.tileHeight = std::max(kDrawerMinTileHeight,
+                               (availableHeight - rowGaps) / std::max(1, layout.rows));
   layout.pageItems = layout.rows * kDrawerColumns;
   if (layout.itemCount > 0) {
     const int safeSelected = std::min(std::max(selectedIndex, 0), layout.itemCount - 1);
     layout.pageStart = (safeSelected / layout.pageItems) * layout.pageItems;
   }
+  layout.showScrollBar = layout.itemCount > layout.pageItems;
+  layout.scrollBarWidth = metrics.scrollBarWidth;
+  layout.scrollBarX = renderer.getScreenWidth() - kDrawerPadX - layout.scrollBarWidth;
 
-  const int gridWidth = renderer.getScreenWidth() - 2 * metrics.contentSidePadding;
+  const int rightGutter = layout.showScrollBar ? (layout.scrollBarWidth + 6) : 0;
+  const int gridWidth = renderer.getScreenWidth() - 2 * kDrawerPadX - rightGutter;
   layout.tileWidth = std::max(1, (gridWidth - (kDrawerColumns - 1) * kDrawerGapX) / kDrawerColumns);
-  const int actualGridWidth = kDrawerColumns * layout.tileWidth + (kDrawerColumns - 1) * kDrawerGapX;
-  layout.startX = std::max(0, (renderer.getScreenWidth() - actualGridWidth) / 2);
+  layout.startX = kDrawerPadX;
   return layout;
+}
+
+void drawDrawerScrollBar(const GfxRenderer& renderer, const DrawerGridLayout& layout) {
+  if (!layout.showScrollBar) return;
+  const int pages = layout.totalPages();
+  const int trackH = layout.scrollTrackHeight;
+  if (pages <= 1 || trackH <= 0) return;
+  const int thumbH = std::max(layout.scrollBarWidth + 8, (trackH * layout.pageItems) / std::max(1, layout.itemCount));
+  const int travel = std::max(0, trackH - thumbH);
+  const int thumbY =
+      layout.top + (pages > 1 ? (travel * layout.currentPage()) / (pages - 1) : 0);
+  renderer.drawLine(layout.scrollBarX, layout.top, layout.scrollBarX, layout.bottom, true);
+  renderer.fillRect(layout.scrollBarX - layout.scrollBarWidth, thumbY, layout.scrollBarWidth, thumbH, true);
 }
 
 const uint8_t* builtinIconBitmap(const UIIcon icon) {
@@ -115,6 +184,7 @@ const uint8_t* builtinIconBitmap(const UIIcon icon) {
     case UIIcon::Recent: return RecentIcon;
     case UIIcon::Settings: return SettingsIcon;
     case UIIcon::Transfer: return TransferIcon;
+    case UIIcon::WifiTransfer: return WifiTransferIcon;
     case UIIcon::Library: return LibraryIcon;
     case UIIcon::Wifi: return WifiIcon;
     case UIIcon::Hotspot: return HotspotIcon;
@@ -139,24 +209,26 @@ void draw1BitIcon(const GfxRenderer& renderer, const uint8_t* icon, const int x,
 
 void AppListActivity::drawItemIcon(const DrawerItem& item, const TouchHitGeometry::Rect& tile) const {
   constexpr int iconTopPadding = 8;
+  constexpr int labelReserve = 28;
+  const int iconSlot = std::max(kDrawerIconSlot, tile.height - labelReserve - iconTopPadding);
   const int iconY = tile.y + iconTopPadding;
   if (item.plugin && !item.pluginIcon.empty()) {
     const int iconX = tile.x + (tile.width - HomeScene::kHomeAppIconW) / 2;
     draw1BitIcon(renderer, item.pluginIcon.data(), iconX,
-                 iconY + (kDrawerIconSlot - HomeScene::kHomeAppIconH) / 2);
+                 iconY + (iconSlot - HomeScene::kHomeAppIconH) / 2);
     return;
   }
 
   if (const uint8_t* bitmap = HomeSceneAssetDecoder::builtinSheetIcon(item.id.c_str())) {
     const int iconX = tile.x + (tile.width - HomeScene::kHomeAppIconW) / 2;
-    draw1BitIcon(renderer, bitmap, iconX, iconY + (kDrawerIconSlot - HomeScene::kHomeAppIconH) / 2);
+    draw1BitIcon(renderer, bitmap, iconX, iconY + (iconSlot - HomeScene::kHomeAppIconH) / 2);
     return;
   }
 
   const uint8_t* bitmap = builtinIconBitmap(item.icon);
   if (!bitmap) return;
   const int iconX = tile.x + (tile.width - kBuiltinIconSize) / 2;
-  renderer.drawIcon(bitmap, iconX, iconY + (kDrawerIconSlot - kBuiltinIconSize) / 2, kBuiltinIconSize,
+  renderer.drawIcon(bitmap, iconX, iconY + (iconSlot - kBuiltinIconSize) / 2, kBuiltinIconSize,
                     kBuiltinIconSize);
 }
 
@@ -165,50 +237,43 @@ void AppListActivity::taskTrampoline(void* param) {
 }
 
 void AppListActivity::displayTaskLoop() {
+  // Cache verify and cooperative exit only. This task does not draw, submit,
+  // write the global footer, or replace the lists the UI reads unlocked.
+  // pendingReady_ blocks another full scan until loop() consumes the result.
   while (true) {
     if (exitDisplayTask_.load(std::memory_order_acquire)) {
-      // Cooperative shutdown: exit only while holding no locks, so the
-      // process-wide guard is never left owned by a deleted task.
+      discardPendingDrawer();
+      // Exit only while holding no locks. The release store is the last this access.
       displayTaskHandle_ = nullptr;
       displayTaskExited_.store(true, std::memory_order_release);
-      vTaskDelete(nullptr);
+      Serial.printf("[WRPERF] stage=applist-display-task-exit stack_hwm=%u\n",
+                    static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+      M4Psram::deleteTask(nullptr);
+      for (;;) vTaskDelay(portMAX_DELAY);
     }
-    if (childScreenOwned_.load(std::memory_order_acquire)) {
-      vTaskDelay(10 / portTICK_PERIOD_MS);
-      continue;
-    }
-    if (updateRequired_) {
-      AppListFrameSnapshot snapshot;
-      bool shouldSubmit = false;
-      // Phase 1: snapshot under the local mutex, then release it before taking
-      // the global guard, so global is never acquired while holding local.
+    if (verifyDrawerCache_.load(std::memory_order_acquire) &&
+        showedDrawer_.load(std::memory_order_acquire) &&
+        !childScreenOwned_.load(std::memory_order_acquire) &&
+        !pendingReady_.load(std::memory_order_acquire)) {
+      bool shouldVerify = false;
       if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        // Child installation happens after releasing this mutex. Recheck
-        // after taking it so a stale pre-lock observation cannot paint the drawer
-        // over the child's first frame.
-        if (updateRequired_ && !childScreenOwned_.load(std::memory_order_acquire)) {
-          snapshot.selectedIndex = selectedIndex_;
-          snapshot.mode = mode_;
-          snapshot.uninstallClearData = uninstallClearData_;
-          snapshot.items = items_;
-          snapshot.apps = apps_;
-          snapshot_ = snapshot;
-          updateRequired_ = false;
-          shouldSubmit = true;
+        if (verifyDrawerCache_.load(std::memory_order_acquire) && mode_ == 0 &&
+            !childScreenOwned_.load(std::memory_order_acquire) &&
+            !exitDisplayTask_.load(std::memory_order_acquire) &&
+            !pendingReady_.load(std::memory_order_acquire)) {
+          shouldVerify = true;
         }
         xSemaphoreGive(renderingMutex_);
       }
-      // A child installed after the snapshot owns the screen now: drop the
-      // stale parent frame instead of painting over the plugin. (Child close
-      // re-arms updateRequired_ via reload, so nothing is lost.)
-      if (shouldSubmit) {
-        M4RenderGuard renderGuard(gM4RenderMutex);
-        if (renderGuard.owns() && !childScreenOwned_.load(std::memory_order_acquire)) {
-          render();
-        } else {
-          // Global contended: never submit without the guard; re-arm instead.
+      if (shouldVerify) {
+        const bool changed = reload(true);
+        if (!changed && !exitDisplayTask_.load(std::memory_order_acquire)) {
           if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-            updateRequired_ = true;
+            if (mode_ == 0 && !childScreenOwned_.load(std::memory_order_acquire) &&
+                !exitDisplayTask_.load(std::memory_order_acquire) &&
+                !pendingReady_.load(std::memory_order_acquire)) {
+              verifyDrawerCache_.store(false, std::memory_order_release);
+            }
             xSemaphoreGive(renderingMutex_);
           }
         }
@@ -218,9 +283,119 @@ void AppListActivity::displayTaskLoop() {
   }
 }
 
-void AppListActivity::reload() {
+namespace {
+
+bool sameInstalledApp(const M4xInstalledApp& a, const M4xInstalledApp& b) {
+  return a.id == b.id && a.name == b.name && a.version == b.version && a.versionCode == b.versionCode &&
+         a.path == b.path && a.runtime == b.runtime && a.entry == b.entry && a.provider == b.provider &&
+         a.icon == b.icon && a.installedAt == b.installedAt;
+}
+
+}  // namespace
+
+bool AppListActivity::sameDrawer(const std::vector<M4xInstalledApp>& appsA, const std::vector<DrawerItem>& itemsA,
+                                 const std::vector<M4xInstalledApp>& appsB, const std::vector<DrawerItem>& itemsB) {
+  if (appsA.size() != appsB.size() || itemsA.size() != itemsB.size()) return false;
+  for (size_t i = 0; i < appsA.size(); ++i) {
+    if (!sameInstalledApp(appsA[i], appsB[i])) return false;
+  }
+  for (size_t i = 0; i < itemsA.size(); ++i) {
+    const DrawerItem& a = itemsA[i];
+    const DrawerItem& b = itemsB[i];
+    if (a.plugin != b.plugin || a.builtin != b.builtin || a.appIndex != b.appIndex || a.id != b.id ||
+        a.label != b.label || a.icon != b.icon || a.pluginIcon.size() != b.pluginIcon.size()) {
+      return false;
+    }
+    if (!a.pluginIcon.empty() && std::memcmp(a.pluginIcon.data(), b.pluginIcon.data(), a.pluginIcon.size()) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AppListActivity::applyCachedDrawer() {
+  std::vector<M4xInstalledApp> apps;
+  std::vector<M4ReturnCache::DrawerItem> cached;
+  if (!M4ReturnCache::restoreDrawer(apps, cached)) return false;
+  std::vector<DrawerItem> items;
+  items.reserve(cached.size());
+  for (const auto& item : cached) {
+    DrawerItem out;
+    out.plugin = item.plugin;
+    out.builtin = static_cast<BuiltinAction>(item.builtin);
+    out.appIndex = item.appIndex;
+    out.id = item.id;
+    out.label = item.label;
+    out.icon = static_cast<UIIcon>(item.icon);
+    out.pluginIcon = item.pluginIcon;
+    items.push_back(std::move(out));
+  }
+  if (renderingMutex_) xSemaphoreTake(renderingMutex_, portMAX_DELAY);
+  apps_ = std::move(apps);
+  items_ = std::move(items);
+  if (selectedIndex_ >= static_cast<int>(items_.size())) {
+    selectedIndex_ = std::max(0, static_cast<int>(items_.size()) - 1);
+  }
+  mode_ = 0;
+  M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+  if (renderingMutex_) xSemaphoreGive(renderingMutex_);
+  return true;
+}
+
+void AppListActivity::submitDirtyFrame() {
+  // Snapshot under the local mutex, refresh the footer from that same view,
+  // release, then take the global guard. Never construct the guard while the
+  // local mutex is held. Skip the frame when a child or a later page owns it.
+  if (subActivity || exitDisplayTask_.load(std::memory_order_acquire) ||
+      childScreenOwned_.load(std::memory_order_acquire) || !updateRequired_) {
+    return;
+  }
+  bool shouldSubmit = false;
+  if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (updateRequired_ && !childScreenOwned_.load(std::memory_order_acquire) &&
+        !exitDisplayTask_.load(std::memory_order_acquire) && !subActivity) {
+      AppListFrameSnapshot& snapshot = snapshot_;
+      snapshot.selectedIndex = selectedIndex_;
+      snapshot.mode = mode_;
+      snapshot.uninstallClearData = uninstallClearData_;
+      snapshot.items = items_;
+      snapshot.apps = apps_;
+      updateRequired_ = false;
+      M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+      shouldSubmit = true;
+    }
+    xSemaphoreGive(renderingMutex_);
+  }
+  if (shouldSubmit) {
+    M4RenderGuard renderGuard(gM4RenderMutex);
+    if (renderGuard.owns() && !childScreenOwned_.load(std::memory_order_acquire) &&
+        !exitDisplayTask_.load(std::memory_order_acquire) && !subActivity) {
+      render();
+      showedDrawer_.store(true, std::memory_order_release);
+    } else {
+      // Re-arm under the local mutex. When the guard owns the global lock this
+      // take stays global-then-local. A timed-out guard holds nothing.
+      if (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+        updateRequired_ = true;
+        xSemaphoreGive(renderingMutex_);
+      }
+    }
+  }
+}
+
+bool AppListActivity::reload(const bool preserveDialog) {
+  if (reloadLock_) xSemaphoreTake(reloadLock_, portMAX_DELAY);
+  struct LockRelease {
+    SemaphoreHandle_t sem;
+    ~LockRelease() {
+      if (sem) xSemaphoreGive(sem);
+    }
+  } release{reloadLock_};
+
+  if (exitDisplayTask_.load(std::memory_order_acquire)) return false;
   M4xInstaller::ensureLayout();
-  const auto apps = M4xRegistry::load();
+  auto apps = M4xRegistry::load();
+  if (exitDisplayTask_.load(std::memory_order_acquire)) return false;
 
   std::vector<DrawerItem> items;
   items.reserve(8 + apps.size());
@@ -237,6 +412,8 @@ void AppListActivity::reload() {
   // Keep the non-Fengyan home destinations available from the drawer. Optional
   // entries use the same configured-state checks as the legacy home menu.
   addBuiltin(BuiltinAction::FileManager, "builtin.files", L(Str::kFileManager), UIIcon::Folder);
+  addBuiltin(BuiltinAction::FileTransfer, "builtin.transfer", L(Str::kWifiTransfer), UIIcon::WifiTransfer);
+  addBuiltin(BuiltinAction::AppStore, "builtin.store", "应用商店", UIIcon::Library);
   addBuiltin(BuiltinAction::RecentBooks, "builtin.history", L(Str::kReadingHistory), UIIcon::Recent);
   if (std::strlen(SETTINGS.opdsServerUrl) > 0) {
     addBuiltin(BuiltinAction::Opds, "builtin.opds", L(Str::kOPDSBrowser), UIIcon::Hotspot);
@@ -262,66 +439,167 @@ void AppListActivity::reload() {
     item.label = app.name.empty() ? app.id : app.name;
     item.icon = UIIcon::Library;
 
-    const std::string iconPath = HomeSceneAssetDecoder::resolveAppIconPath(app.path, app.icon);
-    if (!iconPath.empty()) {
-      item.pluginIcon.resize(HomeScene::kHomeAppIconBytes);
-      if (!HomeSceneAssetDecoder::decodeBmpFileTo1Bit(iconPath.c_str(), item.pluginIcon.data(),
-                                                       HomeScene::kHomeAppIconW, HomeScene::kHomeAppIconH,
-                                                       HomeScene::kHomeAppIconStride)) {
-        item.pluginIcon.clear();
+    const bool cachedIcon = M4ReturnCache::copyDrawerIcon(app.id, app.versionCode, app.path, app.icon,
+                                                          app.installedAt, item.pluginIcon) &&
+                            item.pluginIcon.size() == HomeScene::kHomeAppIconBytes;
+    if (!cachedIcon) {
+      item.pluginIcon.clear();
+      const std::string iconPath = HomeSceneAssetDecoder::resolveAppIconPath(app.path, app.icon);
+      if (!iconPath.empty()) {
+        item.pluginIcon.resize(HomeScene::kHomeAppIconBytes);
+        if (!HomeSceneAssetDecoder::decodeBmpFileTo1Bit(iconPath.c_str(), item.pluginIcon.data(),
+                                                         HomeScene::kHomeAppIconW, HomeScene::kHomeAppIconH,
+                                                         HomeScene::kHomeAppIconStride)) {
+          item.pluginIcon.clear();
+        }
       }
     }
     items.push_back(std::move(item));
   }
 
   if (renderingMutex_) xSemaphoreTake(renderingMutex_, portMAX_DELAY);
-  apps_ = apps;
-  items_ = std::move(items);
-  if (selectedIndex_ >= static_cast<int>(items_.size())) {
-    selectedIndex_ = std::max(0, static_cast<int>(items_.size()) - 1);
+  // Publish into pending only. The UI thread owns apps_, items_,
+  // selectedIndex_, and mode_. Exit drops this result with no cache write.
+  if (exitDisplayTask_.load(std::memory_order_acquire)) {
+    if (renderingMutex_) xSemaphoreGive(renderingMutex_);
+    return false;
   }
-  mode_ = 0;
-  M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+  if (preserveDialog && mode_ != 0) {
+    verifyDrawerCache_.store(true, std::memory_order_release);
+    if (renderingMutex_) xSemaphoreGive(renderingMutex_);
+    return false;
+  }
+  const bool changed = !sameDrawer(apps_, items_, apps, items);
+  if (!changed) {
+    if (renderingMutex_) xSemaphoreGive(renderingMutex_);
+    return false;
+  }
+  pendingApps_ = std::move(apps);
+  pendingItems_ = std::move(items);
+  pendingReady_.store(true, std::memory_order_release);
   if (renderingMutex_) xSemaphoreGive(renderingMutex_);
+  return true;
 }
 
 void AppListActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
   renderingMutex_ = xSemaphoreCreateMutex();
+  reloadLock_ = xSemaphoreCreateMutex();
+  if (!renderingMutex_ || !reloadLock_) {
+    exitDisplayTask_.store(true, std::memory_order_release);
+    displayTaskExited_.store(true, std::memory_order_release);
+    Serial.printf("[%lu] [AppList] failed to create display mutex\n", millis());
+    return;
+  }
   exitDisplayTask_.store(false, std::memory_order_release);
   displayTaskExited_.store(false, std::memory_order_release);
   childScreenOwned_.store(false, std::memory_order_release);
-  reload();
+  showedDrawer_.store(false, std::memory_order_release);
+  if (applyCachedDrawer()) {
+    verifyDrawerCache_.store(true, std::memory_order_release);
+  } else {
+    reload();
+    acceptPendingDrawer();
+    verifyDrawerCache_.store(false, std::memory_order_release);
+  }
   updateRequired_ = true;
-  xTaskCreate(&AppListActivity::taskTrampoline, "AppList", 4096, this, 1, &displayTaskHandle_);
+  if (M4Psram::createTask(&AppListActivity::taskTrampoline, "AppList", 8192, this, 1,
+                          &displayTaskHandle_) != pdPASS) {
+    displayTaskHandle_ = nullptr;
+    displayTaskExited_.store(true, std::memory_order_release);
+    Serial.printf("[%lu] [AppList] failed to create display task\n", millis());
+  }
 }
 
 void AppListActivity::onExit() {
+  // Signal the display owner and stop parent painting. Do not join or delete.
   childScreenOwned_.store(true, std::memory_order_release);
-  ActivityWithSubactivity::onExit();
-  // Cooperative display-task shutdown (same pattern as MyLibrary): the task
-  // may own the process-wide submit guard mid-render; deleting it then would
-  // stick the mutex for all activities. Ask it to self-terminate (it exits
-  // holding no locks) and join boundedly; force-delete only past the deadline.
   exitDisplayTask_.store(true, std::memory_order_release);
-  for (int i = 0; i < 300; ++i) {
-    if (displayTaskExited_.load(std::memory_order_acquire)) break;
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-  if (renderingMutex_) {
-    const bool exitLocked = (xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE);
-    if (displayTaskHandle_) {
-      // Deadline overrun: last resort (may strand an in-flight submit).
-      vTaskDelete(displayTaskHandle_);
-      displayTaskHandle_ = nullptr;
+  ActivityWithSubactivity::onExit();
+}
+
+AppListActivity::~AppListActivity() {
+  // Reaper only destroys after the display owner has published exit.
+  // That owner has already dropped or abandoned pending. Clear it here so a
+  // missed discard cannot outlive the activity.
+  if (displayTaskExited_.load(std::memory_order_acquire)) {
+    pendingApps_.clear();
+    pendingItems_.clear();
+    pendingReady_.store(false, std::memory_order_release);
+    if (renderingMutex_) {
+      vSemaphoreDelete(renderingMutex_);
+      renderingMutex_ = nullptr;
     }
-    if (exitLocked) xSemaphoreGive(renderingMutex_);
-    vSemaphoreDelete(renderingMutex_);
-    renderingMutex_ = nullptr;
-  } else if (displayTaskHandle_) {
-    vTaskDelete(displayTaskHandle_);
-    displayTaskHandle_ = nullptr;
+    if (reloadLock_) {
+      vSemaphoreDelete(reloadLock_);
+      reloadLock_ = nullptr;
+    }
   }
+}
+
+void AppListActivity::discardPendingDrawer() {
+  // Drop an unpublished drawer. The worker calls this before the exit
+  // publication. The UI receive path calls it when the activity has already
+  // exited. A missed take leaves the vectors for the destructor.
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    pendingApps_.clear();
+    pendingItems_.clear();
+    pendingReady_.store(false, std::memory_order_release);
+    xSemaphoreGive(renderingMutex_);
+  }
+}
+
+void AppListActivity::acceptPendingDrawer() {
+  // Move a published drawer into the UI lists. Dialog, child, and exit keep
+  // the lists loop() is already reading. rememberDrawer runs only after a
+  // still-valid apply, and never from the worker.
+  if (exitDisplayTask_.load(std::memory_order_acquire)) {
+    discardPendingDrawer();
+    return;
+  }
+  if (subActivity || childScreenOwned_.load(std::memory_order_acquire) || mode_ != 0) {
+    return;
+  }
+  if (!pendingReady_.load(std::memory_order_acquire)) return;
+
+  bool applied = false;
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (exitDisplayTask_.load(std::memory_order_acquire)) {
+      pendingApps_.clear();
+      pendingItems_.clear();
+      pendingReady_.store(false, std::memory_order_release);
+    } else if (!subActivity && !childScreenOwned_.load(std::memory_order_acquire) && mode_ == 0 &&
+               pendingReady_.load(std::memory_order_acquire)) {
+      apps_ = std::move(pendingApps_);
+      items_ = std::move(pendingItems_);
+      pendingApps_.clear();
+      pendingItems_.clear();
+      pendingReady_.store(false, std::memory_order_release);
+      if (selectedIndex_ >= static_cast<int>(items_.size())) {
+        selectedIndex_ = std::max(0, static_cast<int>(items_.size()) - 1);
+      }
+      updateRequired_ = true;
+      applied = true;
+    }
+    xSemaphoreGive(renderingMutex_);
+  }
+  if (!applied || exitDisplayTask_.load(std::memory_order_acquire)) return;
+
+  std::vector<M4ReturnCache::DrawerItem> cachedItems;
+  cachedItems.reserve(items_.size());
+  for (const auto& item : items_) {
+    M4ReturnCache::DrawerItem cached;
+    cached.plugin = item.plugin;
+    cached.builtin = static_cast<uint8_t>(item.builtin);
+    cached.appIndex = item.appIndex;
+    cached.id = item.id;
+    cached.label = item.label;
+    cached.icon = static_cast<int>(item.icon);
+    cached.pluginIcon = item.pluginIcon;
+    cachedItems.push_back(std::move(cached));
+  }
+  if (exitDisplayTask_.load(std::memory_order_acquire)) return;
+  M4ReturnCache::rememberDrawer(apps_, cachedItems);
 }
 
 bool AppListActivity::selectedIsPlugin() const {
@@ -350,10 +628,23 @@ void AppListActivity::moveSelection(const int delta) {
   selectIndex(next);
 }
 
+void AppListActivity::pageBy(const int pages) {
+  if (items_.empty() || pages == 0) return;
+  const int count = static_cast<int>(items_.size());
+  const auto layout = makeDrawerGridLayout(renderer, selectedIndex_, count);
+  selectIndex(M4ListTouchPolicy::applyPage(selectedIndex_, count, layout.pageItems, pages > 0));
+}
+
 void AppListActivity::activateBuiltin(const BuiltinAction action) {
   switch (action) {
     case BuiltinAction::FileManager:
       if (callbacks_.onFileManagerOpen) callbacks_.onFileManagerOpen();
+      return;
+    case BuiltinAction::FileTransfer:
+      if (callbacks_.onFileTransferOpen) callbacks_.onFileTransferOpen();
+      return;
+    case BuiltinAction::AppStore:
+      if (callbacks_.onAppStoreOpen) callbacks_.onAppStoreOpen();
       return;
     case BuiltinAction::RecentBooks:
       if (callbacks_.onRecentBooksOpen) callbacks_.onRecentBooksOpen();
@@ -431,15 +722,46 @@ void AppListActivity::openInstall() {
   }));
 }
 
+void AppListActivity::openContextMenu() {
+  if (!selectedIsPlugin()) return;
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    mode_ = 2;
+    M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+    updateRequired_ = true;
+    xSemaphoreGive(renderingMutex_);
+  }
+}
+
+void AppListActivity::pinSelected(const int slot) {
+  if (!selectedIsPlugin() || slot < 0 || slot >= M4HomeDock::kSlotCount) return;
+  const auto& item = items_[static_cast<size_t>(selectedIndex_)];
+  if (item.id.empty()) return;
+  if (!M4HomeDock::setSlot(slot, item.id)) {
+    Serial.printf("[M4x] failed to pin %s to home slot %d\n", item.id.c_str(), slot + 1);
+    return;
+  }
+  Serial.printf("[M4x] pinned %s to home slot %d\n", item.id.c_str(), slot + 1);
+  if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    mode_ = 0;
+    M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+    updateRequired_ = true;
+    xSemaphoreGive(renderingMutex_);
+  }
+}
+
 void AppListActivity::uninstallSelected() {
   if (!selectedIsPlugin()) return;
   const auto& item = items_[static_cast<size_t>(selectedIndex_)];
   if (item.appIndex < 0 || item.appIndex >= static_cast<int>(apps_.size())) return;
+  const std::string appId = apps_[static_cast<size_t>(item.appIndex)].id;
   std::string err;
-  if (!M4xInstaller::uninstall(apps_[static_cast<size_t>(item.appIndex)].id, uninstallClearData_, err)) {
+  if (!M4xInstaller::uninstall(appId, uninstallClearData_, err)) {
     Serial.printf("[M4x] uninstall failed: %s\n", err.c_str());
+  } else {
+    M4HomeDock::clear(appId);
   }
   reload();
+  acceptPendingDrawer();
   if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
     updateRequired_ = true;
     xSemaphoreGive(renderingMutex_);
@@ -449,18 +771,32 @@ void AppListActivity::uninstallSelected() {
 void AppListActivity::loop() {
   if (subActivity) {
     if (pumpSubActivityFrame()) {
-      reload();
+      const bool warmed = applyCachedDrawer();
       childScreenOwned_.store(false, std::memory_order_release);
-      if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        updateRequired_ = true;
-        xSemaphoreGive(renderingMutex_);
+      if (warmed) {
+        verifyDrawerCache_.store(true, std::memory_order_release);
+        if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+          updateRequired_ = true;
+          xSemaphoreGive(renderingMutex_);
+        }
+      } else {
+        reload();
+        if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+          updateRequired_ = true;
+          xSemaphoreGive(renderingMutex_);
+        }
       }
     }
     return;
   }
 
+  if (!exitDisplayTask_.load(std::memory_order_acquire)) {
+    acceptPendingDrawer();
+    submitDirtyFrame();
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasBackGesture()) {
-    if (mode_ == 1) {
+    if (mode_ == 1 || mode_ == 2) {
       if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         mode_ = 0;
         M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
@@ -474,6 +810,40 @@ void AppListActivity::loop() {
   }
 
   const int count = static_cast<int>(items_.size());
+  if (mode_ == 2) {
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      for (int slot = 0; slot < M4HomeDock::kSlotCount; ++slot) {
+        if (dockSlotRect(renderer, slot).contains(tx, ty)) {
+          pinSelected(slot);
+          return;
+        }
+      }
+      const auto dialog = uninstallDialogLayout(renderer);
+      int hit = -1;
+      if (M4ListTouchPolicy::dialogButtonFromPoint(dialog, tx, ty, hit)) {
+        if (hit == 0) {
+          if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            mode_ = 0;
+            M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+            updateRequired_ = true;
+            xSemaphoreGive(renderingMutex_);
+          }
+        } else if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+          mode_ = 1;
+          M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
+          updateRequired_ = true;
+          xSemaphoreGive(renderingMutex_);
+        }
+      }
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      pinSelected(0);
+    }
+    return;
+  }
+
   if (mode_ == 1) {
     int tx = 0, ty = 0;
     if (mappedInput.wasScreenTapped(tx, ty)) {
@@ -541,16 +911,17 @@ void AppListActivity::loop() {
         return;
       }
 
+      if (layout.scrollBarContains(tx, ty)) {
+        const int page = layout.pageFromScrollY(ty);
+        selectIndex(page * layout.pageItems);
+        return;
+      }
+
       const int hit = layout.indexFromPoint(tx, ty);
       if (hit >= 0) {
         selectIndex(hit);
         if (selectedIsPlugin() && mappedInput.lastScreenTouchHeldMs() >= kAppLongPressMs) {
-          if (renderingMutex_ && xSemaphoreTake(renderingMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-            mode_ = 1;
-            M4FooterTouchPolicy::setMask(touchFooterButtonsMask());
-            updateRequired_ = true;
-            xSemaphoreGive(renderingMutex_);
-          }
+          openContextMenu();
         } else {
           openSelected();
         }
@@ -563,8 +934,8 @@ void AppListActivity::loop() {
       switch (sw) {
         case MappedInputManager::SwipeDir::Left: moveSelection(-1); break;
         case MappedInputManager::SwipeDir::Right: moveSelection(1); break;
-        case MappedInputManager::SwipeDir::Up: moveSelection(-kDrawerColumns); break;
-        case MappedInputManager::SwipeDir::Down: moveSelection(kDrawerColumns); break;
+        case MappedInputManager::SwipeDir::Up: pageBy(1); break;
+        case MappedInputManager::SwipeDir::Down: pageBy(-1); break;
         case MappedInputManager::SwipeDir::None: break;
       }
       return;
@@ -597,11 +968,12 @@ void AppListActivity::loop() {
 }
 
 void AppListActivity::render() const {
-  // Submit-path input staged by displayTaskLoop(): it deep-copies the dirty
-  // frame under the local mutex, releases it, then calls render() under the
-  // global guard. Reading through this const reference keeps the submitter on
-  // one generation even though reload() replaces items_/apps_ wholesale;
-  // members stay the backing store for loop() hit-testing on the main thread.
+  // Submit-path input staged by the main-loop submitDirtyFrame(): snapshot_
+  // was filled once under the local mutex, that mutex was released, then
+  // render() runs under the global guard. Reading through this const reference
+  // keeps the submitter on one generation when acceptPendingDrawer() replaces
+  // items_ and apps_; those members stay the backing store for loop()
+  // hit-testing on the main thread.
   const AppListFrameSnapshot& frame = snapshot_;
   const bool framePluginSelected =
       frame.selectedIndex >= 0 && frame.selectedIndex < static_cast<int>(frame.items.size()) &&
@@ -612,7 +984,30 @@ void AppListActivity::render() const {
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, L(Str::kApps));
 
-  if (frame.mode == 1 && framePluginSelected) {
+  if (frame.mode == 2 && framePluginSelected) {
+    const auto& item = frame.items[static_cast<size_t>(frame.selectedIndex)];
+    const auto& app = frame.apps[static_cast<size_t>(item.appIndex)];
+    M4UiText::drawCentered(renderer, UI_12_FONT_ID, 100, "扩展应用", true, EpdFontFamily::BOLD);
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 150, app.name.c_str());
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, 190, "固定到主页的位置");
+    for (int slot = 0; slot < M4HomeDock::kSlotCount; ++slot) {
+      const auto r = dockSlotRect(renderer, slot);
+      renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, Color::LightGray);
+      char label[24];
+      std::snprintf(label, sizeof(label), "主页位置 %d", slot + 1);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, true,
+                                  EpdFontFamily::BOLD, 8);
+    }
+    const auto dialog = uninstallDialogLayout(renderer);
+    const auto drawContextButton = [&](const int index, const char* label) {
+      const auto r = dialog.buttonRect(index);
+      renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, index == 1 ? Color::Black : Color::LightGray);
+      M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, index == 0,
+                                  EpdFontFamily::BOLD, 8);
+    };
+    drawContextButton(0, L(Str::kCancel));
+    drawContextButton(1, L(Str::kUninstallApp));
+  } else if (frame.mode == 1 && framePluginSelected) {
     const auto& item = frame.items[static_cast<size_t>(frame.selectedIndex)];
     const auto& app = frame.apps[static_cast<size_t>(item.appIndex)];
     const auto dialog = uninstallDialogLayout(renderer);
@@ -646,17 +1041,19 @@ void AppListActivity::render() const {
       // intact (「文件管理」). Pixel truncate at tile.width-8 became 「文件管…」.
       const std::string label = utf8EllipsizeChars(item.label.c_str(), kDrawerLabelMaxChars);
       const int labelWidth = M4UiText::textWidth(renderer, UI_12_FONT_ID, label.c_str());
-      const int labelY = tile.y + kDrawerIconSlot + 8;
+      const int labelY = tile.y + tile.height - 24;
       M4UiText::draw(renderer, UI_12_FONT_ID, tile.x + std::max(0, (tile.width - labelWidth) / 2), labelY,
                      label.c_str(), true);
     }
+    drawDrawerScrollBar(renderer, layout);
   }
 
   const bool pluginSelected = framePluginSelected;
-  const auto labels = frame.mode == 1 ? mappedInput.mapLabels(L(Str::kBackShort), L(Str::kConfirm), "", "")
-                                 : mappedInput.mapLabels(L(Str::kBackShort), L(Str::kOpen),
-                                                         pluginSelected ? L(Str::kUninstallApp) : "",
-                                                         L(Str::kInstallApp));
+  const auto labels = (frame.mode == 1 || frame.mode == 2)
+                          ? mappedInput.mapLabels(L(Str::kBackShort), L(Str::kConfirm), "", "")
+                          : mappedInput.mapLabels(L(Str::kBackShort), L(Str::kOpen),
+                                                  pluginSelected ? L(Str::kUninstallApp) : "",
+                                                  L(Str::kInstallApp));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }

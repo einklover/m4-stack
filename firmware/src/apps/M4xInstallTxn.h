@@ -2,7 +2,7 @@
 
 // Global install transaction journal + pure recovery decisions (host-testable).
 // Production M4xInstaller persists records under /system/m4x_install_journal.json
-// and executes decideRecovery() / applyRecoveryHooks() on boot / ensureLayout.
+// and executes decideRecovery() from M4xInstaller::recoverInterrupted() at boot.
 
 #include <string>
 #include <vector>
@@ -104,8 +104,13 @@ enum class RecoveryAction : int {
 inline RecoveryAction decideRecovery(const JournalRecord& rec, const FsSnapshot& fs) {
   if (rec.id.empty() || rec.phase == Phase::Idle) return RecoveryAction::ClearJournalOnly;
 
-  // Once the new registry entry is durable, only cleanup remains.
-  if (fs.registryMatchesNew) {
+  // Version and entry equality is not proof this transaction committed: a
+  // same-version reinstall still has the old registry row. Cleanup also
+  // requires the live tree. Otherwise keep the phase rules below.
+  const bool sameIdentity = rec.hadPriorInstall && rec.oldVersionCode == rec.newVersionCode &&
+                            rec.oldEntry == rec.newEntry;
+  if (fs.registryMatchesNew && !(sameIdentity && rec.phase != Phase::RegistryCommitted)) {
+    if (!fs.liveExists) return RecoveryAction::RetainJournal;
     return RecoveryAction::DropBakClearJournal;
   }
 

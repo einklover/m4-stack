@@ -19,6 +19,20 @@ bool ensureParentDirs(const std::string& absPath);
 bool readSmallText(const std::string& path, std::string& out, size_t cap = 16u * 1024u);
 bool writeTextFile(const std::string& path, const std::string& body);
 
+// Append a bounded rotating log at apps_data/<appId>/logs/error.log (128KB).
+// Native UI codes (tls_internal_oom, http_*) never reached this file before.
+void appendAppErrorLog(const std::string& appId, const char* stage, const std::string& error);
+inline bool isHttpOrTlsError(const std::string& error) {
+  return error == "tls_internal_oom" || error.rfind("http_", 0) == 0 ||
+         error == "wifi_not_connected" || error == "discovery_http" ||
+         error == "catalog_http" || error == "detail_http" ||
+         error == "catalog_commit_failed" || error == "discovery_commit_failed" ||
+         error == "sd_open_failed";
+}
+inline void logHttpTlsIf(const std::string& appId, const char* stage, const std::string& error) {
+  if (isHttpOrTlsError(error)) appendAppErrorLog(appId, stage, error);
+}
+
 // Replace two closed generations as one recoverable transaction. Distinct
 // three-letter backup extensions avoid FAT 8.3 alias collisions.
 bool commitTempFilesPair(const std::string& firstTemp, const std::string& firstFinal,

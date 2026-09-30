@@ -29,7 +29,9 @@ inline constexpr int kSystemUi10FontId = 0x4D345302;
 inline constexpr int kSystemUi12FontId = 0x4D345303;
 // Scene ui_24/ui_25 roles share the fixed system UI face; keep this alias
 // local to the renderer contract rather than introducing another font family.
-inline constexpr int kHubCategoryFontId = kSystemUi12FontId;
+// Follow the live UI_12 slot (CenterKernel or the selected system TTF), not
+// the boot-captured private alias. Scene ui_24/ui_25 is chrome, not Reader.
+inline constexpr int kHubCategoryFontId = UI_12_FONT_ID;
 struct Originals {
   bool captured = false;
   const EpdFont* smallRegular = nullptr;

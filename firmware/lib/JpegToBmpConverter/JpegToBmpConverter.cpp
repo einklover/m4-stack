@@ -1,4 +1,5 @@
 #include "JpegToBmpConverter.h"
+#include <M4MemoryManager.h>
 
 #include <HardwareSerial.h>
 #include <SdFat.h>
@@ -6,9 +7,26 @@
 
 #include <cstdio>
 #include <cstring>
+#include <new>
+
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_heap_caps.h>
+#endif
 
 #include "BitmapHelpers.h"
 #include "CoverDither.h"
+
+namespace {
+
+void* allocCoverWork(size_t bytes) {
+  return M4Memory::allocScratch(bytes);
+}
+
+void freeCoverWork(void* p) {
+  M4Memory::free(p);
+}
+
+}  // namespace
 
 // Context structure for picojpeg callback
 struct JpegReadContext {
@@ -343,7 +361,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     return false;
   }
 
-  auto* mcuRowBuffer = static_cast<uint8_t*>(malloc(mcuRowPixels));
+  auto* mcuRowBuffer = static_cast<uint8_t*>(allocCoverWork(mcuRowPixels));
   if (!mcuRowBuffer) {
     Serial.printf("[%lu] [JPG] Failed to allocate MCU row buffer (%d bytes)\n", millis(), mcuRowPixels);
     free(rowBuffer);
@@ -355,12 +373,12 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   uint8_t* coverSmooth = nullptr;
   if (oneBit && exactTarget) {
     const size_t coverPixels = static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight);
-    coverGray = static_cast<uint8_t*>(malloc(coverPixels));
-    coverWork = static_cast<uint8_t*>(malloc(coverPixels));
-    coverSmooth = static_cast<uint8_t*>(malloc(coverPixels));
+    coverGray = static_cast<uint8_t*>(allocCoverWork(coverPixels));
+    coverWork = static_cast<uint8_t*>(allocCoverWork(coverPixels));
+    coverSmooth = static_cast<uint8_t*>(allocCoverWork(coverPixels));
     if (!coverGray || !coverWork || !coverSmooth) {
-      free(coverGray); free(coverWork); free(coverSmooth);
-      free(mcuRowBuffer); free(rowBuffer);
+      freeCoverWork(coverGray); freeCoverWork(coverWork); freeCoverWork(coverSmooth);
+      freeCoverWork(mcuRowBuffer); free(rowBuffer);
       return false;
     }
   }
@@ -370,29 +388,65 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   AtkinsonDitherer* atkinsonDitherer = nullptr;
   FloydSteinbergDitherer* fsDitherer = nullptr;
   Atkinson1BitDitherer* atkinson1BitDitherer = nullptr;
+  uint32_t* rowAccum = nullptr;
+  uint16_t* rowCount = nullptr;
+
+  auto releaseTail = [&]() {
+    delete[] rowAccum;
+    delete[] rowCount;
+    delete atkinsonDitherer;
+    delete fsDitherer;
+    delete atkinson1BitDitherer;
+    rowAccum = nullptr;
+    rowCount = nullptr;
+    atkinsonDitherer = nullptr;
+    fsDitherer = nullptr;
+    atkinson1BitDitherer = nullptr;
+    freeCoverWork(coverGray);
+    freeCoverWork(coverWork);
+    freeCoverWork(coverSmooth);
+    freeCoverWork(mcuRowBuffer);
+    free(rowBuffer);
+    coverGray = nullptr;
+    coverWork = nullptr;
+    coverSmooth = nullptr;
+    mcuRowBuffer = nullptr;
+    rowBuffer = nullptr;
+  };
 
   if (oneBit) {
     // For 1-bit output, use Atkinson dithering for better quality
-    atkinson1BitDitherer = new Atkinson1BitDitherer(outWidth);
+    atkinson1BitDitherer = new (std::nothrow) Atkinson1BitDitherer(outWidth);
   } else if (!USE_8BIT_OUTPUT) {
     if (USE_ATKINSON) {
-      atkinsonDitherer = new AtkinsonDitherer(outWidth);
+      atkinsonDitherer = new (std::nothrow) AtkinsonDitherer(outWidth);
     } else if (USE_FLOYD_STEINBERG) {
-      fsDitherer = new FloydSteinbergDitherer(outWidth);
+      fsDitherer = new (std::nothrow) FloydSteinbergDitherer(outWidth);
     }
+  }
+  const bool ditherWanted = oneBit || (!USE_8BIT_OUTPUT && (USE_ATKINSON || USE_FLOYD_STEINBERG));
+  const bool ditherOk = (atkinson1BitDitherer && atkinson1BitDitherer->ok()) ||
+                        (atkinsonDitherer && atkinsonDitherer->ok()) || (fsDitherer && fsDitherer->ok());
+  if (ditherWanted && !ditherOk) {
+    Serial.printf("[%lu] [JPG] Failed to allocate ditherer\n", millis());
+    releaseTail();
+    return false;
   }
 
   // For scaling: accumulate source rows into scaled output rows
   // We need to track which source Y maps to which output Y
   // Using fixed-point: srcY_fp = outY * scaleY_fp (gives source Y in 16.16 format)
-  uint32_t* rowAccum = nullptr;    // Accumulator for each output X (32-bit for larger sums)
-  uint16_t* rowCount = nullptr;    // Count of source pixels accumulated per output X
   int currentOutY = 0;             // Current output row being accumulated
   uint32_t nextOutY_srcStart = 0;  // Source Y where next output row starts (16.16 fixed point)
 
   if (needsScaling) {
-    rowAccum = new uint32_t[outWidth]();
-    rowCount = new uint16_t[outWidth]();
+    rowAccum = new (std::nothrow) uint32_t[outWidth]();
+    rowCount = rowAccum ? new (std::nothrow) uint16_t[outWidth]() : nullptr;
+    if (!rowAccum || !rowCount) {
+      Serial.printf("[%lu] [JPG] Failed to allocate scale accumulators\n", millis());
+      releaseTail();
+      return false;
+    }
     nextOutY_srcStart = scaleY_fp;  // First boundary is at scaleY_fp (source Y for outY=1)
   }
 
@@ -413,11 +467,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
           Serial.printf("[%lu] [JPG] JPEG decode MCU failed at (%d, %d) with error code: %d\n", millis(), mcuX, mcuY,
                         mcuStatus);
         }
-        free(coverGray);
-        free(coverWork);
-        free(coverSmooth);
-        free(mcuRowBuffer);
-        free(rowBuffer);
+        releaseTail();
         return false;
       }
 
@@ -632,10 +682,10 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
       coverProcessed = bmpOut.write(rowBuffer, bytesPerRow) == bytesPerRow;
     }
   }
-  free(coverGray);
-  free(coverWork);
-  free(coverSmooth);
-  free(mcuRowBuffer);
+  freeCoverWork(coverGray);
+  freeCoverWork(coverWork);
+  freeCoverWork(coverSmooth);
+  freeCoverWork(mcuRowBuffer);
   free(rowBuffer);
 
   if (!coverProcessed) return false;

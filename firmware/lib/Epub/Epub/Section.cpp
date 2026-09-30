@@ -362,8 +362,8 @@ reprocess:
 }  // namespace (preprocessor helpers)
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 15;
-constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
+constexpr uint8_t SECTION_FILE_VERSION = 16;
+constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(uint8_t) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) +
                                  sizeof(uint8_t)+sizeof(bool)+ sizeof(bool) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint32_t);
@@ -390,7 +390,7 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   return position;
 }
 
-void Section::writeSectionFileHeader(const int fontId, const float lineCompression, const bool extraParagraphSpacing,
+void Section::writeSectionFileHeader(const int fontId, const uint8_t readerPx, const float lineCompression, const bool extraParagraphSpacing,
                                      const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                                      const uint16_t viewportHeight, const bool hyphenationEnabled,const int8_t wordSpacing,
                                      const bool firstlineintented,
@@ -399,7 +399,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
     Serial.printf("[%lu] [SCT] File not open for writing header\n", millis());
     return;
   }
-  static_assert(HEADER_SIZE == sizeof(SECTION_FILE_VERSION) + sizeof(fontId) + sizeof(lineCompression) +
+  static_assert(HEADER_SIZE == sizeof(SECTION_FILE_VERSION) + sizeof(fontId) + sizeof(uint8_t) + sizeof(lineCompression) +
                                    sizeof(extraParagraphSpacing) + sizeof(paragraphAlignment) + sizeof(viewportWidth) +
                                    sizeof(viewportHeight) + sizeof(pageCount) + sizeof(hyphenationEnabled) +
                                    sizeof(firstlineintented) +sizeof(wordSpacing)+
@@ -407,6 +407,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
                 "Header size mismatch");
   serialization::writePod(file, SECTION_FILE_VERSION);
   serialization::writePod(file, fontId);
+  serialization::writePod(file, readerPx);
   serialization::writePod(file, lineCompression);
   serialization::writePod(file, extraParagraphSpacing);
   serialization::writePod(file, paragraphAlignment);
@@ -422,7 +423,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for LUT offset
 }
 
-bool Section::loadSectionFile(const int fontId, const float lineCompression, const bool extraParagraphSpacing,
+bool Section::loadSectionFile(const int fontId, const uint8_t readerPx, const float lineCompression, const bool extraParagraphSpacing,
                               const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                               const uint16_t viewportHeight, const bool hyphenationEnabled,const int8_t wordSpacing
                               , const bool firstlineintented, const bool embeddedStyle, const bool chinesePunctFullWidth, const bool showImages) {
@@ -453,6 +454,8 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
     bool fileChinesePunctFullWidth;
     bool fileShowImages;
     serialization::readPod(file, fileFontId);
+    uint8_t fileReaderPx = 0;
+    serialization::readPod(file, fileReaderPx);
     serialization::readPod(file, fileLineCompression);
     serialization::readPod(file, fileExtraParagraphSpacing);
     serialization::readPod(file, fileParagraphAlignment);
@@ -465,7 +468,8 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
     serialization::readPod(file, fileChinesePunctFullWidth);
     serialization::readPod(file, fileShowImages);
 
-    if (fontId != fileFontId || lineCompression != fileLineCompression ||
+    if (fontId != fileFontId || fileReaderPx != readerPx ||
+        lineCompression != fileLineCompression ||
         extraParagraphSpacing != fileExtraParagraphSpacing || paragraphAlignment != fileParagraphAlignment ||
         viewportWidth != fileViewportWidth || viewportHeight != fileViewportHeight ||
         hyphenationEnabled != fileHyphenationEnabled || wordSpacing != fileWordSpacing||
@@ -500,7 +504,7 @@ bool Section::clearCache() const {
   return true;
 }
 
-bool Section::createSectionFile(const int fontId, const float lineCompression, const bool extraParagraphSpacing,
+bool Section::createSectionFile(const int fontId, const uint8_t readerPx, const float lineCompression, const bool extraParagraphSpacing,
                                 const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                                 const uint16_t viewportHeight, const bool hyphenationEnabled,const int8_t wordSpacing,
                                 const bool firstlineintented, const bool embeddedStyle, const bool chinesePunctFullWidth, const bool showImages,
@@ -565,7 +569,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     SdMan.remove(fixedHtmlPath.c_str());
     return false;
   }
-  writeSectionFileHeader(fontId, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth,
+  writeSectionFileHeader(fontId, readerPx, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth,
                          viewportHeight, hyphenationEnabled,wordSpacing,firstlineintented, embeddedStyle, chinesePunctFullWidth, showImages);
   std::vector<uint32_t> lut = {};
   // Derive the content base directory and image cache path prefix for the parser

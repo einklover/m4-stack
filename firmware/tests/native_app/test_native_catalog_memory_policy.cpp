@@ -6,6 +6,7 @@
 int main() {
   using namespace M4NativeCatalogPolicy;
   assert(kTaskStackBytes >= 72u * 1024u);
+  assert(kPsramAssemblyMaxBytes == 2u * 1024u * 1024u);
   assert(!preferPsramAssembly("fanqie"));
   assert(preferPsramAssembly("jjwxc"));
   assert(preferPsramAssembly("weread"));

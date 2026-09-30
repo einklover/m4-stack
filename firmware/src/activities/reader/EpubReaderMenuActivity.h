@@ -248,7 +248,7 @@ class EpubReaderMenuActivity final : public ActivityWithSubactivity {
   void applyInternalAction(InternalAction action);
   std::string currentFontSizeLabel() const;
   std::string styleValueFor(InternalAction action) const;
-  void notifyParentStyleChanged();
+  void notifyParentStyleChanged(bool reloadFonts = true);
   void closeToReader();
   void prepareQuickFontFamilies();
   void applyQuickFontChoice(int slot);

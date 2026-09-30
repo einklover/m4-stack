@@ -110,7 +110,8 @@ bool parseBody(const std::string& body, JsonDocument& doc, Result& out) {
 
 // Read one matching shelf_rows.tsv line. Cheap SD scan; no HTTP.
 bool enrichFromLocalShelf(const std::string& appId, const std::string& bookId,
-                          M4NovelProvider::BookDetail& detail) {
+                          M4NovelProvider::BookDetail& detail,
+                          const std::string& providerId = {}) {
   if (appId.empty() || bookId.empty()) return false;
   const std::string path = appRoot(appId) + "/provider/shelf_rows.tsv";
   FsFile f;
@@ -126,7 +127,7 @@ bool enrichFromLocalShelf(const std::string& appId, const std::string& bookId,
     buf[n] = 0;
     for (int i = 0; i < n; ++i) {
       if (buf[i] == '\n') {
-        if (applyShelfRow(line, bookId, detail, coverBase)) found = true;
+        if (applyShelfRowForProvider(providerId, line, bookId, detail, coverBase)) found = true;
         line.clear();
         if (found) {
           f.close();
@@ -137,7 +138,7 @@ bool enrichFromLocalShelf(const std::string& appId, const std::string& bookId,
       }
     }
   }
-  if (!found && applyShelfRow(line, bookId, detail, coverBase)) found = true;
+  if (!found && applyShelfRowForProvider(providerId, line, bookId, detail, coverBase)) found = true;
   f.close();
   return found;
 }
@@ -145,6 +146,7 @@ bool enrichFromLocalShelf(const std::string& appId, const std::string& bookId,
 Result fetchJjwxc(const Request& req, const CancelFn& cancelled) {
   Result out;
   out.detail = seed(req);
+  (void)enrichFromLocalShelf(req.appId, req.bookId, out.detail, req.providerId);
 
   M4NativeProviderHttp::Request http;
   http.url = std::string(M4_JJWXC_APP_CDN) + "/androidapi/novelbasicinfo?novelId=" + req.bookId;
@@ -154,11 +156,19 @@ Result fetchJjwxc(const Request& req, const CancelFn& cancelled) {
 
   std::string body;
   M4NativeProviderHttp::Result net;
+  if (!M4NativeProviderHttp::prepareHttps()) {
+    out.error = "tls_internal_oom";
+    M4NativeProviderIo::logHttpTlsIf(req.appId, "detail", out.error);
+    return out;
+  }
   if (!M4NativeProviderHttp::requestSmall(http, body, net, req.maxBytes, cancelled)) {
     out.error = net.error.empty() ? "detail_http" : net.error;
     out.receivedBytes = net.bytes;
+    M4NativeProviderIo::logHttpTlsIf(req.appId, "detail", out.error);
+    M4NativeProviderHttp::releaseTlsSession();
     return out;
   }
+  M4NativeProviderHttp::releaseTlsSession();
   out.receivedBytes = net.bytes;
 
   JsonDocument doc;
@@ -183,6 +193,7 @@ Result fetchJjwxc(const Request& req, const CancelFn& cancelled) {
 Result fetchFanqie(const Request& req, const CancelFn& cancelled) {
   Result out;
   out.detail = seed(req);
+  (void)enrichFromLocalShelf(req.appId, req.bookId, out.detail, req.providerId);
 
   M4NativeProviderHttp::Request http;
   // Current Fanqie web API. The legacy api5 multi-detail endpoint now returns
@@ -195,11 +206,19 @@ Result fetchFanqie(const Request& req, const CancelFn& cancelled) {
 
   std::string body;
   M4NativeProviderHttp::Result net;
+  if (!M4NativeProviderHttp::prepareHttps()) {
+    out.error = "tls_internal_oom";
+    M4NativeProviderIo::logHttpTlsIf(req.appId, "detail", out.error);
+    return out;
+  }
   if (!M4NativeProviderHttp::requestSmall(http, body, net, req.maxBytes, cancelled)) {
     out.error = net.error.empty() ? "detail_http" : net.error;
     out.receivedBytes = net.bytes;
+    M4NativeProviderIo::logHttpTlsIf(req.appId, "detail", out.error);
+    M4NativeProviderHttp::releaseTlsSession();
     return out;
   }
+  M4NativeProviderHttp::releaseTlsSession();
   out.receivedBytes = net.bytes;
 
   JsonDocument doc;
@@ -221,6 +240,7 @@ Result fetchFanqie(const Request& req, const CancelFn& cancelled) {
 Result fetchWeread(const Request& req, const CancelFn& cancelled) {
   Result out;
   out.detail = seed(req);
+  (void)enrichFromLocalShelf(req.appId, req.bookId, out.detail, req.providerId);
 
   std::string cookie;
   if (!M4NativeProviderIo::loadCookieHeader(appRoot(req.appId), "weread", cookie)) {
@@ -237,11 +257,19 @@ Result fetchWeread(const Request& req, const CancelFn& cancelled) {
 
   std::string body;
   M4NativeProviderHttp::Result net;
+  if (!M4NativeProviderHttp::prepareHttps()) {
+    out.error = "tls_internal_oom";
+    M4NativeProviderIo::logHttpTlsIf(req.appId, "detail", out.error);
+    return out;
+  }
   if (!M4NativeProviderHttp::requestSmall(http, body, net, req.maxBytes, cancelled)) {
     out.error = net.error.empty() ? "detail_http" : net.error;
     out.receivedBytes = net.bytes;
+    M4NativeProviderIo::logHttpTlsIf(req.appId, "detail", out.error);
+    M4NativeProviderHttp::releaseTlsSession();
     return out;
   }
+  M4NativeProviderHttp::releaseTlsSession();
   out.receivedBytes = net.bytes;
 
   JsonDocument doc;
@@ -270,7 +298,7 @@ Result fetchLegado(const Request& req, const CancelFn& /*cancelled*/) {
   out.detail = seed(req);
   out.localOnly = true;
 
-  (void)enrichFromLocalShelf(req.appId, req.bookId, out.detail);
+  (void)enrichFromLocalShelf(req.appId, req.bookId, out.detail, req.providerId);
 
   if (legadoLocalDetailSufficient(out.detail)) {
     out.ok = true;
@@ -300,7 +328,18 @@ M4NovelProvider::BookDetail seed(const Request& req) {
 Result fetch(const Request& req, const CancelFn& cancelled) {
   Result out;
   out.detail = seed(req);
-  if (req.bookId.empty() || req.providerId.empty() || req.maxBytes == 0) {
+  if (req.bookId.empty() || req.providerId.empty()) {
+    out.error = "bad_detail_request";
+    return out;
+  }
+  if (req.coverOnly) {
+    (void)enrichFromLocalShelf(req.appId, req.bookId, out.detail, req.providerId);
+    out.localOnly = true;
+    out.ok = !out.detail.coverUrl.empty() || !out.detail.title.empty();
+    if (!out.ok) out.error = "cover_missing";
+    return out;
+  }
+  if (req.maxBytes == 0) {
     out.error = "bad_detail_request";
     return out;
   }

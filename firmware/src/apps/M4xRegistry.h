@@ -23,7 +23,16 @@ struct M4xInstalledApp {
 
 class M4xRegistry {
  public:
+  // Read-only callers. On a transient read or parse failure this may return
+  // an empty vector or the backup table. Do not save that result.
   static std::vector<M4xInstalledApp> load();
+
+  // Load for a later modify/save. False on IoError or a transient parse
+  // (NoMemory, TooDeep, overflow): the output is cleared and no backup is
+  // substituted. A missing or confirmed-corrupt primary may still recover
+  // from a valid backup. Callers must not save when this returns false.
+  static bool tryLoad(std::vector<M4xInstalledApp>& apps);
+
   static bool save(const std::vector<M4xInstalledApp>& apps);
 
   static const M4xInstalledApp* find(const std::vector<M4xInstalledApp>& apps, const std::string& id);

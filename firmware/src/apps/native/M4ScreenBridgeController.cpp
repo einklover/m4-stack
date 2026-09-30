@@ -12,6 +12,7 @@
 #include <SDCardManager.h>
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -58,7 +59,9 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
   explicit ScreenBridgeController(M4xInstalledApp app)
       : app_(std::move(app)), endpointPath_("/apps_data/" + app_.id + "/provider/endpoint.txt") {}
 
-  ~ScreenBridgeController() override { stopWorker(); }
+  // The activity reaper deletes this only after readyForDestruction().
+  // Joining here would block the UI; deleting the worker would skip its RAII.
+  ~ScreenBridgeController() override {}
 
   bool scalar(const std::string& key, std::string& out) const override {
     std::lock_guard<std::mutex> lock(mu_);
@@ -182,6 +185,22 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
     }
   }
 
+  void requestStop() override {
+    stop_.store(true, std::memory_order_release);
+  }
+
+  bool readyForDestruction() const override {
+#if defined(ARDUINO_ARCH_ESP32)
+    // loadComments holds mu_ across the comments_ scan and commentsText build.
+    // A blocking lock here would stall the UI for that whole critical section.
+    std::unique_lock<std::mutex> lock(mu_, std::try_to_lock);
+    if (!lock.owns_lock()) return false;
+    return task_ == nullptr;
+#else
+    return true;
+#endif
+  }
+
  private:
   enum class Job : uint8_t {
     None = 0, LoadApps, OpenApp, OpenXhs, LoadFeed, OpenNote, OpenComments, MoreComments, LoadImage
@@ -192,7 +211,7 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
   void startWorker() {
 #if defined(ARDUINO_ARCH_ESP32)
     std::lock_guard<std::mutex> lock(mu_);
-    if (task_ || stop_) return;
+    if (task_ || stop_.load(std::memory_order_acquire)) return;
     TaskHandle_t handle = nullptr;
     if (M4Psram::createTask(taskMain, "ScreenBridgeV2", 24u * 1024u, this, 1, &handle) == pdPASS) {
       task_ = handle;
@@ -200,25 +219,6 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
       status_ = "无法启动屏幕桥任务";
       ++revision_;
     }
-#endif
-  }
-
-  void stopWorker() {
-#if defined(ARDUINO_ARCH_ESP32)
-    TaskHandle_t handle = nullptr;
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      stop_ = true;
-      handle = task_;
-    }
-    for (int i = 0; handle && i < 100; ++i) {
-      vTaskDelay(pdMS_TO_TICKS(20));
-      std::lock_guard<std::mutex> lock(mu_);
-      handle = task_;
-    }
-    if (handle) M4Psram::deleteTask(handle);
-    std::lock_guard<std::mutex> lock(mu_);
-    task_ = nullptr;
 #endif
   }
 
@@ -230,28 +230,51 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
     ++revision_;
   }
 
+  // 20 ms slices. False: stop was requested and the caller must not start
+  // another request. The load after the last slice covers a stop that lands
+  // during that sleep. stop_ is atomic, so this check does not lock.
+  bool delayUnlessStopped(uint32_t totalMs) {
+    constexpr uint32_t kSliceMs = 20;
+    uint32_t waited = 0;
+    while (waited < totalMs) {
+      if (stop_.load(std::memory_order_acquire)) return false;
+      const uint32_t slice = std::min(kSliceMs, totalMs - waited);
+      vTaskDelay(pdMS_TO_TICKS(slice));
+      waited += slice;
+    }
+    return !stop_.load(std::memory_order_acquire);
+  }
+
+  // Last member access is clearing task_ under mu_. The guard unlocks
+  // before self-delete. On device deleteTask(nullptr) does not return.
+  void publishWorkerDone() {
+#if defined(ARDUINO_ARCH_ESP32)
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      task_ = nullptr;
+    }
+    M4Psram::deleteTask(nullptr);
+#endif
+  }
+
   void workerLoop() {
     while (true) {
       Job job = Job::None;
       std::string key;
       {
         std::lock_guard<std::mutex> lock(mu_);
-        if (stop_) break;
+        if (stop_.load(std::memory_order_acquire)) break;
         job = pending_;
         pending_ = Job::None;
         key = selectedKey_;
       }
       if (job == Job::None) {
-        vTaskDelay(pdMS_TO_TICKS(40));
+        if (!delayUnlessStopped(40)) break;
         continue;
       }
       run(job, key);
     }
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      task_ = nullptr;
-    }
-    M4Psram::deleteTask(nullptr);
+    publishWorkerDone();
   }
 
   void run(Job job, const std::string& key) {
@@ -261,26 +284,27 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
     else if (job == Job::OpenXhs) {
       ok = post("/v2/apps/open?id=com.xingin.xhs");
       if (ok) {
-        vTaskDelay(pdMS_TO_TICKS(1800));
+        if (!delayUnlessStopped(1800)) return;
         ok = loadFeed();
       }
     } else if (job == Job::LoadFeed) ok = loadFeed();
     else if (job == Job::OpenNote) {
       ok = post("/v2/xhs/feed/open?token=" + urlEncode(key));
       if (ok) {
-        vTaskDelay(pdMS_TO_TICKS(900));
+        if (!delayUnlessStopped(900)) return;
         ok = loadNote();
       }
     } else if (job == Job::OpenComments) {
       ok = post("/v2/xhs/comments/open");
       if (ok) {
-        vTaskDelay(pdMS_TO_TICKS(700));
+        if (!delayUnlessStopped(700)) return;
         ok = loadComments(false);
       }
     } else if (job == Job::MoreComments) ok = loadComments(true);
     else if (job == Job::LoadImage) ok = loadImage(std::max(0, std::atoi(key.c_str())));
 
     std::lock_guard<std::mutex> lock(mu_);
+    if (stop_.load(std::memory_order_acquire)) return;
     if (job == Job::OpenApp) status_ = ok ? "已在手机打开 · 此应用暂用屏幕镜像" : "手机应用打开失败";
     else if (!ok && status_.find("失败") == std::string::npos) status_ = "手机内容读取失败";
     ++revision_;
@@ -299,8 +323,7 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
       base_.clear();
     }
     const auto wifi = M4NativeWifi::ensureConnected(15000, [this]() {
-      std::lock_guard<std::mutex> lock(mu_);
-      return stop_;
+      return stop_.load(std::memory_order_acquire);
     });
     if (!wifi.ok) return false;
     const std::string ssid = M4QemuNet::ssidStd();
@@ -328,8 +351,7 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
     req.headers = {{"User-Agent", kUserAgent}, {"Connection", "close"}};
     M4NativeProviderHttp::Result net;
     const bool ok = M4NativeProviderHttp::requestSmall(req, body, net, cap, [this]() {
-      std::lock_guard<std::mutex> lock(mu_);
-      return stop_;
+      return stop_.load(std::memory_order_acquire);
     });
     return ok && net.status >= 200 && net.status < 300 && body.find("\"ok\":false") == std::string::npos;
   }
@@ -391,7 +413,7 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
         ++revision_;
       }
       if (!collecting || cached >= target) return true;
-      vTaskDelay(pdMS_TO_TICKS(900));
+      if (!delayUnlessStopped(900)) return false;
     }
     return true;
   }
@@ -441,7 +463,7 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
       }
       collecting = doc["collecting"] | false;
       if (!collecting || (!advance && !rows.empty()) || (advance && rows.size() > baseline) || pass == 7) break;
-      vTaskDelay(pdMS_TO_TICKS(700));
+      if (!delayUnlessStopped(700)) return false;
     }
     std::lock_guard<std::mutex> lock(mu_);
     if (advance) {
@@ -523,7 +545,7 @@ class ScreenBridgeController final : public M4NativeUi::Controller {
   uint32_t revision_ = 1;
   Job pending_ = Job::None;
   bool initialQueued_ = false;
-  bool stop_ = false;
+  std::atomic<bool> stop_{false};
 #if defined(ARDUINO_ARCH_ESP32)
   TaskHandle_t task_ = nullptr;
 #endif

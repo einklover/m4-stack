@@ -35,7 +35,10 @@ constexpr const char* kFanqieUa =
 std::mutex gMu;
 Snapshot gSnapshot;
 std::atomic<bool> gBusy{false};
+std::atomic<bool> gCancel{false};
 TaskHandle_t gTask = nullptr;
+
+bool cancelled() { return gCancel.load(std::memory_order_acquire); }
 
 void publish(Phase phase, size_t received = 0, size_t rows = 0, const std::string& error = {}) {
   std::lock_guard<std::mutex> lock(gMu);
@@ -121,6 +124,7 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
     bool ok = true;
     if (open_) {
       ok = flushBuffer();
+      if (ok) f_.sync();
       f_.close();
       open_ = false;
     }
@@ -433,7 +437,7 @@ bool commitShelfGeneration(AtomicRowsSink& file, const std::string& providerId,
   return committed;
 }
 
-void taskMain(void*) {
+void runJob() {
   Snapshot job;
   {
     std::lock_guard<std::mutex> lock(gMu);
@@ -444,13 +448,15 @@ void taskMain(void*) {
 
   DiscoverySpec spec = makeSpec(job.providerId, job.appId, job.category);
   bool wereadRenewed = false;
-  if (spec.authRequired && job.providerId == "weread") {
+  if (!cancelled() && spec.authRequired && job.providerId == "weread") {
     if (M4NativeProviderLogin::tryRenewSession(appRoot(job.appId))) {
       wereadRenewed = true;
       spec = makeSpec(job.providerId, job.appId, job.category);
     }
   }
-  if (spec.authRequired) {
+  if (cancelled()) {
+    publish(Phase::Error, 0, 0, "cancelled");
+  } else if (spec.authRequired) {
     publish(Phase::AuthRequired, 0, 0, spec.error);
   } else if (!spec.error.empty()) {
     publish(Phase::Error, 0, 0, spec.error);
@@ -468,7 +474,9 @@ void taskMain(void*) {
       M4NativeProviderHeavyGate::Lock heavy(M4NativeProviderHeavyGate::mutex());
       const auto net = M4NativeProviderHttp::requestToSink(
           spec.request, jsonSink,
-          [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); });
+          [&](size_t bytes) { publish(Phase::Receiving, bytes, rows.recordCount()); },
+          [&]() { return cancelled(); });
+      M4NativeProviderHttp::releaseTlsSession();
       const bool finished = net.ok && rows.finish();
       const size_t rowCount = rewrite.written();
       const bool parsed = finished;
@@ -493,11 +501,13 @@ void taskMain(void*) {
                            : M4xJsonStream::errorString(rows.error()));
         writeDiscoveryDiag(job.appId, "error", net.ok, net.bytes, error, rowCount, rewrite.skipped(),
                            hadSidecar);
+        M4NativeProviderIo::logHttpTlsIf(job.appId, "discovery", error);
         publish(Phase::Error, net.bytes, rowCount, error);
       } else if (!commitShelfGeneration(file, job.providerId, job.appId)) {
         file.discard();
         writeDiscoveryDiag(job.appId, "commit_fail", net.ok, net.bytes, "discovery_commit_failed",
                            rowCount, rewrite.skipped(), hadSidecar);
+        M4NativeProviderIo::logHttpTlsIf(job.appId, "discovery", "discovery_commit_failed");
         publish(Phase::Error, net.bytes, rowCount, "discovery_commit_failed");
       } else {
         writeDiscoveryDiag(job.appId, "ready", net.ok, net.bytes, "-", rowCount, rewrite.skipped(),
@@ -542,7 +552,8 @@ void taskMain(void*) {
                 }
               }
             },
-            [&]() { return rows.recordCount() >= spec.maxRows; });
+            [&]() { return cancelled() || rows.recordCount() >= spec.maxRows; });
+        M4NativeProviderHttp::releaseTlsSession();
         const bool boundedWindow = rows.recordCount() >= spec.maxRows && net.error == "cancelled";
         const bool finished = net.ok && rows.finish();
         const bool parsed = (finished && (rows.recordCount() > 0 || job.providerId == "weread")) ||
@@ -569,6 +580,7 @@ void taskMain(void*) {
           } else {
             writeDiscoveryDiag(job.appId, "error", net.ok || boundedWindow, net.bytes, error,
                                rows.recordCount(), 0, false);
+            M4NativeProviderIo::logHttpTlsIf(job.appId, "discovery", error);
             publish(Phase::Error, net.bytes, rows.recordCount(), error);
           }
           break;
@@ -578,6 +590,7 @@ void taskMain(void*) {
           writeDiscoveryDiag(job.appId, "commit_fail", net.ok || boundedWindow, net.bytes,
                              "discovery_commit_failed",
                              rows.recordCount(), 0, false);
+          M4NativeProviderIo::logHttpTlsIf(job.appId, "discovery", "discovery_commit_failed");
           publish(Phase::Error, net.bytes, rows.recordCount(), "discovery_commit_failed");
         } else {
           writeDiscoveryDiag(job.appId, "ready", net.ok || boundedWindow, net.bytes, "-",
@@ -589,11 +602,16 @@ void taskMain(void*) {
     }
   }
 
-  gBusy.store(false, std::memory_order_release);
+}
+
+void taskMain(void*) {
+  // Return through C++ frames before self-delete (FreeRTOS does not unwind).
+  runJob();
   {
     std::lock_guard<std::mutex> lock(gMu);
     gTask = nullptr;
   }
+  gBusy.store(false, std::memory_order_release);
   M4Psram::deleteTask(nullptr);
 }
 
@@ -608,6 +626,7 @@ bool startCategory(const std::string& providerId, const std::string& appId,
   }
   bool expected = false;
   if (!gBusy.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return false;
+  gCancel.store(false, std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(gMu);
     gSnapshot = {};
@@ -648,5 +667,7 @@ Snapshot snapshot() {
 }
 
 bool busy() { return gBusy.load(std::memory_order_acquire); }
+
+void cancel() { gCancel.store(true, std::memory_order_release); }
 
 }  // namespace M4NativeProviderDiscovery

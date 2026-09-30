@@ -17,6 +17,24 @@
 
 #define GUI UITheme::getInstance().getTheme()
 
+namespace {
+
+M4ListTouchPolicy::DialogTwoButtonLayout bluetoothConfirmLayout(const GfxRenderer& renderer) {
+  return M4ListTouchPolicy::makeCenteredTwoButtons(renderer.getScreenWidth(), renderer.getScreenHeight() - 190,
+                                                   144, 64, 24, 2);
+}
+
+void drawBluetoothConfirmButton(const GfxRenderer& renderer,
+                                const M4ListTouchPolicy::DialogTwoButtonLayout& layout, int index,
+                                const char* label) {
+  const auto r = layout.buttonRect(index);
+  renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, index == 1 ? Color::Black : Color::LightGray);
+  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, index == 0,
+                              EpdFontFamily::BOLD, 8);
+}
+
+}  // namespace
+
 void SimpleBluetoothActivity::taskTrampoline(void* param) {
   auto* self = static_cast<SimpleBluetoothActivity*>(param);
   self->displayTaskLoop();
@@ -650,8 +668,18 @@ void SimpleBluetoothActivity::handleWifiDisconnectConfirm() {
   }
   int tx = 0;
   int ty = 0;
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) ||
-      mappedInput.wasScreenTapped(tx, ty)) {
+  if (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty)) {
+    int hit = -1;
+    if (M4ListTouchPolicy::dialogButtonFromPoint(bluetoothConfirmLayout(renderer), tx, ty, hit)) {
+      if (hit == 0) {
+        state = BtPageState::MAIN_MENU;
+        updateRequired = true;
+        return;
+      }
+      button = M4ConfirmButton::Confirm;
+      footerPrimaryOrRow = true;
+    }
+  } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
     button = M4ConfirmButton::Confirm;
     footerPrimaryOrRow = true;
   }
@@ -670,8 +698,9 @@ void SimpleBluetoothActivity::renderWifiDisconnectConfirm() {
   const auto pageHeight = renderer.getScreenHeight();
   M4UiText::drawCentered(renderer, UI_12_FONT_ID, pageHeight / 2 - 40, "确认", true, EpdFontFamily::BOLD);
   M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2, "打开蓝牙会断开 Wi-Fi");
-  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 48, "点按确认");
-  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 18, "左缘滑动取消");
+  const auto dialog = bluetoothConfirmLayout(renderer);
+  drawBluetoothConfirmButton(renderer, dialog, 0, L(Str::kCancel));
+  drawBluetoothConfirmButton(renderer, dialog, 1, L(Str::kConfirm));
 }
 
 // ============ 设备列表 ============

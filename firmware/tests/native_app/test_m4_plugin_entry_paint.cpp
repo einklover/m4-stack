@@ -1,8 +1,9 @@
 // M4 AppList -> plugin entry-paint contract.
 //
-// RED until the handoff paints cleanly:
-//   1. After AppList claims the screen for a child, the parent display task
-//      must stop without reading the unsynchronized child pointer.
+//   1. AppList paint runs on the UI thread in submitDirtyFrame, before input.
+//      The background task never draws and never reads subActivity. While a
+//      child is installed, loop() returns before it accepts a pending drawer
+//      and submits.
 //   2. Startup painting must happen on the child render owner, not concurrently
 //      from onEnter and the runtime task.
 //   3. Every first child frame must serialize its clear/full submit with the
@@ -65,14 +66,16 @@ int main() {
   assert(!apps.empty() && !appsHeader.empty() && !rt.empty() && !native.empty());
 
   const std::string openFn = bodyOf(apps, "void AppListActivity::openSelected()");
-  const std::string loopFn = bodyOf(apps, "void AppListActivity::displayTaskLoop()");
+  const std::string workerFn = bodyOf(apps, "void AppListActivity::displayTaskLoop()");
+  const std::string submitFn = bodyOf(apps, "void AppListActivity::submitDirtyFrame()");
+  const std::string uiFn = bodyOf(apps, "void AppListActivity::loop()");
   const std::string enterFn = bodyOf(rt, "void AppRuntimeActivity::onEnter()");
   const std::string runtimeTaskFn = bodyOf(rt, "void AppRuntimeActivity::runtimeTaskMain()");
   const std::string startupFn = bodyOf(rt, "void AppRuntimeActivity::renderStartupPage()");
   const std::string nativeEnterFn = bodyOf(native, "void NativeAppActivity::onEnter()");
   const std::string nativeStartupFn = bodyOf(native, "void NativeAppActivity::renderStartupPage()");
   const std::string nativeRenderFn = bodyOf(native, "void NativeAppActivity::render()");
-  assert(!openFn.empty() && !loopFn.empty() && !enterFn.empty() &&
+  assert(!openFn.empty() && !workerFn.empty() && !submitFn.empty() && !uiFn.empty() && !enterFn.empty() &&
          !runtimeTaskFn.empty() && !startupFn.empty() && !nativeEnterFn.empty() &&
          !nativeStartupFn.empty() && !nativeRenderFn.empty());
 
@@ -94,14 +97,28 @@ int main() {
     assert(clear < enter && claim < enter);
   }
 
-  // 1b. The display task uses an atomic owner bit for all handoff checks and
-  //     never dereferences ActivityWithSubactivity::subActivity.
+  // 1b. The background task never paints and never reads the child pointer.
+  //     submitDirtyFrame, on the UI thread, rechecks the child after the guard
+  //     and is reached only after loop() has returned for a live subActivity.
   assert(appsHeader.find("std::atomic<bool> childScreenOwned_") != std::string::npos);
-  assert(countOcc(loopFn, "childScreenOwned_") >= 3);
-  assert(loopFn.find("subActivity") == std::string::npos);
-  assert(loopFn.find("M4RenderGuard") != std::string::npos);
-  const size_t guard = loopFn.find("M4RenderGuard");
-  assert(loopFn.find("childScreenOwned_", guard) != std::string::npos);
+  assert(workerFn.find("subActivity") == std::string::npos);
+  assert(workerFn.find("M4RenderGuard") == std::string::npos);
+  assert(workerFn.find("render()") == std::string::npos);
+  assert(workerFn.find("setMask") == std::string::npos);
+  assert(workerFn.find("childScreenOwned_") != std::string::npos);
+  assert(countOcc(submitFn, "childScreenOwned_") >= 3);
+  assert(submitFn.find("subActivity") != std::string::npos);
+  assert(submitFn.find("M4RenderGuard") != std::string::npos);
+  const size_t guard = submitFn.find("M4RenderGuard");
+  assert(submitFn.find("childScreenOwned_", guard) != std::string::npos);
+  assert(submitFn.find("render();", guard) != std::string::npos);
+  const size_t child = uiFn.find("if (subActivity)");
+  const size_t ret = uiFn.find("return;", child);
+  const size_t accept = uiFn.find("acceptPendingDrawer()", ret);
+  const size_t called = uiFn.find("submitDirtyFrame()", accept);
+  assert(child != std::string::npos && ret != std::string::npos && accept != std::string::npos &&
+         called != std::string::npos);
+  assert(child < ret && ret < accept && accept < called);
   assert(apps.find("childScreenOwned_.store(false") != std::string::npos);
 
   // 2. Runtime startup page is painted once by the runtime owner before

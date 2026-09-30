@@ -44,38 +44,31 @@ class FontManager {
   // Persist font diagnostics because serial output is not reliable on USB.
   static void appendFontDiagnostic(const char* line);
 
+  // Which UI role a runtime TTF face serves. The PSRAM budget follows the
+  // role — never creation order (B6):
+  // - Reader: the main reading face, 512 slots / 768KB.
+  // - Chrome: system UI small/body faces, 96 slots / 96KB.
+  enum class TtfFaceRole : uint8_t { Reader, Chrome };
+
   // Load a specific family and size (returns pointer to cached family or new one)
-  EpdFontFamily* getCustomFontFamily(const std::string& familyName, int fontSize);
+  EpdFontFamily* getCustomFontFamily(const std::string& familyName, int fontSize, TtfFaceRole role);
 
   // 清除已加载字体的内存缓存（切换字体时调用，迫使重新加载并写入 flash）
   void clearLoadedFonts();
+  void clearLoadedReaderFonts();
 
   // Runtime TTF objects own their stream/cmap/scratch/PSRAM cache metadata.
   // Once GfxRenderer aliases have been removed, they can and should be fully
   // destroyed on a real family/reader-size switch. The legacy clear path only
   // clears caches because historical epdfont objects have mixed ownership;
   // keeping this operation TTF-only avoids changing that legacy contract.
-  void releaseRuntimeTtfFaces() {
-    for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
-      auto& sizes = familyIt->second;
-      for (auto sizeIt = sizes.begin(); sizeIt != sizes.end();) {
-        EpdFontFamily* family = sizeIt->second;
-        const EpdFont* font = family ? family->getFont(EpdFontFamily::REGULAR) : nullptr;
-        if (font && font->isRuntimeTtf()) {
-          delete const_cast<EpdFont*>(font);
-          delete family;
-          sizeIt = sizes.erase(sizeIt);
-        } else {
-          ++sizeIt;
-        }
-      }
-      if (sizes.empty()) {
-        familyIt = loadedFonts.erase(familyIt);
-      } else {
-        ++familyIt;
-      }
-    }
-  }
+  void releaseRuntimeTtfFaces();
+  void releaseRuntimeTtfFaces(TtfFaceRole role);
+  // Delete detached runtime faces for one role while preserving the currently
+  // bound family/sizes. Used by system chrome after aliases have moved to the
+  // new face, preventing old UI-size variants from accumulating in PSRAM.
+  void releaseRuntimeTtfFacesExcept(TtfFaceRole role, const std::string& familyName,
+                                    int keepSizeA, int keepSizeB = -1);
 
   // Force next getAvailableFamilies() to re-scan /fonts and /FONT (M4 hot-plug / first boot).
   void invalidateScan() {
@@ -94,6 +87,15 @@ class FontManager {
   std::vector<RuntimeFontInfo> runtimeFonts;
   bool scanned = false;
 
-  // Map: FamilyName -> Size -> EpdFontFamily*
-  std::map<std::string, std::map<int, EpdFontFamily*>> loadedFonts;
+  // Runtime TTF: (family, sizePx, role) so chrome/reader at the same px do not
+  // share a budget. epdfont ignores role (always 0).
+  struct LoadedFaceKey {
+    int sizePx = 0;
+    uint8_t role = 0;
+    bool operator<(const LoadedFaceKey& o) const {
+      if (sizePx != o.sizePx) return sizePx < o.sizePx;
+      return role < o.role;
+    }
+  };
+  std::map<std::string, std::map<LoadedFaceKey, EpdFontFamily*>> loadedFonts;
 };

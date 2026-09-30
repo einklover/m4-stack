@@ -22,6 +22,12 @@ class EpdFontLoader {
   // Rebind SMALL/UI_10/UI_12 to the current 系统字号 without a full SD rescan.
   // Returns false when the CenterKernel chrome face is unavailable.
   static bool applySystemChrome(GfxRenderer& renderer);
+  // Idle-loop SD append of dirty TTF glyph bitmaps (few glyphs per call).
+  static int idleFlushTtfGlyphs(int maxGlyphs);
+  // Leave system/chrome aliases intact, but detach and destroy the expensive
+  // reader-role runtime TTF faces at an activity boundary. The next reader
+  // or Lua app lazily reloads them through ensureFontsFromSd().
+  static void releaseRuntimeReaderFonts(GfxRenderer& renderer);
 
  private:
   static std::vector<int> loadedCustomIds;

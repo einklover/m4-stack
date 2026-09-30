@@ -6,6 +6,7 @@
 #include <freertos/task.h>
 
 #include <atomic>
+#include <array>
 #include <functional>
 #include <string>
 #include <vector>
@@ -80,11 +81,22 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
 
   void onEnter() override;
   void onExit() override;
+  ~TxtReaderActivity() override;
+  bool readyForDestruction() const override {
+    return displayTaskExited_.load(std::memory_order_acquire) &&
+           ActivityWithSubactivity::readyForDestruction();
+  }
   void loop() override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
   bool readerMenuSyncSupported() const override { return false; }
-  void onReaderMenuStyleChanged() override { onSettingsChanged(); }
+  void onReaderMenuStyleChanged() override {
+    if (subActivity) {
+      deferredMenuNeedRebuild_ = true;
+    } else {
+      onSettingsChanged();
+    }
+  }
 
   // Parent observes after child loop returns (do not delete from onGoBack).
   bool pluginCloseRequested() const { return pluginCloseRequested_; }
@@ -97,7 +109,10 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
  private:
   std::shared_ptr<Txt> txt;
   TaskHandle_t displayTaskHandle = nullptr;
+  std::atomic<bool> stopTaskRequested_{false};
+  std::atomic<bool> displayTaskExited_{true};
   SemaphoreHandle_t renderingMutex = nullptr;
+  SemaphoreHandle_t progressWriterMutex_ = nullptr;
   int currentPage = 0;
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;
@@ -125,7 +140,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool dualNextLeft = true;
 
   static void taskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
+  void displayTaskLoop();
   void renderScreen();
   void renderDualPage();
   void renderPage(bool skipDisplay = false, int xOffset = 0, bool skipInvert = false);
@@ -148,6 +163,19 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   size_t chapterContentEnd() const;  // exclusive end for loadPageAtOffset
 
   void saveProgress() const;
+  struct ProgressSnapshot {
+    std::shared_ptr<Txt> owner;
+    std::string dir;
+    std::array<uint8_t, 20> data{};
+    uint32_t generation = 0;
+    int page = 0;
+    int totalPages = 0;
+    int chapter = 0;
+    bool valid = false;
+  };
+  bool captureProgressSnapshot(ProgressSnapshot& snapshot) const;
+  void persistProgressSnapshot(const ProgressSnapshot& snapshot) const;
+  std::atomic<uint32_t> progressGeneration_{1};
   void loadProgress();
   void persistOpenHistory();
   int chapternum = 0;
@@ -217,7 +245,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // --- Plugin session ---
   PluginSession pluginSession_{};
   // Set when plugin TOC selects another chapter; published in pluginProgressSnapshot.
-  int pluginSwitchChapterIndex_ = -1;
+  std::atomic<int> pluginSwitchChapterIndex_{-1};
 
   // bool-like close flag with one narrowly scoped side effect: if the provider
   // bridge has converted an empty-path next-chapter open into a list-style
@@ -228,9 +256,9 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   struct PluginCloseFlag {
     bool value = false;
     bool* pendingGoBack = nullptr;
-    int* switchChapterIndex = nullptr;
+    std::atomic<int>* switchChapterIndex = nullptr;
 
-    PluginCloseFlag(bool* goBack, int* switchIndex)
+    PluginCloseFlag(bool* goBack, std::atomic<int>* switchIndex)
         : value(false), pendingGoBack(goBack), switchChapterIndex(switchIndex) {}
 
     PluginCloseFlag& operator=(bool v) {
@@ -298,6 +326,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // providerOverlayMsg_ in memory without a full-frame differential.
   M4ContentProvider::ChapterReady providerOverlayState_ = M4ContentProvider::ChapterReady::Ready;
   bool providerPrefetchRequested_ = false;
+  uint32_t providerPrefetchGateCheckMs_ = 0;
   bool tryProviderNextChapterAdvance();  // last-page next / seamless open
   void providerIdlePrefetchNext();
   bool switchToProviderChapter(const std::string& cacheRelPath, int index0, const std::string& chapterUid,
@@ -330,7 +359,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   // straight to the target, intermediate pages skipped). No debounce — a slow
   // tap (panel idle) starts the animation immediately.
   bool quickMode_ = false;
-  uint32_t lastPageTurnMs_ = 0;
+  std::atomic<uint32_t> lastPageTurnMs_{0};
   // Taps that arrived while the display task holds the state lock. Applied on
   // the next unlocked UI tick so poll() never waits on TTF layout.
   std::atomic<int> pendingTurnDelta_{0};
@@ -355,6 +384,7 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   bool deferredMenuApply_ = false;
   uint8_t deferredMenuOrientation_ = 0;
   bool deferredMenuNeedRebuild_ = false;
+  bool pendingSettingsRebuild_ = false;
   std::function<void()> deferredChildTransition_;
   // Chapter picker selected while state lock was busy (never block forever).
   bool hasDeferredChapterSwitch_ = false;

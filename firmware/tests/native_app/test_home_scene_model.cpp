@@ -138,6 +138,10 @@ void testActionTargetsAreNumericAndPure() {
   assert(target.itemIndex == 0);
   assert(textIs(target.argumentView(), "weread"));
   assert(!model.actionTarget(kActionOpenApp, nullptr, &target));
+  assert(model.actionTarget(kActionOpenRecentBook, &recent, &target));
+  assert(target.action == kActionOpenRecentBook);
+  assert(target.itemIndex == 0);
+  assert(!model.actionTarget(kActionOpenRecentBook, nullptr, &target));
 }
 
 }  // namespace

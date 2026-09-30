@@ -1,5 +1,6 @@
 #include "ParsedText.h"
 
+#include <Arduino.h>
 #include <GfxRenderer.h>
 
 #include <algorithm>
@@ -240,6 +241,8 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   if (words.empty()) {
     return;
   }
+  const uint32_t layoutStartedUs = micros();
+  const size_t inputWordCount = words.size();
 
   // Apply fixed transforms before any per-line layout work.
   applyParagraphIndent();
@@ -291,6 +294,13 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 
   for (size_t i = 0; i < lineCount; ++i) {
     extractLine(i, pageWidth, spaceWidth, wordWidths, continuesVec, lineBreakIndices, processLine,renderer, fontId);
+  }
+  const uint32_t layoutElapsedUs = static_cast<uint32_t>(micros() - layoutStartedUs);
+  if (inputWordCount >= 200 || layoutElapsedUs >= 5000u) {
+    Serial.printf("[EPUB-LAYOUT] words=%u expanded=%u lines=%u hyphenation=%d include_last=%d elapsed_us=%u\n",
+                  static_cast<unsigned>(inputWordCount), static_cast<unsigned>(words.size()),
+                  static_cast<unsigned>(lineCount), hyphenationEnabled ? 1 : 0,
+                  includeLastLine ? 1 : 0, static_cast<unsigned>(layoutElapsedUs));
   }
 
   // After the first layout call, disable first-line indent so that subsequent

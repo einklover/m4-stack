@@ -40,6 +40,8 @@ bool requestChapter(const std::string& providerId, const std::string& bookId, in
 bool invalidateChapterCache(const std::string& providerId, const std::string& bookId, int index0);
 
 M4NativeProvider::Progress progress();
+// True while the single-flight chapter worker still owns provider/TLS state.
+bool busy();
 void acknowledgeAuth(const std::string& providerId);
 void cancelForeground();
 

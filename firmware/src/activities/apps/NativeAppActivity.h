@@ -18,6 +18,7 @@ class NativeAppActivity final : public ActivityWithSubactivity {
 
   void onEnter() override;
   void onExit() override;
+  bool readyForDestruction() const override;
   void loop() override;
   std::string debugUiJson() override;
 

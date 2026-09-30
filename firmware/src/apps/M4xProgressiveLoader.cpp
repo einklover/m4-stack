@@ -10,6 +10,7 @@
 
 #if defined(ARDUINO_ARCH_ESP32)
 #include <Arduino.h>
+#include "util/M4TlsMemory.h"
 #endif
 
 namespace M4xProgressiveLoader {
@@ -197,6 +198,10 @@ bool Session::connectHttp(const std::string& url,
   err = "loader_device_only";
   return false;
 #else
+  if (url.compare(0, 8, "https://") == 0 && !M4TlsMemory::resourcesAvailable()) {
+    err = "oom";
+    return false;
+  }
   secure_ = std::make_unique<WiFiClientSecure>();
   secure_->setInsecure();
   http_ = std::make_unique<HTTPClient>();

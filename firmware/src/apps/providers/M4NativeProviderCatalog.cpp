@@ -196,15 +196,14 @@ class PsramRowsSink final : public M4xJsonStream::Sink {
  public:
   ~PsramRowsSink() override { clear(); }
 
-  // Soft cap for FileRows TSV in PSRAM. Must stay at least as large as the
-  // largest Legado catalog we accept (JSON is bigger than TSV, but long
-  // titles still need headroom). Aligned with request maxBytes below.
-  static constexpr size_t kMaxBytes = 4u * 1024u * 1024u;
+  // The full JSON is streamed; cap only the normalized in-memory TSV prefix.
+  // HybridRowsSink moves subsequent rows to the buffered SD writer.
+  static constexpr size_t kMaxBytes = M4NativeCatalogPolicy::kPsramAssemblyMaxBytes;
 
   bool reserve(size_t hint) {
     clear();
     const size_t initial = std::max<size_t>(8u * 1024u, std::min(hint, kMaxBytes));
-    buf_ = static_cast<uint8_t*>(M4Psram::mallocPrefer(initial));
+    buf_ = static_cast<uint8_t*>(M4Psram::mallocPrefer(initial, "catalog-rows"));
     if (!buf_) return false;
     cap_ = initial;
     size_ = 0;
@@ -221,10 +220,8 @@ class PsramRowsSink final : public M4xJsonStream::Sink {
       while (next < size_ + len && next < kMaxBytes) next *= 2u;
       next = std::min(next, kMaxBytes);
       if (next < size_ + len) return false;
-      auto* nb = static_cast<uint8_t*>(M4Psram::mallocPrefer(next));
+      auto* nb = static_cast<uint8_t*>(M4Psram::reallocPrefer(buf_, cap_, next, "catalog-rows"));
       if (!nb) return false;
-      if (size_) std::memcpy(nb, buf_, size_);
-      M4Psram::freePrefer(buf_);
       buf_ = nb;
       cap_ = next;
     }
@@ -306,9 +303,11 @@ class AtomicRowsSink final : public M4xJsonStream::Sink {
 
   bool commit() {
     if (!close() || written_ == 0 || tmpPath_.empty()) return false;
-    for (int attempt = 0; attempt < 3; ++attempt) {
+    // Let a concurrent FAST_REFRESH drop the shared SPI bus before FatFS rename.
+    delay(120);
+    for (int attempt = 0; attempt < 8; ++attempt) {
       if (M4NativeProviderIo::commitTempFile(tmpPath_, finalPath_, written_, true)) return true;
-      delay(40 + attempt * 60);
+      delay(80 + attempt * 80);
     }
     return false;
   }
@@ -492,6 +491,61 @@ bool commitPsramBody(const std::string& finalPath, PsramRowsSink& mem) {
   return true;
 }
 
+// Assemble small/medium catalogs off the SD bus, then continue large catalogs
+// through the bounded writer. The switch happens before a 2→4 MiB grow-copy.
+class HybridRowsSink final : public M4xJsonStream::Sink {
+ public:
+  explicit HybridRowsSink(std::string finalPath) : finalPath_(std::move(finalPath)) {}
+
+  bool reserve(size_t hint) { return memory_.reserve(hint); }
+  bool empty() const { return written_ == 0; }
+  size_t size() const { return written_; }
+  bool usingSd() const { return usingSd_; }
+
+  bool write(const uint8_t* data, size_t len) override {
+    if (!data) return false;
+    if (len == 0) return true;
+    if (!usingSd_ && len <= M4NativeCatalogPolicy::kPsramAssemblyMaxBytes - memory_.size()) {
+      if (!memory_.write(data, len)) return false;
+      written_ += len;
+      return true;
+    }
+    if (!usingSd_ && !promoteToSd()) return false;
+    if (!file_.write(data, len)) return false;
+    written_ += len;
+    return true;
+  }
+
+  bool commit() {
+    return usingSd_ ? file_.commit() : commitPsramBody(finalPath_, memory_);
+  }
+
+  void discard() {
+    if (usingSd_) file_.discard();
+    memory_.clear();
+    written_ = 0;
+  }
+
+ private:
+  bool promoteToSd() {
+    if (!file_.open(finalPath_)) return false;
+    if (memory_.size() && !file_.write(memory_.data(), memory_.size())) {
+      file_.discard();
+      return false;
+    }
+    memory_.clear();
+    usingSd_ = true;
+    Serial.printf("[NativeCatalog] assembly cap reached; continuing rows on SD\n");
+    return true;
+  }
+
+  std::string finalPath_;
+  PsramRowsSink memory_;
+  AtomicRowsSink file_;
+  size_t written_ = 0;
+  bool usingSd_ = false;
+};
+
 // Full catalog download: prefer PSRAM TSV assembly (no SD during parse), fall
 // back to buffered AtomicRowsSink if PSRAM cannot reserve.
 // On success: *outRows / *outBytes filled. On failure returns false (caller
@@ -503,7 +557,7 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
   publish(Phase::Receiving, 0, 0, {}, keepPartialOnFail, totalHint);
 
   // --- Prefer PSRAM path ---
-  PsramRowsSink mem;
+  HybridRowsSink mem(finalPath);
   if (M4NativeCatalogPolicy::preferPsramAssembly(job.providerId) && mem.reserve(256u * 1024u)) {
     M4xJsonStream::RecordExtractor rows(spec.path, spec.fields, mem, spec.maxRows);
     RecordExtractorSink jsonSink(rows);
@@ -517,9 +571,10 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
           },
           [] { return cancelled(); });
     }
+    M4NativeProviderHttp::releaseTlsSession();
     const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0 && !mem.empty();
     if (!parsed) {
-      mem.clear();
+      mem.discard();
       if (outBytes) *outBytes = net.bytes;
       if (outRows) *outRows = rows.recordCount();
       if (outTransferOk) *outTransferOk = net.ok;
@@ -534,14 +589,16 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
           *outError = M4xJsonStream::errorString(rows.error());
         }
       }
-      Serial.printf("[NativeCatalog] full psram parse failed err=%s keep_partial=%d\n",
+      Serial.printf("[NativeCatalog] full bounded parse failed err=%s keep_partial=%d\n",
                     net.error.empty() ? M4xJsonStream::errorString(rows.error())
                                       : net.error.c_str(),
                     keepPartialOnFail ? 1 : 0);
       return false;
     }
     const size_t rowCount = rows.recordCount();
-    if (!commitPsramBody(finalPath, mem)) {
+    const size_t tsvBytes = mem.size();
+    if (!mem.commit()) {
+      mem.discard();
       if (outBytes) *outBytes = net.bytes;
       if (outRows) *outRows = rowCount;
       if (outTransferOk) *outTransferOk = net.ok;
@@ -550,6 +607,9 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
     }
     if (outBytes) *outBytes = net.bytes;
     if (outRows) *outRows = rowCount;
+    Serial.printf("[NativeCatalog] full commit path=%s rows=%u bytes=%u\n",
+                  mem.usingSd() ? "sd-stream" : "psram-bounded",
+                  static_cast<unsigned>(rowCount), static_cast<unsigned>(tsvBytes));
     return true;
   }
 
@@ -575,6 +635,7 @@ bool downloadFullCatalog(const Snapshot& job, const CatalogSpec& spec,
         },
         [] { return cancelled(); });
   }
+  M4NativeProviderHttp::releaseTlsSession();
   const bool parsed = net.ok && rows.finish() && rows.recordCount() > 0;
   if (!parsed) {
     file.discard();
@@ -629,6 +690,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
         [&](size_t bytes) { publish(Phase::Receiving, bytes, window.count(), {}, false, totalHint); },
         M4ProgressiveCatalog::windowCancel(window, [] { return cancelled(); }));
   }
+  M4NativeProviderHttp::releaseTlsSession();
 
   // First window filled → open immediately (partial). HTTP was cancelled early.
   // Do NOT overwrite these real titles with placeholders — placeholders are only
@@ -638,6 +700,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
       file.discard();
       Serial.printf("[NativeCatalog] first-window commit failed rows=%u path=%s\n",
                     static_cast<unsigned>(window.count()), finalPath.c_str());
+      M4NativeProviderIo::logHttpTlsIf(job.appId, "catalog", "catalog_commit_failed");
       publish(Phase::Error, net.bytes, window.count(), "catalog_commit_failed", false, totalHint);
       return false;
     }
@@ -700,6 +763,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
         (error == "http_401" || error == "http_403" || error == "login_required")) {
       publish(Phase::AuthRequired, net.bytes, 0, error);
     } else {
+      M4NativeProviderIo::logHttpTlsIf(job.appId, "catalog", error);
       publish(Phase::Error, net.bytes, rowCount, cancelled() ? "cancelled" : error);
     }
     return false;
@@ -708,6 +772,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
     file.discard();
     Serial.printf("[NativeCatalog] small-catalog commit failed rows=%u path=%s\n",
                   static_cast<unsigned>(rowCount), finalPath.c_str());
+    M4NativeProviderIo::logHttpTlsIf(job.appId, "catalog", "catalog_commit_failed");
     publish(Phase::Error, net.bytes, rowCount, "catalog_commit_failed");
     return false;
   }
@@ -720,7 +785,7 @@ bool streamCatalogProgressive(const Snapshot& job, const CatalogSpec& spec,
   return true;
 }
 
-void taskMain(void*) {
+void runJob() {
   Snapshot job;
   {
     std::lock_guard<std::mutex> lock(gMu);
@@ -785,6 +850,7 @@ void taskMain(void*) {
         } else {
           Serial.printf("[NativeCatalog] full refill failed err=%s keep placeholders\n",
                         fullErr.c_str());
+          M4NativeProviderIo::logHttpTlsIf(job.appId, "catalog", fullErr);
           // Stale Legado shelf on a fresh first open (empty 200 {"data":[]},
           // 404 locator gone, or changed response shape with zero records):
           // replace the hollow Ready-with-placeholders state with a visible
@@ -809,11 +875,16 @@ void taskMain(void*) {
     }
   }
 
-  gBusy.store(false, std::memory_order_release);
+}
+
+void taskMain(void*) {
+  // Return through C++ frames before self-delete (FreeRTOS does not unwind).
+  runJob();
   {
     std::lock_guard<std::mutex> lock(gMu);
     gTask = nullptr;
   }
+  gBusy.store(false, std::memory_order_release);
   M4Psram::deleteTask(nullptr);
 }
 

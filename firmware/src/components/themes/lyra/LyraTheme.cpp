@@ -50,6 +50,7 @@ const uint8_t* iconForName(UIIcon icon) {
     case UIIcon::Recent:   return RecentIcon;
     case UIIcon::Settings: return SettingsIcon;
     case UIIcon::Transfer: return TransferIcon;
+    case UIIcon::WifiTransfer: return TransferIcon;
     case UIIcon::Wifi:     return WifiIcon;
     case UIIcon::Hotspot:  return HotspotIcon;
     case UIIcon::Cog:      return CogIcon;

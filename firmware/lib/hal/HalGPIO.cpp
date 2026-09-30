@@ -71,6 +71,7 @@ bool HalGPIO::wasAnyReleased() const {
 }
 
 unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
+unsigned long HalGPIO::getPowerButtonHeldTime() const { return inputMgr.getPowerButtonHeldTime(); }
 
 bool HalGPIO::hasTouch() const {
 #ifdef CROSSPOINT_MURPHY_M4

@@ -10,13 +10,73 @@
 #include <esp_task_wdt.h>
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <vector>
 
 namespace {
+
+// Install work can run from the serial bridge, UI, or network task.  Only
+// some of those callers are subscribed to the task watchdog; calling the
+// reset API from an unsubscribed task emits an error for every chunk and can
+// flood the control serial stream.  Feed it only when this task is subscribed.
+inline void resetTaskWdtIfSubscribed() {
+#if defined(ESP32)
+  if (esp_task_wdt_status(nullptr) == ESP_OK) {
+    (void)esp_task_wdt_reset();
+  }
+#endif
+}
+
+// Serializes install, uninstall, and boot recovery. HTTP file transfer already
+// holds storageMutex_ and then calls install(), so the order is storageMutex_
+// then this gate. UI and the install worker take only this gate. Do not take
+// storageMutex_, gM4RenderMutex, or a display lock while the gate is held,
+// and do not take the gate from the HTTP handler. ensureLayout() must not
+// take it: install() reaches that function through probe(). The mutex is not
+// recursive. Recovery work is the locked helper. Only recoverInterrupted()
+// acquires the gate, and that entry is not called while the gate is already held.
+std::atomic<SemaphoreHandle_t> gInstallGate{nullptr};
+
+SemaphoreHandle_t installGateHandle() {
+  SemaphoreHandle_t cur = gInstallGate.load(std::memory_order_acquire);
+  if (cur != nullptr) return cur;
+  SemaphoreHandle_t created = xSemaphoreCreateMutex();
+  if (created == nullptr) return nullptr;
+  SemaphoreHandle_t expected = nullptr;
+  if (gInstallGate.compare_exchange_strong(expected, created, std::memory_order_release,
+                                           std::memory_order_acquire)) {
+    return created;
+  }
+  vSemaphoreDelete(created);
+  return expected;
+}
+
+class InstallGateGuard {
+ public:
+  InstallGateGuard() = default;
+  bool acquire() {
+    handle_ = installGateHandle();
+    if (handle_ == nullptr) return false;
+    held_ = xSemaphoreTake(handle_, portMAX_DELAY) == pdTRUE;
+    return held_;
+  }
+  ~InstallGateGuard() {
+    if (held_) xSemaphoreGive(handle_);
+  }
+  InstallGateGuard(const InstallGateGuard&) = delete;
+  InstallGateGuard& operator=(const InstallGateGuard&) = delete;
+
+ private:
+  SemaphoreHandle_t handle_ = nullptr;
+  bool held_ = false;
+};
 
 bool writeFileBytes(const char* path, const uint8_t* data, size_t n) {
   if (SdMan.exists(path)) SdMan.remove(path);
@@ -31,7 +91,7 @@ bool writeFileBytes(const char* path, const uint8_t* data, size_t n) {
       return false;
     }
     off += static_cast<size_t>(w);
-    esp_task_wdt_reset();
+    resetTaskWdtIfSubscribed();
     vTaskDelay(1);
   }
   f.close();
@@ -149,7 +209,7 @@ class SdWritePrint final : public Print {
       const int n = f_.write(buf + off, chunk);
       if (n <= 0) return off;
       off += static_cast<size_t>(n);
-      esp_task_wdt_reset();
+      resetTaskWdtIfSubscribed();
     }
     return off;
   }
@@ -262,7 +322,7 @@ bool extractListed(const std::string& packagePath, const std::string& destRoot, 
     }
     total += entryBytes;
     Serial.printf("[M4x] extracted %s (%u bytes)\n", rel.c_str(), static_cast<unsigned>(entryBytes));
-    esp_task_wdt_reset();
+    resetTaskWdtIfSubscribed();
   }
   return true;
 }
@@ -312,7 +372,7 @@ bool copyListedFiles(const std::string& fromRoot, const std::string& toRoot, con
       errOut = std::string("write_promote:") + rel;
       return false;
     }
-    esp_task_wdt_reset();
+    resetTaskWdtIfSubscribed();
   }
   return true;
 }
@@ -428,11 +488,13 @@ bool hookLive(const std::string& p, void*) { return SdMan.exists(p.c_str()); }
 bool hookBak(const std::string& p, void*) { return SdMan.exists(p.c_str()); }
 bool hookStaging(const std::string& p, void*) { return SdMan.exists(p.c_str()); }
 bool hookRegHas(const std::string& id, void*) {
-  auto apps = M4xRegistry::load();
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) return false;
   return M4xRegistry::find(apps, id) != nullptr;
 }
 bool hookRegMatch(const M4xInstallTxn::JournalRecord& rec, void*) {
-  auto apps = M4xRegistry::load();
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) return false;
   const auto* a = M4xRegistry::find(apps, rec.id);
   return a && a->versionCode == rec.newVersionCode && a->entry == rec.newEntry;
 }
@@ -509,7 +571,8 @@ bool hookRestoreOld(const M4xInstallTxn::JournalRecord& rec, void*) {
 }
 
 bool hookCommitReg(const M4xInstallTxn::JournalRecord& rec, void*) {
-  auto apps = M4xRegistry::load();
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) return false;
   M4xManifest m;
   m.id = rec.id;
   m.name = rec.newName;
@@ -522,8 +585,8 @@ bool hookCommitReg(const M4xInstallTxn::JournalRecord& rec, void*) {
   m.valid = true;
   M4xRegistry::upsert(apps, m, rec.installPath, static_cast<uint32_t>(millis() / 1000));
   if (!M4xRegistry::save(apps)) return false;
-  // Postcondition: registry matches new.
-  apps = M4xRegistry::load();
+  // Postcondition: registry matches new. A transient re-read is not success.
+  if (!M4xRegistry::tryLoad(apps)) return false;
   const auto* a = M4xRegistry::find(apps, rec.id);
   return a && a->versionCode == rec.newVersionCode && a->entry == rec.newEntry;
 }
@@ -536,7 +599,22 @@ bool hookDropBak(const M4xInstallTxn::JournalRecord& rec, void*) {
   return !SdMan.exists(rec.backupPath.c_str());
 }
 
-void recoverInterruptedInstalls() {
+// Caller holds installGate for the whole call. Do not acquire it here.
+// True when install/uninstall must stop. Does not modify the journal or app dirs.
+bool refuseIfPendingJournal(const std::string& id, std::string& errorOut) {
+  bool pending = false;
+  if (!M4xInstallJournal::readPending(id, pending)) {
+    errorOut = "journal_read";
+    return true;
+  }
+  if (pending) {
+    errorOut = "recovery_required";
+    return true;
+  }
+  return false;
+}
+
+void recoverInterruptedInstallsLocked() {
   M4xInstallJournal::RecoveryHooks h;
   h.liveExists = &hookLive;
   h.bakExists = &hookBak;
@@ -553,18 +631,43 @@ void recoverInterruptedInstalls() {
 
 }  // namespace
 
+bool M4xInstaller::archiveAndReleasePending(const std::string& id, std::string& errorOut) {
+  InstallGateGuard gate;
+  if (!gate.acquire()) {
+    errorOut = "install_gate";
+    return false;
+  }
+  M4xInstallJournal::ArchiveHooks hooks;
+  hooks.pathExists = [](const std::string& path, void*) { return SdMan.exists(path.c_str()); };
+  hooks.listTree = [](const std::string& root, std::vector<std::string>& rels, void*) {
+    return M4xInstallJournal::archiveListTree(root, rels);
+  };
+  hooks.copyFile = [](const std::string& src, const std::string& dst, void*) {
+    return M4xInstallJournal::archiveCopyFileVerified(src, dst);
+  };
+  return M4xInstallJournal::archiveAndRelease(id, hooks, errorOut);
+}
+
 void M4xInstaller::ensureLayout() {
   SdMan.mkdir(M4xPaths::kAppsRoot, true);
   SdMan.mkdir(M4xPaths::kAppsDataRoot, true);
   SdMan.mkdir(M4xPaths::kInbox, true);
   SdMan.mkdir("/system", true);
-  recoverInterruptedInstalls();
+}
+
+void M4xInstaller::recoverInterrupted() {
+  InstallGateGuard gate;
+  if (!gate.acquire()) {
+    Serial.printf("[M4x] recover: install gate unavailable\n");
+    return;
+  }
+  recoverInterruptedInstallsLocked();
 }
 
 M4xInstallResult M4xInstaller::probe(const std::string& packagePath) {
   M4xInstallResult r;
   ensureLayout();
-  esp_task_wdt_reset();
+  resetTaskWdtIfSubscribed();
 
   if (!SdMan.exists(packagePath.c_str())) {
     r.error = "not_found";
@@ -643,14 +746,33 @@ M4xInstallResult M4xInstaller::probe(const std::string& packagePath) {
 }
 
 M4xInstallResult M4xInstaller::install(const std::string& packagePath) {
+  InstallGateGuard gate;
+  if (!gate.acquire()) {
+    M4xInstallResult denied;
+    denied.error = "install_gate";
+    denied.message = "无法开始安装";
+    return denied;
+  }
   Serial.printf("[M4x] install begin path=%s freeHeap=%u\n", packagePath.c_str(),
                 static_cast<unsigned>(ESP.getFreeHeap()));
-  esp_task_wdt_reset();
+  resetTaskWdtIfSubscribed();
 
   M4xInstallResult r = probe(packagePath);
   if (!r.ok) return r;
 
-  auto apps = M4xRegistry::load();
+  if (refuseIfPendingJournal(r.manifest.id, r.error)) {
+    r.ok = false;
+    r.message = r.error == "recovery_required" ? "上次安装未完成，请重启后再试" : "无法读取安装事务日志";
+    return r;
+  }
+
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) {
+    r.ok = false;
+    r.error = "registry_read";
+    r.message = "无法读取应用注册表（未改动注册表）";
+    return r;
+  }
   if (const auto* existing = M4xRegistry::find(apps, r.manifest.id)) {
     if (r.manifest.versionCode < existing->versionCode) {
       r.ok = false;
@@ -766,11 +888,21 @@ M4xInstallResult M4xInstaller::install(const std::string& packagePath) {
 }
 
 bool M4xInstaller::uninstall(const std::string& id, bool clearData, std::string& errorOut) {
+  InstallGateGuard gate;
+  if (!gate.acquire()) {
+    errorOut = "install_gate";
+    return false;
+  }
   if (!M4xIsValidPackageId(id)) {
     errorOut = "invalid_id";
     return false;
   }
-  auto apps = M4xRegistry::load();
+  if (refuseIfPendingJournal(id, errorOut)) return false;
+  std::vector<M4xInstalledApp> apps;
+  if (!M4xRegistry::tryLoad(apps)) {
+    errorOut = "registry_read";
+    return false;
+  }
   const auto* app = M4xRegistry::find(apps, id);
   if (!app) {
     errorOut = "not_installed";

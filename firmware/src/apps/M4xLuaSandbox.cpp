@@ -1,4 +1,5 @@
 #include "apps/M4xLuaSandbox.h"
+#include <M4MemoryManager.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -28,10 +29,10 @@ void* alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
   auto* b = static_cast<Budget*>(ud);
   if (!b) {
     if (nsize == 0) {
-      free(ptr);
+      M4Memory::free(ptr);
       return nullptr;
     }
-    return realloc(ptr, nsize);
+    return M4Memory::reallocApp(ptr, nsize);
   }
 
   // Lua 5.4: when ptr!=NULL and nsize==0, free; when ptr==NULL, osize is type tag (not size).
@@ -39,13 +40,7 @@ void* alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
     if (ptr) {
       if (b->memUsed >= osize) b->memUsed -= osize;
       else b->memUsed = 0;
-#if defined(ARDUINO_ARCH_ESP32)
-      // Lua consists mostly of sub-4 KiB allocations. The default Arduino
-      // malloc policy keeps those in scarce internal RAM and can starve TLS.
-      heap_caps_free(ptr);
-#else
-      free(ptr);
-#endif
+      M4Memory::free(ptr);
     }
     return nullptr;
   }
@@ -63,14 +58,10 @@ void* alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
     return nullptr;
   }
 
-#if defined(ARDUINO_ARCH_ESP32)
-  // Keep the Lua VM in PSRAM so mbedTLS retains contiguous internal memory.
-  // heap_caps_realloc can also migrate a prior fallback allocation.
-  void* p = heap_caps_realloc(ptr, nsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!p) p = heap_caps_realloc(ptr, nsize, MALLOC_CAP_8BIT);
-#else
-  void* p = realloc(ptr, nsize);
-#endif
+  // Lua state belongs to the foreground app. Tiny tables/strings and large
+  // buffers share the same fixed PSRAM arena so no VM allocation can fragment
+  // or exhaust protected internal RAM.
+  void* p = M4Memory::reallocApp(ptr, nsize);
   if (!p) {
     b->violated = true;
     b->reason = "lua_oom";

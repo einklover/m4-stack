@@ -22,6 +22,7 @@ class Activity {
 
  private:
   ActivityWithSubactivity* parentActivity_ = nullptr;
+  Activity* deferredNext_ = nullptr;
   friend class ActivityWithSubactivity;
   void setParentActivity(ActivityWithSubactivity* parent) { parentActivity_ = parent; }
 
@@ -29,6 +30,13 @@ class Activity {
   explicit Activity(std::string name, GfxRenderer& renderer, MappedInputManager& mappedInput)
       : name(std::move(name)), renderer(renderer), mappedInput(mappedInput) {}
   virtual ~Activity() = default;
+  // Activities with background owners remain retired until those owners stop.
+  virtual bool readyForDestruction() const { return true; }
+  virtual bool hasLiveReaderOwner() const {
+    return isReaderActivity() && !readyForDestruction();
+  }
+  Activity* deferredNext() const { return deferredNext_; }
+  void setDeferredNext(Activity* next) { deferredNext_ = next; }
   virtual void onEnter() {
     M4TouchNavigation::activateForActivity(showTouchNavigation());
     M4UiRuntimePolicy::setTextScalePercent(uiTextScalePercent());

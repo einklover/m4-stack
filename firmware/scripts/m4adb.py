@@ -25,11 +25,17 @@ from m4adb_lib.daemon import BridgeDaemon, DaemonTransport, daemon_alive, socket
 from m4adb_lib.font_policy import font_filename_error  # noqa: E402
 from m4adb_lib.journey import load_journey, run_journey  # noqa: E402
 from m4adb_lib.mock_device import MockDevice  # noqa: E402
+from m4adb_lib.owner import decide_attach, lock_is_held, owner_paths, read_owner_pid  # noqa: E402
 from m4adb_lib.transport import MockTransport, auto_port, list_serial_devices, make_transport  # noqa: E402
 from m4adb_lib.watch import watch_loop  # noqa: E402
 
 DEFAULT_CACHE = ROOT / "build" / "m4adb" / "cache"
 DEFAULT_ARTIFACTS = ROOT / "build" / "m4adb" / "runs"
+
+USB_SERIAL_DEBUG_HINT = (
+    "请在设备上开启：设置 → 系统 → 开发者选项 → USB 串口控制。\n"
+    "不要再启动第二个 m4adb，也不要反复拔插 USB。"
+)
 
 
 def _resolve_ready_timeout(args: argparse.Namespace, ready_timeout: float | None = None) -> float:
@@ -73,46 +79,35 @@ def _open_direct_client(args: argparse.Namespace, ready_timeout: float | None = 
     return client
 
 
-def _open_client(args: argparse.Namespace, ready_timeout: float | None = None) -> Client:
-    """Open a client, reusing one resident USB owner whenever possible."""
-    if getattr(args, "mock", False) or getattr(args, "no_daemon", False):
-        return _open_direct_client(args, ready_timeout)
-    port = args.port or auto_port()
-    if not port:
-        raise SystemExit("未找到串口设备。请用 --port 指定，或先运行 devices / doctor。")
-    path = socket_path_for_port(port)
-    base = float(getattr(args, "timeout", 10))
-    ready = _resolve_ready_timeout(args, ready_timeout)
+def _print_bridge_hint(err: BridgeError) -> None:
+    if err.key in ("usb_debug_off", "timeout"):
+        print(USB_SERIAL_DEBUG_HINT, file=sys.stderr, flush=True)
 
-    def connect_existing() -> Client | None:
-        c: Client | None = None
-        try:
-            c = Client(DaemonTransport(path, timeout=1.5), default_timeout=base)
-            c.wait_ready(timeout=min(8.0, ready))
-            print(f"[m4adb] 复用常驻 USB 调试会话 {path}", flush=True)
-            return c
-        except (OSError, RuntimeError, BridgeError):
-            if c is not None:
-                c.close()
-            return None
 
-    existing = connect_existing()
-    if existing is not None:
-        return existing
+def _client_from_socket(path: Path, base: float, ready: float, banner: str) -> Client:
+    c = Client(DaemonTransport(path, timeout=1.5), default_timeout=base)
+    try:
+        print(f"[m4adb] {banner}", flush=True)
+        print(f"[m4adb] 等待桥就绪（最多 {ready:.0f}s）…", flush=True)
+        t0 = time.time()
+        c.wait_ready(timeout=ready)
+        print(f"[m4adb] 已就绪 ({time.time() - t0:.1f}s)", flush=True)
+        return c
+    except BridgeError as e:
+        c.close()
+        _print_bridge_hint(e)
+        raise
 
-    # No responsive daemon: a stale process may still own the socket with a
-    # dead serial handle (device reset/reboot). Ask it to exit first so the
-    # new owner below can bind the socket — never spawn two owners.
-    stop_daemon(path)
-    # Give the old daemon a moment to unlink its socket.
-    time.sleep(0.4)
-    for _ in range(5):
-        if not daemon_alive(path):
-            break
+
+def _wait_for_socket(path: Path, deadline: float) -> bool:
+    while time.time() < deadline:
+        if daemon_alive(path):
+            return True
         time.sleep(0.2)
+    return False
 
-    # Spawn exactly one owner, then connect over its socket.  The child owns
-    # the hardware handle; this process never opens USB directly.
+
+def _spawn_daemon(port: str, baud: int, path: Path, ready: float) -> Path:
     log_path = ROOT / "build" / "m4adb" / "daemon.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("a", encoding="utf-8")
@@ -122,7 +117,7 @@ def _open_client(args: argparse.Namespace, ready_timeout: float | None = None) -
         "--port",
         port,
         "--baud",
-        str(int(getattr(args, "baud", 115200))),
+        str(int(baud)),
         "daemon",
         "--socket",
         str(path),
@@ -133,17 +128,64 @@ def _open_client(args: argparse.Namespace, ready_timeout: float | None = None) -
         subprocess.Popen(cmd, stdout=log, stderr=log, start_new_session=True, close_fds=True)
     finally:
         log.close()
-    deadline = time.time() + ready + 5.0
-    while time.time() < deadline:
-        c = connect_existing()
-        if c is not None:
-            return c
-        time.sleep(0.2)
-    # If daemon startup failed, do not leave a stale owner behind.  A direct
-    # fallback is allowed only after the child is gone, preventing two USB
-    # handles from racing and resetting the board.
-    stop_daemon(path)
-    raise BridgeError("daemon_start_failed", f"常驻 USB 调试服务启动失败；详见 {log_path}")
+    return log_path
+
+
+def _open_client(args: argparse.Namespace, ready_timeout: float | None = None) -> Client:
+    """Attach through the single serial owner. Never stop+spawn on ping timeout."""
+    if getattr(args, "mock", False):
+        return _open_direct_client(args, ready_timeout)
+
+    port = args.port or auto_port()
+    if not port:
+        raise SystemExit("未找到串口设备。请用 --port 指定，或先运行 devices / doctor。")
+    paths = owner_paths(port)
+    base = float(getattr(args, "timeout", 10))
+    ready = _resolve_ready_timeout(args, ready_timeout)
+    no_daemon = bool(getattr(args, "no_daemon", False))
+    sock_alive = daemon_alive(paths.socket)
+    held = lock_is_held(paths.lock)
+    action = decide_attach(socket_alive=sock_alive, lock_held=held, no_daemon=no_daemon)
+
+    if action == "refuse":
+        raise SystemExit(
+            f"--no-daemon 拒绝：端口已有 owner（socket {paths.socket}）。"
+            "请去掉 --no-daemon 以复用常驻会话，或先运行 daemon_stop。"
+        )
+    if action == "direct":
+        print("[m4adb] --no-daemon：端口空闲，直连（可能触发 USB 复位）", flush=True)
+        try:
+            return _open_direct_client(args, ready_timeout)
+        except BridgeError as e:
+            _print_bridge_hint(e)
+            raise
+
+    if action == "wait":
+        print(f"[m4adb] 端口已有 owner，等待 socket {paths.socket}", flush=True)
+        if not _wait_for_socket(paths.socket, time.time() + ready):
+            raise BridgeError(
+                "daemon_not_ready",
+                f"锁被占用但 socket 未就绪（{paths.socket}）。请等待现有 m4adb，不要再开一个。",
+            )
+        return _client_from_socket(
+            paths.socket, base, ready, f"复用常驻 USB 会话 {paths.socket}"
+        )
+
+    if action == "reuse":
+        return _client_from_socket(
+            paths.socket, base, ready, f"复用常驻 USB 会话 {paths.socket}"
+        )
+
+    print(f"[m4adb] 启动常驻 USB 会话（本进程不打开串口）port={port}", flush=True)
+    log_path = _spawn_daemon(port, int(getattr(args, "baud", 115200)), paths.socket, ready)
+    if not _wait_for_socket(paths.socket, time.time() + ready + 5.0):
+        raise BridgeError(
+            "daemon_start_failed",
+            f"常驻 USB 调试服务未监听；详见 {log_path}。不会因此杀掉可能已占用端口的进程。",
+        )
+    return _client_from_socket(
+        paths.socket, base, ready, f"复用常驻 USB 会话 {paths.socket}"
+    )
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
@@ -391,7 +433,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             m4x, _, _ = pkg.resolve_package(path, DEFAULT_CACHE)
         else:
             m4x = path
-        transport = getattr(args, "transport", "auto") or "auto"
+        transport = getattr(args, "transport", "usb") or "usb"
         print(
             f"[m4adb] 安装 {m4x.name} ({m4x.stat().st_size} bytes)；"
             f"transport={transport} commit≤{commit_to:.0f}s overall≤{overall_to:.0f}s",
@@ -405,9 +447,15 @@ def cmd_install(args: argparse.Namespace) -> int:
             transport=transport,
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
+        if getattr(args, "launch", False):
+            app_id = pkg.package_app_id(path)
+            print(f"[m4adb] launch {app_id}", flush=True)
+            launched = c.launch(app_id)
+            print(json.dumps(launched, ensure_ascii=False, indent=2))
         return 0
     except BridgeError as e:
         print(f"错误 {e.key}: {e.message}", file=sys.stderr)
+        _print_bridge_hint(e)
         return 1
     finally:
         c.close()
@@ -778,11 +826,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print("  修复: sudo usermod -aG dialout $USER  然后重新登录")
         return 1
     print(f"[OK] 使用串口 {port}（常驻会话优先）")
+    paths = owner_paths(port)
+    print(
+        f"     socket={paths.socket} alive={daemon_alive(paths.socket)} "
+        f"lock_held={lock_is_held(paths.lock)} pid={read_owner_pid(paths.pid)}"
+    )
     try:
         c = _open_client(args)
     except Exception as e:
         print(f"[FAIL] 打开调试会话失败: {e}")
-        print("  请确认设备已连接，且没有其他程序占用串口；不要意外触发 DTR 复位。")
+        print("  请确认设备已连接；不要再开第二个 m4adb，也不要用 pkill -f。")
+        print("  " + USB_SERIAL_DEBUG_HINT.replace("\n", "\n  "))
         return 1
     try:
         st = c.ping()
@@ -812,7 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-daemon",
         action="store_true",
-        help="不复用常驻 USB 会话（仅故障排查；可能触发设备复位）",
+        help="端口空闲时直连；若已有 owner 则拒绝（避免双开复位）。QEMU 隔离用。",
     )
     p.add_argument(
         "--timeout",
@@ -890,7 +944,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="输出原始 JSON（含 data_b64）",
     )
-    pi = sub.add_parser("install", help="安装 .m4x 或源目录（单次连接，含整体超时）")
+    pi = sub.add_parser(
+        "install",
+        help="安装 .m4x 或源目录（类似 adb install；默认 USB，单 owner）",
+    )
     pi.add_argument("path")
     pi.add_argument(
         "--ready-timeout",
@@ -912,9 +969,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pi.add_argument(
         "--transport",
-        choices=("wifi", "auto", "usb"),
-        default="auto",
-        help="传包通道：auto=优先 Wi-Fi，失败回退 USB；wifi=仅局域网 HTTP；usb=仅串口分片",
+        choices=("usb", "wifi", "auto"),
+        default="usb",
+        help="传包通道：usb=仅串口分片（默认，类似 adb install）；wifi=仅局域网 HTTP；auto=优先 Wi-Fi 失败回退 USB",
+    )
+    pi.add_argument(
+        "--launch",
+        action="store_true",
+        help="安装成功后启动 manifest.json 的 id",
     )
     ps = sub.add_parser("sync", help="仅在内容变化时安装")
     ps.add_argument("source")

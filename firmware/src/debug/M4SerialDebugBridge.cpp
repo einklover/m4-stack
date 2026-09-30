@@ -9,6 +9,7 @@
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <SDCardManager.h>
+#include <esp_heap_caps.h>
 #include <mbedtls/sha256.h>
 
 #include <cstdio>
@@ -29,6 +30,7 @@
 #include "apps/M4xWifiConnect.h"
 #include "apps/M4WifiFailureTracker.h"
 #include "qemu/M4QemuNet.h"
+#include <M4MemoryManager.h>
 #include "util/M4FontDebugPolicy.h"
 
 namespace M4SerialDebug {
@@ -296,13 +298,17 @@ void Bridge::poll() {
   // is not stuck across many e-ink-blocked loops. Cap keeps the owner loop fair.
   constexpr int kRxBudget = 1024;
   if (!auth_.shouldExecuteFrames()) {
-    // Boundedly discard CDC RX so the buffer cannot arm commands after enable.
+    // Parse framed req/chk and NAK usb_debug_off. Never execute, never keep-awake.
     int budget = kRxBudget;
     while (budget-- > 0 && Serial.available() > 0) {
-      (void)Serial.read();
+      const int b = Serial.read();
+      if (b < 0) break;
+      bool lineReady = false;
+      intake_.feed(static_cast<char>(b), lineReady);
+      if (!lineReady) continue;
+      handleUnauthorizedLine(intake_.buf);
+      intake_.clearAfterHandle();
     }
-    intake_.reset();
-    intake_.discardUntilNewline = false;
     return;
   }
   if (enableRxDrainPending_) {
@@ -366,6 +372,18 @@ bool Bridge::parseFrame(const char* line, char* reqIdOut, size_t reqIdCap, char*
   return true;
 }
 
+void Bridge::handleUnauthorizedLine(const char* line) {
+  char reqId[kMaxReqIdLen + 1] = {};
+  char kind[8] = {};
+  const char* payload = nullptr;
+  if (!parseFrame(line, reqId, sizeof(reqId), kind, sizeof(kind), &payload)) return;
+  if (!M4SerialDebugPolicy::isValidReqId(reqId)) return;
+  const char* err = M4SerialDebugPolicy::unauthorizedFrameError(kind);
+  if (!err) return;
+  replyErr(reqId, err, M4SerialDebugPolicy::kUnauthorizedErrorMessage);
+  Serial.flush();
+}
+
 void Bridge::handleLine(const char* line) {
   if (strncmp(line, kPrefix, strlen(kPrefix)) != 0) return;
   noteHostActivity();
@@ -396,6 +414,10 @@ void Bridge::handleLine(const char* line) {
   if (strcmp(kind, "chk") == 0) {
     // Chunk acks are cached by req id for lost-ack retries.
     if (tryIdemReplay(reqId)) return;
+    if (yieldContext_) {
+      replyErr(reqId, "busy", "渲染忙，请稍后重试");
+      return;
+    }
     if (!payload) {
       replyErr(reqId, "bad_chunk", "分片格式错误");
       return;
@@ -485,6 +507,11 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     replyErr(reqId, "missing_op", "缺少 op 字段");
     return;
   }
+  const char* action = doc["action"] | "";
+  if (yieldContext_ && !M4SerialDebugPolicy::canExecuteDuringYield("req", op, action)) {
+    replyErr(reqId, "busy", "渲染忙，请稍后重试");
+    return;
+  }
 
   if (strcmp(op, "ping") == 0 || strcmp(op, "status") == 0) {
     StatusSnapshot st{};
@@ -518,6 +545,7 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
     snprintf(out, sizeof(out),
              "{\"op\":\"%s\",\"protocol\":%d,\"firmware\":\"%s\",\"activity\":\"%s\","
              "\"active_app\":\"%s\",\"free_heap\":%u,\"min_free_heap\":%u,\"free_psram\":%u,"
+             "\"largest_internal_block\":%u,"
              "\"reset_reason\":%u,"
              "\"sd_ok\":%s,\"screen_w\":%d,\"screen_h\":%d,\"orientation\":%d,"
              "\"wifi_connected\":%s,\"wifi_status\":%d,\"wifi_ssid\":\"%s\",\"wifi_ip\":\"%s\","
@@ -526,10 +554,35 @@ void Bridge::handleReq(const char* reqId, const char* json, size_t jsonLen) {
              "\"swipe\",\"screenshot\",\"logs\",\"ui\",\"font\"]}",
              op, kProtocolVersion, st.firmwareVersion ? st.firmwareVersion : "", activityCopy_, appIdCopy_,
              static_cast<unsigned>(st.freeHeap), static_cast<unsigned>(st.minFreeHeap),
-             static_cast<unsigned>(st.freePsram), static_cast<unsigned>(st.resetReason),
+             static_cast<unsigned>(st.freePsram),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(st.resetReason),
              st.sdOk ? "true" : "false", st.screenW, st.screenH,
              st.orientation, wifiConnected ? "true" : "false", static_cast<int>(WiFi.status()), wifiSsidSafe,
              wifiIpSafe, wifiRssi);
+    replyOk(reqId, out);
+    return;
+  }
+
+  // Read-only arena telemetry for bounded-memory simulator/device validation.
+  // This does not allocate or mutate any pool state.
+  if (strcmp(op, "memory") == 0) {
+    const auto t = M4Memory::stats(M4Memory::Pool::Ttf);
+    const auto a = M4Memory::stats(M4Memory::Pool::App);
+    const auto s = M4Memory::stats(M4Memory::Pool::Scratch);
+    char out[760];
+    snprintf(out, sizeof(out),
+             "{\"op\":\"memory\",\"raw_free_psram\":%u,"
+             "\"ttf\":{\"used\":%u,\"peak\":%u,\"largest_free\":%u,\"failures\":%u,\"resets\":%u},"
+             "\"app\":{\"used\":%u,\"peak\":%u,\"largest_free\":%u,\"failures\":%u,\"resets\":%u},"
+             "\"scratch\":{\"used\":%u,\"peak\":%u,\"largest_free\":%u,\"failures\":%u,\"resets\":%u}}",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+             static_cast<unsigned>(t.used), static_cast<unsigned>(t.peak), static_cast<unsigned>(t.largestFree),
+             static_cast<unsigned>(t.failures), static_cast<unsigned>(t.resets),
+             static_cast<unsigned>(a.used), static_cast<unsigned>(a.peak), static_cast<unsigned>(a.largestFree),
+             static_cast<unsigned>(a.failures), static_cast<unsigned>(a.resets),
+             static_cast<unsigned>(s.used), static_cast<unsigned>(s.peak), static_cast<unsigned>(s.largestFree),
+             static_cast<unsigned>(s.failures), static_cast<unsigned>(s.resets));
     replyOk(reqId, out);
     return;
   }

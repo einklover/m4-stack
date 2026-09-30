@@ -198,6 +198,87 @@ void FontManager::clearLoadedFonts() {
   loadedFonts.clear();
 }
 
+void FontManager::clearLoadedReaderFonts() {
+  for (auto f = loadedFonts.begin(); f != loadedFonts.end();) {
+    auto& sizes = f->second;
+    for (auto it = sizes.begin(); it != sizes.end();) {
+      if (it->first.role == 0) it = sizes.erase(it);
+      else ++it;
+    }
+    if (sizes.empty()) f = loadedFonts.erase(f);
+    else ++f;
+  }
+}
+
+void FontManager::releaseRuntimeTtfFaces() {
+  for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
+    auto& sizes = familyIt->second;
+    for (auto sizeIt = sizes.begin(); sizeIt != sizes.end();) {
+      EpdFontFamily* family = sizeIt->second;
+      const EpdFont* font = family ? family->getFont(EpdFontFamily::REGULAR) : nullptr;
+      if (font && font->isRuntimeTtf()) {
+        delete const_cast<EpdFont*>(font);
+        delete family;
+        sizeIt = sizes.erase(sizeIt);
+      } else {
+        ++sizeIt;
+      }
+    }
+    if (sizes.empty()) {
+      familyIt = loadedFonts.erase(familyIt);
+    } else {
+      ++familyIt;
+    }
+  }
+}
+
+void FontManager::releaseRuntimeTtfFaces(TtfFaceRole role) {
+  const uint8_t roleKey = static_cast<uint8_t>(role == TtfFaceRole::Chrome ? 1 : 0);
+  for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
+    auto& sizes = familyIt->second;
+    for (auto sizeIt = sizes.begin(); sizeIt != sizes.end();) {
+      EpdFontFamily* family = sizeIt->second;
+      const EpdFont* font = family ? family->getFont(EpdFontFamily::REGULAR) : nullptr;
+      if (sizeIt->first.role == roleKey && font && font->isRuntimeTtf()) {
+        delete const_cast<EpdFont*>(font);
+        delete family;
+        sizeIt = sizes.erase(sizeIt);
+      } else {
+        ++sizeIt;
+      }
+    }
+    if (sizes.empty()) {
+      familyIt = loadedFonts.erase(familyIt);
+    } else {
+      ++familyIt;
+    }
+  }
+}
+
+void FontManager::releaseRuntimeTtfFacesExcept(TtfFaceRole role, const std::string& familyName,
+                                               int keepSizeA, int keepSizeB) {
+  const uint8_t roleKey = static_cast<uint8_t>(role == TtfFaceRole::Chrome ? 1 : 0);
+  for (auto familyIt = loadedFonts.begin(); familyIt != loadedFonts.end();) {
+    auto& sizes = familyIt->second;
+    for (auto sizeIt = sizes.begin(); sizeIt != sizes.end();) {
+      EpdFontFamily* family = sizeIt->second;
+      const EpdFont* font = family ? family->getFont(EpdFontFamily::REGULAR) : nullptr;
+      const bool sameRole = sizeIt->first.role == roleKey;
+      const bool keep = sameRole && familyIt->first == familyName &&
+                        (sizeIt->first.sizePx == keepSizeA || sizeIt->first.sizePx == keepSizeB);
+      if (sameRole && !keep && font && font->isRuntimeTtf()) {
+        delete const_cast<EpdFont*>(font);
+        delete family;
+        sizeIt = sizes.erase(sizeIt);
+      } else {
+        ++sizeIt;
+      }
+    }
+    if (sizes.empty()) familyIt = loadedFonts.erase(familyIt);
+    else ++familyIt;
+  }
+}
+
 const std::vector<std::string>& FontManager::getAvailableFamilies() {
   if (!scanned) {
     scanFonts();
@@ -242,12 +323,14 @@ void FontManager::scanFonts() {
 
     Serial.printf("[FM] %s opened. Iterating files...\n", dirPath);
     FsFile file;
-    while (file.openNext(&fontDir, O_READ)) {
+    unsigned scannedEntries = 0;
+    constexpr unsigned kMaxFontEntriesPerDir = 512;
+    while (scannedEntries < kMaxFontEntriesPerDir && file.openNext(&fontDir, O_READ)) {
+      ++scannedEntries;
+      if ((scannedEntries & 31u) == 0) delay(1);
       if (!file.isDirectory()) {
         char filename[128];
         file.getName(filename, sizeof(filename));
-        Serial.printf("[FM] Checking %s/%s\n", dirPath, filename);
-
         String name = String(filename);
         if (allowLegacyEpdFont && name.endsWith(".epdfont")) {
         // Use the full filename (minus .epdfont extension) as the font name
@@ -286,6 +369,10 @@ void FontManager::scanFonts() {
       file.close();
     }
     fontDir.close();
+    if (scannedEntries == kMaxFontEntriesPerDir) {
+      Serial.printf("[FM] %s scan capped at %u entries; split large FONT directories\n",
+                    dirPath, kMaxFontEntriesPerDir);
+    }
   };
 
   // Legacy generated bitmap fonts stay in /fonts for internal compatibility.
@@ -739,12 +826,14 @@ static EpdFont* loadFontFile(const String& path) {
   return createSdFont(path, hdr);
 }
 
-EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, int fontSize) {
-  if (loadedFonts[familyName][fontSize]) {
-    return loadedFonts[familyName][fontSize];
-  }
-
+EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, int fontSize,
+                                                 TtfFaceRole role) {
   const bool isRuntimeFont = isRuntimeFontName(String(familyName.c_str()));
+  const LoadedFaceKey cacheKey{fontSize, static_cast<uint8_t>(
+      isRuntimeFont && role == TtfFaceRole::Chrome ? 1 : 0)};
+  if (loadedFonts[familyName][cacheKey]) {
+    return loadedFonts[familyName][cacheKey];
+  }
 
   if (isRuntimeFont) {
     gRuntimeFontDiagnostic = {};
@@ -759,13 +848,25 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
              fontPath.c_str());
     appendFontDiagnostic(diag);
 
-    TtfEpdFont* regular = new (std::nothrow) TtfEpdFont(fontPath, (uint16_t)fontSize);
+    // Budget follows the face role, never creation order (B6): whichever face
+    // is created first must not steal the reader budget from the other. The
+    // Reader and Chrome have separate bounded PSRAM reserves. Reader uses the
+    // build-selected fixed budget; Chrome stays small and stable across Home.
+    const bool isChrome = (role == TtfFaceRole::Chrome);
+    const uint16_t slots =
+        isChrome ? TtfEpdFont::kDefaultEmbeddedSlots : TtfEpdFont::kDefaultReaderRuntimeSlots;
+    const size_t budget =
+        isChrome ? TtfEpdFont::kDefaultEmbeddedBudget : TtfEpdFont::kDefaultReaderRuntimeBudget;
+    Serial.printf("[FontMgr] Runtime face role=%s slots=%u budget=%u\n", isChrome ? "chrome" : "reader",
+                  static_cast<unsigned>(slots), static_cast<unsigned>(budget));
+    TtfEpdFont* regular = new (std::nothrow) TtfEpdFont(fontPath, (uint16_t)fontSize, slots, budget);
     if (regular && regular->valid()) {
       gRuntimeFontDiagnostic.ok = true;
       strncpy(gRuntimeFontDiagnostic.stage, "ready", sizeof(gRuntimeFontDiagnostic.stage) - 1);
       EpdFontFamily* fontFamily = new EpdFontFamily(regular, nullptr, nullptr, nullptr);
-      loadedFonts[familyName][fontSize] = fontFamily;
-      snprintf(diag, sizeof(diag), "load_ok family=%s size=%d", familyName.c_str(), fontSize);
+      loadedFonts[familyName][cacheKey] = fontFamily;
+      snprintf(diag, sizeof(diag), "load_ok family=%s size=%d role=%s", familyName.c_str(), fontSize,
+               isChrome ? "chrome" : "reader");
       appendFontDiagnostic(diag);
       return fontFamily;
     }
@@ -802,7 +903,7 @@ EpdFontFamily* FontManager::getCustomFontFamily(const std::string& familyName, i
 
   if (regular) {
     EpdFontFamily* fontFamily = new EpdFontFamily(regular, nullptr, nullptr, nullptr);
-    loadedFonts[familyName][fontSize] = fontFamily;
+    loadedFonts[familyName][cacheKey] = fontFamily;
     return fontFamily;
   }
 

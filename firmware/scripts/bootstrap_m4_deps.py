@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import subprocess
+import sys
 
 
 REQUIRED_SENTINELS = (
@@ -55,6 +56,10 @@ def _run_as_platformio_extra_script() -> None:
     Import("env")
     firmware_dir = Path(env.subst("$PROJECT_DIR"))
     ensure_dependencies(firmware_dir)
+    patcher = firmware_dir / "scripts" / "patch_sdfat_volume_guard.py"
+    if patcher.is_file():
+        runner = subprocess.run
+        runner([sys.executable, str(patcher)], cwd=firmware_dir, check=True)
 
     build_flags = env.get("BUILD_FLAGS", [])
     if isinstance(build_flags, str):

@@ -15,6 +15,8 @@
 
 #include <BoardConfig.h>
 #include <cstdint>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #if FREEINK_SD_SDMMC
 
@@ -75,6 +77,8 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
   // forward-declared here (a `struct sdmmc_card_t;` tag is a different, conflicting
   // type). Hold it opaquely and cast in the .cpp, where the esp-idf header is included.
   void* _card = nullptr;
+  uint8_t* _bounce = nullptr;
+  SemaphoreHandle_t _ioMutex = nullptr;
   SdmmcLastError _lastError{};
 };
 

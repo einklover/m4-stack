@@ -11,9 +11,10 @@ LOADER = ROOT / "firmware" / "lib" / "EpdFontLoader" / "EpdFontLoader.cpp"
 def test_signed_font_id_is_not_used_as_load_success():
     source = LOADER.read_text(encoding="utf-8")
     assert "bool loadAndInsertCustom(" in source
-    assert "any = loadAndInsertCustom(renderer, d.loadCustomFamily.c_str(), sz, loadedCustomIds) || any;" in source
+    compact = " ".join(source.split())
+    assert "any = loadAndInsertCustom(renderer, d.loadCustomFamily.c_str(), sz, loadedCustomIds, FontManager::TtfFaceRole::Reader) || any;" in compact
     assert "loadAndInsertCustom(renderer, d.loadCustomFamily.c_str(), sz, loadedCustomIds) >= 0" not in source
-    assert "loadAndInsertCustom(renderer, SETTINGS.customFontFamily, size, loadedCustomIds);" in source
+    assert "legacyCustomLoadSucceeded = loadAndInsertCustom(renderer, SETTINGS.customFontFamily, size, loadedCustomIds, FontManager::TtfFaceRole::Reader);" in compact
 
 
 if __name__ == "__main__":
