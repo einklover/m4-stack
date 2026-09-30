@@ -2,10 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <esp_heap_caps.h>
 #include <mbedtls/platform.h>
 
 namespace M4TlsMemory {
+
+inline std::atomic<bool> gExternalActive{false};
+inline bool externalActive() { return gExternalActive.load(std::memory_order_acquire); }
 
 // The bundled SDK defaults to internal-only mbedTLS allocations. Two 16 KiB
 // record buffers plus handshake state exhaust a fragmented internal heap even
@@ -21,7 +25,9 @@ inline void* callocExternal(size_t count, size_t size) {
 // heap_caps_free accepts both pre-existing internal and new external blocks.
 inline bool install() {
   if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == 0) return false;
-  return mbedtls_platform_set_calloc_free(callocExternal, heap_caps_free) == 0;
+  const bool ok = mbedtls_platform_set_calloc_free(callocExternal, heap_caps_free) == 0;
+  gExternalActive.store(ok, std::memory_order_release);
+  return ok;
 }
 
 }  // namespace M4TlsMemory

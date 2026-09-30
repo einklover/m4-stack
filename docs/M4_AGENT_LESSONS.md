@@ -763,3 +763,5 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - 实机刷新商店时 `mbedtls_ssl_setup returned -0x7F00` 是实际 TLS 分配失败。内部 free 约 94KiB / largest 31KiB、PSRAM 约 1.7MiB 仍不能证明握手内存充足；当前 Arduino SDK 默认 `CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC`。不要通过降低 TLS gate 隐藏失败。
 - SDK 开启 MBEDTLS_PLATFORM_MEMORY 且提供运行时分配钩子时，可在 setup 联网前一次性选择 PSRAM calloc + heap_caps_free。钩子全局有效，不能每次请求切换；不要在 PSRAM 失败后回落内部堆。
 - 商店卡片要同时核对标题、元信息实际字高及状态行间距。原 y+52 的副标题超出卡片，kRowTop-16 的状态行压住首行；实机截图是排版验收依据。
+
+- 后续实机仍出现 `oneshot_tls_gate tls_internal_oom`：internal free=96676 / largest=18420、PSRAM约1.6MiB。PSRAM TLS 分配启用后必须同步 gate 的内存类型；保留 internal总量32KiB/连续8KiB给HTTP/lwIP，校验PSRAM总量128KiB/连续32KiB，未安装钩子时保留SDK原门槛。测试要包含已观测的碎片状态，而不只是重启后的31KiB连续块。

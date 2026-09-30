@@ -6,6 +6,9 @@
 
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_heap_caps.h>
+#if defined(CROSSPOINT_MURPHY_M4)
+#include "util/M4TlsMemory.h"
+#endif
 #endif
 
 namespace M4NativeProviderHeavyGate {
@@ -45,6 +48,19 @@ using Lock = std::unique_lock<std::recursive_mutex>;
 inline bool tlsBlockAvailable() {
 #if defined(ARDUINO_ARCH_ESP32)
   diagnosticStage() = 0x310;
+#if defined(CROSSPOINT_MURPHY_M4)
+  if (M4TlsMemory::externalActive()) {
+    // The startup hook allocates TLS records/handshake state in PSRAM.
+    // Retain an internal reserve for HTTP/lwIP objects, but do not require
+    // an internal TLS-sized block when TLS will never allocate one there.
+    constexpr unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    constexpr unsigned external = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    return heap_caps_get_free_size(internal) >= 32u * 1024u &&
+           heap_caps_get_largest_free_block(internal) >= 8u * 1024u &&
+           heap_caps_get_free_size(external) >= 128u * 1024u &&
+           heap_caps_get_largest_free_block(external) >= 32u * 1024u;
+  }
+#endif
   // Arduino-ESP32's bundled mbedTLS keeps the handshake buffers in internal
   // RAM. Prefer the largest contiguous free block over total free heap.
   //
