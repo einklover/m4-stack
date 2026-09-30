@@ -39,8 +39,8 @@ constexpr const char* kPackagePrefix = "https://einklover.github.io/m4-stack/app
 constexpr size_t kMaxCatalogBytes = 48u * 1024u;
 constexpr size_t kMaxPackageBytes = 2u * 1024u * 1024u;
 constexpr int kVisibleRows = 6;
-constexpr int kRowTop = 166;
-constexpr int kRowHeight = 80;
+constexpr int kRowTop = 188;
+constexpr int kRowHeight = 74;
 constexpr int kToolbarTop = 74;
 constexpr int kToolbarHeight = 50;
 constexpr int kPagerHeight = 42;
@@ -52,6 +52,19 @@ bool validSha(const std::string& hex) {
   if (hex.size() != 64) return false;
   for (unsigned char c : hex) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
   return true;
+}
+const char* categoryLabel(const std::string& category) {
+  if (category == "reading") return "阅读";
+  if (category == "games") return "游戏";
+  if (category == "lifestyle") return "生活";
+  if (category == "tools") return "工具";
+  return "应用";
+}
+
+std::string catalogError(const std::string& error) {
+  if (error == "tls_internal_oom") return "TLS 内存不足，请返回后重试";
+  if (hasPrefix(error, "http_")) return "网络连接失败，请稍后刷新";
+  return error;
 }
 class TextSink final : public M4xJsonStream::Sink {
  public:
@@ -226,8 +239,8 @@ void AppStoreActivity::taskEntry(void* arg) {
     } else {
       std::string cached;
       if (readCache(cached) && parse(cached)) {
-        if (!s->cancel.load()) s->publish(std::move(parsed), "刷新失败：" + error, true);
-      } else if (!s->cancel.load()) s->publish({}, error, true);
+        if (!s->cancel.load()) s->publish(std::move(parsed), catalogError(error), true);
+      } else if (!s->cancel.load()) s->publish({}, catalogError(error), true);
     }
     return;
   }
@@ -447,10 +460,11 @@ void AppStoreActivity::render() {
     M4UiText::draw(renderer,UI_12_FONT_ID,24,115,app.name.c_str(),true);
     std::string version = "版本 " + app.version;
     M4UiText::draw(renderer,UI_10_FONT_ID,24,160,version.c_str());
-    M4UiText::draw(renderer,UI_10_FONT_ID,24,204,app.category.c_str());
-    // Description is intentionally bounded before catalog acceptance.
-    std::string desc = app.description.substr(0, 72);
-    M4UiText::draw(renderer,UI_10_FONT_ID,24,255,desc.c_str());
+    M4UiText::draw(renderer,UI_10_FONT_ID,24,204,categoryLabel(app.category));
+    const auto description=M4UiText::wrapLines(renderer,UI_10_FONT_ID,
+                                               app.description.c_str(),w-48,5);
+    for (size_t i=0;i<description.size();++i)
+      M4UiText::draw(renderer,UI_10_FONT_ID,24,255+static_cast<int>(i)*34,description[i].c_str());
     bool installed = false, update = false;
     for (const auto& entry : installed_) if (entry.first == app.id) {
       installed = true; update = entry.second < app.versionCode; break;
@@ -473,7 +487,7 @@ void AppStoreActivity::render() {
     std::string headline=(connected ? "Wi-Fi 已连接" : "Wi-Fi 未连接");
     headline += offline_ ? " | 缓存 " : " | 共 ";
     headline += std::to_string(shown_.size()) + " 款";
-    M4UiText::draw(renderer,UI_10_FONT_ID,22,kRowTop-16,headline.c_str());
+    M4UiText::draw(renderer,UI_10_FONT_ID,22,kRowTop-44,headline.c_str());
     if (shown_.empty()) {
       M4UiText::drawCentered(renderer,UI_12_FONT_ID,210,status_.c_str());
       M4UiText::drawCentered(renderer,UI_10_FONT_ID,260,"请连接 Wi-Fi 后刷新");
@@ -484,14 +498,15 @@ void AppStoreActivity::render() {
         if (i>=static_cast<int>(shown_.size())) break;
         const int y=kRowTop+row*kRowHeight;
         renderer.drawRoundedRect(18,y,w-36,kRowHeight-8,1,8,true);
-        if (i==selected_) renderer.drawRoundedRect(21,y+3,w-42,kRowHeight-14,1,7,true);
+        if (i==selected_) renderer.fillRect(23,y+12,3,kRowHeight-32,true);
         const App& app=shown_[static_cast<size_t>(i)];
-        M4UiText::draw(renderer,UI_12_FONT_ID,34,y+17,app.name.c_str(),true);
-        std::string subtitle=app.version+"  "+app.category;
+        const auto name=M4UiText::truncated(renderer,UI_12_FONT_ID,app.name.c_str(),w-68);
+        M4UiText::draw(renderer,UI_12_FONT_ID,34,y+8,name.c_str(),true);
+        std::string subtitle="v"+app.version+"  "+categoryLabel(app.category);
         for (const auto& old:installed_) if(old.first==app.id) {
           subtitle+=old.second<app.versionCode?"  可更新":"  已安装";break;
         }
-        M4UiText::draw(renderer,UI_10_FONT_ID,34,y+52,subtitle.c_str());
+        M4UiText::draw(renderer,UI_10_FONT_ID,34,y+38,subtitle.c_str());
       }
       const int pages=(static_cast<int>(shown_.size())+kVisibleRows-1)/kVisibleRows;
       if (pages>1) {
@@ -506,7 +521,8 @@ void AppStoreActivity::render() {
     }
     if (!status_.empty()) {
       const std::string label=state_ && state_->busy.load() ? "正在同步目录..." : status_;
-      M4UiText::draw(renderer,UI_10_FONT_ID,22,h-93,label.c_str());
+      const auto fitted=M4UiText::truncated(renderer,UI_10_FONT_ID,label.c_str(),w-44);
+      M4UiText::draw(renderer,UI_10_FONT_ID,22,h-93,fitted.c_str());
     }
     GUI.drawButtonHints(renderer,"返回","详情","","刷新");
   }

@@ -73,6 +73,9 @@ static volatile bool gM4QemuScreenMode = true;
 #include "activities/apps/AppInstallActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
 #include "util/M4UiText.h"
+#ifdef CROSSPOINT_MURPHY_M4
+#include "util/M4TlsMemory.h"
+#endif
 #include "apps/M4xInstaller.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -864,6 +867,9 @@ void setup() {
     M4UsbSerialResetPolicy::applyBeforeSerialBegin();
 #endif
     Serial.begin(115200);
+#ifdef CROSSPOINT_MURPHY_M4
+    Serial.printf("[M4-TLS] allocator=%s\n", M4TlsMemory::install() ? "psram" : "sdk-default");
+#endif
 #ifdef CROSSPOINT_MURPHY_M4
     Serial.printf("[%lu] [M4-BUZZER] early sanitize complete gpio=46 inactive=LOW\n", millis());
 #endif

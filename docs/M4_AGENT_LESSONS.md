@@ -757,3 +757,9 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - 有界目录扫描应在打开下一个条目前检查预算，目录、隐藏文件及被过滤条目也消耗预算；部分结果不能显示为“目录为空”。单次驱动调用仍可能超过时间窗。
 - TTF 索引分批重建期间不要发布部分索引或盲目追加；按记录数预算计入重复键，容量满后继续更新后续重复键的最后偏移。
 - 文件传输页面只在状态改变时更新，已有同步首次绘制路径。改为 owner loop 绘制可以移除独立 display task 及强删锁/对象寿命问题；host/编译结果不等于慢 SD 实机验收。
+
+## 2026-09-30 — 商店刷新 TLS 内存与列表排版
+
+- 实机刷新商店时 `mbedtls_ssl_setup returned -0x7F00` 是实际 TLS 分配失败。内部 free 约 94KiB / largest 31KiB、PSRAM 约 1.7MiB 仍不能证明握手内存充足；当前 Arduino SDK 默认 `CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC`。不要通过降低 TLS gate 隐藏失败。
+- SDK 开启 MBEDTLS_PLATFORM_MEMORY 且提供运行时分配钩子时，可在 setup 联网前一次性选择 PSRAM calloc + heap_caps_free。钩子全局有效，不能每次请求切换；不要在 PSRAM 失败后回落内部堆。
+- 商店卡片要同时核对标题、元信息实际字高及状态行间距。原 y+52 的副标题超出卡片，kRowTop-16 的状态行压住首行；实机截图是排版验收依据。
