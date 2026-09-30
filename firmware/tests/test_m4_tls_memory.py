@@ -55,9 +55,13 @@ int main() {
   total=0; assert(!M4TlsMemory::install()); assert(installs==0);
   // Exact device failure: the SDK-default internal gate rejects this heap.
   assert(!M4TlsMemory::externalActive());
+  assert(!M4TlsMemory::resourcesAvailable());
   assert(!M4NativeProviderHeavyGate::tlsBlockAvailable());
+  internalLargest=30000; assert(M4TlsMemory::resourcesAvailable());
+  internalLargest=18420;
   total=1<<20; assert(M4TlsMemory::install()); assert(installs==1);
   assert(M4TlsMemory::externalActive());
+  assert(M4TlsMemory::resourcesAvailable());
   assert(M4NativeProviderHeavyGate::tlsBlockAvailable());
   internalFree=31000; assert(!M4NativeProviderHeavyGate::tlsBlockAvailable());
   internalFree=96676; internalLargest=7000;
@@ -83,3 +87,12 @@ int main() {
                     "-o", str(d / "test")], check=True)
     subprocess.run([str(d / "test")], check=True)
 print("TLS allocator capabilities, overflow, OOM and paired free: PASS")
+
+# Binding regression: every current Lua/streaming TLS entry uses the system
+# policy; do not let a local internal-only threshold reappear on those routes.
+lua = (ROOT / "firmware/src/apps/M4xLuaHost.cpp").read_text()
+assert "if (largestInternal < 32 * 1024)" not in lua
+assert lua.count("!M4TlsMemory::resourcesAvailable()") == 5
+loader = (ROOT / "firmware/src/apps/M4xProgressiveLoader.cpp").read_text()
+assert "!M4TlsMemory::resourcesAvailable()" in loader
+print("Lua request/extraction/JSON/download and progressive TLS bindings: PASS")

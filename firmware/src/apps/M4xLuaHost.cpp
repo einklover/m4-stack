@@ -32,6 +32,7 @@
 #include "CrossPointSettings.h"
 #include "fontIds.h"
 #include "util/M4FontPolicy.h"
+#include "util/M4TlsMemory.h"
 #include "util/M4UiText.h"
 #include "util/M4xAppFontMap.h"
 #include "util/QRCodeHelper.h"
@@ -2188,13 +2189,13 @@ int l_net_request(lua_State* L) {
   if (WiFi.status() != WL_CONNECTED) return fail("wifi_not_connected");
 #endif
 
-  // Reclaim transient Lua objects before mbedTLS asks for large contiguous
-  // internal blocks. If headroom is already unsafe, return a stable OOM code
+  // Reclaim transient Lua objects before checking the shared TLS allocator
+  // resource policy. If headroom is unsafe, return a stable OOM code
   // instead of collapsing it into HTTPClient's generic "connection refused".
   lua_gc(L, LUA_GCCOLLECT, 0);
   const size_t largestInternal =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (largestInternal < 32 * 1024) {
+  if (!M4TlsMemory::resourcesAvailable()) {
     Serial.printf("[M4xNet] TLS skipped: internal largest=%u free=%u psram=%u lua=%u/%u\n",
                   static_cast<unsigned>(largestInternal),
                   static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -2547,7 +2548,7 @@ int l_net_extractPsvts(lua_State* L) {
   lua_gc(L, LUA_GCCOLLECT, 0);
   const size_t largestInternal =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (largestInternal < 32 * 1024) {
+  if (!M4TlsMemory::resourcesAvailable()) {
     Serial.printf("[M4xNet] TLS skipped (extractPsvts): internal largest=%u free=%u psram=%u lua=%u/%u\n",
                   static_cast<unsigned>(largestInternal),
                   static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -3626,6 +3627,10 @@ bool dlStreamToFile(const std::string& url, const std::vector<std::pair<std::str
                     const std::string& absPath, size_t maxBytes, uint32_t timeoutMs, size_t& outSize,
                     char shaHex[65], std::string& err) {
   uint8_t digest[32] = {0};
+  if (url.compare(0, 8, "https://") == 0 && !M4TlsMemory::resourcesAvailable()) {
+    err = "oom";
+    return false;
+  }
   auto* secure = new WiFiClientSecure();
   configureTlsClient(secure, nullptr);  // no app context: bundle verification
   std::unique_ptr<WiFiClient> client(secure);
@@ -3848,14 +3853,14 @@ int l_dl_jsonGet(lua_State* L) {
     ++attempt;
     const bool needHandshake = !h->netHttp_ || !h->netTls_ || !h->netTls_->connected();
     if (needHandshake) {
-      // Reclaim Lua + refuse TLS when internal heap is fragmented (same gate
-      // as net.request). Category booklist OOM used to surface as generic
+      // Reclaim Lua and use the same system TLS resource gate as net.request.
+      // Category booklist OOM used to surface as generic
       // http fail. A live keep-alive connection skips this: its mbedTLS
       // buffers already exist and no new contiguous block is required.
       lua_gc(L, LUA_GCCOLLECT, 0);
       const size_t largestInternal =
           heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-      if (largestInternal < 32 * 1024) {
+      if (!M4TlsMemory::resourcesAvailable()) {
         Serial.printf("[M4xNet] dl.jsonGet TLS skipped: internal largest=%u free=%u psram=%u lua=%u/%u\n",
                       static_cast<unsigned>(largestInternal),
                       static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -4244,6 +4249,11 @@ int l_dl_jsonToFile(lua_State* L) {
   const size_t cap = M4xHostIo::Limits::bodyCap(maxBytes, M4xHostIo::Operation::JsonToFile);
   const uint32_t safeTimeout = M4xHostIo::Limits::timeoutMs(timeoutMs);
 
+  if (!M4TlsMemory::resourcesAvailable()) {
+    lua_pushboolean(L, 0);
+    lua_pushstring(L, "oom");
+    return 2;
+  }
   auto* secure = new WiFiClientSecure();
   configureTlsClient(secure, h);
   std::unique_ptr<WiFiClient> client(secure);

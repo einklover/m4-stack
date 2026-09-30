@@ -765,3 +765,5 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - 商店卡片要同时核对标题、元信息实际字高及状态行间距。原 y+52 的副标题超出卡片，kRowTop-16 的状态行压住首行；实机截图是排版验收依据。
 
 - 后续实机仍出现 `oneshot_tls_gate tls_internal_oom`：internal free=96676 / largest=18420、PSRAM约1.6MiB。PSRAM TLS 分配启用后必须同步 gate 的内存类型；保留 internal总量32KiB/连续8KiB给HTTP/lwIP，校验PSRAM总量128KiB/连续32KiB，未安装钩子时保留SDK原门槛。测试要包含已观测的碎片状态，而不只是重启后的31KiB连续块。
+
+- Lua `net.request` / `net.extractPsvts` / `dl.jsonGet` 曾各自硬编码internal连续块32KiB，与PSRAM TLS分配不一致。所有native/Lua网络入口应调用系统 `M4TlsMemory::resourcesAvailable()`，不要复制阈值；下载、JSON落盘、渐进HTTPS连接也需要该预检。预检不预留内存，插件仍须处理真实分配失败，原返回结构和`oom`保持兼容。
