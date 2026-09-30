@@ -27,6 +27,7 @@ class AppInstallActivity final : public ActivityWithSubactivity {
   std::string packagePath_;
   std::function<void()> onDone_;
   std::vector<std::string> inboxPackages_;
+  bool inboxScanPartial_ = false;
   int selectedIndex_ = 0;
   M4xInstallResult probe_{};
   enum class Stage { Pick, Confirm, Result } stage_ = Stage::Pick;

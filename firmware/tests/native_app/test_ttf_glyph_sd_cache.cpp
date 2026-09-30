@@ -25,11 +25,11 @@ int main() {
   g14.advanceX = 13;
   g14.left = -1;
   g14.top = 12;
-  g14.bitmap = {0xAA, 0x55, 0xFF};
+  g14.bitmap.assign(42, 0xAA);
 
   Glyph g18 = g14;
   g18.height = 18;
-  g18.bitmap = {0x11, 0x22};
+  g18.bitmap.assign(54, 0x11);
 
   s.put(k14, g14);
   s.put(k18, g18);
@@ -41,7 +41,7 @@ int main() {
   Glyph out;
   assert(s.get(k14, out));
   assert(out.height == 14);
-  assert(out.bitmap.size() == 3 && out.bitmap[0] == 0xAA);
+  assert(out.bitmap.size() == 42 && out.bitmap[0] == 0xAA);
   assert(s.get(k18, out));
   assert(out.height == 18);
 
@@ -102,9 +102,9 @@ int main() {
     Key kB{hashFamily("F.ttf"), 16, 0x4E01};
     Glyph gA;
     gA.width = 8; gA.height = 8; gA.advanceX = 9; gA.left = 0; gA.top = 8;
-    gA.bitmap = {0x01, 0x02, 0x03, 0x04};
+    gA.bitmap.assign(16, 0x01);
     Glyph gB = gA;
-    gB.bitmap = {0xAA, 0xBB};
+    gB.bitmap.assign(16, 0xAA);
     // Layout: [kA][kB][kA again] — duplicate must keep the LAST offset.
     std::vector<uint8_t> img;
     writeU32(img, kMagic); writeU16(img, kVersion); writeU16(img, 0);
@@ -113,7 +113,7 @@ int main() {
     const size_t offB = img.size();
     assert(appendRecord(img, kB, gB));
     Glyph gA2 = gA;
-    gA2.bitmap = {0xFF};
+    gA2.bitmap.assign(16, 0xFF);
     const size_t offA2 = img.size();
     assert(appendRecord(img, kA, gA2));
     std::vector<IndexEntry> idx;
@@ -130,7 +130,7 @@ int main() {
     Store dup;
     assert(dup.loadFromBytes(img.data(), img.size()));
     assert(dup.recordCount() == 2);
-    assert(dup.get(kA, out) && out.bitmap.size() == 1 && out.bitmap[0] == 0xFF);
+    assert(dup.get(kA, out) && out.bitmap.size() == 16 && out.bitmap[0] == 0xFF);
 
     // Torn tail (last record bitmap cut by 1): index stops before it,
     // earlier complete records are kept.
@@ -182,6 +182,7 @@ int main() {
     // Oversize glyphs are left out of serializeAll (device refuses them too).
     Store s2;
     Glyph small;
+    small.width = 2; small.height = 2;
     small.bitmap = {0x11};
     s2.put(k, big);
     Key k2{hashFamily("F.ttf"), 16, 2};

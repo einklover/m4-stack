@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 
 #include <cstddef>
+#include <new>
 
 #include "MappedInputManager.h"
 #include "I18n.h"
@@ -36,10 +37,6 @@ void logNavigationRequest(const WebServerActivityState state, const bool isApMod
   m4LogRuntimeMemory("file-transfer-nav-request");
 }
 }  // namespace
-
-void CrossPointWebServerActivity::taskTrampoline(void* param) {
-  static_cast<CrossPointWebServerActivity*>(param)->displayTaskLoop();
-}
 
 void CrossPointWebServerActivity::deferredCleanupTaskTrampoline(void* param) {
   auto* cleanup = static_cast<DeferredCleanupContext*>(param);
@@ -89,7 +86,6 @@ void CrossPointWebServerActivity::onEnter() {
   if (!deferredCleanupContext) deferredCleanupContext.reset(new DeferredCleanupContext());
   deferredCleanupTaskHandle = nullptr;
   navigationSupervisor.detach();
-  renderingMutex = xSemaphoreCreateMutex();
   state = WebServerActivityState::MODE_SELECTION;
   networkMode = NetworkMode::JOIN_NETWORK;
   isApMode = false;
@@ -99,12 +95,6 @@ void CrossPointWebServerActivity::onEnter() {
   lastHandleClientTime = 0;
   pendingParentAction = PendingParentAction::None;
   updateRequired = true;
-
-  // Server-running rendering builds QR codes with a 512-byte scratch buffer in
-  // addition to the text/rendering call stack. Match the other network display
-  // tasks: 2KB is not enough for this path and trips the FreeRTOS stack canary.
-  xTaskCreate(&CrossPointWebServerActivity::taskTrampoline, "WebServerActivityTask", 4096, this, 1,
-              &displayTaskHandle);
 
   m4WifiNeedNetwork(M4NetworkOwner::Transfer);
 
@@ -140,25 +130,8 @@ void CrossPointWebServerActivity::onExit() {
   state = WebServerActivityState::SHUTTING_DOWN;
   updateRequired = false;
 
-  bool renderMutexHeld = false;
-  unsigned long renderMutexWaitMs = 0;
-  if (renderingMutex) {
-    const unsigned long mutexWaitStarted = millis();
-    renderMutexHeld = xSemaphoreTake(renderingMutex, pdMS_TO_TICKS(25)) == pdTRUE;
-    renderMutexWaitMs = static_cast<unsigned long>(millis() - mutexWaitStarted);
-  }
-  Serial.printf("[%lu] [WEBACT] render_mutex_wait_ms=%lu acquired=%d\n", millis(), renderMutexWaitMs,
-                renderMutexHeld ? 1 : 0);
-
-  if (displayTaskHandle) {
-    vTaskDelete(displayTaskHandle);
-    displayTaskHandle = nullptr;
-  }
-  if (renderMutexHeld && renderingMutex) xSemaphoreGive(renderingMutex);
-  if (renderingMutex) {
-    vSemaphoreDelete(renderingMutex);
-    renderingMutex = nullptr;
-  }
+  // Rendering runs on the activity owner loop, so there is no display task
+  // to delete while it owns renderer/SD locks or still references this object.
 
   bool cleanupDeferred = false;
   if (deferredCleanupContext) {
@@ -329,9 +302,7 @@ void CrossPointWebServerActivity::startWebServer() {
   logInternalHeap("after web server start");
   m4LogRuntimeMemory("file-transfer-server-start-after");
 
-  if (renderingMutex) xSemaphoreTake(renderingMutex, portMAX_DELAY);
-  render();
-  if (renderingMutex) xSemaphoreGive(renderingMutex);
+  renderPendingUpdate();
 }
 
 void CrossPointWebServerActivity::loop() {
@@ -345,6 +316,7 @@ void CrossPointWebServerActivity::loop() {
   if (subActivity) return;
 
   if (state == WebServerActivityState::SHUTTING_DOWN) return;
+  renderPendingUpdate();
 
   auto wantsExit = [this]() -> bool {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) return true;
@@ -396,15 +368,14 @@ void CrossPointWebServerActivity::loop() {
   lastHandleClientTime = millis();
 }
 
-void CrossPointWebServerActivity::displayTaskLoop() {
-  while (true) {
-    if (updateRequired) {
-      updateRequired = false;
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      render();
-      xSemaphoreGive(renderingMutex);
-    }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+void CrossPointWebServerActivity::renderPendingUpdate() {
+  if (!updateRequired) return;
+  updateRequired = false;
+  try {
+    render();
+  } catch (const std::bad_alloc&) {
+    // A failed first paint must not abort navigation or strand a renderer task.
+    Serial.printf("[WEBACT] render skipped: allocation failed\n");
   }
 }
 

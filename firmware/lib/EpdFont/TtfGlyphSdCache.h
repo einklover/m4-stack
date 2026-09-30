@@ -108,6 +108,11 @@ constexpr uint16_t kMaxBitmap = 2048;
 // left(2) + top(2) + bitmapLen(2).
 constexpr size_t kRecordHeader = 19;
 
+// TtfReader packs consecutive pixels at 2bpp, without row padding.
+inline bool validGeometry(uint8_t width, uint8_t height, size_t bytes) {
+  return bytes <= kMaxBitmap && bytes == (uint32_t(width) * height + 3u) / 4u;
+}
+
 inline void writeU16(std::vector<uint8_t>& o, uint16_t v) {
   o.push_back(static_cast<uint8_t>(v));
   o.push_back(static_cast<uint8_t>(v >> 8));
@@ -130,7 +135,7 @@ inline uint32_t readU32(const uint8_t* p) {
 // exceeds kMaxBitmap — callers must treat that as a permanent reject, never
 // silently truncate, or readers would cache a torn glyph as complete.
 inline bool appendRecord(std::vector<uint8_t>& o, const Key& k, const Glyph& g) {
-  if (g.bitmap.size() > kMaxBitmap) return false;
+  if (!validGeometry(g.width, g.height, g.bitmap.size())) return false;
   writeU32(o, k.familyHash);
   writeU16(o, k.sizePx);
   writeU32(o, k.cp);
@@ -159,7 +164,7 @@ inline bool parseRecord(const uint8_t* p, size_t avail, size_t& used, Key& k, Gl
   g.left = static_cast<int16_t>(readU16(p + 13));
   g.top = static_cast<int16_t>(readU16(p + 15));
   const uint16_t n = readU16(p + 17);
-  if (n > kMaxBitmap || avail < kRecordHeader + n) return false;
+  if (!validGeometry(g.width, g.height, n) || avail < kRecordHeader + n) return false;
   g.bitmap.assign(p + kRecordHeader, p + kRecordHeader + n);
   used = kRecordHeader + n;
   return true;
@@ -286,7 +291,7 @@ inline bool buildIndexFromBytes(const uint8_t* data, size_t len,
   if (readU32(data) != kMagic) return false;
   if (readU16(data + 4) != kVersion) return false;
   size_t off = 8;
-  while (off < len && out.size() < maxEntries) {
+  while (off < len) {
     if (len - off < kRecordHeader) break;  // torn tail
     const uint16_t n = readU16(data + off + 17);
     if (n > kMaxBitmap) break;  // corrupt length, cannot resync
@@ -303,7 +308,7 @@ inline bool buildIndexFromBytes(const uint8_t* data, size_t len,
         break;
       }
     }
-    if (!dup) {
+    if (!dup && out.size() < maxEntries) {
       IndexEntry e;
       e.key = k;
       e.offset = static_cast<uint32_t>(off);

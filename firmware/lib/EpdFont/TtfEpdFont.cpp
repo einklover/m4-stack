@@ -11,15 +11,15 @@
 #if defined(ESP32)
 class FaceLock {
  public:
-  explicit FaceLock(SemaphoreHandle_t mu) : mu_(mu), held_(false) {
+  explicit FaceLock(SemaphoreHandle_t mu, TickType_t wait = portMAX_DELAY) : mu_(mu), held_(false) {
     if (mu_) {
-      xSemaphoreTake(mu_, portMAX_DELAY);
-      held_ = true;
+      held_ = xSemaphoreTake(mu_, wait) == pdTRUE;
     }
   }
   ~FaceLock() {
     if (held_ && mu_) xSemaphoreGive(mu_);
   }
+  bool acquired() const { return !mu_ || held_; }
   FaceLock(const FaceLock&) = delete;
   FaceLock& operator=(const FaceLock&) = delete;
 
@@ -845,12 +845,17 @@ int TtfEpdFont::idleFlushDirty(int maxGlyphs) {
     TtfEpdFont* f = gLive[i];
     if (!f || !f->valid_ || f->flushBackedOff()) continue;
 #if defined(ESP32)
-    if (f->mutex_) xSemaphoreTake(f->mutex_, portMAX_DELAY);
+    FaceLock lock(f->mutex_, 0);  // Idle work must never wait behind rendering.
+    if (!lock.acquired()) continue;
 #endif
-    n += f->flushDirtySlots(maxGlyphs - n);
+    try {
+      n += f->flushDirtySlots(maxGlyphs - n);
+    } catch (const std::bad_alloc&) {
 #if defined(ESP32)
-    if (f->mutex_) xSemaphoreGive(f->mutex_);
+      f->lastTransientSkipMs_ = millis();
 #endif
+      // Keep unflushed slots dirty and retry after backoff.
+    }
   }
   return n;
 }

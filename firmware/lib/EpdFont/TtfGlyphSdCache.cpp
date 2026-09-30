@@ -5,6 +5,7 @@
 #if defined(ESP32) && M4_SD_GLYPH_CACHE_ENABLED
 #include <Arduino.h>
 #include <SDCardManager.h>
+#include <M4ScopedFileClose.h>
 #include <esp_heap_caps.h>
 #include <vector>
 #include <atomic>
@@ -42,7 +43,7 @@ ScopedSdCacheLock::ScopedSdCacheLock() {
                                          std::memory_order_acq_rel)) mutex_ = created;
     else { vSemaphoreDelete(created); mutex_ = expected; }
   }
-  held_ = mutex_ && xSemaphoreTake(mutex_, pdMS_TO_TICKS(1200)) == pdTRUE;
+  held_ = mutex_ && xSemaphoreTake(mutex_, 0) == pdTRUE;
 }
 
 struct DiskEnt {
@@ -169,6 +170,12 @@ void dropIndex(int i) {
 // SD-not-ready / I/O failures so a later flush retries the scan instead of
 // appending blind duplicates of records it could not see (B1).
 bool gIndexed = false;
+bool gScanActive = false;
+uint32_t gScanPos = 8;
+uint64_t gScanSize = 0;
+constexpr unsigned kScanRecordsPerCall = 48;
+constexpr uint32_t kScanBudgetMs = 20;
+
 
 // One-shot logs for permanent rejects (index/file full): the file only
 // grows, so these conditions never clear within a boot.
@@ -179,38 +186,64 @@ bool sLoggedOversize = false;
 // Rebuild outcome. Only Ok (including an empty-but-valid file) marks the
 // index built. NoFile means "nothing to index yet"; BadFile means the header
 // is garbage (self-heal on next append); IoError means retry later.
-enum class RebuildResult { Ok, NoFile, BadFile, IoError };
+enum class RebuildResult { Ok, Partial, NoFile, BadFile, IoError };
 
 RebuildResult rebuildIndex() {
   if (!ensureIndexStorage()) return RebuildResult::IoError;
-  resetIndex();
+  if (!gScanActive) resetIndex();
   gIndexed = false;
   if (!SdMan.ready()) return RebuildResult::IoError;
-  if (!SdMan.exists(kPath)) return RebuildResult::NoFile;
+  if (!SdMan.exists(kPath)) {
+    gScanActive = false;
+    resetIndex();
+    return RebuildResult::NoFile;
+  }
   FsFile f;
+  M4ScopedFileClose<FsFile> closeFile(f);
   if (!SdMan.openFileForRead("TtfGlyphCache", kPath, f)) return RebuildResult::IoError;
   const uint64_t fileSize = f.fileSize();
+  if (fileSize > kMaxFileBytes) {
+    f.close();
+    return RebuildResult::IoError;
+  }
   if (fileSize < 8) {
+    gScanActive = false;
+    resetIndex();
     // Fresh/empty file: valid index, zero entries.
     f.close();
     gIndexed = true;
     return RebuildResult::Ok;
   }
-  uint8_t hdr[8];
-  if (f.read(hdr, 8) != 8) {
-    f.close();
-    return RebuildResult::IoError;  // transient short read, not corruption
+  if (gScanActive && fileSize != gScanSize) {
+    gScanActive = false;
+    resetIndex();
   }
-  if (readU32(hdr) != kMagic || readU16(hdr + 4) != kVersion) {
-    f.close();
-    return RebuildResult::BadFile;
+  if (!gScanActive) {
+    uint8_t hdr[8];
+    if (f.read(hdr, 8) != 8) {
+      f.close();
+      return RebuildResult::IoError;  // transient short read, not corruption
+    }
+    if (readU32(hdr) != kMagic || readU16(hdr + 4) != kVersion) {
+      f.close();
+      return RebuildResult::BadFile;
+    }
+    gScanPos = 8;
+    gScanSize = fileSize;
+    gScanActive = true;
   }
-  uint32_t pos = 8;
+  uint32_t pos = gScanPos;
+  unsigned records = 0;
+  const uint32_t started = millis();
   uint8_t recHdr[kRecordHeader];
   // Mirrors buildIndexFromBytes: full-header + bounds validation per record,
   // stop on violation (no resync marker), duplicates keep the LAST offset,
-  // stop adding once kMaxIndex unique keys are collected.
-  while (gActiveCount < static_cast<size_t>(kMaxIndex)) {
+  // Stop adding new keys at capacity, but still scan later duplicate offsets.
+  while (true) {
+    if (records >= kScanRecordsPerCall || millis() - started >= kScanBudgetMs) {
+      f.close();
+      return RebuildResult::Partial;
+    }
     if (static_cast<uint64_t>(pos) + kRecordHeader > fileSize) break;  // torn tail
     if (!f.seekSet(pos)) {
       f.close();
@@ -228,10 +261,19 @@ RebuildResult rebuildIndex() {
     const uint16_t n = readU16(recHdr + 17);
     if (n > kMaxBitmap) break;  // corrupt length
     if (static_cast<uint64_t>(pos) + kRecordHeader + n > fileSize) break;  // torn bitmap
-    if (!upsertIndex(k, pos)) break;
+    // Keep scanning at capacity: later duplicates still replace old offsets.
+    if (gActiveCount < static_cast<size_t>(kMaxIndex) || findIndex(k) >= 0) {
+      if (!upsertIndex(k, pos)) {
+        f.close();
+        return RebuildResult::IoError;
+      }
+    }
     pos += static_cast<uint32_t>(kRecordHeader + n);
+    gScanPos = pos;
+    ++records;
   }
   f.close();
+  gScanActive = false;
   gIndexed = true;
   return RebuildResult::Ok;
 }
@@ -257,10 +299,13 @@ bool fileLookup(const Key& k, Glyph& out) {
   ScopedSdCacheLock lock;
   if (!lock.acquired()) return false;
   if (!ensureIndexStorage()) return false;
-  if (!gIndexed && rebuildIndex() == RebuildResult::IoError) return false;
+  if (!gIndexed) {
+    if (rebuildIndex() != RebuildResult::Ok) return false;
+  }
   const int i = findIndex(k);
   if (i < 0) return false;
   FsFile f;
+  M4ScopedFileClose<FsFile> closeFile(f);
   if (!SdMan.openFileForRead("TtfGlyphCache", kPath, f)) return false;
   if (!f.seekSet(gIndex[static_cast<size_t>(i)].offset)) {
     f.close();
@@ -285,7 +330,7 @@ bool fileLookup(const Key& k, Glyph& out) {
     return false;
   }
   const uint16_t n = readU16(recHdr + 17);
-  if (n > kMaxBitmap) {
+  if (!validGeometry(recHdr[10], recHdr[11], n)) {
     f.close();
     dropIndex(i);
     return false;
@@ -318,10 +363,10 @@ AppendResult fileAppend(const Key& k, const Glyph& g) {
   ScopedSdCacheLock lock;
   if (!lock.acquired()) return AppendResult::TransientFail;
   if (!SdMan.ready() || !ensureIndexStorage()) return AppendResult::TransientFail;
-  if (g.bitmap.size() > kMaxBitmap) {
+  if (!validGeometry(g.width, g.height, g.bitmap.size())) {
     if (!sLoggedOversize) {
       sLoggedOversize = true;
-      Serial.printf("[TTF-GLYPH] cache reject: bitmap %u > %u, dropping glyph\n",
+      Serial.printf("[TTF-GLYPH] cache reject: invalid bitmap length %u (limit %u)\n",
                     static_cast<unsigned>(g.bitmap.size()),
                     static_cast<unsigned>(kMaxBitmap));
     }
@@ -329,12 +374,13 @@ AppendResult fileAppend(const Key& k, const Glyph& g) {
   }
   if (!gIndexed) {
     const RebuildResult r = rebuildIndex();
-    if (r == RebuildResult::IoError) return AppendResult::TransientFail;
+    if (r == RebuildResult::IoError || r == RebuildResult::Partial) return AppendResult::TransientFail;
     if (r == RebuildResult::BadFile) {
       // Our own cache file has a garbage header: reset it (truncate + fresh
       // header) instead of appending after garbage forever. Cached glyphs
       // are regenerable by design (eviction may drop them anyway).
       FsFile rf = SdMan.open(kPath, O_RDWR | O_CREAT | O_TRUNC);
+      M4ScopedFileClose<FsFile> closeResetFile(rf);
       if (!rf) return AppendResult::TransientFail;
       if (!writeFileHeader(rf)) {
         rf.close();
@@ -359,6 +405,7 @@ AppendResult fileAppend(const Key& k, const Glyph& g) {
   SdMan.ensureDirectoryExists(kDir);
   const bool exists = SdMan.exists(kPath);
   FsFile f;
+  M4ScopedFileClose<FsFile> closeFile(f);
   if (exists) {
     f = SdMan.open(kPath, O_RDWR);
   } else {
@@ -428,6 +475,8 @@ void fileResetForTests() {
   if (!lock.acquired()) return;
   resetIndex();
   gIndexed = false;
+  gScanActive = false;
+  gScanPos = 8;
 #endif
 }
 

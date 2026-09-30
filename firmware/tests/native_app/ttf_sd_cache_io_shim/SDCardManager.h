@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 inline std::vector<uint8_t> disk;
+inline unsigned long ioDelayMs = 0;
+inline int openedFiles = 0;
 inline int reads = 0;
 inline int seeks = 0;
 inline int failRead = -1;  // 1-based read() call that returns a short count
@@ -16,12 +18,14 @@ struct FsFile {
   explicit operator bool() const { return opened; }
   uint64_t fileSize() const { return disk.size(); }
   bool seekSet(uint32_t p) {
+    fakeMillis += ioDelayMs;
     ++seeks;
     if (seeks == failSeek) return false;
     pos = p;
     return p <= disk.size();
   }
   int read(void* p, size_t n) {
+    fakeMillis += ioDelayMs;
     ++reads;
     if (reads == failRead) return 4;  // present on disk, short this call
     size_t got = std::min(n, disk.size() - std::min(pos, disk.size()));
@@ -36,6 +40,7 @@ struct FsFile {
     return static_cast<int>(n);
   }
   bool close() {
+    if(opened) --openedFiles;
     opened = false;
     return true;
   }
@@ -47,10 +52,12 @@ struct SdType {
   bool openFileForRead(const char*, const char*, FsFile& f) {
     f.opened = !disk.empty();
     f.pos = 0;
+    if(f.opened) ++openedFiles;
     return f.opened;
   }
   FsFile open(const char*, int flags) {
     if (flags & O_TRUNC) disk.clear();
+    ++openedFiles;
     return FsFile{true, 0};
   }
   void ensureDirectoryExists(const char*) {}

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <new>
 #include <utility>
 
 extern SemaphoreHandle_t gM4RenderMutex;
@@ -59,18 +60,22 @@ AppInstallActivity::AppInstallActivity(GfxRenderer& renderer, MappedInputManager
 void AppInstallActivity::scanInbox() {
   inboxPackages_.clear();
   M4xInstaller::ensureLayout();
-  const auto files = SdMan.listFiles(M4xPaths::kInbox, 64);
-  for (const auto& fArduino : files) {
-    const std::string f = fArduino.c_str();
-    if (f.size() >= 4) {
-      const auto ext = f.substr(f.size() - 4);
-      if (ext == ".m4x" || ext == ".M4X") {
-        std::string full = M4xPaths::kInbox;
-        full += "/";
-        full += f;
-        inboxPackages_.push_back(std::move(full));
+  const auto files = SdMan.listFiles(M4xPaths::kInbox, 64, &inboxScanPartial_);
+  try {
+    for (const auto& fArduino : files) {
+      const std::string f = fArduino.c_str();
+      if (f.size() >= 4) {
+        const auto ext = f.substr(f.size() - 4);
+        if (ext == ".m4x" || ext == ".M4X") {
+          std::string full = M4xPaths::kInbox;
+          full += "/";
+          full += f;
+          inboxPackages_.push_back(std::move(full));
+        }
       }
     }
+  } catch (const std::bad_alloc&) {
+    inboxScanPartial_ = true;  // Keep already discovered packages usable.
   }
 }
 
@@ -80,7 +85,7 @@ void AppInstallActivity::probeSelected() {
     if (inboxPackages_.empty() || selectedIndex_ < 0 ||
         selectedIndex_ >= static_cast<int>(inboxPackages_.size())) {
       probe_ = {};
-      probe_.message = "收件箱没有 .m4x 安装包";
+      probe_.message = inboxScanPartial_ ? "扫描未完成，请减少收件箱文件后重试" : "收件箱没有 .m4x 安装包";
       stage_ = Stage::Result;
       resultMessage_ = probe_.message;
       return;
@@ -325,7 +330,7 @@ void AppInstallActivity::render() const {
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, btnY - 28, "点按按钮或屏幕任意处安装");
   } else {
     if (inboxPackages_.empty()) {
-      M4UiText::drawCentered(renderer, UI_12_FONT_ID, 220, "收件箱为空", true);
+      M4UiText::drawCentered(renderer, UI_12_FONT_ID, 220, inboxScanPartial_ ? "扫描未完成" : "收件箱为空", true);
       M4UiText::drawCentered(renderer, UI_10_FONT_ID, 280, "请将 .m4x 复制到");
       M4UiText::drawCentered(renderer, UI_10_FONT_ID, 320, "/apps_inbox/");
     } else {
@@ -340,7 +345,7 @@ void AppInstallActivity::render() const {
             return slash == std::string::npos ? p : p.substr(slash + 1);
           },
           nullptr, nullptr, nullptr);
-      M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight - 90, "点选安装包后确认");
+      M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight - 90, inboxScanPartial_ ? "仅显示部分文件，请减少文件后重试" : "点选安装包后确认");
     }
   }
 

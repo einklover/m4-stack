@@ -30,9 +30,7 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
     bool isApMode = false;
   };
 
-  TaskHandle_t displayTaskHandle = nullptr;
   TaskHandle_t deferredCleanupTaskHandle = nullptr;
-  SemaphoreHandle_t renderingMutex = nullptr;
   bool updateRequired = false;
   WebServerActivityState state = WebServerActivityState::MODE_SELECTION;
   const std::function<void()> onGoBack;
@@ -48,11 +46,10 @@ class CrossPointWebServerActivity final : public ActivityWithSubactivity {
   unsigned long lastHandleClientTime = 0;
   PendingParentAction pendingParentAction = PendingParentAction::None;
 
-  static void taskTrampoline(void* param);
   static void deferredCleanupTaskTrampoline(void* param);
   static bool webPumpAbortCheck(void* context);
   bool pollWebPumpAbort();
-  [[noreturn]] void displayTaskLoop();
+  void renderPendingUpdate();
   void render() const;
   void renderServerRunning() const;
   void showSetupError(const char* message);

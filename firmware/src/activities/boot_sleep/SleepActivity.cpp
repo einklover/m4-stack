@@ -1,4 +1,7 @@
 #include "SleepActivity.h"
+#include "SleepImageScan.h"
+#include <M4ScopedFileClose.h>
+#include <new>
 
 #include <Epub.h>
 #include <GfxRenderer.h>
@@ -76,33 +79,40 @@ void SleepActivity::onEnter() {
   // TRANSPARENT 模式须保留 framebuffer（阅读内容），不能清屏
   // Other modes render the wallpaper through the same fast-only policy.
 
-  switch (SETTINGS.sleepScreen) {
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
-    GUI.drawPopup(renderer, L(Str::kShuttingDown));
-      return renderBlankSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM):
-    GUI.drawPopup(renderer, L(Str::kShuttingDown));
-      return renderCustomSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
+  try {
+    switch (SETTINGS.sleepScreen) {
+      case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
       GUI.drawPopup(renderer, L(Str::kShuttingDown));
-      return renderCoverSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
-      return renderCoverSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::MARSK):
-    GUI.drawPopup(renderer, L(Str::kShuttingDown));
-      return renderpngtxtSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::MARSK2):
-      // 不调用 drawPopup：弹框的 displayBuffer 会把“关机中”写入屏幕，
-      // 后续灰阶多遗渲染不一定能完全覆盖，导致文字残留
-      return renderPngSleepScreen();
-    case (CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT):
-      // !! 不调用 drawPopup !!
-      // drawPopup 内部会 fillRect+displayBuffer，会清除 framebuffer 顶部区域并触发刷新，
-      // 导致阅读页内容被覆盖。透明模式必须保留完整的阅读页 framebuffer。
-      return renderTransparentSleepScreen();
-    default:
-    GUI.drawPopup(renderer, L(Str::kShuttingDown));
-      return renderDefaultSleepScreen();
+        return renderBlankSleepScreen();
+      case (CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM):
+      GUI.drawPopup(renderer, L(Str::kShuttingDown));
+        return renderCustomSleepScreen();
+      case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
+        GUI.drawPopup(renderer, L(Str::kShuttingDown));
+        return renderCoverSleepScreen();
+      case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
+        return renderCoverSleepScreen();
+      case (CrossPointSettings::SLEEP_SCREEN_MODE::MARSK):
+      GUI.drawPopup(renderer, L(Str::kShuttingDown));
+        return renderpngtxtSleepScreen();
+      case (CrossPointSettings::SLEEP_SCREEN_MODE::MARSK2):
+        // 不调用 drawPopup：弹框的 displayBuffer 会把“关机中”写入屏幕，
+        // 后续灰阶多遗渲染不一定能完全覆盖，导致文字残留
+        return renderPngSleepScreen();
+      case (CrossPointSettings::SLEEP_SCREEN_MODE::TRANSPARENT):
+        // !! 不调用 drawPopup !!
+        // drawPopup 内部会 fillRect+displayBuffer，会清除 framebuffer 顶部区域并触发刷新，
+        // 导致阅读页内容被覆盖。透明模式必须保留完整的阅读页 framebuffer。
+        return renderTransparentSleepScreen();
+      default:
+      GUI.drawPopup(renderer, L(Str::kShuttingDown));
+        return renderDefaultSleepScreen();
+    }
+  } catch (const std::bad_alloc&) {
+    // Keep the last framebuffer and let shutdown continue without another
+    // allocation-heavy wallpaper attempt when candidate/decode allocation fails.
+    renderer.setRenderMode(GfxRenderer::BW);
+    Serial.printf("[SLP] wallpaper skipped: allocation failed\n");
   }
 }
 
@@ -112,35 +122,42 @@ void SleepActivity::renderpngtxtSleepScreen() const {
 
   // ========== 分支1：优先从 /lock_screen 目录随机加载 .pngtxt ==========
   auto dir = SdMan.open("/lock_screen");
+  M4ScopedFileClose<FsFile> closeDirectory(dir);
   if (dir && dir.isDirectory()) {
     std::vector<std::string> files;
     char name[256]; // 缩减文件名缓冲区长度（足够用）
-    
-    // 收集所有 .pngtxt 文件
-    for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
-      if (file.isDirectory()) {
-        file.close();
-        continue;
-      }
-      file.getName(name, sizeof(name));
-      std::string filename = name;
-      
-      // 跳过隐藏文件（.开头）
-      if (!filename.empty() && filename[0] == '.') {
-        file.close();
-        continue;
-      }
+    SleepImageScan::Window scan;
+    scan.begin(millis());
 
-      // 修正：判断后缀为 .pngtxt
-      const std::string suffix = ".pngtxt";
-      if (filename.length() < suffix.length() || 
-          filename.substr(filename.length() - suffix.length()) != suffix) {
+    // Inspect a bounded window of directory entries, not every name on a slow card.
+    while (scan.allow(millis())) {
+      auto file = dir.openNextFile();
+      M4ScopedFileClose<FsFile> closeChild(file);
+      if (!file) break;
+      const bool isDir = file.isDirectory();
+      std::string filename;
+      if (!isDir) {
+        file.getName(name, sizeof(name));
+        filename = name;
+      }
+      const auto step = SleepImageScan::beginEntry(scan, millis(), isDir, filename, ".pngtxt");
+      if (step == SleepImageScan::Step::StopBudget) {
+        file.close();
+        break;
+      }
+      if (step != SleepImageScan::Step::Accept) {
         file.close();
         continue;
       }
-      
       files.emplace_back(filename);
       file.close();
+    }
+    if (!scan.allow(millis())) scan.markStopped();
+    if (scan.partial) {
+      Serial.printf("[SLP] /lock_screen .pngtxt scan partial: visited=%u cap=%u budgetMs=%u\n",
+                    static_cast<unsigned>(scan.visited),
+                    static_cast<unsigned>(SleepImageScan::kMaxEntries),
+                    static_cast<unsigned>(SleepImageScan::kBudgetMs));
     }
 
     const size_t numFiles = files.size();
@@ -227,23 +244,29 @@ void SleepActivity::renderpngtxtSleepScreen() const {
 void SleepActivity::renderCustomSleepScreen() const {
   // Check if we have a /sleep directory
   auto dir = SdMan.open("/sleep");
+  M4ScopedFileClose<FsFile> closeDirectory(dir);
   if (dir && dir.isDirectory()) {
     std::vector<std::string> files;
     char name[500];
-    // collect all valid BMP files
-    for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
-      if (file.isDirectory()) {
-        file.close();
-        continue;
+    SleepImageScan::Window scan;
+    scan.begin(millis());
+    // collect valid BMP files inside a finite entry/time window
+    while (scan.allow(millis())) {
+      auto file = dir.openNextFile();
+      M4ScopedFileClose<FsFile> closeChild(file);
+      if (!file) break;
+      const bool isDir = file.isDirectory();
+      std::string filename;
+      if (!isDir) {
+        file.getName(name, sizeof(name));
+        filename = name;
       }
-      file.getName(name, sizeof(name));
-      auto filename = std::string(name);
-      if (filename[0] == '.') {
+      const auto step = SleepImageScan::beginEntry(scan, millis(), isDir, filename, ".bmp");
+      if (step == SleepImageScan::Step::StopBudget) {
         file.close();
-        continue;
+        break;
       }
-
-      if (filename.substr(filename.length() - 4) != ".bmp") {
+      if (step != SleepImageScan::Step::Accept) {
         file.close();
         continue;
       }
@@ -254,6 +277,13 @@ void SleepActivity::renderCustomSleepScreen() const {
       }
       files.emplace_back(filename);
       file.close();
+    }
+    if (!scan.allow(millis())) scan.markStopped();
+    if (scan.partial) {
+      Serial.printf("[SLP] /sleep BMP scan partial: visited=%u cap=%u budgetMs=%u\n",
+                    static_cast<unsigned>(scan.visited),
+                    static_cast<unsigned>(SleepImageScan::kMaxEntries),
+                    static_cast<unsigned>(SleepImageScan::kBudgetMs));
     }
     const auto numFiles = files.size();
     if (numFiles > 0) {
@@ -389,17 +419,41 @@ static void renderPngTransparentHD(GfxRenderer& renderer, const std::string& png
 void SleepActivity::renderPngSleepScreen() const {
 
   auto dir = SdMan.open("/lock_screen");
+  M4ScopedFileClose<FsFile> closeDirectory(dir);
   if (dir && dir.isDirectory()) {
     std::vector<std::string> files;
     char name[500];
-    for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
-      if (file.isDirectory()) { file.close(); continue; }
-      file.getName(name, sizeof(name));
-      auto filename = std::string(name);
-      if (filename[0] == '.') { file.close(); continue; }
-      if (!ImageDecoderFactory::isFormatSupported(filename)) { file.close(); continue; }
+    SleepImageScan::Window scan;
+    scan.begin(millis());
+    while (scan.allow(millis())) {
+      auto file = dir.openNextFile();
+      M4ScopedFileClose<FsFile> closeChild(file);
+      if (!file) break;
+      const bool isDir = file.isDirectory();
+      std::string filename;
+      if (!isDir) {
+        file.getName(name, sizeof(name));
+        filename = name;
+      }
+      const auto step = SleepImageScan::beginEntry(scan, millis(), isDir, filename, nullptr);
+      if (step == SleepImageScan::Step::StopBudget) {
+        file.close();
+        break;
+      }
+      if (step != SleepImageScan::Step::Accept ||
+          !ImageDecoderFactory::isFormatSupported(filename)) {
+        file.close();
+        continue;
+      }
       files.emplace_back(filename);
       file.close();
+    }
+    if (!scan.allow(millis())) scan.markStopped();
+    if (scan.partial) {
+      Serial.printf("[SLP] /lock_screen image scan partial: visited=%u cap=%u budgetMs=%u\n",
+                    static_cast<unsigned>(scan.visited),
+                    static_cast<unsigned>(SleepImageScan::kMaxEntries),
+                    static_cast<unsigned>(SleepImageScan::kBudgetMs));
     }
 
     const auto numFiles = files.size();

@@ -750,3 +750,10 @@ The local `max-min` range used as an edge gate also treats an isolated bright/da
 - A case-sensitive string prefix cannot prevent moving a FAT directory into itself: case variants, Unicode folding and short-name aliases can name the same directory. SdFat `FatFile::rename` does not reject an ancestor/descendant move before rewriting entries.
 - In MyLibrary, compare the source `firstCluster()` with every destination parent on the same SdMan volume; close each handle before opening the next and fail closed on an unreadable parent. Do not substitute ASCII-only case folding for directory identity.
 - `python3 firmware/tests/test_m4_astra_stability.py` extracts the production guard and paste path. The original guard failed the `/Books` to `/books/sub/Books` assertion; identity, short-name, Unicode, unreadable-parent and valid-sibling cases pass with the fix. Host evidence is not a physical-card test.
+
+## 2026-09-30 — 慢 SD / OOM 接手修复
+
+- SdFat 默认 `DESTRUCTOR_CLOSES_FILE=0`。包含 vector/string 分配的文件路径要显式保护异常时的 close，不能把普通文件对象析构当作 RAII。
+- 有界目录扫描应在打开下一个条目前检查预算，目录、隐藏文件及被过滤条目也消耗预算；部分结果不能显示为“目录为空”。单次驱动调用仍可能超过时间窗。
+- TTF 索引分批重建期间不要发布部分索引或盲目追加；按记录数预算计入重复键，容量满后继续更新后续重复键的最后偏移。
+- 文件传输页面只在状态改变时更新，已有同步首次绘制路径。改为 owner loop 绘制可以移除独立 display task 及强删锁/对象寿命问题；host/编译结果不等于慢 SD 实机验收。

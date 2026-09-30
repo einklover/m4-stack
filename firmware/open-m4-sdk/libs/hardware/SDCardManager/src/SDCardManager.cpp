@@ -1,4 +1,6 @@
 #include "SDCardManager.h"
+#include "M4ScopedFileClose.h"
+#include <new>
 
 #include <BoardConfig.h>
 #include <driver/gpio.h>
@@ -240,8 +242,10 @@ bool SDCardManager::ready() const {
   return initialized;
 }
 
-std::vector<String> SDCardManager::listFiles(const char* path, const int maxFiles) {
+std::vector<String> SDCardManager::listFiles(const char* path, const int maxFiles, bool* partial) {
   std::vector<String> ret;
+  if (partial) *partial = false;
+  if (maxFiles <= 0) return ret;
   if (!initialized) {
     if (Serial) Serial.printf("[%lu] [SD] not initialized, returning empty list\n", millis());
     return ret;
@@ -260,16 +264,29 @@ std::vector<String> SDCardManager::listFiles(const char* path, const int maxFile
 
   int count = 0;
   char name[128];
-  for (auto f = root.openNextFile(); f && count < maxFiles; f = root.openNextFile()) {
+  const uint32_t started = millis();
+  unsigned visited = 0;
+  while (count < maxFiles && visited < 512 && millis() - started < 400) {
+    auto f = root.openNextFile();
+    if (!f) { root.close(); return ret; }
+    ++visited;
     if (f.isDirectory()) {
       f.close();
       continue;
     }
     f.getName(name, sizeof(name));
-    ret.emplace_back(name);
+    try {
+      if (name[0]) ret.emplace_back(name);
+    } catch (const std::bad_alloc&) {
+      f.close();
+      if (partial) *partial = true;
+      root.close();
+      return ret;
+    }
     f.close();
     count++;
   }
+  if (partial) *partial = true;
   root.close();
   return ret;
 }
