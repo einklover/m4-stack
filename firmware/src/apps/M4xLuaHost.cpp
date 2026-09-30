@@ -3,6 +3,7 @@
 #define LUA_C89_NUMBERS 1
 
 #include "apps/M4xLuaHost.h"
+#include <M4MemoryManager.h>
 #include "apps/M4xFsRange.h"
 #include "apps/M4xHttpBodyReader.h"
 #include "apps/M4xHostIo.h"
@@ -23,12 +24,15 @@
 #include "util/M4ContentProviderContract.h"
 #include "util/M4xUiListPolicy.h"
 #include "util/M4xJsonScan.h"
+#include "activities/home/HomeSceneAssetDecoder.h"
+#include "apps/providers/M4Psram.h"
 #include "apps/M4xWifiConnect.h"
 #include "apps/M4WifiFailureTracker.h"
 #include "apps/weread/WereadCrypto.h"
 #include "CrossPointSettings.h"
 #include "fontIds.h"
 #include "util/M4FontPolicy.h"
+#include "util/M4TlsMemory.h"
 #include "util/M4UiText.h"
 #include "util/M4xAppFontMap.h"
 #include "util/QRCodeHelper.h"
@@ -36,7 +40,9 @@
 #include "WifiCredentialStore.h"
 #include "qemu/M4QemuNet.h"
 
+#include <GfxRenderer.h>
 #include <EpdFontLoader.h>
+#include <cstring>
 #include <mbedtls/sha256.h>
 
 // Full types for the reused keep-alive connection members (netTls_/netHttp_).
@@ -66,6 +72,7 @@ extern "C" {
 #include <time.h>
 
 #include <cctype>
+#include <climits>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -113,37 +120,21 @@ struct NetBodyBuf {
   char* data = nullptr;
   size_t len = 0;
   size_t cap = 0;
-  bool fromCaps = false;
 
   ~NetBodyBuf() { clear(); }
   void clear() {
     if (data) {
-      if (fromCaps) heap_caps_free(data);
-      else free(data);
+      M4Memory::free(data);
       data = nullptr;
     }
     len = cap = 0;
-    fromCaps = false;
   }
   bool reserve(size_t n) {
     if (n <= cap) return true;
-    char* p = static_cast<char*>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    bool caps = true;
-    if (!p) {
-      p = static_cast<char*>(malloc(n));
-      caps = false;
-    }
+    char* p = static_cast<char*>(M4Memory::reallocApp(data, n));
     if (!p) return false;
-    if (data && len) std::memcpy(p, data, len);
-    const size_t oldLen = len;
-    if (data) {
-      if (fromCaps) heap_caps_free(data);
-      else free(data);
-    }
     data = p;
     cap = n;
-    len = oldLen;
-    fromCaps = caps;
     return true;
   }
   bool append(const char* src, size_t n, size_t maxTotal) {
@@ -229,6 +220,25 @@ static uint32_t httpNowMs() { return static_cast<uint32_t>(millis()); }
 static bool httpIsCancelled() {
   return gHost && gHost->isCancelRequested();
 }
+
+class NetBusyScope {
+ public:
+  explicit NetBusyScope(M4xLuaHost* host) : host_(host), startedMs_(millis()) {
+    if (host_) host_->setNetworkBusy(true);
+    Serial.printf("[M4xNet] busy=1 stage=request_begin\n");
+  }
+  ~NetBusyScope() {
+    if (host_) host_->setNetworkBusy(false);
+    Serial.printf("[WRPERF] stage=lua_net_request ms=%lu cancelled=%d\n",
+                  static_cast<unsigned long>(millis() - startedMs_),
+                  host_ && host_->isCancelRequested() ? 1 : 0);
+    Serial.printf("[M4xNet] busy=0 stage=request_end\n");
+  }
+
+ private:
+  M4xLuaHost* host_;
+  uint32_t startedMs_;
+};
 static bool headerIsChunked(const std::vector<M4xNetPolicy::ResponseHeader>& headers) {
   for (const auto& h : headers) {
     if (M4xNetPolicy::toLowerAscii(h.name) == "transfer-encoding") {
@@ -635,6 +645,45 @@ int l_gui_fillRect(lua_State* L) {
   return 0;
 }
 
+Color luaGuiDitherColor(lua_State* L, int idx) {
+  if (lua_type(L, idx) == LUA_TSTRING) {
+    const char* s = lua_tostring(L, idx);
+    if (s) {
+      if (strcmp(s, "white") == 0) return White;
+      if (strcmp(s, "light") == 0 || strcmp(s, "lightgray") == 0) return LightGray;
+      if (strcmp(s, "dark") == 0 || strcmp(s, "darkgray") == 0) return DarkGray;
+      if (strcmp(s, "black") == 0) return Black;
+    }
+  }
+  const int n = static_cast<int>(luaL_optnumber(L, idx, static_cast<lua_Number>(LightGray)));
+  if (n <= 1) return White;
+  if (n <= 5) return LightGray;
+  if (n <= 10) return DarkGray;
+  return Black;
+}
+
+int l_gui_fillRectDither(lua_State* L) {
+  auto* h = hostFromLua(L);
+  if (!h || !h->renderer_) return 0;
+  const int x = static_cast<int>(luaL_checknumber(L, 1));
+  const int y = static_cast<int>(luaL_checknumber(L, 2));
+  const int w = static_cast<int>(luaL_checknumber(L, 3));
+  const int ht = static_cast<int>(luaL_checknumber(L, 4));
+  h->renderer_->fillRectDither(x, y, w, ht, luaGuiDitherColor(L, 5));
+  return 0;
+}
+
+int l_gui_fillRectStipple(lua_State* L) {
+  auto* h = hostFromLua(L);
+  if (!h || !h->renderer_) return 0;
+  const int x = static_cast<int>(luaL_checknumber(L, 1));
+  const int y = static_cast<int>(luaL_checknumber(L, 2));
+  const int w = static_cast<int>(luaL_checknumber(L, 3));
+  const int ht = static_cast<int>(luaL_checknumber(L, 4));
+  h->renderer_->fillRectStipple(x, y, w, ht);
+  return 0;
+}
+
 int l_gui_drawLine(lua_State* L) {
   auto* h = hostFromLua(L);
   if (!h || !h->renderer_) return 0;
@@ -671,6 +720,35 @@ int l_gui_refresh(lua_State* L) {
   auto* h = hostFromLua(L);
   if (h && h->renderer_) h->renderer_->displayBuffer();
   return 0;
+}
+
+// gui.drawBmp(rel, x, y [, scale]) -> bool
+// Opaque white plate plus black runs. scale is an integer 1..4.
+int l_gui_drawBmp(lua_State* L) {
+  auto* h = hostFromLua(L);
+  if (!h || !h->renderer_) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  const char* rel = luaL_checkstring(L, 1);
+  const int x = static_cast<int>(luaL_checknumber(L, 2));
+  const int y = static_cast<int>(luaL_checknumber(L, 3));
+  const int scale = static_cast<int>(luaL_optnumber(L, 4, 1));
+  lua_pushboolean(L, h->drawInstallBmp(rel, x, y, scale) ? 1 : 0);
+  return 1;
+}
+
+// gui.bmpSize(rel) -> w, h | nothing
+int l_gui_bmpSize(lua_State* L) {
+  auto* h = hostFromLua(L);
+  if (!h) return 0;
+  const char* rel = luaL_checkstring(L, 1);
+  int w = 0;
+  int hgt = 0;
+  if (!h->installBmpSize(rel, w, hgt)) return 0;
+  lua_pushnumber(L, w);
+  lua_pushnumber(L, hgt);
+  return 2;
 }
 
 // ---- sys ----
@@ -729,7 +807,16 @@ int l_sys_time(lua_State* L) {
 
 int l_sys_delay(lua_State* L) {
   const int ms = static_cast<int>(luaL_checknumber(L, 1));
-  if (ms > 0 && ms < 5000) delay(static_cast<uint32_t>(ms));
+  if (ms > 0 && ms < 5000) {
+    auto* h = hostFromLua(L);
+    uint32_t remaining = static_cast<uint32_t>(ms);
+    while (remaining) {
+      const uint32_t slice = std::min<uint32_t>(remaining, 25u);
+      delay(slice);
+      remaining -= slice;
+      if (h && h->isCancelRequested()) return luaL_error(L, "cancelled");
+    }
+  }
   return 0;
 }
 
@@ -1728,15 +1815,12 @@ int l_fs_readRange(lua_State* L) {
     return 2;
   }
   // M4xRuntime task stack is only ~12 KiB — never put a 16 KiB window on it.
-  // Prefer PSRAM; fall back to internal heap. Only-window allocation (toRead).
+  // This window is optional application working memory. Keep it PSRAM-only on
+  // ESP32; a failed allocation returns a clean Lua `oom` result instead of
+  // fragmenting the internal heap.
   static_assert(!M4xFsRange::isStackBufferSafe(M4xFsRange::kMaxLength),
                 "full readRange max must not be treated as stack-safe");
-  uint8_t* buf = static_cast<uint8_t*>(heap_caps_malloc(toRead, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  bool fromCaps = true;
-  if (!buf) {
-    buf = static_cast<uint8_t*>(malloc(toRead));
-    fromCaps = false;
-  }
+  uint8_t* buf = static_cast<uint8_t*>(M4Memory::allocApp(toRead));
   if (!buf) {
     f.close();
     lua_pushnil(L);
@@ -1746,16 +1830,14 @@ int l_fs_readRange(lua_State* L) {
   FsFileCtx ctx{&f};
   if (!M4xLuaSandbox::readExact(fsReadChunk, &ctx, buf, toRead)) {
     f.close();
-    if (fromCaps) heap_caps_free(buf);
-    else free(buf);
+    M4Memory::free(buf);
     lua_pushnil(L);
     lua_pushstring(L, "short_read");
     return 2;
   }
   f.close();
   lua_pushlstring(L, reinterpret_cast<const char*>(buf), toRead);
-  if (fromCaps) heap_caps_free(buf);
-  else free(buf);
+  M4Memory::free(buf);
   return 1;
 }
 
@@ -2061,7 +2143,8 @@ int l_net_request(lua_State* L) {
   if (!method || !urlIn) return luaL_error(L, "method/url required");
 
   std::vector<std::pair<std::string, std::string>> headerList;
-  std::string body;
+  const char* bodyData = nullptr;
+  size_t bodyLen = 0;
   int timeoutMs = M4xNetPolicy::kDefaultTimeoutMs;
 
   if (lua_istable(L, 3)) {
@@ -2073,11 +2156,12 @@ int l_net_request(lua_State* L) {
 
     lua_getfield(L, 3, "body");
     if (lua_isstring(L, -1)) {
-      size_t blen = 0;
-      const char* b = lua_tolstring(L, -1, &blen);
-      if (b && blen) body.assign(b, blen);
+      bodyData = lua_tolstring(L, -1, &bodyLen);
+      // Keep the Lua string rooted on the stack until the synchronous request
+      // and any redirect hops have finished.
+    } else {
+      lua_pop(L, 1);
     }
-    lua_pop(L, 1);
 
     lua_getfield(L, 3, "headers");
     if (lua_istable(L, -1)) {
@@ -2105,13 +2189,13 @@ int l_net_request(lua_State* L) {
   if (WiFi.status() != WL_CONNECTED) return fail("wifi_not_connected");
 #endif
 
-  // Reclaim transient Lua objects before mbedTLS asks for large contiguous
-  // internal blocks. If headroom is already unsafe, return a stable OOM code
+  // Reclaim transient Lua objects before checking the shared TLS allocator
+  // resource policy. If headroom is unsafe, return a stable OOM code
   // instead of collapsing it into HTTPClient's generic "connection refused".
   lua_gc(L, LUA_GCCOLLECT, 0);
   const size_t largestInternal =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (largestInternal < 32 * 1024) {
+  if (!M4TlsMemory::resourcesAvailable()) {
     Serial.printf("[M4xNet] TLS skipped: internal largest=%u free=%u psram=%u lua=%u/%u\n",
                   static_cast<unsigned>(largestInternal),
                   static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -2127,6 +2211,9 @@ int l_net_request(lua_State* L) {
   if (methodStr != "GET" && methodStr != "POST") return fail("unsupported_method");
 
   if (!M4xNetPolicy::isAllowedUrl(url)) return fail("https_required");
+  if (h->isCancelRequested()) return fail("cancelled");
+
+  NetBusyScope busyScope(h);
 
   const size_t maxBody = netMaxBodyBytes();
   const uint32_t deadline = millis() + static_cast<uint32_t>(timeoutMs);
@@ -2145,6 +2232,10 @@ int l_net_request(lua_State* L) {
   };
 
   for (int hop = 0; hop <= M4xNetPolicy::kMaxRedirects; ++hop) {
+    if (h->isCancelRequested()) {
+      err = "cancelled";
+      break;
+    }
     if (static_cast<int32_t>(deadline - millis()) <= 0) {
       err = "timeout";
       break;
@@ -2164,6 +2255,10 @@ int l_net_request(lua_State* L) {
     bool insecureRetried = false;
 
   retry_tls:
+    if (h->isCancelRequested()) {
+      err = "cancelled";
+      break;
+    }
     std::unique_ptr<WiFiClient> client;
     {
       auto* secure = new WiFiClientSecure();
@@ -2195,7 +2290,7 @@ int l_net_request(lua_State* L) {
 
     // Do not log Cookie / Authorization values.
     Serial.printf("[M4xNet] %s %s body=%u hop=%d\n", methodStr.c_str(), url.c_str(),
-                  static_cast<unsigned>(body.size()), hop);
+                  static_cast<unsigned>(bodyLen), hop);
 
     // HTTPClient performs the verified TLS handshake and sends the request in
     // this bounded call. Pre-connecting separately would change reuse and
@@ -2207,9 +2302,14 @@ int l_net_request(lua_State* L) {
       if (!hasHeaderCI("Content-Type")) {
         http.addHeader("Content-Type", "application/json");
       }
-      code = http.POST(const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(body.data())), body.size());
+      code = http.POST(const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(bodyData)), bodyLen);
     }
-    if (code < 0 && allowInsecureRetry && !insecureRetried) {
+    if (h->isCancelRequested()) {
+      err = "cancelled";
+      http.end();
+      break;
+    }
+    if (code < 0 && allowInsecureRetry && !insecureRetried && !h->isCancelRequested()) {
       http.end();
       insecureRetried = true;
       goto retry_tls;
@@ -2265,7 +2365,8 @@ int l_net_request(lua_State* L) {
       if (code == 303 || code == 302 || code == 301) {
         if (methodStr == "POST") {
           methodStr = "GET";
-          body.clear();
+          bodyData = nullptr;
+          bodyLen = 0;
         }
       }
       url = next;
@@ -2447,7 +2548,7 @@ int l_net_extractPsvts(lua_State* L) {
   lua_gc(L, LUA_GCCOLLECT, 0);
   const size_t largestInternal =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (largestInternal < 32 * 1024) {
+  if (!M4TlsMemory::resourcesAvailable()) {
     Serial.printf("[M4xNet] TLS skipped (extractPsvts): internal largest=%u free=%u psram=%u lua=%u/%u\n",
                   static_cast<unsigned>(largestInternal),
                   static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -3371,14 +3472,10 @@ class SdTransactionBackend final : public M4xHostIo::TransactionBackend {
 class TransactionJsonSink final : public M4xJsonStream::Sink {
  public:
   explicit TransactionJsonSink(M4xHostIo::TransactionalWriter& writer) : writer_(writer) {
-#if defined(ARDUINO_ARCH_ESP32)
-    buffer_ = static_cast<uint8_t*>(heap_caps_malloc(kBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-#endif
+    buffer_ = static_cast<uint8_t*>(M4Memory::allocApp(kBufferBytes));
   }
   ~TransactionJsonSink() override {
-#if defined(ARDUINO_ARCH_ESP32)
-    if (buffer_) heap_caps_free(buffer_);
-#endif
+    if (buffer_) M4Memory::free(buffer_);
   }
   bool write(const uint8_t* data, size_t len) override {
     if (!data && len) return false;
@@ -3530,6 +3627,10 @@ bool dlStreamToFile(const std::string& url, const std::vector<std::pair<std::str
                     const std::string& absPath, size_t maxBytes, uint32_t timeoutMs, size_t& outSize,
                     char shaHex[65], std::string& err) {
   uint8_t digest[32] = {0};
+  if (url.compare(0, 8, "https://") == 0 && !M4TlsMemory::resourcesAvailable()) {
+    err = "oom";
+    return false;
+  }
   auto* secure = new WiFiClientSecure();
   configureTlsClient(secure, nullptr);  // no app context: bundle verification
   std::unique_ptr<WiFiClient> client(secure);
@@ -3615,15 +3716,13 @@ bool dlStreamToFile(const std::string& url, const std::vector<std::pair<std::str
 class PsramJsonAllocator final : public ArduinoJson::Allocator {
  public:
   void* allocate(size_t size) override {
-    void* p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    return p ? p : heap_caps_malloc(size, MALLOC_CAP_8BIT);
+    return M4Memory::allocApp(size);
   }
   void deallocate(void* ptr) override {
-    if (ptr) heap_caps_free(ptr);
+    M4Memory::free(ptr);
   }
   void* reallocate(void* ptr, size_t new_size) override {
-    void* p = heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    return p ? p : heap_caps_realloc(ptr, new_size, MALLOC_CAP_8BIT);
+    return M4Memory::reallocApp(ptr, new_size);
   }
 };
 
@@ -3754,14 +3853,14 @@ int l_dl_jsonGet(lua_State* L) {
     ++attempt;
     const bool needHandshake = !h->netHttp_ || !h->netTls_ || !h->netTls_->connected();
     if (needHandshake) {
-      // Reclaim Lua + refuse TLS when internal heap is fragmented (same gate
-      // as net.request). Category booklist OOM used to surface as generic
+      // Reclaim Lua and use the same system TLS resource gate as net.request.
+      // Category booklist OOM used to surface as generic
       // http fail. A live keep-alive connection skips this: its mbedTLS
       // buffers already exist and no new contiguous block is required.
       lua_gc(L, LUA_GCCOLLECT, 0);
       const size_t largestInternal =
           heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-      if (largestInternal < 32 * 1024) {
+      if (!M4TlsMemory::resourcesAvailable()) {
         Serial.printf("[M4xNet] dl.jsonGet TLS skipped: internal largest=%u free=%u psram=%u lua=%u/%u\n",
                       static_cast<unsigned>(largestInternal),
                       static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -3867,8 +3966,8 @@ int l_dl_jsonGet(lua_State* L) {
     lua_pushstring(L, err);
     return 2;
   }
-  Serial.printf("[M4xNet] dl.jsonGet body bytes=%u psram=%d ok\n",
-                static_cast<unsigned>(body.len), body.fromCaps ? 1 : 0);
+  Serial.printf("[M4xNet] dl.jsonGet body bytes=%u pool=app ok\n",
+                static_cast<unsigned>(body.len));
   if (h) h->extendCallbackWallMs(4000);  // parse + table build may exceed the callback budget
 
   // Keep-alive / idle-EOF can leave a few trailing bytes past the JSON value.
@@ -4150,6 +4249,11 @@ int l_dl_jsonToFile(lua_State* L) {
   const size_t cap = M4xHostIo::Limits::bodyCap(maxBytes, M4xHostIo::Operation::JsonToFile);
   const uint32_t safeTimeout = M4xHostIo::Limits::timeoutMs(timeoutMs);
 
+  if (!M4TlsMemory::resourcesAvailable()) {
+    lua_pushboolean(L, 0);
+    lua_pushstring(L, "oom");
+    return 2;
+  }
   auto* secure = new WiFiClientSecure();
   configureTlsClient(secure, h);
   std::unique_ptr<WiFiClient> client(secure);
@@ -4892,6 +4996,7 @@ bool M4xLuaHost::start(GfxRenderer& renderer, const M4xInstalledApp& app, std::s
   SdMan.mkdir(dataDir_.c_str(), true);
 
   clearCancel();
+  networkBusy_.store(false, std::memory_order_release);
   budget_ = M4xLuaSandbox::Budget{};
   budget_.memLimit = psramFound() ? M4xLuaSandbox::kPsramHeapLimit
                                   : M4xLuaSandbox::kDefaultHeapLimit;
@@ -4930,10 +5035,14 @@ bool M4xLuaHost::start(GfxRenderer& renderer, const M4xInstalledApp& app, std::s
       {"lineHeight", l_gui_lineHeight},
       {"drawRect", l_gui_drawRect},
       {"fillRect", l_gui_fillRect},
+      {"fillRectDither", l_gui_fillRectDither},
+      {"fillRectStipple", l_gui_fillRectStipple},
       {"drawLine", l_gui_drawLine},
       {"drawQR", l_gui_drawQR},
       {"qrSize", l_gui_qrSize},
       {"refresh", l_gui_refresh},
+      {"drawBmp", l_gui_drawBmp},
+      {"bmpSize", l_gui_bmpSize},
       {nullptr, nullptr},
   };
   registerModule(L, "gui", guiRegs);
@@ -5338,13 +5447,198 @@ std::string M4xLuaHost::debugUiJson() const {
   return out;
 }
 
+namespace {
+
+constexpr size_t kMaxBmpFileBytes = 64 * 1024;
+constexpr int kMaxBmpEdge = 240;
+constexpr size_t kMaxBmpDecoded = 8192;
+
+uint32_t readU32LE(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+bool peekBmpSize(const uint8_t* p, size_t n, uint16_t& w, uint16_t& h) {
+  if (!p || n < 26 || p[0] != 'B' || p[1] != 'M') return false;
+  const int32_t iw = static_cast<int32_t>(readU32LE(p + 18));
+  const int32_t ih = static_cast<int32_t>(readU32LE(p + 22));
+  if (iw <= 0 || iw == INT32_MIN || ih == 0 || ih == INT32_MIN) return false;
+  const int32_t ah = ih < 0 ? -ih : ih;
+  if (iw > 65535 || ah > 65535) return false;
+  w = static_cast<uint16_t>(iw);
+  h = static_cast<uint16_t>(ah);
+  return true;
+}
+
+}  // namespace
+
+void M4xLuaHost::clearBmpCache() {
+  for (BmpCacheSlot& slot : bmpCache_) {
+    M4Psram::freePrefer(slot.bits);
+    slot = BmpCacheSlot{};
+  }
+  bmpStamp_ = 1;
+}
+
+bool M4xLuaHost::fillBmpSlot(BmpCacheSlot& slot) {
+  slot.failed = false;
+  slot.bits = nullptr;
+  slot.w = 0;
+  slot.h = 0;
+  slot.stride = 0;
+  std::string path;
+  if (!sandboxInstallPath(this, slot.rel.c_str(), path)) {
+    slot.failed = true;
+    return false;
+  }
+  if (isCancelRequested()) return false;
+  FsFile file;
+  if (!SdMan.openFileForRead("M4xBmp", path.c_str(), file)) {
+    Serial.printf("[M4xBmp] missing %s\n", slot.rel.c_str());
+    slot.failed = true;
+    return false;
+  }
+  const size_t n = file.fileSize();
+  if (n < 54 || n > kMaxBmpFileBytes) {
+    file.close();
+    Serial.printf("[M4xBmp] size %u rel=%s\n", static_cast<unsigned>(n), slot.rel.c_str());
+    slot.failed = true;
+    return false;
+  }
+  uint8_t* raw = static_cast<uint8_t*>(M4Psram::mallocPrefer(n, "lua-bmp"));
+  if (!raw) {
+    file.close();
+    return false;
+  }
+  FsFileCtx ctx{&file};
+  const bool got = M4xLuaSandbox::readExact(fsReadChunk, &ctx, raw, n);
+  file.close();
+  if (!got || isCancelRequested()) {
+    M4Psram::freePrefer(raw);
+    return false;
+  }
+  uint16_t w = 0;
+  uint16_t h = 0;
+  if (!peekBmpSize(raw, n, w, h) || w == 0 || h == 0 || w > kMaxBmpEdge || h > kMaxBmpEdge) {
+    M4Psram::freePrefer(raw);
+    Serial.printf("[M4xBmp] edge rel=%s\n", slot.rel.c_str());
+    slot.failed = true;
+    return false;
+  }
+  const uint16_t stride = static_cast<uint16_t>((w + 7) / 8);
+  const size_t decoded = static_cast<size_t>(stride) * h;
+  if (decoded == 0 || decoded > kMaxBmpDecoded) {
+    M4Psram::freePrefer(raw);
+    slot.failed = true;
+    return false;
+  }
+  uint8_t* bits = static_cast<uint8_t*>(M4Psram::mallocPrefer(decoded, "lua-bmp-bits"));
+  if (!bits) {
+    M4Psram::freePrefer(raw);
+    return false;
+  }
+  const bool ok = HomeSceneAssetDecoder::decodeBmpBytesTo1Bit(
+      raw, n, bits, w, h, stride, [this]() { return isCancelRequested(); });
+  M4Psram::freePrefer(raw);
+  if (!ok) {
+    M4Psram::freePrefer(bits);
+    if (isCancelRequested()) return false;
+    Serial.printf("[M4xBmp] decode rel=%s\n", slot.rel.c_str());
+    slot.failed = true;
+    return false;
+  }
+  slot.w = w;
+  slot.h = h;
+  slot.stride = stride;
+  slot.bits = bits;
+  slot.failed = false;
+  return true;
+}
+
+M4xLuaHost::BmpCacheSlot* M4xLuaHost::bmpCacheSlot(const char* rel) {
+  if (!rel || rel[0] == '\0') return nullptr;
+  BmpCacheSlot* empty = nullptr;
+  BmpCacheSlot* oldest = &bmpCache_[0];
+  for (int i = 0; i < kBmpCacheSlots; ++i) {
+    BmpCacheSlot& slot = bmpCache_[i];
+    if (slot.rel == rel) {
+      slot.stamp = bmpStamp_++;
+      if (bmpStamp_ == 0) bmpStamp_ = 1;
+      return &slot;
+    }
+    if (slot.rel.empty() && !empty) empty = &slot;
+    if (slot.stamp < oldest->stamp) oldest = &slot;
+  }
+  BmpCacheSlot* slot = empty ? empty : oldest;
+  M4Psram::freePrefer(slot->bits);
+  *slot = BmpCacheSlot{};
+  slot->rel = rel;
+  slot->stamp = bmpStamp_++;
+  if (bmpStamp_ == 0) bmpStamp_ = 1;
+  if (!fillBmpSlot(*slot)) {
+    if (!slot->failed) {
+      M4Psram::freePrefer(slot->bits);
+      *slot = BmpCacheSlot{};
+      return nullptr;
+    }
+  }
+  return slot;
+}
+
+bool M4xLuaHost::installBmpSize(const char* rel, int& outW, int& outH) {
+  BmpCacheSlot* slot = bmpCacheSlot(rel);
+  if (!slot || slot->failed || !slot->bits) return false;
+  outW = slot->w;
+  outH = slot->h;
+  return true;
+}
+
+bool M4xLuaHost::drawInstallBmp(const char* rel, int x, int y, int scale) {
+  if (!renderer_ || scale < 1 || scale > 4) return false;
+  if (x < -1024 || y < -1024 || x > 2048 || y > 2048) return false;
+  BmpCacheSlot* slot = bmpCacheSlot(rel);
+  if (!slot || slot->failed || !slot->bits || slot->w == 0 || slot->h == 0) return false;
+  const int dw = static_cast<int>(slot->w) * scale;
+  const int dh = static_cast<int>(slot->h) * scale;
+  // White plate, then black horizontal runs. 1 in the cache is black ink.
+  renderer_->fillRect(x, y, dw, dh, false);
+  const int w = slot->w;
+  const int h = slot->h;
+  const int stride = slot->stride;
+  const uint8_t* bits = slot->bits;
+  for (int row = 0; row < h; ++row) {
+    const uint8_t* src = bits + static_cast<size_t>(row) * static_cast<size_t>(stride);
+    int run = -1;
+    for (int col = 0; col < w; ++col) {
+      const bool black = (src[col >> 3] & static_cast<uint8_t>(0x80 >> (col & 7))) != 0;
+      if (black) {
+        if (run < 0) run = col;
+      } else if (run >= 0) {
+        renderer_->fillRect(x + run * scale, y + row * scale, (col - run) * scale, scale, true);
+        run = -1;
+      }
+    }
+    if (run >= 0) {
+      renderer_->fillRect(x + run * scale, y + row * scale, (w - run) * scale, scale, true);
+    }
+  }
+  return true;
+}
+
 void M4xLuaHost::stop() {
+  // AppRuntimeActivity is intentionally deferred for one event-loop turn, so
+  // do not leave the plugin's keep-alive HTTP/TLS objects alive until that
+  // deferred delete.  This is the owner task, and releaseNetworkSession only
+  // drops this host's clients; it does not disconnect shared Wi-Fi.
+  releaseNetworkSession();
   if (L_) {
     lua_close(static_cast<lua_State*>(L_));
     L_ = nullptr;
   }
   if (gHost == this) gHost = nullptr;
+  networkBusy_.store(false, std::memory_order_release);
   renderer_ = nullptr;
+  clearBmpCache();
   // Drop host-owned scene rows/file cursors with the Lua state.  Otherwise a
   // plugin error followed by a restart can retain a large SD-backed source
   // and leave the next app with a stale active scene.

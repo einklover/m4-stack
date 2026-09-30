@@ -66,7 +66,7 @@ void WifiSelectionActivity::onEnter() {
   cachedMacAddress = std::string(macStr);
 
   updateRequired = true;
-  xTaskCreate(&WifiSelectionActivity::taskTrampoline, "WifiSelectionTask", 4096, this, 1, &displayTaskHandle);
+  xTaskCreate(&WifiSelectionActivity::taskTrampoline, "WifiSelectionTask", 8192, this, 1, &displayTaskHandle);
   if (occupancyDenied) {
     connectionError = m4WifiTransferHoldsCopy();
     state = WifiSelectionState::CONNECTION_FAILED;

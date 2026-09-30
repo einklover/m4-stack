@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include <SDCardManager.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <Serialization.h>
 
 #include <climits>
@@ -11,6 +13,7 @@
 
 #include "fontIds.h"
 #include "managers/FontManager.h"
+#include "util/M4SettingsCommit.h"
 
 // Initialize the static instance
 CrossPointSettings CrossPointSettings::instance;
@@ -26,6 +29,19 @@ void readAndValidate(FsFile& file, uint8_t& member, const uint8_t maxValue) {
 namespace {
 // JSON format (primary storage)
 constexpr char SETTINGS_JSON_FILE[] = "/.crosspoint/settings.json";
+constexpr char SETTINGS_JSON_TMP[] = "/.crosspoint/settings.json.tmp";
+constexpr char SETTINGS_JSON_BACKUP[] = "/.crosspoint/settings.json.bak";
+bool settingsPrimaryInvalid = false;
+StaticSemaphore_t settingsFileMutexStorage;
+SemaphoreHandle_t settingsFileMutex() {
+  static SemaphoreHandle_t handle = xSemaphoreCreateMutexStatic(&settingsFileMutexStorage);
+  return handle;
+}
+struct SettingsFileLock {
+  SemaphoreHandle_t handle = settingsFileMutex();
+  SettingsFileLock() { if (handle) xSemaphoreTake(handle, portMAX_DELAY); }
+  ~SettingsFileLock() { if (handle) xSemaphoreGive(handle); }
+};
 constexpr uint8_t SETTINGS_JSON_VERSION = 1;
 // Binary format (legacy – kept for one-time migration only)
 constexpr uint8_t SETTINGS_FILE_VERSION = 5;
@@ -104,10 +120,12 @@ uint8_t legacyReaderPixelSize(uint8_t family, uint8_t size, uint8_t legacyCustom
 }  // namespace
 
 bool CrossPointSettings::saveToFile() const {
+  SettingsFileLock fileLock;
+  if (!fileLock.handle) return false;
   SdMan.mkdir("/.crosspoint");
 
   FsFile outputFile;
-  if (!SdMan.openFileForWrite("CPS", SETTINGS_JSON_FILE, outputFile)) {
+  if (!SdMan.openFileForWrite("CPS", SETTINGS_JSON_TMP, outputFile)) {
     return false;
   }
 
@@ -156,6 +174,8 @@ bool CrossPointSettings::saveToFile() const {
   doc["customFontFamily"]          = customFontFamily;
   doc["readerPixelSize"]            = getReaderPixelSize();
   doc["uiFontSize"]                 = getUiFontSize();
+  doc["uiFontFamily"]               = getUiFontFamily();
+  doc["uiCustomFontFamily"]         = uiCustomFontFamily;
   // Keep the old key for one release so older firmware sees a sensible size;
   // all current runtime decisions use readerPixelSize.
   doc["customFontSize"]            = getReaderPixelSize();
@@ -249,8 +269,21 @@ bool CrossPointSettings::saveToFile() const {
   doc["zlibEmail"]                 = zlibEmail;
   doc["zlibPassword"]              = zlibPassword;
 
-  serializeJson(doc, outputFile);
+  const size_t expected = measureJson(doc);
+  const size_t written = serializeJson(doc, outputFile);
+  const bool synced = expected > 0 && written == expected && !doc.overflowed() &&
+                      !outputFile.getWriteError() && outputFile.sync();
   outputFile.close();
+  if (!synced) {
+    SdMan.remove(SETTINGS_JSON_TMP);
+    Serial.printf("[%lu] [CPS] Settings temp write/sync failed\n", millis());
+    return false;
+  }
+  if (!M4SettingsCommit::commit(SdMan, SETTINGS_JSON_TMP, SETTINGS_JSON_FILE,
+                                SETTINGS_JSON_BACKUP, settingsPrimaryInvalid)) {
+    Serial.printf("[%lu] [CPS] Settings commit rename failed\n", millis());
+    return false;
+  }
   Serial.printf("[%lu] [CPS] Settings saved to JSON\n", millis());
   return true;
 }
@@ -275,6 +308,8 @@ void CrossPointSettings::resetToDefaults() {
   fontFamily = SYSTEM_FONT;
   readerPixelSize = 26;
   uiFontSize = 1;
+  uiFontFamily = SYSTEM_FONT;
+  uiCustomFontFamily[0] = '\0';
   customFontSize = 0;
   customFontFamily[0] = '\0';
   fontSize = LARGE;
@@ -749,10 +784,13 @@ bool CrossPointSettings::loadFromBinaryFile() {
 }
 
 bool CrossPointSettings::loadFromFile() {
+  (void)settingsFileMutex();  // boot initializes the static mutex before worker tasks start
   // ── 1. 优先尝试 JSON 格式 ─────────────────────────────────────────
-  if (SdMan.exists(SETTINGS_JSON_FILE)) {
+  const char* const jsonCandidates[] = {SETTINGS_JSON_FILE, SETTINGS_JSON_BACKUP};
+  for (const char* jsonPath : jsonCandidates) {
+    if (!SdMan.exists(jsonPath)) continue;
     FsFile inputFile;
-    if (SdMan.openFileForRead("CPS", SETTINGS_JSON_FILE, inputFile)) {
+    if (SdMan.openFileForRead("CPS", jsonPath, inputFile)) {
       JsonDocument doc;
       DeserializationError err = deserializeJson(doc, inputFile);
       inputFile.close();
@@ -842,6 +880,12 @@ bool CrossPointSettings::loadFromFile() {
             if (uiTier < 0 || uiTier > 2) uiTier = 1;
             uiFontSize = static_cast<uint8_t>(uiTier);
           }
+          {
+            int uiFam = doc["uiFontFamily"] | (int)SYSTEM_FONT;
+            if (uiFam < 0 || uiFam > 1) uiFam = SYSTEM_FONT;
+            uiFontFamily = static_cast<uint8_t>(uiFam);
+          }
+          getString("uiCustomFontFamily", uiCustomFontFamily, sizeof(uiCustomFontFamily));
           lineSpacing              = doc["lineSpacing"]              | (uint8_t)NORMAL;
           customLineSpacing        = doc["customLineSpacing"]        | (uint8_t)10;
           wordSpacing              = static_cast<int8_t>(doc["wordSpacing"] | 0);
@@ -959,7 +1003,16 @@ bool CrossPointSettings::loadFromFile() {
           getString("zlibEmail",     zlibEmail,     sizeof(zlibEmail));
           getString("zlibPassword",  zlibPassword,  sizeof(zlibPassword));
 
-          Serial.printf("[%lu] [CPS] Settings loaded from JSON\n", millis());
+          if (jsonPath == SETTINGS_JSON_BACKUP) {
+            settingsPrimaryInvalid = true;
+            if ((!SdMan.exists(SETTINGS_JSON_FILE) || SdMan.remove(SETTINGS_JSON_FILE)) &&
+                SdMan.rename(SETTINGS_JSON_BACKUP, SETTINGS_JSON_FILE)) {
+              settingsPrimaryInvalid = false;
+            }
+          } else {
+            settingsPrimaryInvalid = false;
+          }
+          Serial.printf("[%lu] [CPS] Settings loaded from JSON source=%s\n", millis(), jsonPath);
           return true;
         }
         Serial.printf("[%lu] [CPS] JSON version mismatch: %u\n", millis(), v);

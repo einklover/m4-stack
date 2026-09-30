@@ -192,6 +192,10 @@ void EpubReaderActivity::onEnter() {
     return;
   }
 
+  // The global font loader frees Reader-role TTF after the previous activity
+  // retires. Rehydrate the saved custom face before spawning the display task.
+  EpdFontLoader::ensureFontsFromSd(renderer);
+
   // Configure screen orientation based on settings
   // NOTE: This affects layout math and must be applied before any render calls.
   applyReaderOrientation(renderer, SETTINGS.orientation);
@@ -609,6 +613,19 @@ void EpubReaderActivity::loop() {
           updateRequired = true;
         }
       }
+      if (replaced && !subActivity && pendingMenuClose_.load()) {
+        // The menu onExit has now stopped its display task. Keep the reader
+        // rendering task quiescent while replacing its runtime font faces.
+        applyOrientation(pendingMenuOrientation_);
+        xSemaphoreTake(renderingMutex, portMAX_DELAY);
+        if (section) nextPageNumber = section->currentPage;
+        section.reset();
+        EpdFontLoader::loadFontsFromSd(renderer);
+        xSemaphoreGive(renderingMutex);
+        applyAutoPageTurnSettings();
+        pendingMenuClose_.store(false);
+        updateRequired = true;
+      }
       // Deferred exit: process after subActivity->loop() returns to avoid use-after-free
       if (pendingSubactivityExit) {
         pendingSubactivityExit = false;
@@ -714,11 +731,8 @@ void EpubReaderActivity::loop() {
 
     // Enter reader menu activity (仅在全局下一页模式关闭时有效)
     if (!globalNextPageMode && (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || touchMenu)) {
-      // Don't start activity transition while rendering
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      exitActivity();
+      // enterReaderMenu owns the render lock while entering the child.
       enterReaderMenu(EpubReaderMenuActivity::MenuLayer::QUICK);
-      xSemaphoreGive(renderingMutex);
     }
 
     // Long press BACK (1s+) goes directly to home
@@ -741,11 +755,8 @@ void EpubReaderActivity::loop() {
     if (globalNextPageMode) {
       // 菜单键（Confirm）短按：进入菜单（不在全局下一页模式下拦截）
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-        // Don't start activity transition while rendering
-        xSemaphoreTake(renderingMutex, portMAX_DELAY);
-        exitActivity();
+        // enterReaderMenu owns the render lock while entering the child.
         enterReaderMenu(EpubReaderMenuActivity::MenuLayer::QUICK);
-        xSemaphoreGive(renderingMutex);
         return;
       }
 
@@ -1108,21 +1119,11 @@ void EpubReaderActivity::loop() {
 }
 
 void EpubReaderActivity::onReaderMenuBack(const uint8_t orientation) {
+  // A child callback still runs on the menu stack. Teardown its display task
+  // before replacing font objects that the menu renderer may still reference.
+  pendingMenuOrientation_ = orientation;
+  pendingMenuClose_ = true;
   exitActivity();
-  // Reload fonts from SD in case the user changed font settings in the menu.
-  EpdFontLoader::loadFontsFromSd(renderer);
-  // Apply the user-selected orientation when the menu is dismissed.
-  // This ensures the menu can be navigated without immediately rotating the screen.
-  applyOrientation(orientation);
-  // Apply auto page turn settings from SETTINGS
-  applyAutoPageTurnSettings();
-  // Save current page before resetting section so we return to the same page.
-  if (section) {
-    nextPageNumber = section->currentPage;
-  }
-  // Reset section to re-render with potentially new font/settings
-  section.reset();
-  updateRequired = true;
 }
 
 // Translate an absolute percent into a spine index plus a normalized position
@@ -1199,6 +1200,8 @@ void EpubReaderActivity::jumpToPercent(float normalizedPercent) {
 }
 
 void EpubReaderActivity::enterReaderMenu(EpubReaderMenuActivity::MenuLayer layer) {
+  // Do not let the reader display task use fonts while the menu starts.
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
   const int currentPage = section ? section->currentPage + 1 : 0;
   const int totalPages = section ? section->pageCount : 0;
   float bookProgress = 0.0f;
@@ -1212,6 +1215,7 @@ void EpubReaderActivity::enterReaderMenu(EpubReaderMenuActivity::MenuLayer layer
       this->renderer, this->mappedInput, title, currentPage, totalPages, bookProgressPercent,
       SETTINGS.orientation, [this](const uint8_t orientation) { onReaderMenuBack(orientation); },
       [this](EpubReaderMenuActivity::MenuAction action) { onReaderMenuConfirm(action); }, layer));
+  xSemaphoreGive(renderingMutex);
 }
 
 void EpubReaderActivity::enterChapterSelector() {
@@ -1376,13 +1380,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       exitActivity();
       enterNewActivity(new EpubReaderSettingsActivity(
           renderer, mappedInput, [this] {
-            // 返回阅读器后重载当前章节以应用新设置（字体、边距等影响排版）
+            // The settings child still owns its display task in this callback.
+            // Reflow/reload only after pumpSubActivityFrame has stopped it.
+            pendingMenuOrientation_ = SETTINGS.orientation;
+            pendingMenuClose_.store(true);
             exitActivity();
-            section.reset();
-            // 设置期间 autoPageTurnEnabled 可能变化：重新对表，避免旧定时器
-            // 回到阅读器后立即触发一次翻页（与 onReaderMenuBack 一致）。
-            applyAutoPageTurnSettings();
-            updateRequired = true;
           }));
       xSemaphoreGive(renderingMutex);
       break;
@@ -1724,7 +1726,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
 
 void EpubReaderActivity::displayTaskLoop() {
   while (true) {
-    if (subActivity) {
+    if (subActivity || pendingMenuClose_.load()) {
       updateRequired = false;
       vTaskDelay(20 / portTICK_PERIOD_MS);
       continue;
@@ -1737,6 +1739,11 @@ void EpubReaderActivity::displayTaskLoop() {
       }
       // 加锁保证渲染过程独占
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
+      if (subActivity || pendingMenuClose_.load()) {
+        xSemaphoreGive(renderingMutex);
+        vTaskDelay(20 / portTICK_PERIOD_MS);
+        continue;
+      }
       APP_STATE.isRenderComplete = false; // 标记渲染开始
       renderScreen(); // 执行核心渲染逻辑
       APP_STATE.isRenderComplete = true;  // 标记渲染完成（包括 saveProgress）
@@ -1873,7 +1880,7 @@ void EpubReaderActivity::renderScreen() {
                   viewportWidth, viewportHeight, renderer.getScreenWidth(), renderer.getScreenHeight(),
                   orientedMarginLeft, orientedMarginRight, orientedMarginTop, orientedMarginBottom);
 
-    if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+    if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderPixelSize(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                   viewportHeight, SETTINGS.hyphenationEnabled,SETTINGS.wordSpacing,SETTINGS.firstlineintented, SETTINGS.embeddedStyle,
                                   static_cast<bool>(SETTINGS.chinesePunctWidth), static_cast<bool>(SETTINGS.epubShowImages))) {
@@ -1881,7 +1888,7 @@ void EpubReaderActivity::renderScreen() {
 
       const auto popupFn = [this]() { GUI.drawPopup(renderer, "加载章节中..."); };
 
-      if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+      if (!section->createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderPixelSize(), SETTINGS.getReaderLineCompression(),
                                       SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                       viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.wordSpacing, SETTINGS.firstlineintented, SETTINGS.embeddedStyle,
                                       static_cast<bool>(SETTINGS.chinesePunctWidth), static_cast<bool>(SETTINGS.epubShowImages), popupFn)) {

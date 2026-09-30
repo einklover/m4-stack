@@ -90,6 +90,11 @@ class ExtractorSink final : public M4xJsonStream::Sink {
 Result requestToSink(const Request& req, M4xJsonStream::Sink& sink,
                      const ProgressFn& progress = {}, const CancelFn& cancelled = {});
 
+// Drop a leftover TLS session (discovery/catalog/chapter hop). Safe anytime.
+void releaseTlsSession();
+// releaseTlsSession + tlsBlockAvailable (short yield). false → tls_internal_oom.
+bool prepareHttps();
+
 // Small response helper for protocol metadata (psvts/login gate). Hard capped.
 bool requestSmall(const Request& req, std::string& bodyOut, Result& resultOut,
                   size_t hardCap = 16u * 1024u, const CancelFn& cancelled = {});

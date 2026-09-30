@@ -118,7 +118,8 @@ void testChildMembership() {
     assert(!streq(k, "sdOta"));
   }
   assert(hasClear && hasReset);
-  assert(m4SettingsChildCount("advanced") > 8);
+  assert(m4SettingsChildCount("advanced") == 5);
+  assert(m4SettingsChildCount("advancedDisplay") >= 1);
   printf("child membership PASS\n");
 }
 

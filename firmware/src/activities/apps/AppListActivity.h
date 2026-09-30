@@ -24,6 +24,8 @@ class AppListActivity final : public ActivityWithSubactivity {
     std::function<void()> onDataCapsuleOpen;
     std::function<void()> onBookmarkNotesOpen;
     std::function<void()> onNetworkOpen;
+    std::function<void()> onFileTransferOpen;
+    std::function<void()> onAppStoreOpen;
   };
 
   explicit AppListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -34,10 +36,15 @@ class AppListActivity final : public ActivityWithSubactivity {
 
   void onEnter() override;
   void onExit() override;
+  ~AppListActivity() override;
+  bool readyForDestruction() const override {
+    return displayTaskExited_.load(std::memory_order_acquire) &&
+           ActivityWithSubactivity::readyForDestruction();
+  }
   void loop() override;
   bool showTouchNavigation() const override { return false; }
   uint8_t touchFooterButtonsMask() const override {
-    return mode_ == 1 ? M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm
+    return mode_ == 1 || mode_ == 2 ? M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm
                       : M4FooterTouchPolicy::Back | M4FooterTouchPolicy::Confirm |
                             M4FooterTouchPolicy::Right |
                             (selectedIsPlugin() ? M4FooterTouchPolicy::Left : 0);
@@ -46,6 +53,8 @@ class AppListActivity final : public ActivityWithSubactivity {
  private:
   enum class BuiltinAction : uint8_t {
     FileManager,
+    FileTransfer,
+    AppStore,
     RecentBooks,
     Opds,
     JianGuo,
@@ -66,10 +75,11 @@ class AppListActivity final : public ActivityWithSubactivity {
   };
 
   // Phase 1 (INV-R1): dirty-frame snapshot. Indices alone are insufficient
-  // because reload() replaces items_/apps_ wholesale (torn-drawer hazard);
-  // the display task deep-copies the dirty frame under the local mutex and
-  // render() consumes it under the global guard. The drawer is small, so a
-  // dirty-only deep copy beats a shared-pointer refactor here.
+  // because acceptPendingDrawer() replaces items_ and apps_ together.
+  // The main loop fills snapshot_ once under the local mutex and render()
+  // reads that member under the global guard. The background task never
+  // submits and never writes the lists loop() reads unlocked. The drawer
+  // is small, so one dirty-frame fill beats a shared-pointer refactor here.
   struct AppListFrameSnapshot {
     int selectedIndex = 0;
     int mode = 0;
@@ -84,36 +94,57 @@ class AppListActivity final : public ActivityWithSubactivity {
   std::vector<DrawerItem> items_;
   int selectedIndex_ = 0;
   std::atomic<bool> updateRequired_{false};
-  // 0 = list mode, 1 = confirm uninstall
+  // 0 = list mode, 1 = confirm uninstall, 2 = plugin context menu
   int mode_ = 0;
   bool uninstallClearData_ = true;
 
   TaskHandle_t displayTaskHandle_ = nullptr;
   SemaphoreHandle_t renderingMutex_ = nullptr;
-  // Phase 1 (INV-R1) fix: cooperative display-task shutdown (same pattern as
-  // MyLibrary). onExit asks the task to self-terminate (it exits only while
-  // holding no locks) and joins boundedly, so a mid-submit task is never
-  // deleted while owning the process-wide guard.
+  // onExit only signals the display owner to stop. The reaper deletes the
+  // local mutexes after that owner publishes exit. There is no timeout kill
+  // and no join on the UI thread.
   std::atomic<bool> exitDisplayTask_{false};
-  std::atomic<bool> displayTaskExited_{false};
+  std::atomic<bool> displayTaskExited_{true};
   // Set before installing a child so the display task never has to inspect
   // ActivityWithSubactivity::subActivity across task boundaries.
   std::atomic<bool> childScreenOwned_{false};
-  // Staged submit input: written by the display task under the local mutex,
-  // read by render() under the global guard. Single writer/reader (the display
-  // task), so the handoff itself needs no further locking.
+  // Return visits arm a background cache check. The worker reloads afterwards.
+  // The main loop submits another frame only when that reload changed the list.
+  std::atomic<bool> verifyDrawerCache_{false};
+  // Set by the main loop after a successful drawer submit. The worker waits
+  // for this before the first background reload.
+  std::atomic<bool> showedDrawer_{false};
+  // reload() publishes the next drawer here under renderingMutex_. loop()
+  // moves it into apps_ and items_. The worker never writes those, nor
+  // selectedIndex_ or mode_.
+  std::vector<M4xInstalledApp> pendingApps_;
+  std::vector<DrawerItem> pendingItems_;
+  std::atomic<bool> pendingReady_{false};
+  SemaphoreHandle_t reloadLock_ = nullptr;
+  // Staged submit input: the main loop fills this once under the local mutex,
+  // and render() reads it under the global guard. Single writer and reader,
+  // both on the UI thread, so the handoff itself needs no further locking.
   AppListFrameSnapshot snapshot_;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
-  void reload();
+  void submitDirtyFrame();
+  void acceptPendingDrawer();
+  void discardPendingDrawer();
+  bool reload(bool preserveDialog = false);
+  bool applyCachedDrawer();
+  static bool sameDrawer(const std::vector<M4xInstalledApp>& appsA, const std::vector<DrawerItem>& itemsA,
+                         const std::vector<M4xInstalledApp>& appsB, const std::vector<DrawerItem>& itemsB);
   void render() const;
   void openSelected();
   void openInstall();
+  void pinSelected(int slot);
+  void openContextMenu();
   void uninstallSelected();
   bool selectedIsPlugin() const;
   void selectIndex(int index);
   void moveSelection(int delta);
+  void pageBy(int pages);
   void activateBuiltin(BuiltinAction action);
   void drawItemIcon(const DrawerItem& item, const TouchHitGeometry::Rect& tile) const;
 };

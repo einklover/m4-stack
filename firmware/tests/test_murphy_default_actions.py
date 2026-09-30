@@ -45,7 +45,7 @@ def test_murphy_default_other_actions_intact():
     assert icon_child.get("action") == "open_app"
     assert icon_child.get("action_arg") == "$item.id"
     # No extra unknown actions
-    allowed = {"open_history", "open_apps", "open_current_book", "open_app"}
+    allowed = {"open_history", "open_apps", "open_current_book", "open_app", "open_recent_book"}
     for n in nodes:
         if "action" in n:
             assert n["action"] in allowed, f"unexpected action {n['action']} on {n}"

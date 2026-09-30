@@ -6,13 +6,13 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <SDCardManager.h>
 
 #include "../ActivityWithSubactivity.h"
 
 class MyLibraryActivity final : public ActivityWithSubactivity {
  private:
 
-  TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
 
   size_t selectorIndex = 0;
@@ -29,12 +29,30 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
   const std::function<void(const std::string& path, const std::string& originalSourcePath)> onSelectBook;
   const std::function<void()> onGoHome;
 
-  static void taskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
   void render() const;
 
   // Data loading
   void loadFiles();
+  void startDirectoryPage(uint64_t position);
+  void scanDirectoryBatch();
+  void finishDirectoryPage();
+  bool selectDirectoryPage();
+  void enterDirectory(const std::string& selectedItem);
+  void returnToParent();
+  void returnToRoot();
+  FsFile scanDirectory;
+  // pageStart identifies the visible page. cursor is the next 32-byte slot to read.
+  uint64_t directoryPageStart = 0, directoryNextStart = 0, directoryCursor = 0;
+  bool directoryLoading = false, directoryHasMore = false, directoryError = false;
+  size_t directoryNameBytes = 0, directoryVisited = 0;
+  uint32_t directoryStartedMs = 0;
+  std::string directoryPendingSelect;
+  struct DirectoryCrumb {
+    std::string path;
+    uint64_t pageStart = 0;
+    std::string entryName;
+  };
+  std::vector<DirectoryCrumb> directoryCrumbs;
   size_t findEntry(const std::string& name) const;
 
   //文件管理
@@ -43,6 +61,7 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
   bool isCutMode = false;
   //搜索模式
   bool isSearchMode = false;
+  bool searchTruncated = false;
   std::vector<std::string> searchResults;
   std::string originalBasePath;
 
@@ -106,7 +125,10 @@ class MyLibraryActivity final : public ActivityWithSubactivity {
     std::string out = "{\"basepath\":\"" + safe(basepath) + "\",\"selected\":\"" + safe(selected) +
                       "\",\"selected_index\":" + std::to_string(selectorIndex) +
                       ",\"count\":" + std::to_string(visible.size()) +
-                      ",\"search\":" + (isSearchMode ? "true" : "false") + "}";
+                      ",\"search\":" + (isSearchMode ? "true" : "false") +
+                      ",\"loading\":" + (directoryLoading ? "true" : "false") +
+                      ",\"more\":" + (directoryHasMore ? "true" : "false") +
+                      ",\"truncated\":" + (searchTruncated ? "true" : "false") + "}";
     return out;
   }
 };

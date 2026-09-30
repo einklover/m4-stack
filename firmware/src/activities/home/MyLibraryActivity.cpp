@@ -13,6 +13,8 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/M4UiText.h"
+#include "util/M4LibraryScanPolicy.h"
+#include "util/M4CheckedCopy.h"
 #include "util/StringUtils.h"
 //加入搜索
 #include "../util/KeyboardEntryActivity.h"
@@ -25,13 +27,14 @@
 #include "../../util/ImageCache.h"
 // PNG 编码（用于透明壁纸叠加合成）
 #include "../../../lib/miniz/miniz.h"
+#include "apps/providers/M4Psram.h"
+#include "../../lib/Epub/Epub/converters/JpegImagePolicy.h"
 
 
 namespace {
 constexpr int SKIP_PAGE_MS = 700;
 constexpr unsigned long GO_HOME_MS = 1000;
 //防止误删，把删除改为长按confirm
-constexpr int COPY_BUF_SIZE = 256; // 256字节缓冲区，适配小运存
 
 // Format a byte count as a human-readable size string (e.g. "1.2MB", "512KB").
 // Returns an empty string for 0 (used to suppress size display for directories).
@@ -93,85 +96,82 @@ bool copyFile(const char* srcPath, const char* dstPath) {
     Serial.printf("[复制] 打开源文件失败：%s\n", srcPath);
     return false;
   }
-  // 打开目标文件（创建新文件）
-  if (!SdMan.openFileForWrite("FileSelection", dstPath, dstFile)) {
-    Serial.printf("[复制] 创建目标文件失败：%s\n", dstPath);
+  // Exclusive create: never truncate a destination created by another component.
+  dstFile = SdMan.open(dstPath, O_WRONLY | O_CREAT | O_EXCL);
+  if (!dstFile) {
     srcFile.close();
     return false;
   }
-
-  // 256字节缓冲区，边读边写
-  uint8_t buf[COPY_BUF_SIZE];
-  size_t readBytes = 0;
-  while ((readBytes = srcFile.read(buf, COPY_BUF_SIZE)) > 0) {
-    dstFile.write(buf, readBytes);
-  }
-
-  // 关闭文件句柄，释放资源
+  const bool ok = M4CheckedCopy::copy(srcFile, dstFile, srcFile.size(), [] { delay(1); });
   srcFile.close();
   dstFile.close();
-  
-  Serial.printf("[复制] 成功：%s → %s\n", srcPath, dstPath);
-  return true;
-}
-//复制文件夹
-bool copyDir(const char* srcPath, const char* dstPath) {
-  // 检查源文件夹是否存在
-  if (!SdMan.exists(srcPath)) {
-    Serial.printf("[复制] 源文件夹不存在：%s\n", srcPath);
-    return false;
-  }
-  // 创建目标文件夹
-  if (!SdMan.mkdir(dstPath, true)) {
-    Serial.printf("[复制] 创建目标文件夹失败：%s\n", dstPath);
-    return false;
-  }
-  Serial.printf("[复制] 文件夹成功：%s → %s\n", srcPath, dstPath);
-  return true;
+  if (!ok) SdMan.remove(dstPath);  // Only the partial file created by us.
+  return ok;
 }
 
-// 递归搜索含关键词文件，并收集对应文件大小
+// Compare directory identity, not spelling: FAT accepts case and short-name aliases.
+// All paths use SdMan's single volume. Close each handle before opening the next.
+bool canMoveDirectory(const std::string& source, std::string parent) {
+  auto dir = SdMan.open(source.c_str());
+  if (!dir || !dir.isDirectory()) return false;
+  const auto sourceCluster = dir.firstCluster();
+  dir.close();
+  while (!parent.empty()) {
+    dir = SdMan.open(parent.c_str());
+    if (!dir || !dir.isDirectory()) return false;
+    const bool same = dir.firstCluster() == sourceCluster;
+    dir.close();
+    if (same) return false;
+    while (parent.size() > 1 && parent.back() == '/') parent.pop_back();
+    if (parent == "/") return true;
+    const auto slash = parent.find_last_of('/');
+    if (slash == std::string::npos) return false;
+    parent.resize(slash == 0 ? 1 : slash);
+  }
+  return false;
+}
+
+// Search is bounded by nodes, depth, matches, and wall time. Child handles
+// close before descending; one name buffer is shared across recursive frames.
 void searchFilesRecursive(const std::string& currentDir, const std::string& keyword,
-                           std::vector<std::string>& result, std::vector<uint32_t>& sizes) {
+                          std::vector<std::string>& result, std::vector<uint32_t>& sizes,
+                          M4LibraryScanPolicy::Budget& budget, unsigned depth, char (&name)[500]) {
   auto root = SdMan.open(currentDir.c_str());
   if (!root || !root.isDirectory()) {
     if (root) root.close();
     return;
   }
-
-  char name[500];
   root.rewindDirectory();
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
+    if (!budget.visit(millis())) { file.close(); break; }
     file.getName(name, sizeof(name));
-    if (name[0] == '.' || strcmp(name, "System Volume Information") == 0) {
-      file.close();
-      continue;
-    }
-
+    const bool isDir = file.isDirectory();
+    const uint32_t size = isDir ? 0 : static_cast<uint32_t>(file.size());
+    file.close();  // Yield only after the child handle is gone.
+    if ((budget.entries & 31u) == 0) delay(1);
+    // getName writes an empty string when the name is missing or does not fit.
+    if (name[0] == '\0' || name[0] == '.' || strcmp(name, "System Volume Information") == 0) continue;
     std::string fullPath = currentDir;
-    if (fullPath.back() != '/') fullPath += "/";
+    if (fullPath.back() != '/') fullPath += '/';
     fullPath += name;
-
-    if (file.isDirectory()) {
-      searchFilesRecursive(fullPath + "/", keyword, result, sizes);
+    if (isDir) {
+      if (budget.descend(depth)) searchFilesRecursive(fullPath + "/", keyword, result, sizes, budget, depth + 1, name);
     } else {
       std::string fn = name;
-      std::transform(fn.begin(), fn.end(), fn.begin(), ::tolower);
-      std::string kw = keyword;
-      std::transform(kw.begin(), kw.end(), kw.begin(), ::tolower);
-
-      if (fn.find(kw) != std::string::npos) {
-        if (StringUtils::checkFileExtension(fn, ".epub") ||
-            StringUtils::checkFileExtension(fn, ".xtch") ||
-            StringUtils::checkFileExtension(fn, ".xtc") ||
-            StringUtils::checkFileExtension(fn, ".txt") ||
-            StringUtils::checkFileExtension(fn, ".md")) {
-          result.push_back(fullPath);
-          sizes.push_back(static_cast<uint32_t>(file.size()));
-        }
+      std::transform(fn.begin(), fn.end(), fn.begin(),
+                     [](unsigned char c) { return static_cast<char>(tolower(c)); });
+      if (fn.find(keyword) != std::string::npos &&
+          (StringUtils::checkFileExtension(fn, ".epub") ||
+           StringUtils::checkFileExtension(fn, ".xtch") ||
+           StringUtils::checkFileExtension(fn, ".xtc") ||
+           StringUtils::checkFileExtension(fn, ".txt") ||
+           StringUtils::checkFileExtension(fn, ".md"))) {
+        if (!budget.match()) break;
+        result.push_back(std::move(fullPath));
+        sizes.push_back(size);
       }
     }
-    file.close();
+    if (budget.truncated) break;
   }
   root.close();
 }
@@ -181,7 +181,7 @@ void MyLibraryActivity::sortFileList(std::vector<std::string>& strs) {
     if (str1.back() != '/' && str2.back() == '/') return false;
     return lexicographical_compare(
         begin(str1), end(str1), begin(str2), end(str2),
-        [](const char& char1, const char& char2) { return tolower(char1) < tolower(char2); });
+        [](unsigned char char1, unsigned char char2) { return tolower(char1) < tolower(char2); });
   });
 }
 // 执行搜索（接收char*关键词，适配100字符限制）
@@ -194,10 +194,20 @@ void MyLibraryActivity::doSearch(const char* keyword) {
   originalBasePath = basepath;
   searchResults.clear();
   searchResultSizes.clear();
+  searchTruncated = false;
   
   Serial.printf("[搜索] 开始搜索 %s 及其子目录中包含'%s'的文件\n", basepath.c_str(), SEARCH_KEYWORD);
   // 调用递归搜索（传char数组）
-  searchFilesRecursive(basepath, SEARCH_KEYWORD, searchResults, searchResultSizes);
+  std::string foldedKeyword = SEARCH_KEYWORD;
+  std::transform(foldedKeyword.begin(), foldedKeyword.end(), foldedKeyword.begin(),
+                 [](unsigned char c) { return static_cast<char>(tolower(c)); });
+  M4LibraryScanPolicy::Budget budget(millis());
+  char searchName[500];
+  searchFilesRecursive(basepath, foldedKeyword, searchResults, searchResultSizes, budget, 0, searchName);
+  searchTruncated = budget.truncated;
+  if (searchTruncated) Serial.printf("[搜索] Capped entries=%u matches=%u elapsed=%lu ms\n",
+                                      static_cast<unsigned>(budget.entries),
+                                      static_cast<unsigned>(budget.matches), millis() - budget.started);
   
   // Sort results and their sizes together to keep the two vectors in sync
   {
@@ -211,7 +221,7 @@ void MyLibraryActivity::doSearch(const char* keyword) {
                  const std::pair<std::string, uint32_t>& b) {
                 return std::lexicographical_compare(
                     a.first.begin(), a.first.end(), b.first.begin(), b.first.end(),
-                    [](const char& c1, const char& c2) { return tolower(c1) < tolower(c2); });
+                    [](unsigned char c1, unsigned char c2) { return tolower(c1) < tolower(c2); });
               });
     searchResults.clear();
     searchResultSizes.clear();
@@ -271,6 +281,7 @@ void MyLibraryActivity::cancelSearch() {
   isSearchMode = false;
   searchResults.clear();
   searchResultSizes.clear();
+  searchTruncated = false;
   basepath = originalBasePath;
   loadFiles();
   selectorIndex = 0;
@@ -282,108 +293,229 @@ void MyLibraryActivity::cancelSearch() {
 
 
 
-void MyLibraryActivity::taskTrampoline(void* param) {
-  auto* self = static_cast<MyLibraryActivity*>(param);
-  self->displayTaskLoop();
-}
+void MyLibraryActivity::loadFiles() { startDirectoryPage(0); }
 
-void MyLibraryActivity::loadFiles() {
+void MyLibraryActivity::startDirectoryPage(uint64_t position) {
+  // A new page or directory gets its own cursor. The previous page's seek
+  // position must not be reused after basepath or the resume slot changes.
+  scanDirectory.close();
   files.clear();
   fileSizes.clear();
+  directoryPageStart = directoryCursor = position;
+  directoryNextStart = 0;
+  directoryLoading = true;
+  directoryHasMore = directoryError = false;
+  directoryNameBytes = directoryVisited = 0;
+  directoryStartedMs = millis();
+  directoryPendingSelect.clear();
+  selectorIndex = 0;
+  updateRequired = true;
+}
 
-  // 修复：确保路径以/结尾，否则SdMan.open可能识别失败
-  std::string realBasePath = basepath;
-  if (realBasePath != "/" && realBasePath.back() != '/') {
-    realBasePath += "/";
+bool MyLibraryActivity::selectDirectoryPage() {
+  if (isSearchMode || directoryLoading || files.empty()) return false;
+  if (directoryPageStart && selectorIndex == 0) {
+    startDirectoryPage(0);
+    return true;
   }
+  if (directoryHasMore && selectorIndex == files.size() - 1) {
+    startDirectoryPage(directoryNextStart);
+    return true;
+  }
+  return false;
+}
 
-  auto root = SdMan.open(realBasePath.c_str()); // 用修复后的路径打开
-  if (!root || !root.isDirectory()) {
-    if (root) root.close();
+void MyLibraryActivity::scanDirectoryBatch() {
+  if (!directoryLoading) return;
+  // One read-only cursor for this visible page. FatFile::seekSet follows the
+  // FAT chain from the first cluster when the reopened file position is 0, so
+  // closing and seeking on every 16-entry/4 ms turn repeats that prefix.
+  // Keeping this handle across UI turns is sequential I/O on one owner. It is
+  // not a volume lock; unsynchronized SdFat use from another task is a
+  // separate race, and close/reopen does not remove it.
+  if (!scanDirectory) {
+    std::string path = basepath.empty() ? std::string("/") : basepath;
+    if (path != "/" && path.back() != '/') path.push_back('/');
+    scanDirectory = SdMan.open(path.c_str());  // O_RDONLY
+    if (!scanDirectory || !scanDirectory.isDirectory() || (directoryCursor & 31ull) != 0 ||
+        !scanDirectory.seekSet(directoryCursor)) {
+      directoryError = true;
+      finishDirectoryPage();
+      return;
+    }
+  }
+  const uint32_t started = millis();
+  char name[768];  // SdFat UTF-8 names can use three bytes per UTF-16 character.
+  for (unsigned i = 0; i < 16 && millis() - started < 4; ++i) {
+    const uint64_t position = scanDirectory.curPosition();
+    if ((position & 31ull) != 0) {
+      directoryError = true;
+      finishDirectoryPage();
+      return;
+    }
+    auto file = scanDirectory.openNextFile();
+    if (!file) {
+      directoryError = scanDirectory.getError() != 0;
+      finishDirectoryPage();
+      return;
+    }
+    ++directoryVisited;
+    const size_t length = file.getName(name, sizeof(name));
+    const bool isDirectory = file.isDirectory();
+    const uint32_t bytes = isDirectory ? 0 : static_cast<uint32_t>(file.size());
+    file.close();
+    // getName returns 0 for an empty or truncated name. Skip that entry.
+    // A directory I/O error is the only reason to fail the whole page.
+    if (!length || length >= sizeof(name) - 1) {
+      if (scanDirectory.getError() != 0) {
+        directoryError = true;
+        finishDirectoryPage();
+        return;
+      }
+      continue;
+    }
+    if ((!showAllFiles && name[0] == '.') || strcmp(name, "System Volume Information") == 0) continue;
+    const std::string filename(name, length);
+    const bool accepted = isDirectory || showAllFiles ||
+        StringUtils::checkFileExtension(filename, ".epub") ||
+        StringUtils::checkFileExtension(filename, ".xtch") ||
+        StringUtils::checkFileExtension(filename, ".xtc") ||
+        StringUtils::checkFileExtension(filename, ".txt") ||
+        StringUtils::checkFileExtension(filename, ".md") ||
+        StringUtils::checkFileExtension(filename, ".png") ||
+        StringUtils::checkFileExtension(filename, ".bmp") ||
+        StringUtils::checkFileExtension(filename, ".jpg") ||
+        StringUtils::checkFileExtension(filename, ".jpeg") ||
+        StringUtils::checkFileExtension(filename, ".epdfont") ||
+        StringUtils::checkFileExtension(filename, ".m4x");
+    if (!accepted) continue;
+    if (files.size() >= 64 || directoryNameBytes + length + 2 > 8192) {
+      directoryHasMore = true;
+      directoryNextStart = directoryCursor = position;  // Resume before the unconsumed item.
+      finishDirectoryPage();
+      return;
+    }
+    files.push_back(isDirectory ? filename + "/" : filename);
+    fileSizes.push_back(bytes);
+    directoryNameBytes += length + 2;
+  }
+  // A partial batch must advance to the next aligned slot. Keeping the old
+  // cursor would reread the same entries forever and leave the UI on "读取中".
+  // Leave scanDirectory open: the next turn continues at this position.
+  const uint64_t next = scanDirectory.curPosition();
+  if ((next & 31ull) != 0) {
+    directoryError = true;
+    finishDirectoryPage();
     return;
   }
+  directoryCursor = next;
+}
 
-  root.rewindDirectory();
-
-  // Build entries as pairs <name, size> so files and sizes are sorted together
+void MyLibraryActivity::finishDirectoryPage() {
+  scanDirectory.close();  // Page cursor dies on completion and on error.
+  if (directoryError) {
+    // An unreadable cursor is not a later page. A "back to first" row would
+    // hide the failure text and look like a successful listing.
+    files.clear();
+    fileSizes.clear();
+    directoryHasMore = false;
+    directoryLoading = false;
+    directoryPendingSelect.clear();
+    updateRequired = true;
+    Serial.printf("[Library] page entries=0 visited=%u names=%u ms=%lu more=0 error=1 stack_hwm=%u\n",
+                  static_cast<unsigned>(directoryVisited), static_cast<unsigned>(directoryNameBytes),
+                  millis() - directoryStartedMs,
+                  static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+    return;
+  }
   std::vector<std::pair<std::string, uint32_t>> entries;
-  char name[500];
-  for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
-    file.getName(name, sizeof(name));
-
-    if (!showAllFiles) {
-      // 书籍模式：跳过隐藏文件、系统目录
-      if (name[0] == '.' || strcmp(name, "System Volume Information") == 0) {
-        file.close();
-        continue;
-      }
-    } else {
-      // 全部显示模式：仅跳过 Windows 系统卷目录
-      if (strcmp(name, "System Volume Information") == 0) {
-        file.close();
-        continue;
-      }
-    }
-
-    if (file.isDirectory()) {
-      entries.emplace_back(std::string(name) + "/", 0u); // 目录不显示大小
-    } else {
-      auto filename = std::string(name);
-      const bool isBookFile =
-          StringUtils::checkFileExtension(filename, ".epub") ||
-          StringUtils::checkFileExtension(filename, ".xtch") ||
-          StringUtils::checkFileExtension(filename, ".xtc") ||
-          StringUtils::checkFileExtension(filename, ".txt") ||
-          StringUtils::checkFileExtension(filename, ".md");
-      const bool isImageFile =
-          StringUtils::checkFileExtension(filename, ".png") ||
-          StringUtils::checkFileExtension(filename, ".bmp") ||
-          StringUtils::checkFileExtension(filename, ".jpg") ||
-          StringUtils::checkFileExtension(filename, ".jpeg");
-      const bool isFontFile =
-          StringUtils::checkFileExtension(filename, ".epdfont");
-      const bool isAppPackage =
-          StringUtils::checkFileExtension(filename, ".m4x");
-      if (showAllFiles || isBookFile || isImageFile || isFontFile || isAppPackage) {
-        entries.emplace_back(filename, static_cast<uint32_t>(file.size()));
-      }
-    }
-    file.close();
+  entries.reserve(files.size());
+  for (size_t i = 0; i < files.size(); ++i) entries.emplace_back(std::move(files[i]), fileSizes[i]);
+  std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+    const bool aDir = !a.first.empty() && a.first.back() == '/';
+    const bool bDir = !b.first.empty() && b.first.back() == '/';
+    if (aDir != bDir) return aDir;
+    return std::lexicographical_compare(a.first.begin(), a.first.end(), b.first.begin(), b.first.end(),
+        [](unsigned char a, unsigned char b) { return tolower(a) < tolower(b); });
+  });
+  files.clear();
+  fileSizes.clear();
+  if (directoryPageStart) {
+    files.emplace_back("< 回到首批 >");
+    fileSizes.push_back(0);
   }
-  root.close();
-
-  // Sort entries: directories first, then alphabetically (case-insensitive)
-  std::sort(entries.begin(), entries.end(),
-            [](const std::pair<std::string, uint32_t>& a,
-               const std::pair<std::string, uint32_t>& b) {
-              const bool aDir = a.first.back() == '/';
-              const bool bDir = b.first.back() == '/';
-              if (aDir && !bDir) return true;
-              if (!aDir && bDir) return false;
-              return std::lexicographical_compare(
-                  a.first.begin(), a.first.end(), b.first.begin(), b.first.end(),
-                  [](const char& c1, const char& c2) { return tolower(c1) < tolower(c2); });
-            });
-
-  // Split sorted pairs back into the two parallel vectors
-  files.reserve(entries.size());
-  fileSizes.reserve(entries.size());
-  for (auto& e : entries) {
-    files.push_back(std::move(e.first));
-    fileSizes.push_back(e.second);
+  for (auto& entry : entries) {
+    files.push_back(std::move(entry.first));
+    fileSizes.push_back(entry.second);
   }
-  
-  // 关键优化：释放 entries 占用的内存，减少内存碎片化
-  // 在WiFi AP模式下，内存非常紧张，必须及时释放临时缓冲区
-  entries.clear();
-  entries.shrink_to_fit();  // 真正释放 vector 内部缓冲区
+  if (directoryHasMore) {
+    files.emplace_back("< 下一批 >");
+    fileSizes.push_back(0);
+  }
+  directoryLoading = false;
+  if (!directoryPendingSelect.empty()) {
+    selectorIndex = findEntry(directoryPendingSelect);
+    directoryPendingSelect.clear();
+  }
+  updateRequired = true;
+  Serial.printf("[Library] page entries=%u visited=%u names=%u ms=%lu more=%d error=%d stack_hwm=%u\n",
+                static_cast<unsigned>(entries.size()), static_cast<unsigned>(directoryVisited),
+                static_cast<unsigned>(directoryNameBytes), millis() - directoryStartedMs,
+                directoryHasMore, directoryError, static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
 }
 
 //enter也需要改
+void MyLibraryActivity::enterDirectory(const std::string& selectedItem) {
+  if (selectedItem.empty() || selectedItem.back() != '/') return;
+  if (directoryCrumbs.size() >= 8) directoryCrumbs.erase(directoryCrumbs.begin());
+  std::string crumbPath = basepath.empty() ? std::string("/") : basepath;
+  while (crumbPath.size() > 1 && crumbPath.back() == '/') crumbPath.pop_back();
+  directoryCrumbs.push_back(DirectoryCrumb{std::move(crumbPath), directoryPageStart, selectedItem});
+  std::string next = basepath.empty() ? std::string("/") : basepath;
+  if (next != "/" && next.back() != '/') next.push_back('/');
+  next += selectedItem;
+  if (next.size() > 1 && next.back() == '/') next.pop_back();
+  basepath = std::move(next);
+  loadFiles();
+}
+
+void MyLibraryActivity::returnToParent() {
+  while (basepath.size() > 1 && basepath.back() == '/') basepath.pop_back();
+  if (basepath == "/" || basepath.empty()) {
+    onGoHome();
+    return;
+  }
+  const size_t lastSlash = basepath.find_last_of('/');
+  const std::string parent =
+      (lastSlash == 0 || lastSlash == std::string::npos) ? std::string("/") : basepath.substr(0, lastSlash);
+  std::string entryName = basepath.substr(lastSlash == std::string::npos ? 0 : lastSlash + 1);
+  if (entryName.empty() || entryName.back() != '/') entryName.push_back('/');
+  uint64_t pageStart = 0;
+  if (!directoryCrumbs.empty() && directoryCrumbs.back().path == parent) {
+    pageStart = directoryCrumbs.back().pageStart;
+    if (!directoryCrumbs.back().entryName.empty()) entryName = directoryCrumbs.back().entryName;
+    directoryCrumbs.pop_back();
+  } else {
+    directoryCrumbs.clear();
+  }
+  basepath = parent;
+  startDirectoryPage(pageStart);
+  directoryPendingSelect = std::move(entryName);
+}
+
+void MyLibraryActivity::returnToRoot() {
+  directoryCrumbs.clear();
+  directoryPendingSelect.clear();
+  basepath = "/";
+  loadFiles();
+}
+
 void MyLibraryActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
 
   renderingMutex = xSemaphoreCreateMutex();
+  directoryCrumbs.clear();
+  directoryPendingSelect.clear();
 
   // 如果有设置Home目录，进入时直接跳转到该目录
   if (basepath == "/" && SETTINGS.libraryHomePath[0] != '\0') {
@@ -410,23 +542,14 @@ void MyLibraryActivity::onEnter() {
 
   updateRequired = true;
 
-  xTaskCreate(&MyLibraryActivity::taskTrampoline, "MyLibraryActivityTask",
-              4096,               // Stack size
-              this,               // Parameters
-              1,                  // Priority
-              &displayTaskHandle  // Task handle
-  );
+
 }
 
 void MyLibraryActivity::onExit() {
   ActivityWithSubactivity::onExit();
 
-  // Wait until not rendering to delete task to avoid killing mid-instruction to EPD
-  xSemaphoreTake(renderingMutex, portMAX_DELAY);
-  if (displayTaskHandle) {
-    vTaskDelete(displayTaskHandle);
-    displayTaskHandle = nullptr;
-  }
+  scanDirectory.close();  // In-progress page cursor must not outlive the activity.
+  directoryLoading = false;
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
 
@@ -435,6 +558,25 @@ void MyLibraryActivity::onExit() {
 
 //核心：修改loop，匹配这几个我需要的操作
 void MyLibraryActivity::loop() {
+  // List mutation and rendering have one owner. The old display task could
+  // dereference vector storage while loadFiles/search cleared it on the UI task.
+  if (!subActivity) {
+    scanDirectoryBatch();
+    if (updateRequired && !isPreviewingImage) {
+      updateRequired = false;
+      render();
+    }
+  }
+  if (directoryLoading) {
+    if (mappedInput.wasBackGesture() || mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      scanDirectory.close();  // Cancel closes the page cursor before the parent scan.
+      directoryLoading = false;
+      // Cancel this scan. At the card root that leaves the library; deeper,
+      // it resumes the parent page instead of abandoning the whole activity.
+      returnToParent();
+    }
+    return;
+  }
   if (subActivity) {
       pumpSubActivityFrame();
       // if a search was requested while the keyboard was running, close it now
@@ -458,6 +600,7 @@ void MyLibraryActivity::loop() {
   // Swipe is checked before tap so scrolling never also activates a row.
   if (mappedInput.hasTouch()) {
     auto openSelected = [this]() {
+      if (selectDirectoryPage()) return;
       std::string fullPath;
       bool hasValidSelection = false;
       if (isSearchMode) {
@@ -473,10 +616,8 @@ void MyLibraryActivity::loop() {
       }
       if (!hasValidSelection) return;
       if (!fullPath.empty() && fullPath.back() == '/') {
-        basepath = fullPath.substr(0, fullPath.length() - 1);
-        loadFiles();
-        selectorIndex = 0;
-        updateRequired = true;
+        const auto slash = fullPath.find_last_of('/', fullPath.size() - 2);
+        enterDirectory(fullPath.substr(slash == std::string::npos ? 0 : slash + 1));
       } else if (StringUtils::checkFileExtension(fullPath, ".png") ||
                  StringUtils::checkFileExtension(fullPath, ".bmp") ||
                  StringUtils::checkFileExtension(fullPath, ".jpg") ||
@@ -621,15 +762,7 @@ void MyLibraryActivity::loop() {
     } else {
       // Main file list
       if (mappedInput.wasBackGesture()) {
-        if (basepath != "/") {
-          size_t lastSlash = basepath.find_last_of('/');
-          basepath = (lastSlash == 0) ? "/" : basepath.substr(0, lastSlash);
-          loadFiles();
-          selectorIndex = 0;
-          updateRequired = true;
-        } else {
-          onGoHome();
-        }
+        returnToParent();
         return;
       }
       const auto swipe = mappedInput.wasSwipe();
@@ -649,6 +782,7 @@ void MyLibraryActivity::loop() {
       auto metrics = UITheme::getInstance().getMetrics();
       const int pageHeight = renderer.getScreenHeight();
       int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+      if (isSearchMode && searchTruncated) contentTop += 28;
       // Match MyLibraryActivity::render() copy/cut status strip.
       if (hasCopyData && !copySourcePath.empty()) {
         contentTop += 40 + 6;
@@ -733,10 +867,7 @@ void MyLibraryActivity::loop() {
   // Long press BACK (1s+) goes to root folder
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= GO_HOME_MS &&
       basepath != "/") {
-    basepath = "/";
-    loadFiles();
-    selectorIndex = 0;
-    updateRequired = true;
+    returnToRoot();
     return;
   }
  //弹出操作菜单时，拦截所有按键由菜单处理
@@ -786,6 +917,7 @@ void MyLibraryActivity::loop() {
         }
       }
       if (hasValidSelection) {
+        if (selectDirectoryPage()) return;
         actionTargetPath = fullPath;
         showingActionMenu = true;
         menuJustOpened = true;  // 吸收紧随其后的按键松手事件
@@ -815,6 +947,7 @@ void MyLibraryActivity::loop() {
         }
       }
       if (hasValidSelection) {
+        if (selectDirectoryPage()) return;
         actionTargetPath = fullPath;
         showingActionMenu = true;
         menuJustOpened = false;
@@ -843,11 +976,10 @@ void MyLibraryActivity::loop() {
     }
 
     if (hasValidSelection) {
+      if (selectDirectoryPage()) return;
       if (!fullPath.empty() && fullPath.back() == '/') {
-        // 进入文件夹
-        basepath = fullPath.substr(0, fullPath.length() - 1);
-        loadFiles();
-        selectorIndex = 0;
+        const auto slash = fullPath.find_last_of('/', fullPath.size() - 2);
+        enterDirectory(fullPath.substr(slash == std::string::npos ? 0 : slash + 1));
       } else if (StringUtils::checkFileExtension(fullPath, ".png") ||
                  StringUtils::checkFileExtension(fullPath, ".bmp") ||
                  StringUtils::checkFileExtension(fullPath, ".jpg") ||
@@ -913,41 +1045,25 @@ void MyLibraryActivity::loop() {
 
 if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
   // Short press or BT virtual: go up one directory, or go home if at root.
-  // NOTE: Do NOT check getHeldTime() here. The long-press case (go to root / go home)
+  // NOTE: Do NOT check getHeldTime() here. The long-press case (go to root)
   // is already handled above via isPressed(Back) && getHeldTime() >= GO_HOME_MS.
   // Checking getHeldTime() here would block BT virtual button releases when the user
   // previously held a physical key for a long time (getHeldTime() stays large until
-  // a new physical press resets it).
-  if (basepath != "/") {
-    const std::string oldPath = basepath;
-
-    // 修复：正确截取上级目录（处理嵌套路径）
-    size_t lastSlash = basepath.find_last_of('/');
-    // 避免截取后为空（比如 /dir1 → 截取后是 ""，要改成 "/"）
-    basepath = (lastSlash == 0) ? "/" : basepath.substr(0, lastSlash);
-    
-    loadFiles(); // 重新加载上级目录内容
-
-    // 修复：返回上级后定位到之前的目录项
-    const std::string dirName = oldPath.substr(lastSlash + 1) + "/";
-    selectorIndex = findEntry(dirName);
-
-    updateRequired = true;
-  } else {
-    onGoHome();
-  }
+  // a new physical press resets it). The parent highlight is applied after the
+  // async page finishes; findEntry on the still-empty vector always returned 0.
+  returnToParent();
 }
 
   const auto& displayList = isSearchMode ? searchResults : files;
-  int listSize = static_cast<int>(displayList.size());
-  if (upReleased) {
+  const int listSize = static_cast<int>(displayList.size());
+  if (listSize > 0 && upReleased) {
     if (skipPage) {
       selectorIndex = std::max(static_cast<int>((selectorIndex / pageItems - 1) * pageItems), 0);
     } else {
       selectorIndex = (selectorIndex + listSize - 1) % listSize;
     }
     updateRequired = true;
-  } else if (downReleased) {
+  } else if (listSize > 0 && downReleased) {
     if (skipPage) {
       selectorIndex = std::min(static_cast<int>((selectorIndex / pageItems + 1) * pageItems), listSize - 1);
     } else {
@@ -958,18 +1074,6 @@ if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
 }
 
 
-
-void MyLibraryActivity::displayTaskLoop() {
-  while (true) {
-    if (updateRequired && !isPreviewingImage) {
-      updateRequired = false;
-      xSemaphoreTake(renderingMutex, portMAX_DELAY);
-      render();
-      xSemaphoreGive(renderingMutex);
-    }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-  }
-}
 
   //添加四个按鈕：删除、复制、剪切、粘贴
   //添加搜索和取消搜索
@@ -984,7 +1088,17 @@ void MyLibraryActivity::render() const {
 
 
 
+  if (directoryLoading) {
+    M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2, "正在读取目录，返回可取消");
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return;
+  }
   int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  if (isSearchMode && searchTruncated) {
+    M4UiText::draw(renderer, UI_10_FONT_ID, metrics.contentSidePadding, contentTop,
+                   "结果较多，请缩小搜索范围");
+    contentTop += 28;
+  }
   // 有复制/剪切标记时显示状态栏
   if (hasCopyData && !copySourcePath.empty()) {
     const size_t lastSlash = copySourcePath.find_last_of('/');
@@ -1008,7 +1122,7 @@ void MyLibraryActivity::render() const {
       // 拼接 "未找到含'关键词'的文件"
       snprintf(emptyHint, sizeof(emptyHint), "未找到含'%s'的文件", SEARCH_KEYWORD);
       // 赋值给emptyText
-      std::string emptyText = isSearchMode ? emptyHint : "No books found";
+      std::string emptyText = isSearchMode ? emptyHint : directoryError ? "目录读取失败，请返回重试" : "No books found";
       M4UiText::draw(renderer, UI_10_FONT_ID, metrics.contentSidePadding, contentTop + 20, emptyText.c_str());
   } else {
       // 绘制列表时，用 displayList 替代原来的 files
@@ -1076,14 +1190,14 @@ void MyLibraryActivity::render() const {
 
 
 void MyLibraryActivity::executeActionMenu(int index) {
+  if (selectDirectoryPage()) { showingActionMenu = false; return; }
   const std::string fullPath = actionTargetPath;
   showingActionMenu = false;
   switch (index) {
     case 0: {  // 打开
       if (!fullPath.empty() && fullPath.back() == '/') {
-        basepath = fullPath.substr(0, fullPath.length() - 1);
-        loadFiles();
-        selectorIndex = 0;
+        const auto slash = fullPath.find_last_of('/', fullPath.size() - 2);
+        enterDirectory(fullPath.substr(slash == std::string::npos ? 0 : slash + 1));
       } else if (StringUtils::checkFileExtension(fullPath, ".png") ||
                  StringUtils::checkFileExtension(fullPath, ".bmp") ||
                  StringUtils::checkFileExtension(fullPath, ".jpg") ||
@@ -1149,24 +1263,35 @@ void MyLibraryActivity::executeActionMenu(int index) {
       }
       std::string dstPath = basepath;
       if (dstPath.back() != '/') dstPath += "/";
-      size_t lastSlash = copySourcePath.find_last_of('/');
-      std::string fileName = copySourcePath.substr(lastSlash + 1);
+      std::string source = copySourcePath;
+      while (source.size() > 1 && source.back() == '/') source.pop_back();
+      const std::string fileName = source.substr(source.find_last_of('/') + 1);
       dstPath += fileName;
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       GUI.drawPopup(renderer, "正在粘贴...");
       xSemaphoreGive(renderingMutex);
       bool pasteSuccess = false;
-      if (!copySourcePath.empty() && copySourcePath.back() == '/') {
-        pasteSuccess = copyDir(copySourcePath.c_str(), dstPath.c_str());
-      } else {
-        pasteSuccess = copyFile(copySourcePath.c_str(), dstPath.c_str());
+      const bool directory = !copySourcePath.empty() && copySourcePath.back() == '/';
+      if (!source.empty() && source != "/" && !SdMan.exists(dstPath.c_str())) {
+        if (isCutMode) {
+          // Same-volume move; never emulate a directory move by mkdir + removeDir.
+          // Reject moving a directory inside itself before touching the volume.
+          if (!directory || canMoveDirectory(source, basepath))
+            pasteSuccess = SdMan.rename(source.c_str(), dstPath.c_str());
+        } else if (!directory) {
+          pasteSuccess = copyFile(source.c_str(), dstPath.c_str());
+        }
       }
-      if (pasteSuccess && isCutMode) {
-        deleteFileOrDir(copySourcePath);
+      if (pasteSuccess) {
+        hasCopyData = false;
         isCutMode = false;
+        copySourcePath.clear();
+      } else {
+        xSemaphoreTake(renderingMutex, portMAX_DELAY);
+        GUI.drawPopup(renderer, directory && !isCutMode ? "文件夹请使用剪切移动" : "粘贴失败，源文件已保留");
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+        xSemaphoreGive(renderingMutex);
       }
-      hasCopyData = false;
-      copySourcePath = "";
       if (isSearchMode) {
         doSearch(SEARCH_KEYWORD);
       } else {
@@ -1516,6 +1641,10 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
 
   const int srcW = dims.width;
   const int srcH = dims.height;
+  if (!JpegImagePolicy::validSourceDimensions(srcW, srcH)) {
+    Serial.printf("[壁纸] 图片超过解码尺寸/像素上限: %dx%d\n", srcW, srcH);
+    return false;
+  }
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
 
@@ -1527,6 +1656,10 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
 
   const int dstW = (int)(srcW * scale);
   const int dstH = (int)(srcH * scale);
+  if (!JpegImagePolicy::validDestinationDimensions(dstW, dstH)) {
+    Serial.printf("[壁纸] 输出尺寸无效: %dx%d\n", dstW, dstH);
+    return false;
+  }
 
   Serial.printf("[壁纸] 生成缓存: %s (%dx%d -> %dx%d)\n", imagePath.c_str(), srcW, srcH, dstW, dstH);
 
@@ -1545,7 +1678,7 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
 
   // 分配行缓冲（2-bit packed，每行 (width+3)/4 字节）
   const int bytesPerRow = (dstW + 3) / 4;
-  uint8_t* rowBuffer = (uint8_t*)malloc(bytesPerRow);
+  uint8_t* rowBuffer = static_cast<uint8_t*>(M4Psram::mallocPrefer(static_cast<size_t>(bytesPerRow), "wallpaper-row"));
   if (!rowBuffer) {
     Serial.printf("[壁纸] 无法分配行缓冲\n");
     cacheFile.close();
@@ -1554,11 +1687,18 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
   }
 
   // 分配 RGBA 缓冲区用于解码
-  const int rgbaBufSize = dstW * dstH * 4;
-  uint8_t* rgbaBuf = (uint8_t*)malloc(rgbaBufSize);
+  size_t rgbaBufSize = 0;
+  if (!JpegImagePolicy::rgbaBufferBytes(dstW, dstH, rgbaBufSize)) {
+    Serial.printf("[壁纸] RGBA 缓冲区尺寸溢出: %dx%d\n", dstW, dstH);
+    M4Psram::freePrefer(rowBuffer);
+    cacheFile.close();
+    SdMan.remove(pxcPath.c_str());
+    return false;
+  }
+  uint8_t* rgbaBuf = static_cast<uint8_t*>(M4Psram::mallocPrefer(rgbaBufSize, "wallpaper-preview-rgba"));
   if (!rgbaBuf) {
     Serial.printf("[壁纸] 无法分配 RGBA 缓冲区\n");
-    free(rowBuffer);
+    M4Psram::freePrefer(rowBuffer);
     cacheFile.close();
     SdMan.remove(pxcPath.c_str());
     return false;
@@ -1570,8 +1710,8 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
 
   if (pixelsWritten == 0) {
     Serial.printf("[壁纸] 解码失败\n");
-    free(rgbaBuf);
-    free(rowBuffer);
+    M4Psram::freePrefer(rgbaBuf);
+    M4Psram::freePrefer(rowBuffer);
     cacheFile.close();
     SdMan.remove(pxcPath.c_str());
     return false;
@@ -1597,8 +1737,8 @@ bool MyLibraryActivity::generatePxcCache(const std::string& imagePath, const std
     cacheFile.write(rowBuffer, bytesPerRow);
   }
 
-  free(rgbaBuf);
-  free(rowBuffer);
+  M4Psram::freePrefer(rgbaBuf);
+  M4Psram::freePrefer(rowBuffer);
   cacheFile.close();
 
   Serial.printf("[壁纸] 缓存生成完成: %s (%dx%d, %d bytes)\n", pxcPath.c_str(), dstW, dstH, 4 + bytesPerRow * dstH);

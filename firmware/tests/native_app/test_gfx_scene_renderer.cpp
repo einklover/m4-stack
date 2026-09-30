@@ -121,6 +121,7 @@ void testSceneFontIdRoutesToRuntimeFontId(){
   assert(GfxSceneRenderer::runtimeFontId(19)==NOTOSANS_18_FONT_ID);
   assert(GfxSceneRenderer::runtimeFontId(20)==SMALL_FONT_ID);
   assert(GfxSceneRenderer::runtimeFontId(22)==SMALL_FONT_ID);
+  assert(GfxSceneRenderer::runtimeFontId(24)==M4FixedRuntimeUiFonts::kHubCategoryFontId);
 }
 
 void testTextAlignmentUsesMeasuredWidthWithinRect(){

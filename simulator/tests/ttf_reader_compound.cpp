@@ -203,7 +203,7 @@ void verifyCompound(ttf::TtfFont& font) {
   assert(font.findGlyph('A', gid));
   assert(gid == 2);
 
-  std::vector<ttf::Contour> contours;
+  ttf::PsramVector<ttf::Contour> contours;
   assert(font.collectGlyph(gid, ttf::Xform{}, contours));
   assert(contours.size() == 2);
   assert(contours[0].pts.size() == 4);

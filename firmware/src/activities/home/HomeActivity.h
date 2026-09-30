@@ -12,6 +12,7 @@
 #include "../Activity.h"
 #include "./MyLibraryActivity.h"
 #include "../../RecentBooksStore.h"
+#include "apps/M4xRegistry.h"
 #include "ui/pages/HomeSceneModel.h"
 #include "ui/scene/UiSceneAssets.h"
 
@@ -19,15 +20,23 @@ struct Rect;
 
 class HomeActivity final : public Activity {
   TaskHandle_t displayTaskHandle = nullptr;
+  std::atomic<bool> displayStopRequested{false};
+  std::atomic<bool> displayTaskExited{true};
 #ifdef CROSSPOINT_MURPHY_M4
   struct BackendContext {
     HomeScene::HomeSceneModel model;
     std::vector<RecentBook> recentBooks;
+    std::vector<M4xInstalledApp> installedApps;
+    bool appsLoaded = false;
     std::atomic<bool> cancelled{false};
     std::atomic<uint32_t> epoch{0};
     std::atomic<bool> exiting{false};
     std::atomic<bool> updateRequired{false};
     BackendContext() = default;
+  };
+  struct DisplayTaskArgs {
+    HomeActivity* activity;
+    std::shared_ptr<BackendContext> context;
   };
   TaskHandle_t sceneBackendTaskHandle = nullptr;
   std::shared_ptr<BackendContext> backendCtx;
@@ -68,18 +77,26 @@ class HomeActivity final : public Activity {
   const std::function<void()> onDataCapsuleOpen;  // 数据胶囊回调
   const std::function<void()> onBookmarkNotesOpen;  // 书签笔记回调
   const std::function<void()> onAppsOpen;           // 扩展应用列表
+  const std::function<void()> onAppStoreOpen;
   const std::function<void(const std::string& appId)> onOpenNativeApp;
 
 
   static void taskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
 #ifdef CROSSPOINT_MURPHY_M4
+  void displayTaskLoop(const std::shared_ptr<BackendContext>& ctx);
+  void render(const std::shared_ptr<BackendContext>& ctx);
   static void sceneBackendTaskTrampoline(void* param);
   // Lifetime-safe backend: owns its own context, never touches raw HomeActivity `this`.
   static void backendLoop(BackendContext& ctx);
   static void loadRecentBooksInto(BackendContext& ctx, int maxBooks);
+  static const std::vector<M4xInstalledApp>& cachedInstalledApps(BackendContext& ctx);
+  static void notePublishedHome(BackendContext& ctx);
   static bool tryEnsureCoverThumbInCtx(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
                                        const std::function<bool()>& cancelled = {});
+  static bool tryDecodeCoverThumbIfExists(BackendContext& ctx, const std::string& coverBmpPath, int w, int h,
+                                          const UiScene::AssetKey& key, const std::function<bool()>& cancelled);
+  static bool publishHomeSceneWithAssetsFastCtx(BackendContext& ctx);
+  static void refreshMissingCoversInCtx(BackendContext& ctx);
   static void publishHomeSceneFromBackendCtx(BackendContext& ctx);
   static bool publishHomeSceneWithAssetsCtx(BackendContext& ctx);
   // Legacy trampoline for compatibility (unused after refactor, kept to avoid ODR)
@@ -92,9 +109,11 @@ class HomeActivity final : public Activity {
   bool dispatchHomeSceneAction(const UiScene::UiSceneAction& action);
   void dispatchHomeSceneActions();
   void handleSnapshotInput();
-  void renderSnapshotScene();
-#endif
+  void renderSnapshotScene(const std::shared_ptr<BackendContext>& ctx);
+#else
+  [[noreturn]] void displayTaskLoop();
   void render();
+#endif
   int getMenuItemCount() const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
@@ -114,6 +133,7 @@ class HomeActivity final : public Activity {
                         const std::function<void()>& onDataCapsuleOpen,
                         const std::function<void()>& onBookmarkNotesOpen,
                         const std::function<void()>& onAppsOpen,
+                        const std::function<void()>& onAppStoreOpen,
                         bool animateEntry = false, int animationDirection = 0,
                         const std::function<void(const std::string& appId)>& onOpenNativeApp = {})
       : Activity("Home", renderer, mappedInput),
@@ -129,10 +149,16 @@ class HomeActivity final : public Activity {
         onDataCapsuleOpen(onDataCapsuleOpen),
         onBookmarkNotesOpen(onBookmarkNotesOpen),
         onAppsOpen(onAppsOpen),
+        onAppStoreOpen(onAppStoreOpen),
         onOpenNativeApp(onOpenNativeApp) {}
   void onEnter() override;
   void onExit() override;
+  ~HomeActivity() override;
+  bool readyForDestruction() const override {
+    return displayTaskExited.load(std::memory_order_acquire);
+  }
   void loop() override;
+  static bool backendBusy();
   bool isHomeActivity() const override { return true; }
   bool showTouchNavigation() const override { return false; }
   uint8_t touchFooterButtonsMask() const override {

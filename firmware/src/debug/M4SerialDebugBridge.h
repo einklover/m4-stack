@@ -142,6 +142,7 @@ class Bridge {
 
   void feedByte(char c);
   void handleLine(const char* line);
+  void handleUnauthorizedLine(const char* line);
   bool parseFrame(const char* line, char* reqIdOut, size_t reqIdCap, char* kindOut, size_t kindCap,
                   const char** payloadStart);
   void handleReq(const char* reqId, const char* json, size_t jsonLen);

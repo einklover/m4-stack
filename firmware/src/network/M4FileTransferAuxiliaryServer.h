@@ -5,6 +5,7 @@
 #include <WiFiUdp.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include <cstddef>
 #include <memory>
@@ -31,12 +32,16 @@ class M4FileTransferAuxiliaryServer final {
   bool begin();
   void poll();
   void stop();
+  // Owner-task abort: close the partial upload and give storageMutex_ on the
+  // same task that took it (UI poll / WS START). Cleanup must not call this.
+  void abortOwnedUpload();
   bool running() const { return running_; }
   WsUploadStatus uploadStatus() const;
 
  private:
   static constexpr uint16_t WS_PORT = 81;
   static constexpr uint16_t LOCAL_UDP_PORT = 8134;
+  static constexpr TickType_t kStorageTakeTicks = pdMS_TO_TICKS(50);
 
   static M4FileTransferAuxiliaryServer* wsInstance_;
   static void wsEventCallback(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
@@ -48,6 +53,7 @@ class M4FileTransferAuxiliaryServer final {
   void clearEpubCacheIfNeeded(const String& filePath) const;
 
   SemaphoreHandle_t storageMutex_ = nullptr;
+  TaskHandle_t storageOwner_ = nullptr;
   bool storageLocked_ = false;
   std::unique_ptr<WebSocketsServer> wsServer_;
   WiFiUDP udp_;

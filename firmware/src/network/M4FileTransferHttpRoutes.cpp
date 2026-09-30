@@ -20,6 +20,7 @@
 
 #include "CrossPointSettings.h"
 #include "SettingsLists.h"
+#include "apps/M4xInstaller.h"
 #include "apps/providers/M4LanVisitorStore.h"
 #include "network/M4HttpRequestParser.h"
 #include "network/html/FilesPageHtml.generated.h"
@@ -238,6 +239,13 @@ void scanFiles(const char* path, Callback callback) {
     file = root.openNextFile();
   }
   root.close();
+}
+
+bool filenameLooksLikeM4x(const std::string& name) {
+  if (name.size() < 4) return false;
+  const char* ext = name.c_str() + (name.size() - 4);
+  return ext[0] == '.' && (ext[1] == 'm' || ext[1] == 'M') && ext[2] == '4' &&
+         (ext[3] == 'x' || ext[3] == 'X');
 }
 
 bool writeFileBytes(FsFile& file, const char* data, const size_t length) {
@@ -471,6 +479,33 @@ esp_err_t M4FileTransferHttpRoutes::handleUpload(httpd_req_t* req) const {
   }
 
   clearEpubCacheIfNeeded(filePath);
+
+  String installFlag;
+  const bool askedInstall = queryArg(req, "install", installFlag) && installFlag == "1";
+  const bool isPluginPackage = filenameLooksLikeM4x(filename);
+  if (askedInstall && !isPluginPackage) {
+    return sendResponse(req, 400, "text/plain", "Not a plugin package (.m4x)");
+  }
+  if (askedInstall || isPluginPackage) {
+    M4xInstaller::ensureLayout();
+    esp_task_wdt_reset();
+    const M4xInstallResult installed = M4xInstaller::install(std::string(filePath.c_str()));
+    esp_task_wdt_reset();
+    if (!installed.ok) {
+      String err = "Uploaded but install failed: ";
+      err += installed.message.empty() ? installed.error.c_str() : installed.message.c_str();
+      return sendResponse(req, 400, "text/plain", err);
+    }
+    String ok = "Plugin installed: ";
+    ok += installed.manifest.name.empty() ? installed.manifest.id.c_str() : installed.manifest.name.c_str();
+    if (!installed.manifest.id.empty()) {
+      ok += " (";
+      ok += installed.manifest.id.c_str();
+      ok += ")";
+    }
+    return sendResponse(req, 200, "text/plain", ok);
+  }
+
   const String response = "File uploaded successfully: " + String(filename.c_str());
   return sendResponse(req, 200, "text/plain", response);
 }

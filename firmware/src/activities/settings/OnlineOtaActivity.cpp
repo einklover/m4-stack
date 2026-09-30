@@ -8,7 +8,25 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/M4ListTouchPolicy.h"
 #include "util/M4UiText.h"
+
+namespace {
+
+M4ListTouchPolicy::DialogTwoButtonLayout otaConfirmDialogLayout(const GfxRenderer& renderer) {
+  return M4ListTouchPolicy::makeCenteredTwoButtons(renderer.getScreenWidth(), renderer.getScreenHeight() - 190,
+                                                   144, 64, 24, 2);
+}
+
+void drawOtaButton(const GfxRenderer& renderer, const M4ListTouchPolicy::DialogTwoButtonLayout& layout,
+                   int index, const char* label) {
+  const auto r = layout.buttonRect(index);
+  renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, index == 1 ? Color::Black : Color::LightGray);
+  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, index == 0,
+                              EpdFontFamily::BOLD, 8);
+}
+
+}  // namespace
 
 void OnlineOtaActivity::taskTrampoline(void* param) {
   static_cast<OnlineOtaActivity*>(param)->displayTaskLoop();
@@ -190,7 +208,7 @@ void OnlineOtaActivity::render() {
       
       // 计算最大可见行数：充分利用屏幕空间
       const int pageHeight = renderer.getScreenHeight();
-      const int buttonHintsHeight = 40;  // 按钮提示区域高度
+      const int buttonHintsHeight = 190;  // 保留触屏取消/下载按钮区域
       const int maxVisibleArea = pageHeight - versionY - buttonHintsHeight - 10;  // 从版本号下方到按钮提示上方的所有空间
       remarkMaxLines = maxVisibleArea / lineHeight;
       
@@ -222,6 +240,9 @@ void OnlineOtaActivity::render() {
       }
 
       const auto labels = mappedInput.mapLabels(L(Str::kCancel), L(Str::kConfirm), "\u2191", "\u2193");
+      const auto dialog = otaConfirmDialogLayout(renderer);
+      drawOtaButton(renderer, dialog, 0, L(Str::kCancel));
+      drawOtaButton(renderer, dialog, 1, L(Str::kDownload));
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);  // 强制显示按钮提示
       break;
     }
@@ -316,6 +337,9 @@ void OnlineOtaActivity::render() {
       M4UiText::drawCentered(renderer, UI_12_FONT_ID, promptY + 18, L(Str::kPressConfirmToFlash), false, EpdFontFamily::BOLD);
       
       const auto labels = mappedInput.mapLabels(L(Str::kCancel), L(Str::kConfirm), "", "");
+      const auto dialog = otaConfirmDialogLayout(renderer);
+      drawOtaButton(renderer, dialog, 0, L(Str::kCancel));
+      drawOtaButton(renderer, dialog, 1, L(Str::kConfirm));
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       break;
     }
@@ -384,7 +408,19 @@ void OnlineOtaActivity::loop() {
   }
 
   if (state == UPDATE_AVAILABLE) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    bool confirmDownload = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+    int tx = 0, ty = 0;
+    if (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty)) {
+      int hit = -1;
+      if (M4ListTouchPolicy::dialogButtonFromPoint(otaConfirmDialogLayout(renderer), tx, ty, hit)) {
+        if (hit == 0) {
+          goBack();
+          return;
+        }
+        confirmDownload = true;
+      }
+    }
+    if (confirmDownload) {
       Serial.printf("[%lu] [OnlineOTA] User confirmed download\n", millis());
       startDownload();
     }
@@ -433,7 +469,19 @@ void OnlineOtaActivity::loop() {
   }
 
   if (state == READY_TO_FLASH) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    bool confirmFlash = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+    int tx = 0, ty = 0;
+    if (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty)) {
+      int hit = -1;
+      if (M4ListTouchPolicy::dialogButtonFromPoint(otaConfirmDialogLayout(renderer), tx, ty, hit)) {
+        if (hit == 0) {
+          goBack();
+          return;
+        }
+        confirmFlash = true;
+      }
+    }
+    if (confirmFlash) {
       Serial.printf("[%lu] [OnlineOTA] User confirmed flash\n", millis());
       
       // 检查可用内存

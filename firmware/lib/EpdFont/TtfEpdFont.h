@@ -16,8 +16,18 @@
 // remain PSRAM-first and shared by glyf/CFF1/CFF2 paths.
 class TtfEpdFont : public EpdFont {
  public:
-  static constexpr uint16_t kDefaultRuntimeSlots = 512;
-  static constexpr size_t kDefaultRuntimeBudget = 768 * 1024;
+#ifndef M4_READER_TTF_CACHE_SLOTS
+#define M4_READER_TTF_CACHE_SLOTS 1536
+#endif
+#ifndef M4_READER_TTF_CACHE_BUDGET
+#define M4_READER_TTF_CACHE_BUDGET (2 * 1024 * 1024)
+#endif
+  // One bounded PSRAM-backed reader cache. Build flags can vary the budget
+  // for the simulator sweep without changing ownership or eviction semantics.
+  static constexpr uint16_t kDefaultReaderRuntimeSlots = M4_READER_TTF_CACHE_SLOTS;
+  static constexpr size_t kDefaultReaderRuntimeBudget = M4_READER_TTF_CACHE_BUDGET;
+  static constexpr uint16_t kDefaultRuntimeSlots = kDefaultReaderRuntimeSlots;
+  static constexpr size_t kDefaultRuntimeBudget = kDefaultReaderRuntimeBudget;
   static constexpr uint16_t kDefaultEmbeddedSlots = 96;
   static constexpr size_t kDefaultEmbeddedBudget = 96 * 1024;
 
@@ -45,6 +55,14 @@ class TtfEpdFont : public EpdFont {
   size_t cacheBudget() const { return cacheBudget_; }
   bool hasCodepoint(uint32_t cp) const;
   void clearCaches();
+  // Append dirty PSRAM glyphs to SD. Safe to call from the main idle loop.
+  static int idleFlushDirty(int maxGlyphs);
+  // Low-overhead aggregate counters for cache lookup, raster, and SD flush cost.
+  static void logPerformanceStats(const char* stage);
+  // Effective family key: path hash mixed with the font-file fingerprint, so
+  // a replaced TTF under the same path stops matching stale SD records (B5).
+  uint32_t familyKey() const { return famHash_; }
+  int dirtySlotCount() const;
 
  private:
   enum class Backend : uint8_t { Glyf, Cff1, Cff2 };
@@ -54,11 +72,21 @@ class TtfEpdFont : public EpdFont {
     EpdGlyph glyph{};
     uint8_t* bitmap = nullptr;
     uint32_t bitmapSize = 0;
+    bool dirty = false;
+    bool fromSd = false;
   };
 
   bool usesCffBackend() const { return backend_ != Backend::Glyf; }
   int ensureGlyph(uint32_t cp) const;
   void evictSlot(int slot) const;
+  int pickSlot() const;
+  bool publishGlyph(int slot, uint32_t cp, uint8_t w, uint8_t h, uint8_t adv, int16_t left,
+                    int16_t top, const uint8_t* bits, uint32_t len, bool fromSd) const;
+  void trimCache(int keepSlot) const;
+  int flushDirtySlots(int maxGlyphs) const;
+  bool flushBackedOff() const;
+  void registerLive();
+  void unregisterLive();
   bool allocateEntries();
   bool finishInit(const char* sourceLabel);
   bool backendFindGlyph(uint32_t cp, uint16_t& gid) const;
@@ -75,6 +103,15 @@ class TtfEpdFont : public EpdFont {
 
   String path_;
   String runtimeError_;
+  // Path hash mixed with the font fingerprint (B5). Computed once at init;
+  // falls back to the plain path hash when the fingerprint is unavailable.
+  uint32_t famHash_ = 0;
+  // Last successful SD flush (Ok/Duplicate), for live-table victim choice.
+  mutable uint32_t lastFlushActivityMs_ = 0;
+  // Last transient SD failure; idleFlushDirty skips this face until the
+  // backoff below expires instead of churning the same head glyph (B2).
+  mutable uint32_t lastTransientSkipMs_ = 0;
+  static constexpr uint32_t kFlushTransientBackoffMs = 5000;
   uint16_t sizePx_ = 0;
   uint16_t renderSizePx_ = 0;
   uint16_t maxSlots_ = kDefaultRuntimeSlots;
@@ -96,6 +133,15 @@ class TtfEpdFont : public EpdFont {
   mutable uint32_t accessCounter_ = 0;
   mutable uint8_t glyphDiagnosticsLogged_ = 0;
   mutable size_t cacheBytes_ = 0;
+  mutable uint32_t perfLookups_ = 0;
+  mutable uint32_t perfResidentHits_ = 0;
+  mutable uint32_t perfSdHits_ = 0;
+  mutable uint32_t perfRasterMisses_ = 0;
+  mutable uint32_t perfSlowLookups_ = 0;
+  mutable uint32_t perfMaxLookupUs_ = 0;
+  mutable uint64_t perfTotalLookupUs_ = 0;
+  mutable uint32_t perfFlushRounds_ = 0;
+  mutable uint64_t perfFlushUs_ = 0;
   // Advance-only cache: wrapping/index hit this and never touch glyf/CFF.
   static constexpr uint16_t kAdvanceCache = 256;
   mutable uint32_t advCp_[kAdvanceCache]{};

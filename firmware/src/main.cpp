@@ -69,8 +69,13 @@ static volatile bool gM4QemuScreenMode = true;
 #include "activities/reader/ReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/apps/AppListActivity.h"
+#include "activities/apps/AppStoreActivity.h"
 #include "activities/apps/AppInstallActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
+#include "util/M4UiText.h"
+#ifdef CROSSPOINT_MURPHY_M4
+#include "util/M4TlsMemory.h"
+#endif
 #include "apps/M4xInstaller.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -92,6 +97,7 @@ static volatile bool gM4QemuScreenMode = true;
 #include <esp32-hal.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <M4MemoryManager.h>
 #include "util/M4FrontlightPolicy.h"
 #include "util/M4FontDebugPolicy.h"
 #include "util/M4FontPolicy.h"
@@ -100,8 +106,15 @@ static volatile bool gM4QemuScreenMode = true;
 
 #ifdef CROSSPOINT_MURPHY_M4
 #include "debug/M4SerialDebugBridge.h"
+#include "debug/M4UsbSerialResetPolicy.h"
+#include "apps/M4HttpTransport.h"
 #include "apps/M4xRegistry.h"
 #include "apps/providers/M4NativeProviderHeavyGate.h"
+#include "apps/providers/M4NativeProviderBookDetailAsync.h"
+#include "apps/providers/M4NativeProviderCatalog.h"
+#include "apps/providers/M4NativeProviderDiscovery.h"
+#include "apps/providers/M4NativeProviderLogin.h"
+#include "apps/providers/M4NativeProviderManager.h"
 #include "activities/apps/AppRuntimeActivity.h"
 #include "activities/apps/NativeAppActivity.h"
 #endif
@@ -409,23 +422,107 @@ EpdFontFamily ui12FontFamily(&bootCkFont, &bootCkFont);
 unsigned long t1 = 0;
 unsigned long t2 = 0;
 
-// Deferred delete: activity objects are not freed immediately in exitActivity()
-// to prevent use-after-free when exitActivity() is called from within the
-// activity's own call stack (e.g., reader back button callback chain).
-static Activity* deferredDeleteActivity = nullptr;
+// Retired activities can remain alive while a worker is quiescing. Reap only
+// after the activity's call stack has unwound and its background owners stop.
+static Activity* deferredActivities = nullptr;
+#ifdef CROSSPOINT_MURPHY_M4
+static bool gM4PendingTransientReset = false;
+#endif
 
 void exitActivity() {
   if (currentActivity) {
     currentActivity->onExit();
-    // If there's a previously deferred activity, delete it now (it's no longer
-    // in any call stack since we've completed at least one full loop iteration).
-    if (deferredDeleteActivity) {
-      delete deferredDeleteActivity;
-    }
-    deferredDeleteActivity = currentActivity;
+    currentActivity->setDeferredNext(deferredActivities);
+    deferredActivities = currentActivity;
     currentActivity = nullptr;
   }
 }
+
+static bool hasDeferredActivities() { return deferredActivities != nullptr; }
+
+static bool hasPendingReaderOwner() {
+  if (currentActivity &&
+      (currentActivity->isReaderActivity() || currentActivity->hasLiveReaderOwner())) {
+    return true;
+  }
+  for (Activity* activity = deferredActivities; activity; activity = activity->deferredNext()) {
+    if (activity->isReaderActivity() || activity->hasLiveReaderOwner()) return true;
+  }
+  return false;
+}
+
+// Main-loop-only query: block destructive cache maintenance until retired
+// readers and Home cover workers relinquish their files. Never remount here.
+bool m4ReaderCacheBusy() {
+  return hasDeferredActivities() || hasPendingReaderOwner()
+#ifdef CROSSPOINT_MURPHY_M4
+      || HomeActivity::backendBusy()
+#endif
+      ;
+}
+
+static void reapDeferredActivities() {
+  Activity* previous = nullptr;
+  Activity* activity = deferredActivities;
+  while (activity) {
+    Activity* next = activity->deferredNext();
+    if (!activity->readyForDestruction()) {
+      previous = activity;
+      activity = next;
+      continue;
+    }
+    if (previous) previous->setDeferredNext(next);
+    else deferredActivities = next;
+#ifdef CROSSPOINT_MURPHY_M4
+    // Runtime TTF faces are global. Wait until every top-level or nested Reader
+    // display owner has stopped before removing the shared renderer aliases.
+    if (activity->isReaderActivity() && !hasPendingReaderOwner()) {
+      EpdFontLoader::releaseRuntimeReaderFonts(renderer);
+    }
+#endif
+    delete activity;
+    activity = next;
+  }
+}
+
+#ifdef CROSSPOINT_MURPHY_M4
+static bool m4HomeBoundaryWorkersBusy() {
+  return HomeActivity::backendBusy() ||
+         M4NativeProviderCatalog::busy() ||
+         M4NativeProviderBookDetailAsync::busy() ||
+         M4NativeProviderDiscovery::busy() ||
+         M4NativeProviderManager::busy() ||
+         M4NativeProviderLogin::busy();
+}
+
+static void releaseM4HomeBoundaryResources() {
+  // exitActivity() has already linked the previous activity into
+  // deferredActivities. ScreenBridge is not in the provider busy set, and its
+  // worker can still hold M4HttpTransport's HeavyGate. shutdown() takes that
+  // gate and would block this UI call. Cancel process-wide provider jobs
+  // here. Close TLS only when those jobs are idle and no deferred activity
+  // remains. loop() already waits on gM4PendingTransientReset until
+  // reapDeferredActivities() clears the list, then calls shutdown().
+  M4NativeProviderManager::cancelForeground();
+  M4NativeProviderCatalog::cancel();
+  M4NativeProviderDiscovery::cancel();
+  M4NativeProviderBookDetailAsync::cancel();
+  M4NativeProviderLogin::cancel();
+
+  const unsigned long deadline = millis() + 450;
+  while (m4HomeBoundaryWorkersBusy() &&
+         static_cast<long>(deadline - millis()) > 0) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  const bool providerBusy = m4HomeBoundaryWorkersBusy();
+  if (providerBusy || hasDeferredActivities()) {
+    Serial.println("[M4-BOUNDARY] defer TLS shutdown until providers and deferred activities release HTTP");
+  } else {
+    M4HttpTransport::shutdown();
+  }
+}
+#endif
 
 void enterNewActivity(Activity* activity) {
   currentActivity = activity;
@@ -435,6 +532,10 @@ void enterNewActivity(Activity* activity) {
 // Verify power button press duration on wake-up from deep sleep
 // Pre-condition: isWakeupByPowerButton() == true
 void verifyPowerButtonDuration() {
+#ifdef CROSSPOINT_MURPHY_M4
+  // Short press wakes and boots. Do not re-sleep when longPressBoot is still set.
+  return;
+#endif
   // If long-press-to-boot is disabled, any press length is sufficient to boot.
   // This is independent of the shortPwrBtn (power button function) setting,
   // because the device is not yet on when this check runs.
@@ -567,6 +668,22 @@ void onGoToSettings() {
   enterNewActivity(new SettingsActivity(renderer, mappedInputManager, onGoHome));
 }
 
+void onGoToAppStore();
+
+void onGoToAppStoreWifi() {
+  // Return to the store after Wi-Fi setup so its onEnter always fetches again.
+  exitActivity();
+  enterNewActivity(new WifiSelectionActivity(
+      renderer, mappedInputManager, [](bool) { onGoToAppStore(); },
+      M4WifiSelectionPurpose::SystemNetworking));
+}
+
+void onGoToAppStore() {
+  exitActivity();
+  enterNewActivity(new AppStoreActivity(renderer, mappedInputManager, onGoHome,
+                                        onGoToAppStoreWifi));
+}
+
 void onGoToMyLibrary();
 void onGoToRecentBooks();
 void onGoToBrowser();
@@ -585,6 +702,8 @@ void onGoToApps() {
   callbacks.onDataCapsuleOpen = onGoToDataCapsule;
   callbacks.onBookmarkNotesOpen = onGoToBookmarkNotes;
   callbacks.onNetworkOpen = onGoToNetwork;
+  callbacks.onFileTransferOpen = onGoToFileTransfer;
+  callbacks.onAppStoreOpen = onGoToAppStore;
   enterNewActivity(new AppListActivity(renderer, mappedInputManager, onGoHome, std::move(callbacks)));
 }
 
@@ -658,13 +777,24 @@ void onGoToBookmarkNotes() {
 }
 
 void onGoHomeAnimated(const bool animateEntry, const int animationDirection) {
+  // Home is an idempotent destination. Recreating it while its scene backend
+  // is still loading only creates another App-arena owner and defeats the
+  // teardown boundary below.
+  if (currentActivity && currentActivity->isHomeActivity()) return;
+  const bool hadActivityOwner = currentActivity != nullptr || hasDeferredActivities();
   exitActivity();
+#ifdef CROSSPOINT_MURPHY_M4
+  releaseM4HomeBoundaryResources();
+  // The old Activity is still deferred here. Reset the application arenas only
+  // at the end of loop(), after that Activity is actually destroyed.
+  if (hadActivityOwner) gM4PendingTransientReset = true;
+#endif
   enterNewActivity(new HomeActivity(renderer, mappedInputManager,
                                     [](const std::string& path, const std::string& originalSourcePath) { onGoToReader(path, originalSourcePath); },
                                     onGoToMyLibrary, onGoToRecentBooks,
                                     onGoToSettings, onGoToFileTransfer, onGoToBrowser, onGoToJianGuoYun,
                                     onGoToDataCapsule, onGoToBookmarkNotes, onGoToApps,
-                                    animateEntry, animationDirection, onGoToNativeApp));
+                                    onGoToAppStore, animateEntry, animationDirection, onGoToNativeApp));
 #ifdef CROSSPOINT_MURPHY_M4
   gDebugActiveAppId.clear();
 #endif
@@ -701,6 +831,26 @@ void setupDisplayAndFonts() {
 }
 
 
+#ifdef CROSSPOINT_MURPHY_M4
+static void waitForSdRetryInput() {
+  bool released = false;
+  float tx = 0, ty = 0;
+  (void)gpio.wasTouchTap(tx, ty); // Discard an old boot-screen tap.
+  for (;;) {
+    gpio.update();
+    const bool pressed = mappedInputManager.isPressed(MappedInputManager::Button::Confirm);
+    if (!pressed) released = true;
+    if (gpio.wasTouchTap(tx, ty)) return;
+    if (released && pressed) {
+      do { gpio.update(); delay(20); }
+      while (mappedInputManager.isPressed(MappedInputManager::Button::Confirm));
+      return;
+    }
+    delay(20);
+  }
+}
+#endif
+
 void setup() {
 #ifdef CROSSPOINT_MURPHY_M4
     sanitizeM4BuzzerEarly();
@@ -713,7 +863,13 @@ void setup() {
 #if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
     Serial.setRxBufferSize(8192);
 #endif
+#ifdef CROSSPOINT_MURPHY_M4
+    M4UsbSerialResetPolicy::applyBeforeSerialBegin();
+#endif
     Serial.begin(115200);
+#ifdef CROSSPOINT_MURPHY_M4
+    Serial.printf("[M4-TLS] allocator=%s\n", M4TlsMemory::install() ? "psram" : "sdk-default");
+#endif
 #ifdef CROSSPOINT_MURPHY_M4
     Serial.printf("[%lu] [M4-BUZZER] early sanitize complete gpio=46 inactive=LOW\n", millis());
 #endif
@@ -753,8 +909,30 @@ void setup() {
       Serial.printf("[%lu] [M4-PSRAM] free=%u total=%u\n", millis(),
                     static_cast<unsigned>(psramFree), static_cast<unsigned>(psramTotal));
       if (psramTotal == 0) {
-        Serial.printf("[%lu] [M4-PSRAM] WARNING: PSRAM not detected; continuing with internal RAM only\n",
+        Serial.printf("[%lu] [M4-PSRAM] WARNING: PSRAM not detected; app features may fail rather than consume protected internal RAM\n",
                       millis());
+      } else {
+        const bool arenasReady = M4Memory::begin();
+        const auto ttfArena = M4Memory::stats(M4Memory::Pool::Ttf);
+        const auto appArena = M4Memory::stats(M4Memory::Pool::App);
+        const auto scratchArena = M4Memory::stats(M4Memory::Pool::Scratch);
+        m4PsramOk = m4PsramOk && arenasReady;
+        Serial.printf("[%lu] [M4-PSRAM-ARENA] ready=%d reserve=%u ttf=%u app=%u scratch=%u raw_free=%u "
+                      "ttf_used=%u ttf_peak=%u ttf_fail=%u ttf_reset=%u "
+                      "app_used=%u app_peak=%u app_fail=%u app_reset=%u "
+                      "scratch_used=%u scratch_peak=%u scratch_fail=%u scratch_reset=%u\n",
+                      millis(), arenasReady ? 1 : 0,
+                      static_cast<unsigned>(M4Memory::reservedBytes()),
+                      static_cast<unsigned>(ttfArena.capacity),
+                      static_cast<unsigned>(appArena.capacity),
+                      static_cast<unsigned>(scratchArena.capacity),
+                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                      static_cast<unsigned>(ttfArena.used), static_cast<unsigned>(ttfArena.peak),
+                      static_cast<unsigned>(ttfArena.failures), static_cast<unsigned>(ttfArena.resets),
+                      static_cast<unsigned>(appArena.used), static_cast<unsigned>(appArena.peak),
+                      static_cast<unsigned>(appArena.failures), static_cast<unsigned>(appArena.resets),
+                      static_cast<unsigned>(scratchArena.used), static_cast<unsigned>(scratchArena.peak),
+                      static_cast<unsigned>(scratchArena.failures), static_cast<unsigned>(scratchArena.resets));
       }
     }
     frontlightManager.begin();
@@ -820,53 +998,62 @@ void setup() {
     }
 #endif
 
-    // SD Card Initialization (classified stage/detail; never format user media).
-    // Second chance: cold boot / post-flash can leave the rail unsettled; a short
-    // delay + full re-begin often succeeds even when the first probe reported no_card
-    // despite a physical card being present.
+    // Retry only before any application file handles or workers exist. A mounted
+    // volume that later fails I/O must never be remounted from this path.
+    bool sdRetryDisplayReady = false;
     if (!SdMan.begin()) {
-        Serial.printf("[%lu] [M4-SD] first begin failed stage=%s code=%s detail=%s — retry in 400ms\n", millis(),
-                      SdMan.lastStage(), SdMan.lastCodeName(), SdMan.lastDetail());
-        delay(400);
-        if (!SdMan.begin()) {
-          Serial.printf("[%lu] [M4-SD] ERROR stage=%s code=%s detail=%s\n", millis(), SdMan.lastStage(),
-                        SdMan.lastCodeName(), SdMan.lastDetail());
+      Serial.printf("[%lu] [M4-SD] first begin failed stage=%s code=%s detail=%s; retry in 400ms\n", millis(),
+                    SdMan.lastStage(), SdMan.lastCodeName(), SdMan.lastDetail());
+      delay(400);
+      if (!SdMan.begin()) {
 #ifdef CROSSPOINT_MURPHY_M4
-          // Touch not stream-ready at this point; report configured only.
-          printM4BootSummary(m4PsramOk, false, false, gpio.hasTouch(), gpio.isTouchStreamReady(), false, m4LightOk);
-#endif
-          setupDisplayAndFonts();
-          exitActivity();
-          // "no_card" is often a bus/power false negative, not an empty slot.
-          char sdMsg[120];
-          const char* code = SdMan.lastCodeName();
-          if (code && strcmp(code, "no_card") == 0) {
-            snprintf(sdMsg, sizeof(sdMsg),
-                     "SD init fail (no_card)\nReseat card & reboot\n%s", SdMan.lastDetail());
-          } else if (code && strcmp(code, "unsupported_fs") == 0) {
-            snprintf(sdMsg, sizeof(sdMsg), "SD: bad filesystem\nUse FAT32\n%s", SdMan.lastDetail());
-          } else if (code && (strcmp(code, "mount_timeout") == 0 || strcmp(code, "sector_timeout") == 0)) {
-            snprintf(sdMsg, sizeof(sdMsg), "SD: bus timeout\nReseat & reboot\n%s", SdMan.lastDetail());
-          } else {
-            snprintf(sdMsg, sizeof(sdMsg), "SD: %s/%s\n%s", SdMan.lastStage(), code ? code : "?",
-                     SdMan.lastDetail());
+        printM4BootSummary(m4PsramOk, false, false, gpio.hasTouch(), gpio.isTouchStreamReady(), false, m4LightOk);
+        setupDisplayAndFonts();
+        sdRetryDisplayReady = true;
+        for (;;) {
+          Serial.printf("[%lu] [M4-SD] waiting for retry stage=%s code=%s detail=%s\n", millis(),
+                        SdMan.lastStage(), SdMan.lastCodeName(), SdMan.lastDetail());
+          char status[64];
+          snprintf(status, sizeof(status), "SD: %s", SdMan.lastCodeName());
+          renderer.clearScreen();
+          M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 - 28, status, true,
+                                 EpdFontFamily::BOLD);
+          M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 + 8,
+                                 "Check card; tap or Confirm to retry", true);
+          renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          waitForSdRetryInput();
+          if (SdMan.begin()) {
+            Serial.printf("[%lu] [M4-SD] interactive retry mounted\n", millis());
+            break;
           }
-          enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager, sdMsg, EpdFontFamily::BOLD));
-          return;
         }
+#else
+        setupDisplayAndFonts();
+        exitActivity();
+        enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager, "SD init failed",
+                                                       EpdFontFamily::BOLD));
+        return;
+#endif
+      } else {
         Serial.printf("[%lu] [M4-SD] second begin succeeded after retry\n", millis());
+      }
     }
 #ifdef CROSSPOINT_MURPHY_M4
     // Read-only capability probe: root list + optional settings file if present.
-    if (!SdMan.capabilityProbe("/.crosspoint/settings.json")) {
+    while (!SdMan.capabilityProbe("/.crosspoint/settings.json")) {
       Serial.printf("[%lu] [M4-SD] ERROR capability_probe stage=%s code=%s detail=%s\n", millis(), SdMan.lastStage(),
                     SdMan.lastCodeName(), SdMan.lastDetail());
       printM4BootSummary(m4PsramOk, false, false, gpio.hasTouch(), gpio.isTouchStreamReady(), false, m4LightOk);
-      setupDisplayAndFonts();
-      exitActivity();
-      enterNewActivity(new FullScreenMessageActivity(renderer, mappedInputManager, "SD: io_failure",
-                                                     EpdFontFamily::BOLD));
-      return;
+      if (!sdRetryDisplayReady) { setupDisplayAndFonts(); sdRetryDisplayReady = true; }
+      renderer.clearScreen();
+      M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 - 28,
+                            "SD read failed", true, EpdFontFamily::BOLD);
+      M4UiText::drawCentered(renderer, UI_10_FONT_ID, renderer.getScreenHeight() / 2 + 8,
+                            "Tap or Confirm to retry reading", true);
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+      // Re-probe the mounted volume only. No power cycle, no invalidation of
+      // handles, no formatting; capabilityProbe closes its own handles.
+      waitForSdRetryInput();
     }
     m4SdOk = true;
     Serial.printf("[%lu] [M4-SD] mounted ok part=%d fatType=%u sectors=%llu stage=%s code=%s\n", millis(),
@@ -877,6 +1064,12 @@ void setup() {
 #else
     Serial.printf("[%lu] [M4-SD] mounted ok\n", millis());
 #endif
+
+    // setup() is still the only application task. SD begin has returned and,
+    // on Murphy, capabilityProbe has succeeded. QEMU's SD-less scene path
+    // returns above and does not reach here. Later ensureLayout calls only
+    // create directories; they do not recover.
+    M4xInstaller::recoverInterrupted();
 
     SETTINGS.loadFromFile();
 #ifdef M4_QEMU_PLUGIN_FONT
@@ -995,7 +1188,7 @@ void setup() {
     Serial.printf("[%lu] [DBG] FontCacheManager initialized\n", millis());
     Serial.flush();
 
-    setupDisplayAndFonts();
+    if (!sdRetryDisplayReady) setupDisplayAndFonts();
     Serial.printf("[%lu] [M4-DISP] setupDisplayAndFonts done\n", millis());
     Serial.flush();
 #ifdef CROSSPOINT_MURPHY_M4
@@ -1297,6 +1490,17 @@ void loop() {
 #endif
 
   gpio.update();
+#ifdef CROSSPOINT_MURPHY_M4
+  // SD glyph persistence is best-effort. Do one glyph at a time and leave a
+  // short quiet window for touch, rendering and provider work; flushing two
+  // records on every 10ms loop made slow cards feel permanently stuck.
+  static unsigned long lastGlyphFlush = 0;
+  if (currentActivity && !currentActivity->isReaderActivity() &&
+      !mappedInputManager.wasTouchActivity() && millis() - lastGlyphFlush >= 250) {
+    EpdFontLoader::idleFlushTtfGlyphs(1);
+    lastGlyphFlush = millis();
+  }
+#endif
 
 #ifndef CROSSPOINT_X3
   // NTP同步状态机（在主线程中执行，避免WiFi驱动问题）
@@ -1487,6 +1691,23 @@ void loop() {
     return;
   }
 
+#ifdef CROSSPOINT_MURPHY_M4
+  // Fixed short-press sleep. Act once on release, after boot settle and a
+  // minimum held time, so a held key and wake bounce do not sleep every frame.
+  {
+    static unsigned long m4PowerIgnoreUntilMs = 0;
+    if (m4PowerIgnoreUntilMs == 0) {
+      m4PowerIgnoreUntilMs = millis() + 700;
+    }
+    if (millis() >= m4PowerIgnoreUntilMs && gpio.wasReleased(HalGPIO::BTN_POWER)) {
+      const unsigned long held = gpio.getPowerButtonHeldTime();
+      if (held >= 60 && held < 8000) {
+        enterDeepSleep();
+        return;
+      }
+    }
+  }
+#else
   // 短按电源键功能处理
   if (gpio.wasReleased(HalGPIO::BTN_POWER)) {
     // 检查短按电源键的设置
@@ -1512,6 +1733,7 @@ void loop() {
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
+#endif
 
   // Long press Back button (1.5s) → go home from any non-home page
   static bool longPressBackHomeFired = false;
@@ -1582,12 +1804,43 @@ void loop() {
   applyFrontlightSettings(false);
 #endif
 
-  // Process deferred activity deletion after loop() returns.
-  // At this point we're safely outside any activity's call stack.
-  if (deferredDeleteActivity) {
-    delete deferredDeleteActivity;
-    deferredDeleteActivity = nullptr;
+  // Process retired activities after loop() returns. An activity with a slow
+  // owner stays linked until it reports that destruction is safe.
+  reapDeferredActivities();
+
+#ifdef CROSSPOINT_MURPHY_M4
+  if (gM4PendingTransientReset && !hasDeferredActivities()) {
+    if (!m4HomeBoundaryWorkersBusy()) {
+      // The previous Activity and provider workers no longer own App/Scratch
+      // pointers. HTTP/TLS is closed before whole-pool reset.
+      M4HttpTransport::shutdown();
+      M4Memory::resetTransient();
+      const auto t = M4Memory::stats(M4Memory::Pool::Ttf);
+      const auto a = M4Memory::stats(M4Memory::Pool::App);
+      const auto s = M4Memory::stats(M4Memory::Pool::Scratch);
+      Serial.printf("[M4-PSRAM-RESET] ttf=%u/%u app=%u/%u scratch=%u/%u internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u "
+                    "raw_psram_free=%u raw_psram_largest=%u main_stack_hwm=%u "
+                    "ttf_peak=%u ttf_fail=%u ttf_reset=%u app_peak=%u app_fail=%u app_reset=%u "
+                    "scratch_peak=%u scratch_fail=%u scratch_reset=%u\n",
+                    static_cast<unsigned>(t.used), static_cast<unsigned>(t.capacity),
+                    static_cast<unsigned>(a.used), static_cast<unsigned>(a.capacity),
+                    static_cast<unsigned>(s.used), static_cast<unsigned>(s.capacity),
+                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                    static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT)),
+                    static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT)),
+                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                    static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+                    static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+                    static_cast<unsigned>(t.peak), static_cast<unsigned>(t.failures), static_cast<unsigned>(t.resets),
+                    static_cast<unsigned>(a.peak), static_cast<unsigned>(a.failures), static_cast<unsigned>(a.resets),
+                    static_cast<unsigned>(s.peak), static_cast<unsigned>(s.failures), static_cast<unsigned>(s.resets));
+      gM4PendingTransientReset = false;
+    } else {
+      Serial.println("[M4-PSRAM-RESET] skipped: provider worker still owns App arena");
+    }
   }
+#endif
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {

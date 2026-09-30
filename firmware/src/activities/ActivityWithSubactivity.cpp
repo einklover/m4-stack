@@ -14,6 +14,73 @@ void restoreParentPolicies(ActivityWithSubactivity& activity) {
 }
 }  // namespace
 
+ActivityWithSubactivity::~ActivityWithSubactivity() {
+  Activity* child = retiredSubActivities_;
+  while (child) {
+    Activity* next = child->deferredNext();
+    if (child->readyForDestruction()) {
+      delete child;
+    } else {
+      // A parent is retained by the top-level reaper while any child owner is
+      // live. Keep this defensive path safe if a caller bypasses that contract.
+      Serial.printf("[ACT] retained child owner outlived parent: %s\n", child->getName().c_str());
+    }
+    child = next;
+  }
+}
+
+bool ActivityWithSubactivity::readyForDestruction() const {
+  if (subActivity && !subActivity->readyForDestruction()) return false;
+  for (Activity* child = retiredSubActivities_; child; child = child->deferredNext()) {
+    if (!child->readyForDestruction()) return false;
+  }
+  return true;
+}
+
+bool ActivityWithSubactivity::hasLiveReaderOwner() const {
+  if (Activity::hasLiveReaderOwner()) return true;
+  if (subActivity && subActivity->hasLiveReaderOwner()) return true;
+  for (Activity* child = retiredSubActivities_; child; child = child->deferredNext()) {
+    if (child->hasLiveReaderOwner()) return true;
+  }
+  return false;
+}
+
+void ActivityWithSubactivity::retireSubActivity(std::unique_ptr<Activity>& child) {
+  if (!child) return;
+  child->onExit();
+  Activity* raw = child.release();
+  if (raw->readyForDestruction()) {
+    delete raw;
+    return;
+  }
+  raw->setDeferredNext(retiredSubActivities_);
+  retiredSubActivities_ = raw;
+}
+
+void ActivityWithSubactivity::reapRetiredSubActivities() {
+  Activity* previous = nullptr;
+  Activity* child = retiredSubActivities_;
+  while (child) {
+    Activity* next = child->deferredNext();
+    if (!child->readyForDestruction()) {
+      previous = child;
+      child = next;
+      continue;
+    }
+    if (previous) previous->setDeferredNext(next);
+    else retiredSubActivities_ = next;
+    delete child;
+    child = next;
+  }
+}
+
+void ActivityWithSubactivity::activatePendingSubActivity() {
+  if (subActivity || !pendingSubActivity_ || retiredSubActivities_) return;
+  subActivity = std::move(pendingSubActivity_);
+  subActivity->onEnter();
+}
+
 void ActivityWithSubactivity::exitActivity() {
   // Child callbacks run inside subActivity->loop(). Destroying that child here
   // is a use-after-free as soon as the callback returns. Defer teardown until
@@ -24,10 +91,7 @@ void ActivityWithSubactivity::exitActivity() {
     return;
   }
 
-  if (subActivity) {
-    subActivity->onExit();
-    subActivity.reset();
-  }
+  retireSubActivity(subActivity);
   pendingExitSub_ = false;
   pendingSubActivity_.reset();
   restoreParentPolicies(*this);
@@ -46,8 +110,12 @@ void ActivityWithSubactivity::enterNewActivity(Activity* activity) {
   }
 
   exitActivity();
-  subActivity.reset(activity);
-  if (subActivity) subActivity->onEnter();
+  if (retiredSubActivities_) {
+    pendingSubActivity_.reset(activity);
+  } else {
+    subActivity.reset(activity);
+    if (subActivity) subActivity->onEnter();
+  }
 }
 
 bool ActivityWithSubactivity::pumpSubActivityFrame() {
@@ -60,23 +128,22 @@ bool ActivityWithSubactivity::pumpSubActivityFrame() {
   if (!pendingExitSub_) return false;
 
   pendingExitSub_ = false;
-  if (subActivity) {
-    subActivity->onExit();
-    subActivity.reset();
-  }
+  retireSubActivity(subActivity);
   restoreParentPolicies(*this);
 
-  if (pendingSubActivity_) {
-    subActivity = std::move(pendingSubActivity_);
-    subActivity->onEnter();
-  }
+  reapRetiredSubActivities();
+  activatePendingSubActivity();
   return true;
 }
 
 void ActivityWithSubactivity::loop() {
+  reapRetiredSubActivities();
+  activatePendingSubActivity();
   if (subActivity) {
     pumpSubActivityFrame();
   }
+  reapRetiredSubActivities();
+  activatePendingSubActivity();
 }
 
 void ActivityWithSubactivity::onExit() {

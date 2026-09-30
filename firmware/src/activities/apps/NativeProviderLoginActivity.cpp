@@ -6,6 +6,8 @@
 #include "fontIds.h"
 #include "util/M4UiText.h"
 #include "util/QRCodeHelper.h"
+#include "util/M4RuntimeMemory.h"
+#include "apps/providers/M4Psram.h"
 
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
@@ -22,6 +24,8 @@ NativeProviderLoginActivity::NativeProviderLoginActivity(
 
 void NativeProviderLoginActivity::onEnter() {
   Activity::onEnter();
+  m4LogRuntimeMemory("provider-login-ui-enter");
+  M4Psram::logAllocationStats("provider-login-ui-enter");
   delivered_ = false;
   lastSignature_.clear();
   lastPaintMs_ = 0;
@@ -30,8 +34,12 @@ void NativeProviderLoginActivity::onEnter() {
 }
 
 void NativeProviderLoginActivity::onExit() {
+  m4LogRuntimeMemory("provider-login-ui-exit-begin");
+  M4Psram::logAllocationStats("provider-login-ui-exit-begin");
   M4NativeProviderLogin::cancel();
   Activity::onExit();
+  m4LogRuntimeMemory("provider-login-ui-exit-end");
+  M4Psram::logAllocationStats("provider-login-ui-exit-end");
 }
 
 void NativeProviderLoginActivity::loop() {

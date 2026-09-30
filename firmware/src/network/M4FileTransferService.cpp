@@ -195,6 +195,10 @@ bool M4FileTransferService::webServerRunning() const {
   return httpRuntime && httpRuntime->httpServer != nullptr;
 }
 
+void M4FileTransferService::abortOwnedWsUpload() {
+  if (httpRuntime && httpRuntime->auxiliaryServer) httpRuntime->auxiliaryServer->abortOwnedUpload();
+}
+
 void M4FileTransferService::stopWebServer() {
   const unsigned long stopStarted = millis();
   const bool hadServer = webServerRunning();

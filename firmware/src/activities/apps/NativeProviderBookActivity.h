@@ -108,6 +108,7 @@ class NativeProviderBookActivity final : public ActivityWithSubactivity {
   M4NovelProvider::BookDetail detail_;
   bool detailLoading_ = false;
   bool detailAttempted_ = false;
+  bool coverAcquireAttempted_ = false;
   std::string detailError_;
   std::string providerCoverBmpPath_;
   M4NativeProviderDetailTouchPolicy::Layout detailTouch_;

@@ -9,7 +9,26 @@
 #include "activities/settings/M4SettingsConfirm.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/M4CacheClearPolicy.h"
+#include "util/M4ListTouchPolicy.h"
 #include "util/M4UiText.h"
+
+namespace {
+
+M4ListTouchPolicy::DialogTwoButtonLayout warningDialogLayout(const GfxRenderer& renderer) {
+  return M4ListTouchPolicy::makeCenteredTwoButtons(renderer.getScreenWidth(), renderer.getScreenHeight() - 190,
+                                                   144, 64, 24, 2);
+}
+
+void drawWarningButton(const GfxRenderer& renderer, const M4ListTouchPolicy::DialogTwoButtonLayout& layout,
+                       int index, const char* label) {
+  const auto r = layout.buttonRect(index);
+  renderer.fillRoundedRect(r.x, r.y, r.width, r.height, 12, index == 1 ? Color::Black : Color::LightGray);
+  M4UiText::drawCenteredInBox(renderer, UI_10_FONT_ID, r.x, r.y, r.width, r.height, label, index == 0,
+                              EpdFontFamily::BOLD, 8);
+}
+
+}  // namespace
 
 void ClearCacheActivity::taskTrampoline(void* param) {
   auto* self = static_cast<ClearCacheActivity*>(param);
@@ -68,7 +87,9 @@ void ClearCacheActivity::render() {
                               EpdFontFamily::BOLD);
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 10, L(Str::kClearCacheDesc3), true);
     M4UiText::drawCentered(renderer, UI_10_FONT_ID, pageHeight / 2 + 30, L(Str::kClearCacheDesc4), true);
-  
+    const auto dialog = warningDialogLayout(renderer);
+    drawWarningButton(renderer, dialog, 0, L(Str::kCancel));
+    drawWarningButton(renderer, dialog, 1, L(Str::kClear));
     const auto labels = mappedInput.mapLabels(L(Str::kCancel), L(Str::kClear), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
@@ -106,7 +127,15 @@ void ClearCacheActivity::render() {
   }
 }
 
+extern bool m4ReaderCacheBusy();  // Main-loop ownership query in main.cpp.
+
 void ClearCacheActivity::clearCache() {
+  if (m4ReaderCacheBusy()) {
+    Serial.printf("[CLEAR_CACHE] Deferred file owners still busy; retry after returning Home\n");
+    state = FAILED;
+    updateRequired = true;
+    return;
+  }
   Serial.printf("[%lu] [CLEAR_CACHE] Clearing cache...\n", millis());
 
   // Open .crosspoint directory
@@ -121,11 +150,14 @@ void ClearCacheActivity::clearCache() {
 
   clearedCount = 0;
   failedCount = 0;
-  char name[128];
+  char name[768];
 
   // Iterate through all entries in the directory
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
-    file.getName(name, sizeof(name));
+    const size_t nameLength = file.getName(name, sizeof(name));
+    if (!nameLength || nameLength >= sizeof(name) - 1) {
+      file.close(); ++failedCount; break;
+    }
     String itemName(name);
 
     // Only delete directories starting with epub_, xtc_, or txt_
@@ -135,26 +167,70 @@ void ClearCacheActivity::clearCache() {
 
       file.close();  // Close before attempting to delete
 
-      if (SdMan.removeDir(fullPath.c_str())) {
+      // Reader progress lives beside derived cache files. Keep it on SD while
+      // removing every other entry; never move it through a temporary file.
+      bool ok = true;
+      auto cacheDir = SdMan.open(fullPath.c_str());
+      if (!cacheDir || !cacheDir.isDirectory()) {
+        ok = false;
+      } else {
+        for (auto child = cacheDir.openNextFile(); child; child = cacheDir.openNextFile()) {
+          char childName[768];
+          const size_t childLength = child.getName(childName, sizeof(childName));
+          const bool isDir = child.isDirectory();
+          child.close();
+          if (!childLength || childLength >= sizeof(childName) - 1) { ok = false; break; }
+          if (M4CacheClearPolicy::keepReaderProgress(childName, isDir)) continue;
+          String childPath = fullPath + "/" + childName;
+          if (!(isDir ? SdMan.removeDir(childPath.c_str()) : SdMan.remove(childPath.c_str()))) {
+            ok = false;
+            break;
+          }
+        }
+        if (cacheDir.getError()) ok = false;
+        cacheDir.close();
+      }
+      if (cacheDir) cacheDir.close();
+      if (ok) {
         clearedCount++;
       } else {
-        Serial.printf("[%lu] [CLEAR_CACHE] Failed to remove: %s\n", millis(), fullPath.c_str());
+        Serial.printf("[%lu] [CLEAR_CACHE] Failed to clear: %s\n", millis(), fullPath.c_str());
         failedCount++;
       }
     } else {
       file.close();
     }
   }
+  if (root.getError()) ++failedCount;
   root.close();
 
   Serial.printf("[%lu] [CLEAR_CACHE] Cache cleared: %d removed, %d failed\n", millis(), clearedCount, failedCount);
 
-  state = SUCCESS;
+  state = failedCount ? FAILED : SUCCESS;
   updateRequired = true;
 }
 
 void ClearCacheActivity::loop() {
   if (state == WARNING) {
+    int tx = 0, ty = 0;
+    if (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty)) {
+      int hit = -1;
+      if (M4ListTouchPolicy::dialogButtonFromPoint(warningDialogLayout(renderer), tx, ty, hit)) {
+        if (hit == 0) {
+          Serial.printf("[%lu] [CLEAR_CACHE] User cancelled by touch\n", millis());
+          goBack();
+        } else {
+          Serial.printf("[%lu] [CLEAR_CACHE] User confirmed by touch\n", millis());
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          state = CLEARING;
+          xSemaphoreGive(renderingMutex);
+          updateRequired = true;
+          vTaskDelay(10 / portTICK_PERIOD_MS);
+          clearCache();
+        }
+        return;
+      }
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
         m4SettingsDangerAccepts(M4ConfirmButton::Power, true)) {
       return;
@@ -179,7 +255,9 @@ void ClearCacheActivity::loop() {
   }
 
   if (state == SUCCESS || state == FAILED) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    int tx = 0, ty = 0;
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        (mappedInput.hasTouch() && mappedInput.wasScreenTapped(tx, ty))) {
       goBack();
     }
     return;

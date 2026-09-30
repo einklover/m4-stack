@@ -13,11 +13,19 @@ class ActivityWithSubactivity : public Activity {
  protected:
   std::unique_ptr<Activity> subActivity = nullptr;
   std::unique_ptr<Activity> pendingSubActivity_ = nullptr;
+  // Children with background owners stay alive after onExit until those
+  // owners publish readyForDestruction(). Intrusive links avoid another
+  // allocation during a low-memory activity transition.
+  Activity* retiredSubActivities_ = nullptr;
   bool pendingExitSub_ = false;
   bool pumpingSubActivity_ = false;
 
   void exitActivity();
   void enterNewActivity(Activity* activity);
+  void reapRetiredSubActivities();
+  void activatePendingSubActivity();
+  bool hasPendingSubActivityRetirements() const { return retiredSubActivities_ != nullptr; }
+  void retireSubActivity(std::unique_ptr<Activity>& child);
   // Schedule child teardown after the current child frame returns.
   void requestExitSubActivity() {
     pendingExitSub_ = true;
@@ -28,6 +36,9 @@ class ActivityWithSubactivity : public Activity {
  public:
   explicit ActivityWithSubactivity(std::string name, GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity(std::move(name), renderer, mappedInput) {}
+  ~ActivityWithSubactivity() override;
+  bool readyForDestruction() const override;
+  bool hasLiveReaderOwner() const override;
   void loop() override;
   void onExit() override;
 

@@ -45,6 +45,13 @@ class LegadoProvider final : public M4NativeProvider::Adapter {
       out.error = "book_locator_missing";
       return out;
     }
+    if (!M4NativeProviderHttp::prepareHttps()) {
+      out.error = "tls_internal_oom";
+      M4NativeProviderIo::logHttpTlsIf(
+          req.book.appId.empty() ? std::string("com.legado.client") : req.book.appId, "chapter",
+          out.error);
+      return out;
+    }
 
     M4NativeProviderIo::PartFileSink file;
     if (!file.open(req.cacheAbsPath)) {
@@ -83,6 +90,9 @@ class LegadoProvider final : public M4NativeProvider::Adapter {
       file.close();
       M4NativeProviderIo::removeIncomplete(req.cacheAbsPath);
       out.error = res.error.empty() ? "network" : res.error;
+      M4NativeProviderIo::logHttpTlsIf(
+          req.book.appId.empty() ? std::string("com.legado.client") : req.book.appId, "chapter",
+          out.error);
       return out;
     }
     if (!scalar.finish()) {

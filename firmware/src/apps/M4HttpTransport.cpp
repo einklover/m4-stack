@@ -206,6 +206,7 @@ Result perform(esp_http_client_handle_t h, const Request& req, RxCtx& ctx, const
     }
   }
 
+  const MemSnap requestBefore = memSnap();
   M4NativeProviderHeavyGate::diagnosticStage() = 0x413;
   const uint32_t t0 = millis();
   const esp_err_t err = esp_http_client_perform(h);
@@ -242,6 +243,18 @@ Result perform(esp_http_client_handle_t h, const Request& req, RxCtx& ctx, const
     out.ok = true;
   }
 
+  const MemSnap requestAfter = memSnap();
+  Serial.printf("[WRPERF] stage=provider_tls_http tag=%s ms=%u status=%d ok=%d err=%s "
+                "int_largest=%u->%u int_free=%u->%u psram=%u->%u\n",
+                tag ? tag : "provider", static_cast<unsigned>(dt), out.status,
+                out.ok ? 1 : 0, out.error[0] ? out.error : "-",
+                static_cast<unsigned>(requestBefore.largestInternal),
+                static_cast<unsigned>(requestAfter.largestInternal),
+                static_cast<unsigned>(requestBefore.freeInternal),
+                static_cast<unsigned>(requestAfter.freeInternal),
+                static_cast<unsigned>(requestBefore.freePsram),
+                static_cast<unsigned>(requestAfter.freePsram));
+
   if (debugActive()) {
     MemSnap m = memSnap();
     char det[120];
@@ -252,6 +265,15 @@ Result perform(esp_http_client_handle_t h, const Request& req, RxCtx& ctx, const
     logStep(tag ? tag : "perform_post", det, &m);
   }
   return out;
+}
+
+void cleanupClientCooperatively(esp_http_client_handle_t h) {
+  if (!h) return;
+  // TLS transport teardown is synchronous. Give idle/display tasks a scheduler
+  // tick after the body transfer and another after releasing the client.
+  delay(1);
+  esp_http_client_cleanup(h);
+  delay(1);
 }
 
 }  // namespace
@@ -293,7 +315,10 @@ void debugStep(const char* stage, const char* detail) {
   gDebug = prev;
 }
 
-bool sessionOpen() { return gSession != nullptr; }
+bool sessionOpen() {
+  M4NativeProviderHeavyGate::Lock lock(M4NativeProviderHeavyGate::mutex());
+  return gSession != nullptr;
+}
 
 Result requestToSink(const Request& req, M4xJsonStream::Sink& sink, ProgressFn progress,
                      void* progressCtx, CancelFn cancel, void* cancelCtx) {
@@ -309,7 +334,7 @@ Result requestToSink(const Request& req, M4xJsonStream::Sink& sink, ProgressFn p
     // often free TLS buffers only after cleanup.
     if (gSession) {
       sessionFreeHeaders();
-      esp_http_client_cleanup(gSession);
+      cleanupClientCooperatively(gSession);
       gSession = nullptr;
     }
     if (!M4NativeProviderHeavyGate::tlsBlockAvailable()) {
@@ -337,7 +362,8 @@ Result requestToSink(const Request& req, M4xJsonStream::Sink& sink, ProgressFn p
   }
   out = perform(h, req, ctx, "oneshot");
   M4NativeProviderHeavyGate::diagnosticStage() = 0x422;
-  esp_http_client_cleanup(h);
+  cleanupClientCooperatively(h);
+  M4NativeProviderHeavyGate::diagnosticStage() = 0x423;
   if (debugActive()) {
     MemSnap m = memSnap();
     logStep("oneshot_exit", out.ok ? "ok" : out.error, &m);
@@ -346,6 +372,8 @@ Result requestToSink(const Request& req, M4xJsonStream::Sink& sink, ProgressFn p
 }
 
 bool sessionBegin(const char* hostHint) {
+  const uint32_t startedMs = millis();
+  const MemSnap before = memSnap();
   M4NativeProviderHeavyGate::Lock lock(M4NativeProviderHeavyGate::mutex());
   M4NativeProviderHeavyGate::diagnosticStage() = 0x400;
   if (gSession) {
@@ -378,6 +406,12 @@ bool sessionBegin(const char* hostHint) {
     MemSnap m = memSnap();
     logStep("session_begin_post", gSession ? "ok" : "init_failed", &m);
   }
+  const MemSnap after = memSnap();
+  Serial.printf("[WRPERF] stage=tls_session_begin ms=%lu ok=%d int_largest=%u->%u int_free=%u->%u psram=%u->%u\n",
+                static_cast<unsigned long>(millis() - startedMs), gSession ? 1 : 0,
+                static_cast<unsigned>(before.largestInternal), static_cast<unsigned>(after.largestInternal),
+                static_cast<unsigned>(before.freeInternal), static_cast<unsigned>(after.freeInternal),
+                static_cast<unsigned>(before.freePsram), static_cast<unsigned>(after.freePsram));
   return gSession != nullptr;
 }
 
@@ -409,7 +443,10 @@ Result sessionRequestToSink(const Request& req, M4xJsonStream::Sink& sink, Progr
 }
 
 void sessionEnd() {
+  const uint32_t startedMs = millis();
+  const MemSnap before = memSnap();
   M4NativeProviderHeavyGate::Lock lock(M4NativeProviderHeavyGate::mutex());
+  const bool wasOpen = gSession != nullptr;
   M4NativeProviderHeavyGate::diagnosticStage() = 0x430;
   if (gSession) {
     if (debugActive()) {
@@ -417,13 +454,19 @@ void sessionEnd() {
       logStep("session_end_pre", "", &m);
     }
     sessionFreeHeaders();
-    esp_http_client_cleanup(gSession);
+    cleanupClientCooperatively(gSession);
     gSession = nullptr;
     if (debugActive()) {
       MemSnap m = memSnap();
       logStep("session_end_post", "closed", &m);
     }
   }
+  const MemSnap after = memSnap();
+  Serial.printf("[WRPERF] stage=tls_session_end ms=%lu was_open=%d int_largest=%u->%u int_free=%u->%u psram=%u->%u\n",
+                static_cast<unsigned long>(millis() - startedMs), wasOpen ? 1 : 0,
+                static_cast<unsigned>(before.largestInternal), static_cast<unsigned>(after.largestInternal),
+                static_cast<unsigned>(before.freeInternal), static_cast<unsigned>(after.freeInternal),
+                static_cast<unsigned>(before.freePsram), static_cast<unsigned>(after.freePsram));
 }
 
 void shutdown() { sessionEnd(); }

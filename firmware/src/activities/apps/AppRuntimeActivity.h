@@ -24,8 +24,12 @@ class AppRuntimeActivity final : public ActivityWithSubactivity {
   explicit AppRuntimeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, M4xInstalledApp app,
                               const std::function<void()>& onExitApp);
 
+  ~AppRuntimeActivity() override;
   void onEnter() override;
   void onExit() override;
+  bool readyForDestruction() const override {
+    return (!ownerTaskStarted_ || life_.isDone()) && ActivityWithSubactivity::readyForDestruction();
+  }
   void loop() override;
   // m4adb `ui`: failed/error + Lua screen/status/message + host list scene.
   std::string debugUiJson() override;

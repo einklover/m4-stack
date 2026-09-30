@@ -280,8 +280,23 @@ bool Txt::load() {
   static uint8_t midBuf[kBlock + kAlignPad];
   static uint8_t tailBuf[kBlock + kAlignPad];
 
-  file.seek(0);
-  const size_t headLen = static_cast<size_t>(file.read(headBuf, fileSize < kHeadMax ? fileSize : kHeadMax));
+  auto readSample = [&](uint8_t* buffer, size_t want, const char* sample) -> size_t {
+    if (want == 0) return 0;
+    const int got = file.read(buffer, want);
+    if (got < 0 || static_cast<size_t>(got) > want) {
+      Serial.printf("[%lu] [TXT] %s sample read failed: got=%d want=%lu path=%s\n", millis(),
+                    sample, got, static_cast<unsigned long>(want), filepath.c_str());
+      return 0;
+    }
+    return static_cast<size_t>(got);
+  };
+
+  if (!file.seek(0)) {
+    file.close();
+    Serial.printf("[%lu] [TXT] Failed to seek sample head: %s\n", millis(), filepath.c_str());
+    return false;
+  }
+  const size_t headLen = readSample(headBuf, fileSize < kHeadMax ? fileSize : kHeadMax, "head");
   if (headLen == 0) {
     file.close();
     loaded = true;
@@ -330,15 +345,19 @@ bool Txt::load() {
       }
       size_t midWant = fileSize - midStart;
       if (midWant > kBlock + kAlignPad) midWant = kBlock + kAlignPad;
-      file.seek(midStart);
-      const size_t midGot = static_cast<size_t>(file.read(midBuf, midWant));
+      const size_t midGot = file.seek(midStart) ? readSample(midBuf, midWant, "mid") : 0;
+      if (midGot == 0 && midWant != 0) {
+        Serial.printf("[%lu] [TXT] Failed to seek/read sample mid: %s\n", millis(), filepath.c_str());
+      }
       if (midGot > 0) accBuf(midBuf, midGot, true);
 
       // Tail
       size_t tailStart = fileSize > (kBlock + kAlignPad) ? fileSize - (kBlock + kAlignPad) : 0;
       size_t tailWant = fileSize - tailStart;
-      file.seek(tailStart);
-      const size_t tailGot = static_cast<size_t>(file.read(tailBuf, tailWant));
+      const size_t tailGot = file.seek(tailStart) ? readSample(tailBuf, tailWant, "tail") : 0;
+      if (tailGot == 0 && tailWant != 0) {
+        Serial.printf("[%lu] [TXT] Failed to seek/read sample tail: %s\n", millis(), filepath.c_str());
+      }
       if (tailGot > 0) accBuf(tailBuf, tailGot, true);
 
       M4TxtEncoding::DetectResult parts[1] = {det};

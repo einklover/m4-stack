@@ -1,4 +1,5 @@
 #include "CffReader.h"
+#include <M4MemoryManager.h>
 
 #include <algorithm>
 #include <cmath>
@@ -20,21 +21,10 @@ uint32_t tag(const char s[5]) {
          (uint32_t(uint8_t(s[2])) << 8) | uint8_t(s[3]);
 }
 void* reallocPsramFirst(void* p, size_t n) {
-#if defined(ARDUINO_ARCH_ESP32)
-  void* q = heap_caps_realloc(p, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!q) q = heap_caps_realloc(p, n, MALLOC_CAP_8BIT);
-  return q;
-#else
-  return std::realloc(p, n);
-#endif
+  return M4Memory::reallocTtf(p, n);
 }
 void freeMem(void* p) {
-  if (!p) return;
-#if defined(ARDUINO_ARCH_ESP32)
-  heap_caps_free(p);
-#else
-  std::free(p);
-#endif
+  M4Memory::free(p);
 }
 bool decodeDictNumber(const uint8_t* data, size_t len, size_t& pos, int32_t& out) {
   if (pos >= len) return false;

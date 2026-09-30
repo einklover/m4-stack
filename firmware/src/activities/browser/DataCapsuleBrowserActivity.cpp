@@ -418,7 +418,7 @@ void DataCapsuleBrowserActivity::onEnter() {
     updateRequired = true;
 
     xTaskCreate(&DataCapsuleBrowserActivity::taskTrampoline, "DataCapsuleBrowserTask",
-                4096, this, 1, &displayTaskHandle);
+                8192, this, 1, &displayTaskHandle);
 
     autoConnectAttempted = false;
     autoConnectStartTime = 0;

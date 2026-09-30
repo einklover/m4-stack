@@ -36,6 +36,7 @@ constexpr UiScene::ActionId kActionOpenCurrentBook = 0;
 constexpr UiScene::ActionId kActionOpenHistory = 1;
 constexpr UiScene::ActionId kActionOpenApps = 2;
 constexpr UiScene::ActionId kActionOpenApp = 3;
+constexpr UiScene::ActionId kActionOpenRecentBook = 4;
 
 constexpr uint8_t kInvalidItemIndex = 0xFF;
 constexpr std::size_t kMaxRecentItems = 4;
@@ -256,6 +257,8 @@ class HomeSceneModel final {
 
   // Paired publication (snapshot + fixed asset arena) — renderer pins this for the full frame.
   bool publishWithAssets(const HomeScenePublication& pub);
+  // Copies into the heap draft, then publishes. Safe on the 8–16KB loop stack.
+  bool publishExisting(const HomeScenePublication& pub);
   bool copyLatestPublication(HomeScenePublication& out) const;
   UiStateStore<HomeScenePublication>::Snapshot acquirePublication();
   bool addPublicationAsset(const UiScene::AssetKey& key, const uint8_t* data,

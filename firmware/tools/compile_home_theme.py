@@ -116,7 +116,7 @@ MAX_ASSETS = 32
 MAX_STRINGS = 8 * 1024
 MAX_SCENE_NODES = 128
 MAX_SCENE_DEPTH = 3
-MAX_REPEAT_LIMIT = 8
+MAX_REPEAT_LIMIT = 9
 MAX_REPEAT_CHILDREN = 16
 
 SECTION_META = 1
@@ -190,6 +190,7 @@ ACTION_SCENE_MAP = {
     "open_history": 1,
     "open_apps": 2,
     "open_app": 3,
+    "open_recent_book": 4,
 }
 
 # finite vocabularies — stable font IDs (not temporary ordinals)
@@ -348,6 +349,7 @@ LEGACY_SCENE_ACTIONS = {
     "open_history": 1,
     "open_apps": 2,
     "open_app": 3,
+    "open_recent_book": 4,
 }
 RESERVED_SCENE_ACTION_NAMES = set(LEGACY_SCENE_ACTIONS)
 RESERVED_SCENE_ACTION_IDS = set(LEGACY_SCENE_ACTIONS.values())

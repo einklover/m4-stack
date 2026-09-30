@@ -3,6 +3,7 @@
 #if defined(CROSSPOINT_MURPHY_M4)
 #include <Arduino.h>
 #include <MemoryManager.h>
+#include "M4MemoryManager.h"
 
 namespace {
 M4MemoryPressure mapPressure(freeink::MemPressure pressure) {
@@ -57,6 +58,19 @@ void m4LogRuntimeMemory(const char* stage) {
       static_cast<unsigned>(snapshot.psramFree), static_cast<unsigned>(snapshot.psramLargest),
       static_cast<unsigned>(snapshot.psramMinEver), pressureName(snapshot.pressure),
       static_cast<unsigned>(m4InternalFragmentationPct(snapshot)));
+  const M4Memory::PoolStats t = M4Memory::stats(M4Memory::Pool::Ttf);
+  const M4Memory::PoolStats a = M4Memory::stats(M4Memory::Pool::App);
+  const M4Memory::PoolStats s = M4Memory::stats(M4Memory::Pool::Scratch);
+  Serial.printf("[%lu] [M4-ARENA] stage=%s ttf=%u/%u peak=%u fail=%u reset=%u "
+                "app=%u/%u peak=%u fail=%u reset=%u scratch=%u/%u peak=%u fail=%u reset=%u\n",
+                millis(), stage ? stage : "?", static_cast<unsigned>(t.used),
+                static_cast<unsigned>(t.capacity), static_cast<unsigned>(t.peak),
+                static_cast<unsigned>(t.failures), static_cast<unsigned>(t.resets),
+                static_cast<unsigned>(a.used), static_cast<unsigned>(a.capacity),
+                static_cast<unsigned>(a.peak), static_cast<unsigned>(a.failures),
+                static_cast<unsigned>(a.resets), static_cast<unsigned>(s.used),
+                static_cast<unsigned>(s.capacity), static_cast<unsigned>(s.peak),
+                static_cast<unsigned>(s.failures), static_cast<unsigned>(s.resets));
 }
 
 #else

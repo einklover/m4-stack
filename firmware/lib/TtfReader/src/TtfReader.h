@@ -20,9 +20,48 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <limits>
+#include <new>
 #include <vector>
 
+#include <M4MemoryManager.h>
+
 namespace ttf {
+
+// Glyph outlines are transient application-owned data. Keep their backing
+// storage in the fixed TTF PSRAM arena so a complex CJK glyph cannot fragment
+// the internal heap while it is being rasterized. This is deliberately local
+// to the TTF reader; it is not a global STL allocator replacement.
+template <typename T>
+class PsramAllocator {
+ public:
+  using value_type = T;
+
+  PsramAllocator() noexcept = default;
+  template <typename U>
+  PsramAllocator(const PsramAllocator<U>&) noexcept {}
+
+  T* allocate(std::size_t n) {
+    if (n > max_size()) throw std::bad_alloc();
+    void* p = M4Memory::allocTtf(n * sizeof(T));
+    if (!p) throw std::bad_alloc();
+    return static_cast<T*>(p);
+  }
+
+  void deallocate(T* p, std::size_t) noexcept { M4Memory::free(p); }
+
+  std::size_t max_size() const noexcept {
+    return std::numeric_limits<std::size_t>::max() / sizeof(T);
+  }
+
+  template <typename U>
+  bool operator==(const PsramAllocator<U>&) const noexcept { return true; }
+  template <typename U>
+  bool operator!=(const PsramAllocator<U>&) const noexcept { return false; }
+};
+
+template <typename T>
+using PsramVector = std::vector<T, PsramAllocator<T>>;
 
 class TtfStream {
  public:
@@ -37,7 +76,7 @@ struct Pt {
   bool on;
 };
 struct Contour {
-  std::vector<Pt> pts;
+  PsramVector<Pt> pts;
 };
 struct Xform {
   float a = 1, b = 0, c = 0, d = 1, tx = 0, ty = 0;
@@ -77,7 +116,7 @@ class TtfFont {
   int32_t numGlyphs() const { return numGlyphs_; }
 
   bool findGlyph(uint32_t cp, uint16_t& gid) const;
-  bool collectGlyph(uint16_t gid, const Xform& xf, std::vector<Contour>& out, int depth = 0) const;
+  bool collectGlyph(uint16_t gid, const Xform& xf, PsramVector<Contour>& out, int depth = 0) const;
   bool glyphHMetrics(uint16_t gid, int32_t& advUnits, int32_t& lsbUnits) const;
   void fontVMetrics(int32_t& ascUnits, int32_t& descUnits, int32_t& gapUnits) const;
   int32_t fontBBoxYMax() const { return bboxYMax_; }
@@ -99,7 +138,7 @@ class TtfFont {
   // Low-stack version used by the unified face-offset path. Scans cmap
   // encoding records one at a time and retains only the selected subtable.
   bool initCmapStreamed();
-  bool collectGlyphInternal(uint16_t gid, const Xform& xf, std::vector<Contour>& out, int depth) const;
+  bool collectGlyphInternal(uint16_t gid, const Xform& xf, PsramVector<Contour>& out, int depth) const;
 
   TtfStream* s_ = nullptr;
   uint32_t fileSize_ = 0;

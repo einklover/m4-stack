@@ -1,4 +1,5 @@
 #include "CffReader.h"
+#include <M4MemoryManager.h>
 
 #include <algorithm>
 #include <cmath>
@@ -14,13 +15,7 @@ namespace {
 uint16_t rd16(const uint8_t* p) { return static_cast<uint16_t>((uint16_t(p[0]) << 8) | p[1]); }
 uint32_t rd32(const uint8_t* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
 void* reallocPsramFirst(void* p, size_t n) {
-#if defined(ARDUINO_ARCH_ESP32)
-  void* q = heap_caps_realloc(p, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!q) q = heap_caps_realloc(p, n, MALLOC_CAP_8BIT);
-  return q;
-#else
-  return std::realloc(p, n);
-#endif
+  return M4Memory::reallocTtf(p, n);
 }
 bool type2Number(const uint8_t* data, size_t len, size_t& pos, float& out) {
   if (pos >= len) return false;
@@ -33,11 +28,11 @@ bool type2Number(const uint8_t* data, size_t len, size_t& pos, float& out) {
   return false;
 }
 int subrBias(uint32_t count) { return count < 1240 ? 107 : (count < 33900 ? 1131 : 32768); }
-void debugMove(std::vector<Contour>* out, float x, float y) {
+void debugMove(PsramVector<Contour>* out, float x, float y) {
   if (!out) return;
   Contour c; c.pts.push_back({x,y,true}); out->push_back(std::move(c));
 }
-void debugLine(std::vector<Contour>* out, float x, float y) {
+void debugLine(PsramVector<Contour>* out, float x, float y) {
   if (!out) return;
   if (out->empty() || out->back().pts.empty()) debugMove(out,x,y);
   else { auto& p=out->back().pts; if(std::fabs(p.back().x-x)>1e-6f||std::fabs(p.back().y-y)>1e-6f)p.push_back({x,y,true}); }
@@ -90,7 +85,7 @@ bool CffFont::parsePrivateDict() {
   return true;
 }
 
-bool CffFont::executeType2(Slice code,std::vector<Contour>* debugOut,EdgeBuildState* edgeOut,int depth,float& x,float& y,uint32_t& stemCount) const {
+bool CffFont::executeType2(Slice code,PsramVector<Contour>* debugOut,EdgeBuildState* edgeOut,int depth,float& x,float& y,uint32_t& stemCount) const {
   static constexpr uint32_t kMaxCode=256u*1024u,kMaxActive=512u*1024u; static constexpr int kMaxFrames=17;
   if(depth>16||!code.valid()||code.len>kMaxCode){lastError_="CFF Type2 recursion or CharString limit exceeded";return false;}
   struct Frame{uint32_t base=0,len=0,pos=0;};
@@ -197,7 +192,7 @@ bool CffFont::executeType2(Slice code,std::vector<Contour>* debugOut,EdgeBuildSt
   return true;
 }
 
-bool CffFont::collectGlyph(uint16_t gid,std::vector<Contour>& out) const {
+bool CffFont::collectGlyph(uint16_t gid,PsramVector<Contour>& out) const {
   if(!ready_||gid>=glyphCount_)return false;
   if(!prepareGlyphLocalSubrs(gid))return false;
   Slice glyph;if(!indexObject(charStringsInfo_,gid,glyph))return false;float x=0,y=0;uint32_t stems=0;if(!executeType2(glyph,&out,nullptr,0,x,y,stems))return false;lastError_="ok";return true;

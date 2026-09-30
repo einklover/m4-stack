@@ -28,5 +28,8 @@ bool startCategory(const std::string& providerId, const std::string& appId,
 
 Snapshot snapshot();
 bool busy();
+// Cooperatively stop an in-flight discovery before the Home boundary reclaims
+// the shared App arena. The worker remains responsible for its own teardown.
+void cancel();
 
 }  // namespace M4NativeProviderDiscovery

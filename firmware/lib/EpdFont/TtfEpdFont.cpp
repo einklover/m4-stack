@@ -1,4 +1,6 @@
 #include "TtfEpdFont.h"
+#include <M4MemoryManager.h>
+#include "TtfGlyphSdCache.h"
 
 #include <HardwareSerial.h>
 #include <algorithm>
@@ -6,11 +8,53 @@
 #include <cstring>
 #include <new>
 
+#if defined(ESP32)
+class FaceLock {
+ public:
+  explicit FaceLock(SemaphoreHandle_t mu, TickType_t wait = portMAX_DELAY) : mu_(mu), held_(false) {
+    if (mu_) {
+      held_ = xSemaphoreTake(mu_, wait) == pdTRUE;
+    }
+  }
+  ~FaceLock() {
+    if (held_ && mu_) xSemaphoreGive(mu_);
+  }
+  bool acquired() const { return !mu_ || held_; }
+  FaceLock(const FaceLock&) = delete;
+  FaceLock& operator=(const FaceLock&) = delete;
+
+ private:
+  SemaphoreHandle_t mu_;
+  bool held_;
+};
+#endif
+
+// Glyph outline allocation throws std::bad_alloc from the TTF PSRAM allocator.
+// Catch it inside the face lock so the semaphore is given and the caller sees
+// a missing glyph instead of an escaped exception.
+template <class F>
+auto m4UnderFaceLock(SemaphoreHandle_t mu, F&& fn) -> decltype(fn()) {
+  using R = decltype(fn());
+#if defined(ESP32)
+  FaceLock lock(mu);
+#else
+  (void)mu;
+#endif
+  try {
+    return fn();
+  } catch (const std::bad_alloc&) {
+    return R();
+  }
+}
+
 extern void m4AppendFontDiagnostic(const char* line);
 extern "C" void m4YieldToDebugBridge() __attribute__((weak));
 extern "C" void m4YieldToDebugBridge() {}
 
 namespace {
+
+constexpr int kLiveMax = 8;
+TtfEpdFont* gLive[kLiveMax]{};
 
 uint16_t be16(const uint8_t* p) {
   return static_cast<uint16_t>((uint16_t(p[0]) << 8) | p[1]);
@@ -42,6 +86,22 @@ class SdTtfStream : public ttf::TtfStream {
 
   uint32_t size() const override {
     return file_.isOpen() ? file_.fileSize() : 0;
+  }
+
+  // Content identity for the SD glyph cache key (B5): file size + FAT modify
+  // stamp. Same path + replaced file => different fingerprint => stale SD
+  // records stop matching. Returns 0 when unavailable (caller keeps path hash).
+  uint32_t fileFingerprint() {
+    if (!file_.isOpen()) return 0;
+    const uint64_t sz = file_.fileSize();
+    uint16_t mdate = 0, mtime = 0;
+    bool hasTime = false;
+#if defined(ESP32)
+    hasTime = file_.getModifyDateTime(&mdate, &mtime);
+#endif
+    return TtfGlyphCache::fingerprintFromMeta(
+        static_cast<uint32_t>(sz & 0xffffffffu),
+        static_cast<uint32_t>((sz >> 32) & 0xffffffffu), mdate, mtime, hasTime);
   }
 
   bool seek(uint32_t pos) override {
@@ -258,13 +318,12 @@ bool probeCollection(SdTtfStream& stream, uint32_t& faceOffset,
 }
 
 void* ttfAlloc(size_t n) {
-#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
-  if (psramFound()) return ps_malloc(n);
-#endif
-  return malloc(n);
+  // Runtime TTF metadata and glyph bitmaps live in the boot-reserved TTF arena.
+  // Pool exhaustion is a font-cache OOM, never a reason to steal internal RAM.
+  return M4Memory::allocTtf(n);
 }
 
-void ttfFree(void* p) { free(p); }
+void ttfFree(void* p) { M4Memory::free(p); }
 
 int clampMetric(int value, int low, int high) {
   if (low > high) std::swap(low, high);
@@ -353,14 +412,7 @@ int TtfEpdFont::lookupAdvancePx(uint32_t cp) const {
 
 int TtfEpdFont::glyphAdvanceX(uint32_t cp, const EpdFontStyles::Style style) const {
   (void)style;
-#if defined(ESP32)
-  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-#endif
-  const int adv = lookupAdvancePx(cp);
-#if defined(ESP32)
-  if (mutex_) xSemaphoreGive(mutex_);
-#endif
-  return adv;
+  return m4UnderFaceLock(mutex_, [&]() -> int { return lookupAdvancePx(cp); });
 }
 bool TtfEpdFont::backendRasterize(uint16_t gid, ttf::GlyphBitmap& out) const {
   return usesCffBackend() ? cffFont_.rasterize(gid, renderSizePx_, out)
@@ -505,12 +557,17 @@ TtfEpdFont::TtfEpdFont(const String& path, uint16_t sizePx,
   mutex_ = xSemaphoreCreateMutex();
 #endif
 
+  famHash_ = TtfGlyphCache::hashFamily(path_.c_str());
   auto* sd = new (std::nothrow) SdTtfStream();
   if (!sd || !sd->open(path_)) {
     runtimeError_ = "font file open failed";
     delete sd;
     return;
   }
+  // Mix the file fingerprint into the cache key: replacing the TTF under the
+  // same path must not keep matching stale SD glyphs (B5). Unknown (0) keeps
+  // the plain path hash.
+  famHash_ = TtfGlyphCache::mixFingerprint(famHash_, sd->fileFingerprint());
 
   uint8_t magic[4] = {};
   const bool haveMagic = sd->seek(0) && sd->read(magic, sizeof(magic)) == sizeof(magic);
@@ -556,6 +613,7 @@ TtfEpdFont::TtfEpdFont(const String& path, uint16_t sizePx,
 
   if (!finishInit(path_.c_str())) return;
   if (!allocateEntries()) valid_ = false;
+  if (valid_) registerLive();
 }
 
 TtfEpdFont::TtfEpdFont(const uint8_t* data, uint32_t dataSize,
@@ -569,6 +627,11 @@ TtfEpdFont::TtfEpdFont(const uint8_t* data, uint32_t dataSize,
     runtimeError_ = "empty embedded TTF";
     return;
   }
+  // Embedded faces share the "<flash>" path, so the content fingerprint also
+  // separates DIFFERENT embedded fonts that would otherwise share one key.
+  famHash_ = TtfGlyphCache::mixFingerprint(
+      TtfGlyphCache::hashFamily(path_.c_str()),
+      TtfGlyphCache::contentFingerprint(data, dataSize));
   stream_ = new (std::nothrow) MemoryTtfStream(data, dataSize);
   backend_ = Backend::Glyf;
   faceOffset_ = 0;
@@ -578,9 +641,11 @@ TtfEpdFont::TtfEpdFont(const uint8_t* data, uint32_t dataSize,
   }
   if (!finishInit("<flash>")) return;
   if (!allocateEntries()) valid_ = false;
+  if (valid_) registerLive();
 }
 
 TtfEpdFont::~TtfEpdFont() {
+  unregisterLive();
   clearCaches();
   if (entries_) {
     for (uint16_t i = 0; i < maxSlots_; ++i) entries_[i].~Entry();
@@ -606,17 +671,239 @@ void TtfEpdFont::evictSlot(int slot) const {
   entries_[slot] = Entry{};
 }
 
-void TtfEpdFont::clearCaches() {
-#if defined(ESP32)
-  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-#endif
-  if (entries_) {
-    for (uint16_t i = 0; i < maxSlots_; ++i) evictSlot(i);
+int TtfEpdFont::dirtySlotCount() const {
+  if (!entries_) return 0;
+  int d = 0;
+  for (uint16_t i = 0; i < maxSlots_; ++i) {
+    if (entries_[i].dirty && entries_[i].cp != 0xffffffffu) ++d;
   }
-  backendClearScratch();
+  return d;
+}
+
+void TtfEpdFont::registerLive() {
+  for (int i = 0; i < kLiveMax; ++i) {
+    if (gLive[i] == this) return;
+  }
+  for (int i = 0; i < kLiveMax; ++i) {
+    if (!gLive[i]) {
+      gLive[i] = this;
+      return;
+    }
+  }
+  // Table full: evict instead of silently dropping this face (B4). Prefer a
+  // face with no dirty slots; otherwise the least-recently flushed one. The
+  // victim keeps working from PSRAM — it only loses idle-flush service, and
+  // eviction may drop its unflushed glyphs by design.
+  // NOTE: dirty counts are read without the victims' mutexes; this is only a
+  // heuristic for victim choice (all font use is on the main task).
+  int victim = 0;
+  for (int i = 1; i < kLiveMax; ++i) {
+    const bool victimClean = gLive[victim]->dirtySlotCount() == 0;
+    const bool candClean = gLive[i]->dirtySlotCount() == 0;
+    if (victimClean == candClean) {
+      if (gLive[i]->lastFlushActivityMs_ < gLive[victim]->lastFlushActivityMs_) victim = i;
+    } else if (candClean) {
+      victim = i;
+    }
+  }
+  Serial.printf("[TTF] live table full (%d): evicting ptr=%p dirty=%d for ptr=%p\n", kLiveMax,
+                static_cast<void*>(gLive[victim]), gLive[victim]->dirtySlotCount(),
+                static_cast<void*>(this));
+  gLive[victim] = this;
+}
+
+void TtfEpdFont::unregisterLive() {
+  for (int i = 0; i < kLiveMax; ++i) {
+    if (gLive[i] == this) gLive[i] = nullptr;
+  }
+}
+
+int TtfEpdFont::pickSlot() const {
+  int slot = -1;
+  uint32_t minAccess = 0xffffffffu;
+  for (uint16_t i = 0; i < maxSlots_; ++i) {
+    if (entries_[i].cp == 0xffffffffu) {
+      slot = i;
+      break;
+    }
+    if (entries_[i].lastAccess < minAccess) {
+      minAccess = entries_[i].lastAccess;
+      slot = i;
+    }
+  }
+  if (slot >= 0) evictSlot(slot);
+  return slot;
+}
+
+bool TtfEpdFont::publishGlyph(int slot, uint32_t cp, uint8_t w, uint8_t h, uint8_t adv, int16_t left,
+                              int16_t top, const uint8_t* bits, uint32_t len, bool fromSd) const {
+  uint8_t* bitmap = nullptr;
+  if (len && bits) {
+    bitmap = static_cast<uint8_t*>(ttfAlloc(len));
+    if (!bitmap) return false;
+    std::memcpy(bitmap, bits, len);
+  }
+  entries_[slot].cp = cp;
+  entries_[slot].lastAccess = ++accessCounter_;
+  entries_[slot].glyph.width = w;
+  entries_[slot].glyph.height = h;
+  entries_[slot].glyph.advanceX = adv;
+  entries_[slot].glyph.left = left;
+  entries_[slot].glyph.top = top;
+  entries_[slot].glyph.dataLength = len;
+  entries_[slot].glyph.dataOffset = cp;
+  entries_[slot].bitmap = bitmap;
+  entries_[slot].bitmapSize = len;
+  entries_[slot].dirty = M4_SD_GLYPH_CACHE_ENABLED && !fromSd;
+  entries_[slot].fromSd = fromSd;
+  cacheBytes_ += len;
+  return true;
+}
+
+void TtfEpdFont::trimCache(int keepSlot) const {
+  while (cacheBytes_ > cacheBudget_) {
+    int victim = -1;
+    uint32_t leastAccess = 0xffffffffu;
+    for (uint16_t i = 0; i < maxSlots_; ++i) {
+      if (int(i) == keepSlot || entries_[i].cp == 0xffffffffu) continue;
+      if (entries_[i].lastAccess < leastAccess) {
+        leastAccess = entries_[i].lastAccess;
+        victim = i;
+      }
+    }
+    if (victim < 0) break;
+    evictSlot(victim);
+  }
+}
+
+int TtfEpdFont::flushDirtySlots(int maxGlyphs) const {
+  if (!entries_ || maxGlyphs <= 0) return 0;
+  const uint32_t startedUs = micros();
+  int n = 0;
+  for (uint16_t i = 0; i < maxSlots_ && n < maxGlyphs; ++i) {
+    if (!entries_[i].dirty || entries_[i].cp == 0xffffffffu) continue;
+    TtfGlyphCache::Key k;
+    k.familyHash = famHash_;
+    k.sizePx = sizePx_;
+    k.cp = entries_[i].cp;
+    TtfGlyphCache::Glyph g;
+    g.width = entries_[i].glyph.width;
+    g.height = entries_[i].glyph.height;
+    g.advanceX = entries_[i].glyph.advanceX;
+    g.left = entries_[i].glyph.left;
+    g.top = entries_[i].glyph.top;
+    if (entries_[i].bitmap && entries_[i].bitmapSize) {
+      g.bitmap.assign(entries_[i].bitmap, entries_[i].bitmap + entries_[i].bitmapSize);
+    }
+    const TtfGlyphCache::AppendResult res = TtfGlyphCache::fileAppend(k, g);
+    if (res == TtfGlyphCache::AppendResult::Ok ||
+        res == TtfGlyphCache::AppendResult::Duplicate) {
+      entries_[i].dirty = false;
+      entries_[i].fromSd = true;
+      ++n;
 #if defined(ESP32)
-  if (mutex_) xSemaphoreGive(mutex_);
+      lastFlushActivityMs_ = millis();
+      lastTransientSkipMs_ = 0;
 #endif
+    } else if (res == TtfGlyphCache::AppendResult::PermanentReject) {
+      // Index full, file full, or oversize bitmap (already logged once in the
+      // cache layer): drop this glyph so later glyphs are not starved (B2).
+      // It stays servable from PSRAM until LRU eviction drops it by design.
+      entries_[i].dirty = false;
+    } else {
+      // Transient (SD not ready / I/O error): keep dirty, back off, and stop
+      // this round. idleFlushDirty skips this face until the backoff expires
+      // instead of churning the same head glyph every loop (B2).
+#if defined(ESP32)
+      lastTransientSkipMs_ = millis();
+#endif
+      break;
+    }
+  }
+  perfFlushUs_ += static_cast<uint32_t>(micros() - startedUs);
+  ++perfFlushRounds_;
+  return n;
+}
+
+bool TtfEpdFont::flushBackedOff() const {
+#if defined(ESP32)
+  return lastTransientSkipMs_ != 0 &&
+         (millis() - lastTransientSkipMs_) < kFlushTransientBackoffMs;
+#else
+  return false;
+#endif
+}
+
+int TtfEpdFont::idleFlushDirty(int maxGlyphs) {
+#if !M4_SD_GLYPH_CACHE_ENABLED
+  (void)maxGlyphs;
+  return 0;
+#endif
+  if (maxGlyphs <= 0) return 0;
+  int n = 0;
+  for (int i = 0; i < kLiveMax && n < maxGlyphs; ++i) {
+    TtfEpdFont* f = gLive[i];
+    if (!f || !f->valid_ || f->flushBackedOff()) continue;
+#if defined(ESP32)
+    FaceLock lock(f->mutex_, 0);  // Idle work must never wait behind rendering.
+    if (!lock.acquired()) continue;
+#endif
+    try {
+      n += f->flushDirtySlots(maxGlyphs - n);
+    } catch (const std::bad_alloc&) {
+#if defined(ESP32)
+      f->lastTransientSkipMs_ = millis();
+#endif
+      // Keep unflushed slots dirty and retry after backoff.
+    }
+  }
+  return n;
+}
+
+void TtfEpdFont::logPerformanceStats(const char* stage) {
+  uint32_t lookups = 0, residentHits = 0, sdHits = 0, rasterMisses = 0, slowLookups = 0;
+  uint32_t maxLookupUs = 0, flushRounds = 0, skipped = 0;
+  uint64_t totalLookupUs = 0, flushUs = 0;
+  for (int i = 0; i < kLiveMax; ++i) {
+    TtfEpdFont* f = gLive[i];
+    if (!f) continue;
+#if defined(ESP32)
+    if (f->mutex_ && xSemaphoreTake(f->mutex_, 0) != pdTRUE) {
+      ++skipped;
+      continue;
+    }
+#endif
+    lookups += f->perfLookups_;
+    residentHits += f->perfResidentHits_;
+    sdHits += f->perfSdHits_;
+    rasterMisses += f->perfRasterMisses_;
+    slowLookups += f->perfSlowLookups_;
+    if (f->perfMaxLookupUs_ > maxLookupUs) maxLookupUs = f->perfMaxLookupUs_;
+    totalLookupUs += f->perfTotalLookupUs_;
+    flushRounds += f->perfFlushRounds_;
+    flushUs += f->perfFlushUs_;
+#if defined(ESP32)
+    if (f->mutex_) xSemaphoreGive(f->mutex_);
+#endif
+  }
+  Serial.printf("[TTF-PERF] stage=%s lookups=%u resident=%u sd_hit=%u raster=%u slow_5ms=%u "
+                "total_us=%llu max_us=%u flush_rounds=%u flush_us=%llu skipped_faces=%u\n",
+                stage ? stage : "?", static_cast<unsigned>(lookups),
+                static_cast<unsigned>(residentHits), static_cast<unsigned>(sdHits),
+                static_cast<unsigned>(rasterMisses), static_cast<unsigned>(slowLookups),
+                static_cast<unsigned long long>(totalLookupUs), static_cast<unsigned>(maxLookupUs),
+                static_cast<unsigned>(flushRounds), static_cast<unsigned long long>(flushUs),
+                static_cast<unsigned>(skipped));
+}
+
+void TtfEpdFont::clearCaches() {
+  (void)m4UnderFaceLock(mutex_, [&]() -> int {
+    if (entries_) {
+      for (uint16_t i = 0; i < maxSlots_; ++i) evictSlot(i);
+    }
+    backendClearScratch();
+    return 0;
+  });
 }
 
 int TtfEpdFont::ensureGlyph(uint32_t cp) const {
@@ -624,6 +911,7 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   for (uint16_t i = 0; i < maxSlots_; ++i) {
     if (entries_[i].cp == cp) {
       entries_[i].lastAccess = ++accessCounter_;
+      ++perfResidentHits_;
       return i;
     }
   }
@@ -631,14 +919,8 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
   // Spaces and controls: synthesize empty glyph, never fallback to '?'.
   // Prefer real hmtx advance for proportional layout; fallback to em/3 only if metrics unavailable.
   if (cp == 0x20 || cp == 0x3000 || cp == 0x00A0 || cp == 0x09 || cp == 0x0A || cp == 0x0D) {
-    int slot = -1;
-    uint32_t minAccess = 0xffffffffu;
-    for (uint16_t i = 0; i < maxSlots_; ++i) {
-      if (entries_[i].cp == 0xffffffffu) { slot = i; break; }
-      if (entries_[i].lastAccess < minAccess) { minAccess = entries_[i].lastAccess; slot = i; }
-    }
+    const int slot = pickSlot();
     if (slot < 0) return -1;
-    evictSlot(slot);
     int adv = 0;
     uint16_t gid = 0;
     int32_t advUnits = 0, lsb = 0;
@@ -648,17 +930,25 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
     }
     if (adv <= 0) adv = std::max(1, int(sizePx_) / 3);
     adv = std::max(1, std::min(255, adv));
-    entries_[slot].cp = cp;
-    entries_[slot].lastAccess = ++accessCounter_;
-    entries_[slot].glyph.width = 0;
-    entries_[slot].glyph.height = 0;
-    entries_[slot].glyph.advanceX = uint8_t(adv);
-    entries_[slot].glyph.left = 0;
-    entries_[slot].glyph.top = 0;
-    entries_[slot].glyph.dataLength = 0;
-    entries_[slot].glyph.dataOffset = cp;
-    entries_[slot].bitmap = nullptr;
-    entries_[slot].bitmapSize = 0;
+    if (!publishGlyph(slot, cp, 0, 0, uint8_t(adv), 0, 0, nullptr, 0, true)) return -1;
+    return slot;
+  }
+
+  TtfGlyphCache::Key ck;
+  ck.familyHash = famHash_;
+  ck.sizePx = sizePx_;
+  ck.cp = cp;
+  TtfGlyphCache::Glyph cg;
+  if (TtfGlyphCache::fileLookup(ck, cg)) {
+    ++perfSdHits_;
+    const int slot = pickSlot();
+    if (slot < 0) return -1;
+    const uint32_t len = static_cast<uint32_t>(cg.bitmap.size());
+    if (!publishGlyph(slot, cp, cg.width, cg.height, cg.advanceX, cg.left, cg.top,
+                      len ? cg.bitmap.data() : nullptr, len, true)) {
+      return -1;
+    }
+    trimCache(slot);
     return slot;
   }
 
@@ -674,52 +964,24 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
     m4AppendFontDiagnostic(line);
     if (gid == 0 || !backendRasterize(0, gb)) return -1;
   }
+  ++perfRasterMisses_;
   // Owner-loop TTF first-paint can take hundreds of ms per CJK glyph on QEMU.
   // Yield so m4adb tap/key is ACKed instead of looking frozen until the page
   // finishes. Weak no-op on host tests; firmware overrides on the main task.
   if (m4YieldToDebugBridge) m4YieldToDebugBridge();
 
-  int slot = -1;
-  uint32_t minAccess = 0xffffffffu;
-  for (uint16_t i = 0; i < maxSlots_; ++i) {
-    if (entries_[i].cp == 0xffffffffu) {
-      slot = i;
-      break;
-    }
-    if (entries_[i].lastAccess < minAccess) {
-      minAccess = entries_[i].lastAccess;
-      slot = i;
-    }
-  }
+  const int slot = pickSlot();
   if (slot < 0) return -1;
-  evictSlot(slot);
-
-  uint8_t* bitmap = nullptr;
-  const uint32_t len = gb.packedLen;
-  if (len && gb.data) {
-    bitmap = static_cast<uint8_t*>(ttfAlloc(len));
-    if (!bitmap) return -1;
-    std::memcpy(bitmap, gb.data, len);
-  }
 
   // Resolve hmtx before publishing this cache slot. lookupAdvancePx() first
   // checks resident entries; publishing cp while advanceX is still zero makes
   // it read this half-built entry and collapses every rendered glyph onto one x.
   const int advance = std::max(0, std::min(255, lookupAdvancePx(cp)));
-  entries_[slot].cp = cp;
-  entries_[slot].lastAccess = ++accessCounter_;
-  entries_[slot].glyph.width = uint8_t(gb.width);
-  entries_[slot].glyph.height = uint8_t(gb.height);
-  // Advances and bearings both stay on the source font metrics at the
-  // configured reader px.
-  entries_[slot].glyph.advanceX = static_cast<uint8_t>(advance);
-  entries_[slot].glyph.left = gb.xoff;
-  entries_[slot].glyph.top = gb.yoff;
-  entries_[slot].glyph.dataLength = len;
-  entries_[slot].glyph.dataOffset = cp;
-  entries_[slot].bitmap = bitmap;
-  entries_[slot].bitmapSize = len;
-  cacheBytes_ += len;
+  const uint32_t len = gb.packedLen;
+  if (!publishGlyph(slot, cp, uint8_t(gb.width), uint8_t(gb.height), static_cast<uint8_t>(advance),
+                    gb.xoff, gb.yoff, (len && gb.data) ? gb.data : nullptr, len, false)) {
+    return -1;
+  }
 
   if (glyphDiagnosticsLogged_ < 12) {
     Serial.printf("[TTF-GLYPH] ptr=%p cp=U+%04lX advance=%d bitmap=%ux%u left=%d top=%d nominal=%u raster=%u lineH=%u asc=%d desc=%d\n",
@@ -730,33 +992,23 @@ int TtfEpdFont::ensureGlyph(uint32_t cp) const {
     ++glyphDiagnosticsLogged_;
   }
 
-  while (cacheBytes_ > cacheBudget_) {
-    int victim = -1;
-    uint32_t leastAccess = 0xffffffffu;
-    for (uint16_t i = 0; i < maxSlots_; ++i) {
-      if (int(i) == slot || entries_[i].cp == 0xffffffffu) continue;
-      if (entries_[i].lastAccess < leastAccess) {
-        leastAccess = entries_[i].lastAccess;
-        victim = i;
-      }
-    }
-    if (victim < 0) break;
-    evictSlot(victim);
-  }
+  trimCache(slot);
   return slot;
 }
 
 const EpdGlyph* TtfEpdFont::getGlyph(uint32_t cp,
                                     const EpdFontStyles::Style style) const {
   (void)style;
-#if defined(ESP32)
-  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-#endif
-  const int slot = ensureGlyph(cp);
-#if defined(ESP32)
-  if (mutex_) xSemaphoreGive(mutex_);
-#endif
-  return slot < 0 ? nullptr : &entries_[slot].glyph;
+  const uint32_t startedUs = micros();
+  return m4UnderFaceLock(mutex_, [&]() -> const EpdGlyph* {
+    const int slot = ensureGlyph(cp);
+    const uint32_t elapsedUs = static_cast<uint32_t>(micros() - startedUs);
+    ++perfLookups_;
+    perfTotalLookupUs_ += elapsedUs;
+    if (elapsedUs > perfMaxLookupUs_) perfMaxLookupUs_ = elapsedUs;
+    if (elapsedUs >= 5000u) ++perfSlowLookups_;
+    return slot < 0 ? nullptr : &entries_[slot].glyph;
+  });
 }
 
 const uint8_t* TtfEpdFont::loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffer,
@@ -773,21 +1025,15 @@ const uint8_t* TtfEpdFont::loadGlyphBitmap(const EpdGlyph* glyph, uint8_t* buffe
     return nullptr;
   }
   const uint32_t cp = glyph->dataOffset;
-#if defined(ESP32)
-  if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY);
-#endif
-  const int slot = ensureGlyph(cp);
-  const uint8_t* result = nullptr;
-  if (slot >= 0 && entries_[slot].bitmap && entries_[slot].bitmapSize) {
-    if (buffer) {
-      std::memcpy(buffer, entries_[slot].bitmap, entries_[slot].bitmapSize);
-      result = buffer;
-    } else {
-      result = entries_[slot].bitmap;
+  return m4UnderFaceLock(mutex_, [&]() -> const uint8_t* {
+    const int slot = ensureGlyph(cp);
+    if (slot >= 0 && entries_[slot].bitmap && entries_[slot].bitmapSize) {
+      if (buffer) {
+        std::memcpy(buffer, entries_[slot].bitmap, entries_[slot].bitmapSize);
+        return buffer;
+      }
+      return entries_[slot].bitmap;
     }
-  }
-#if defined(ESP32)
-  if (mutex_) xSemaphoreGive(mutex_);
-#endif
-  return result;
+    return nullptr;
+  });
 }

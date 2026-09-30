@@ -7,12 +7,64 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 namespace {
 
 constexpr const char* kRegistryTmp = "/system/app_registry.json.tmp";
 constexpr const char* kRegistryBak = "/system/app_registry.json.bak";
+
+// Independent of installGate. Install already holds that non-recursive mutex
+// across load/save, so taking it again here would deadlock. This mutex is the
+// only registry transaction lock: load (including bak write-back) and save
+// (primary->bak and tmp->primary) both hold it for the whole call. load must
+// not call save.
+std::mutex& registryTxnMu() {
+  static std::mutex mu;
+  return mu;
+}
+
+enum class RegistryReadKind { Missing, Ok, IoError };
+
+struct RegistryRead {
+  RegistryReadKind kind;
+  std::string text;
+};
+
+// Missing means the path is not on the card. IoError means it is present but
+// this read did not return the full file (open, size, or short read). Callers
+// that repair a registry must not delete or replace an IoError primary.
+RegistryRead readRegistryFile(const char* path) {
+  FsFile f;
+  if (!SdMan.openFileForRead("M4xReg", path, f)) {
+    return {SdMan.exists(path) ? RegistryReadKind::IoError : RegistryReadKind::Missing, {}};
+  }
+  const size_t n = f.fileSize();
+  if (n > 256u * 1024u) {
+    f.close();
+    return {RegistryReadKind::IoError, {}};
+  }
+  std::string out;
+  out.resize(n);
+  if (n > 0) {
+    size_t off = 0;
+    while (off < n) {
+      const int r = f.read(reinterpret_cast<uint8_t*>(&out[off]), n - off);
+      if (r <= 0) {
+        f.close();
+        return {RegistryReadKind::IoError, {}};
+      }
+      off += static_cast<size_t>(r);
+    }
+    if (off != n) {
+      f.close();
+      return {RegistryReadKind::IoError, {}};
+    }
+  }
+  f.close();
+  return {RegistryReadKind::Ok, std::move(out)};
+}
 
 std::string readAllText(const char* path) {
   FsFile f;
@@ -40,23 +92,40 @@ std::string readAllText(const char* path) {
   return out;
 }
 
+// Create-only. openFileForWrite uses O_TRUNC, so an existing path is refused
+// and only a file this call created is removed on failure.
 bool writeAllTextExact(const char* path, const std::string& body) {
-  if (SdMan.exists(path)) SdMan.remove(path);
+  if (SdMan.exists(path)) return false;
   FsFile f;
   if (!SdMan.openFileForWrite("M4xReg", path, f)) return false;
   const size_t n = body.size();
   size_t off = 0;
-  while (off < n) {
+  bool ok = true;
+  while (ok && off < n) {
     const size_t chunk = std::min<size_t>(4096, n - off);
     const int w = f.write(reinterpret_cast<const uint8_t*>(body.data() + off), chunk);
-    if (w <= 0) {
-      f.close();
-      SdMan.remove(path);
-      return false;
-    }
-    off += static_cast<size_t>(w);
+    if (w <= 0) ok = false;
+    else off += static_cast<size_t>(w);
   }
-  f.close();
+  if (ok && (off != n || f.getWriteError())) ok = false;
+  if (ok && f.fileSize() != n) ok = false;
+  if (ok && !f.sync()) ok = false;
+  if (!f.close()) ok = false;
+  if (!ok) {
+    SdMan.remove(path);
+    return false;
+  }
+  FsFile verify;
+  if (!SdMan.openFileForRead("M4xReg", path, verify)) {
+    SdMan.remove(path);
+    return false;
+  }
+  const bool sizeOk = verify.fileSize() == n;
+  verify.close();
+  if (!sizeOk) {
+    SdMan.remove(path);
+    return false;
+  }
   return true;
 }
 
@@ -78,12 +147,19 @@ void applyLiveManifestRuntime(const std::string& installPath, M4xRuntimeKind& ru
   provider = live.provider;
 }
 
-bool parseRegistry(const std::string& raw, std::vector<M4xInstalledApp>& apps) {
+enum class RegistryParse { Ok, Corrupt, Transient };
+
+RegistryParse parseRegistry(const std::string& raw, std::vector<M4xInstalledApp>& apps) {
   apps.clear();
-  if (raw.empty()) return false;
+  if (raw.empty()) return RegistryParse::Corrupt;
   JsonDocument doc;
-  if (deserializeJson(doc, raw)) return false;
-  if (!doc["apps"].is<JsonArray>()) return false;
+  const DeserializationError err = deserializeJson(doc, raw);
+  if (err == DeserializationError::NoMemory || err == DeserializationError::TooDeep) {
+    return RegistryParse::Transient;
+  }
+  if (err) return RegistryParse::Corrupt;
+  if (doc.overflowed()) return RegistryParse::Transient;
+  if (!doc["apps"].is<JsonArray>()) return RegistryParse::Corrupt;
 
   for (JsonObject o : doc["apps"].as<JsonArray>()) {
     M4xInstalledApp a;
@@ -111,28 +187,103 @@ bool parseRegistry(const std::string& raw, std::vector<M4xInstalledApp>& apps) {
     }
     if (!a.id.empty() && !a.path.empty()) apps.push_back(std::move(a));
   }
-  return true;
+  return RegistryParse::Ok;
+}
+
+struct RegistryLoadResult {
+  bool failClosed = false;
+  std::vector<M4xInstalledApp> apps;
+};
+
+// strictWrite is the modify/save path. IoError and Transient must not substitute
+// the backup or an empty table. Confirmed-corrupt and missing still repair from bak.
+RegistryLoadResult loadRegistryUnlocked(bool strictWrite) {
+  RegistryLoadResult out;
+  const RegistryRead primary = readRegistryFile(M4xPaths::kRegistryPath);
+  if (primary.kind == RegistryReadKind::Ok) {
+    const RegistryParse parsed = parseRegistry(primary.text, out.apps);
+    if (parsed == RegistryParse::Ok) return out;
+    if (parsed == RegistryParse::Transient) {
+      out.apps.clear();
+      if (strictWrite) {
+        out.failClosed = true;
+        return out;
+      }
+      const RegistryRead bak = readRegistryFile(kRegistryBak);
+      if (bak.kind == RegistryReadKind::Ok &&
+          parseRegistry(bak.text, out.apps) == RegistryParse::Ok) {
+        return out;
+      }
+      out.apps.clear();
+      return out;
+    }
+    out.apps.clear();
+  } else if (primary.kind == RegistryReadKind::IoError) {
+    out.apps.clear();
+    if (strictWrite) {
+      out.failClosed = true;
+      return out;
+    }
+    const RegistryRead bak = readRegistryFile(kRegistryBak);
+    if (bak.kind == RegistryReadKind::Ok &&
+        parseRegistry(bak.text, out.apps) == RegistryParse::Ok) {
+      return out;
+    }
+    out.apps.clear();
+    return out;
+  }
+
+  // Primary is missing or confirmed corrupt. Never accept an unreadable backup
+  // as an empty registry on a modify/save path: transient SD/JSON failures may
+  // recover later, and overwriting them here would destroy installed app rows.
+  const RegistryRead bak = readRegistryFile(kRegistryBak);
+  if (bak.kind == RegistryReadKind::IoError) {
+    if (strictWrite) out.failClosed = true;
+    out.apps.clear();
+    return out;
+  }
+  if (bak.kind == RegistryReadKind::Ok) {
+    const RegistryParse parsed = parseRegistry(bak.text, out.apps);
+    if (parsed == RegistryParse::Transient) {
+      if (strictWrite) out.failClosed = true;
+      out.apps.clear();
+      return out;
+    }
+    if (parsed == RegistryParse::Ok) {
+      if (!bak.text.empty()) {
+        if (SdMan.exists(M4xPaths::kRegistryPath)) SdMan.remove(M4xPaths::kRegistryPath);
+        if (!SdMan.exists(M4xPaths::kRegistryPath)) {
+          (void)writeAllTextExact(M4xPaths::kRegistryPath, bak.text);
+        }
+      }
+      return out;
+    }
+  }
+
+  out.apps.clear();
+  return out;
 }
 
 }  // namespace
 
 std::vector<M4xInstalledApp> M4xRegistry::load() {
-  std::vector<M4xInstalledApp> apps;
+  std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
+  return loadRegistryUnlocked(false).apps;
+}
 
-  const std::string primary = readAllText(M4xPaths::kRegistryPath);
-  if (parseRegistry(primary, apps)) return apps;
-
-  const std::string bak = readAllText(kRegistryBak);
-  if (parseRegistry(bak, apps)) {
-    if (!bak.empty()) writeAllTextExact(M4xPaths::kRegistryPath, bak);
-    return apps;
+bool M4xRegistry::tryLoad(std::vector<M4xInstalledApp>& apps) {
+  std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
+  RegistryLoadResult loaded = loadRegistryUnlocked(true);
+  if (loaded.failClosed) {
+    apps.clear();
+    return false;
   }
-
-  apps.clear();
-  return apps;
+  apps = std::move(loaded.apps);
+  return true;
 }
 
 bool M4xRegistry::save(const std::vector<M4xInstalledApp>& apps) {
+  std::lock_guard<std::mutex> registryTxnLock(registryTxnMu());
   JsonDocument doc;
   JsonArray arr = doc["apps"].to<JsonArray>();
   for (const auto& a : apps) {
@@ -152,25 +303,45 @@ bool M4xRegistry::save(const std::vector<M4xInstalledApp>& apps) {
     JsonArray files = o["files"].to<JsonArray>();
     for (const auto& f : a.files) files.add(f);
   }
+  if (doc.overflowed()) return false;
   std::string out;
-  serializeJson(doc, out);
+  const size_t written = serializeJson(doc, out);
+  if (doc.overflowed() || written == 0 || written != out.size()) return false;
 
   SdMan.mkdir("/system", true);
 
+  if (SdMan.exists(kRegistryTmp) && !SdMan.remove(kRegistryTmp)) return false;
   if (!writeAllTextExact(kRegistryTmp, out)) return false;
 
-  if (SdMan.exists(M4xPaths::kRegistryPath)) {
-    if (SdMan.exists(kRegistryBak)) SdMan.remove(kRegistryBak);
+  const bool hadPrimary = SdMan.exists(M4xPaths::kRegistryPath);
+  if (hadPrimary) {
+    if (SdMan.exists(kRegistryBak) && !SdMan.remove(kRegistryBak)) {
+      SdMan.remove(kRegistryTmp);
+      return false;
+    }
     if (!SdMan.rename(M4xPaths::kRegistryPath, kRegistryBak)) {
       const std::string prev = readAllText(M4xPaths::kRegistryPath);
-      if (!prev.empty()) writeAllTextExact(kRegistryBak, prev);
-      SdMan.remove(M4xPaths::kRegistryPath);
+      if (prev.empty() || !writeAllTextExact(kRegistryBak, prev)) {
+        SdMan.remove(kRegistryTmp);
+        return false;
+      }
+      const std::string bakCheck = readAllText(kRegistryBak);
+      if (bakCheck != prev || !SdMan.remove(M4xPaths::kRegistryPath)) {
+        SdMan.remove(kRegistryTmp);
+        return false;
+      }
     }
   }
 
   if (!SdMan.rename(kRegistryTmp, M4xPaths::kRegistryPath)) {
+    if (SdMan.exists(M4xPaths::kRegistryPath)) {
+      SdMan.remove(kRegistryTmp);
+      return false;
+    }
     if (!writeAllTextExact(M4xPaths::kRegistryPath, out)) {
-      if (SdMan.exists(kRegistryBak)) SdMan.rename(kRegistryBak, M4xPaths::kRegistryPath);
+      if (SdMan.exists(M4xPaths::kRegistryPath)) SdMan.remove(M4xPaths::kRegistryPath);
+      if (hadPrimary && SdMan.exists(kRegistryBak)) SdMan.rename(kRegistryBak, M4xPaths::kRegistryPath);
+      SdMan.remove(kRegistryTmp);
       return false;
     }
     SdMan.remove(kRegistryTmp);

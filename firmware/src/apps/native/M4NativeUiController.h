@@ -118,6 +118,11 @@ class Controller {
   // Called once per activity loop frame (outside render). Providers may start
   // background discovery/network here; must not block.
   virtual void pollAsync() {}
+
+  // Cooperative stop. Default no-op: controllers without a worker stay
+  // concrete and immediately destructible. Must not block or delete a task.
+  virtual void requestStop() {}
+  virtual bool readyForDestruction() const { return true; }
 };
 
 inline bool isBinding(const std::string& s) { return s.size() > 1 && s[0] == '@'; }

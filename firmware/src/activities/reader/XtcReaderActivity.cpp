@@ -6,10 +6,14 @@
  */
 
 #include "XtcReaderActivity.h"
+#include <M4MemoryManager.h>
 
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <SDCardManager.h>
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_heap_caps.h>
+#endif
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -33,6 +37,16 @@ namespace {
 constexpr unsigned long skipPageMs = 700;
 constexpr unsigned long goHomeMs = 1000;
 constexpr int loadedMaxPage_per= 500;//新增
+
+uint8_t* allocXtcPageBuffer(size_t bytes) {
+  auto* p = static_cast<uint8_t*>(M4Memory::allocApp(bytes));
+  if (p) std::memset(p, 0, bytes);
+  return p;
+}
+
+void freeXtcPageBuffer(void* p) {
+  M4Memory::free(p);
+}
 }  // namespace
 
 void XtcReaderActivity::taskTrampoline(void* param) {
@@ -55,7 +69,7 @@ void XtcReaderActivity::onEnter() {
   }
   // 新增：进入时清理旧缓冲区（避免脏数据）
   if (pageBuffer) {
-    free(pageBuffer);
+    freeXtcPageBuffer(pageBuffer);
     pageBuffer = nullptr;
     pageBufferCapacity = 0;
   }
@@ -104,7 +118,7 @@ void XtcReaderActivity::onExit() {
   xtc.reset();
     // 新增：退出时释放复用的缓冲区
   if (pageBuffer) {
-    free(pageBuffer);
+    freeXtcPageBuffer(pageBuffer);
     pageBuffer = nullptr;
     pageBufferCapacity = 0;
   }
@@ -342,10 +356,10 @@ void XtcReaderActivity::renderFullPage() {
   // 复用全局buffer（逻辑不变）
   if (pageBufferCapacity < slicePageBufferSize) {
     if (pageBuffer) {
-      free(pageBuffer);
+      freeXtcPageBuffer(pageBuffer);
       pageBuffer = nullptr;
     }
-    pageBuffer = static_cast<uint8_t*>(calloc(1, slicePageBufferSize));
+    pageBuffer = allocXtcPageBuffer(slicePageBufferSize);
     if (!pageBuffer) {
       Serial.printf("[%lu] [XTR] Alloc failed: %lu bytes\n", millis(), slicePageBufferSize);
       renderer.clearScreen();
