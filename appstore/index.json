@@ -213,13 +213,13 @@
     {
       "id": "com.m4.sokoban",
       "name": "推箱子",
-      "version": "0.1.0",
-      "versionCode": 1,
-      "description": "V1 Lua Sokoban. Original beginner levels, undo, dead corners, saved progress.",
+      "version": "0.2.0",
+      "versionCode": 2,
+      "description": "三章 24 关推箱子：章节选关、撤销、下一关及独立进度存档。",
       "category": "games",
-      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.sokoban-v0.1.0.m4x",
-      "sha256": "ca5da4f010e2c1e8da1343e64b649c1fd0ba23df3dab18d5ba4ac3518c537f88",
-      "sourceUrl": "https://github.com/einklover/m4-stack/tree/main/plugins/m4-lua-sokoban-plugin"
+      "packageUrl": "https://einklover.github.io/m4-stack/appstore/packages/com.m4.sokoban-v0.2.0.m4x",
+      "sha256": "7b3726b48cb7bb92c4fd44e7b20be4ae3b6a771d7333783caa6a4e1d9f15295c",
+      "sourceUrl": "https://github.com/einklover/m4-stack/tree/15b1630635a269d0e6125795cd746b7be038005d/plugins/m4-lua-sokoban-plugin"
     }
   ]
 }
